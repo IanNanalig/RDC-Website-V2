@@ -1,0 +1,359 @@
+
+===== PAGE 1 =====
+!!! READ BEFORE USE !!!
+This template is intended to be a guide in gathering of inputs. Please make a copy first.
+Note: 🚩- Required items to be filled-out
+Kindly return the accomplished Project Profile to the OAGMP-MDPS technical staff on or 
+before 28 November 2025 (Friday) via submission (signed Project Template, with transmittal 
+memo) of hard copy to the OAGMP 16th Floor, New MMDA Building, and the soft copy via 
+email: pped@mmda.gov.ph. Thank you.
+===== PAGE 2 =====
+UPDATING OF THE PUBLIC INVESTMENT PROGRAM (PIP) 2023-2028 AND FORMULATION OF THE THREE-YEAR ROLLING INFRASTRUCTURE PROGRAM (TRIP) FOR FYs 2027-2029 AS INPUT TO THE  FY 2027 BUDGET PREPARATION
+PROGRAM/PROJECT PROFILE
+PROJECT TITLE 🚩 [1]
+MMDA OFFICE/ UNIT-IN-CHARGE 🚩
+Is it a Program or a Project?🚩
+Program [2]
+Is it a regular program? [3]
+Yes No
+Project [4]
+Is this a part/subcomponent/subproject of a Program? [5]
+Yes
+- Parent Program Title: [6]
+- Parent Program PIP Code:
+- Sub Program [7]
+No
+Is this a part of a convergence program (PCB)? 🚩 [8]
+Yes
+No
+
+===== PAGE 3 =====
+BASIS FOR IMPLEMENTATION 🚩 [9]
+General Appropriations Act (GAA) for FY (Present year)
+National Expenditure Program (NEP) for FY (Next year)
+Multi-Year Obligational Authority (MYOA)Multi-Year Contracting Authority (MYCA)
+Existing masterplan/sector studies/procurement plan:
+List of RDC-endorsed programs/projects
+Signed Agreements/International Commitments: [10]
+Regular program (e.g. part of PAMANA, HFEP, etc.)
+List of ARNIPAPs agreed during the Regional-National Invesment Programming Dialogue
+Other existing laws, rules, or regulations*:
+PROJECT OBJECTIVE 🚩(indicate the objective of the program/project in terms of the development gap it intends to address and its responsiveness to the PDP)
+===== PAGE 4 =====
+PROJECT DESCRIPTION 🚩(Identify the Components of the P/P . If a program, please identify the sub-P/P and explain the objective of the P/P in terms of responding to the PDP/RMIf the P/P involves construction, rehabilitation, or improvement of a government facility, specify the definite purpose and components for the facility to be constructed, rehabilitated or improved.)
+IMPLEMENTING AGENCY
+Parent/Oversight Agency 🚩
+Attached Agency
+Co-Implementing Agency (if applicable)
+IMPLEMENTATION PERIOD
+Start of Project Implementation 🚩 [11]
+Year of Project Completion 🚩 [12]
+SPATIAL COVERAGE  - By Cost/Investment
+Note: Interregional & Region-Specific P/Ps, agencies are required to identify coverage by cost of the P/Ps down to provincial level. Please also identify the cities/municipalities covered, if applicable
+COVERAGE 🚩 [13] Choose
+Region(s) 🚩  
+===== PAGE 5 =====
+Note: Interregional & Region-Specific P/Ps, agencies are required to identify coverage by cost of the P/Ps down to provincial level. Please also identify the cities/municipalities covered, if applicable
+Province(s) 🚩  
+Locality(ies) 
+SPATIAL COVERAGE  - By Impact
+Note: Agencies may provide Spatial Coverage - By impact on a provincial level
+COVERAGE 🚩 [14] Choose
+Region(s) 🚩  
+Province(s)  
+River Basins 🚩 [15] Yes
+Major River Basin [16]
+Principal River Basin [17]
+No
+INCLUSION IN PROGRAMMING DOCUMENT
+PUBLIC INVESTMENT PROGRAM (PIP) 🚩 [18] Choose
+CORE INVESTMENT PROGRAM/PROJECT (CIP) (if applicable) [19]Choose
+THREE-YEAR ROLLING INFRASTRUCTURE PROGRAM (if applicable) [20]
+AGENCY REGIONAL-NATIONAL INVESTMENT PROGRAM AND PROJECT (ARNIPAP) (if applicable) [21]
+Is it a Research and Development Program/Project? 🚩 Choose
+Is the Program/Project included in the RDIP? 🚩 Choose
+Will require Regional Development Council (RDC) Endorsement? 🚩 Choose
+PHYSICAL AND FINANCIAL STATUS
+Catergory: 🚩Choose
+Status of Implementation Readiness: 🚩Choose
+Note: (For Proposed PAPs only) Should meet one of the following Level of Readiness (Choose one (1) appropriate level of readiness): 🚩
+CIPs [22] Non-CIPs [23]
+===== PAGE 6 =====
+1 - With Economy and Development (ED)-Council and/or ICC project approval but not yet ongoing - With approval of appropriate approving body not yet ongoing
+2
+- With project preparation document completed, for ICC processing in 2025 or 2026;- If for NG funding, included in the NEP for FY 2026 or for inclusion in the FY 2027 budget proposals
+- With project preparation document completed, for approval of appropriate approving body in 2025 or 2026;- If for NG funding, included in the NEP for FY 2026 or for inclusion in the FY 2027 budget proposals
+3
+- With project preparation document to be completed in 2026-onwards, for ICC processing in 2027-onwards; and - If for NG funding, for inclusion in FY 2028 budget proposal or succedding years
+- With project preparation document to be implemented in 2026-onwards, for ICC processing in 2027-onwards; and - If for NG funding, for inclusion in FY 2028 budget proposal or succedding years
+Implementation Risk: 🚩 [24]
+Mitigation Strategies: 🚩 [25]
+PAP Code 🚩 [26]
+===== PAGE 7 =====
+UPDATES: 🚩 [27]
+Update as of:🚩 [28]
+FUNDING SOURCES AND MODE OF IMPLEMENTATION
+Funding Sources: 🚩
+NG LGU Counterpart
+ODA Loan Private Sector
+ODA Grant Others (Please identify the specific fund source):
+GOCC/GFIs
+Main Funding Sources 🚩
+===== PAGE 8 =====
+NG LGU Counterpart
+ODA Loan Choose Private Sector
+ODA Grant Choose Others (Please specify):
+GOCC/GFIs
+Mode of Implementation/Procurement 🚩
+Through Local Funds in accordance with RA 9184 or the Government Procurement Act
+Through ODA pursuant to RA 8182 or the ODA Act of 1996
+Through PPP under PD 1112/1113
+Through PPP under the Amended BOT Law and Its IRR
+Through Joint Venture Arrangement:
+Others (Please specify):
+PROJECT COST (In Exact Amount in PHP) 🚩
+Funding Source [29] Investment Targets [30]
+2022 and Prior 2023 2024 2025 2026 2027 2028 2029 Continuing YearsOverall Total
+NG 0.00
+ODA Loan 0.00
+ODA Grant 0.00
+GOCC/ GFIs 0.00
+LGU Counterpart 0.00
+Private Sector 0.00
+Others 0.00
+Total 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00
+PIP-Budget Tracker 🚩
+Not included in the OSBPS for FY 2026 Not included in FY 2026 NEP Not Included in the GAA 2025
+===== PAGE 9 =====
+PIP-Budget Tracker [31]
+Year Amount submitted in the OSBPSAmount included in the National Expenditure Program (NEP) Amount allocated in the General Appropriations Act (GAA)
+2025
+2026
+2027
+2028
+2029
+Total 0.00 0.00 0.00
+PROVINCIAL/ DISTRICT BREAKDOWN 🚩
+With breakdown (Please fill the detail per district) No available breakdown information (Kindly skip)
+Province Investment Targets
+2022 and Prior 2023 2024 2025 2026 2027 2028 2029 Continuing YearsOverall Total
+NCR 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00
+1st District (MNL) 0.00
+2nd District (MANDA, MRK, PSG, QC, SJ) 0.00
+3rd District (CAL, MAL, NAV, VAL) 0.00
+4th District  (LSP, MAK, MUNTI, PRQ, PSY, PAT, TAG) 0.00
+Total 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00
+0.00Level of Approval 🚩
+Will require ICC/ ED Council Approval Not Applicable
+Philippine Development Plan (PDP) CHAPTERS
+MAIN PDP CHAPTER 🚩
+===== PAGE 10 =====
+OTHER PDP CHAPTER(S) (Select as many as applicable, if any) [32]
+Chapter 2 Promote Human and Social Development Chapter 5 Modernize Agriculture and Agribusiness Chapter 11.2 Ensure Sound Fiscal Management and Improve the Tax Regime
+Chapter 2.1 Boost Health Chapter 6 Revitalize Industry Chapter 12 Expand and Upgrade Infrastructure
+Chapter 2.2 Improve Education and Lifelong Learning Chapter 7 Reinvigorate Services Chapter 13 Ensure Peace, Security, and Public Safety and Enhance Administration of Justice
+Chapter 2.3 Establish Livable Communities
+Chapter 8 Advance Research & Development, Technology, and Innovation Chapter 13.1 Ensure Peace, Security, and Public Safety
+Chapter 3. Reduce Vulnerabilities and Protect Purchasing Power Chapter 9 Promote Trade and Investments Chapter 13.2 Enhance Administration of Justice
+Chapter 3.1 Ensure Food Security and Proper Nutrition Chapter 10 Promote Competition and Improve Regulatory Efficiency
+Chapter 14 Practice Good Governance and Improve Bureaucratic Efficiency
+Chapter 3.2 Strengthen Social Protection Chapter 11 Ensure Macroeconomic Stability Chapter 15 Accelerate Climate Action and Strengthen Disaster Resilience
+Chapter 4. Increase Income Earning Ability
+Chapter 11.1 Promote an Inclusive, Innovative, and Healthy Financial Sector
+Outcome/ Indicator Statements 🚩
+PDP RM Outcome/Indicator Statement Applicable (Please Specify): [33]Select the outcome and indicator statements that the P/P is responsive to based on the PDP Results Matrix (RM). Copy of RM can be accessed through this link: https://depdev.gov.ph/pdp-2023-2028-results-matrices/ 
+Outcome: Choose
+Subchapter Outcome:  
+ - specify
+Indicator(s): 
+ - specify
+No PDP RM Outcome/Indicator Statement Applicable
+===== PAGE 11 =====
+Outcome/New Indicators (based on the PDP 2023-2028 Midterm Update
+PDP 2023-2028 Midterm Update Chapter 🚩 [34]  
+Outcome/ Indicator Statements 🚩
+PDP MU RM Outcome/Indicator Statement Applicable (Please Specify): [35]Select the outcome and indicator statements that the P/P is responsive to based on the PDP Midterm Update Results Matrix (RM). Copy of RM can be accessed through this link: https://pdp.depdev.gov.ph/philippine-development-plan-2023-2028-midterm-update/ 
+Outcome: Choose
+Subchapter Outcome:  
+ - specify
+Indicator(s): 
+ - specify
+No PDP RM Outcome/Indicator Statement Applicable
+MAIN INFRASTRUCTURE SECTOR / SUBSECTOR
+MAIN INFRASTRUCTURE SECTOR  [For TRIP and Chapter 12 programs/projects] 🚩 [36] Water Resources - Flood Management
+Other Infrastructure Sector  [For TRIP and Chapter 12 programs/projects] [37]
+Project Readiness🚩 [38]
+Pre-Feasibility Study/Business Case Right-of-Way Acquisition RDC Endorsement
+Feasiblity Study Resettlement Action Plan Detailed Engineering Design
+Level of Approval Environment Compliance Certificate Other Pre-Investment Activities
+EXPECTED OUTPUTS/DELIVERABLES (for TRIP and Chapter 12 programs/projects)
+Indicator 🚩: Water Resources (Others)
+===== PAGE 12 =====
+Expected Outputs/ Deliverables 🚩:
+Indicator Value Unit
+Expected 
+Outputs/ 
+Deliverables:
+8-POINT SOCIOECONOMIC AGENDA (Select as many as applicable) 🚩
+Protect purchasing power and mitigate socioeconomic scarringCreate quality jobs
+Reduce vulnerability and mitigate scarring from the COVID-19 pandemicCreate green jobs
+Ensure sound macroeconomic fundamentals Uphold public order and safety, peace and security
+Create more jobs Ensure a level playing field
+SUSTAINABLE DEVELOPMENT GOALS (Select as many as applicable) 🚩
+1 - No poverty 7 - Affordable and clean energy 13 - Climate action
+2 - Zero hunger 8 - Decent work and economic growth 14 - Life below water
+3 - Good health and well-being 9 - Industry, innovation and infrastructure 15 - Life on land
+4 - Quality education 10 - Reduced inequalities 16 - Peace, justice and strong institutions
+5 - Gender equality 11 - Sustainable cities and communities 17 - Partnerships for the goals
+6- Clean water and sanitation 12 - Responsible consumption and production
+LEVEL OF GENDER AND DEVELOPMENT (GAD) RESPONSIVENESS
+Based on the score of the program/project using the GAD checklist (https://neda.gov.ph/gender-and-development), identify the Level of GAD Responsiveness of the program/project. 🚩
+===== PAGE 13 =====
+EMPLOYMENT GENERATION (Please indicate the no. of persons to be employed by the project (outside of the implementing agency only) during the project implementation
+Total no. of persons to be employed: 🚩 0 No. of Male No. of Female
+REMARKS (Other remarks or any other pertinent information on the program/project.)
+ [39]
+CONTACT INFORMATION
+FOCAL PERSON 🚩
+Signature over Full Name               :
+Designation                                     :
+Department/Office/Unit                    :
+ALTERNATIVE REPRESENTATIVE 🚩
+Signature over Full Name               :
+Designation                                     :
+Department/Office/Unit                   :
+CONTACT DETAILS 🚩
+Agency Office Address                   :
+Telephone No./Contact No.            :
+Email Address                                :
+Kindly return the accomplished Project Profile to the OAGMP-MDPS technical staff on or before 28 November 2025 (Friday) via submission of hard copy to the OAGMP 16th Floor, New MMDA Building, and the soft copy via email: pped@mmda.gov.ph. Thank you.
+===== PAGE 14 =====
+[1] The project title should be identical with the project's title in the budget proposal submitted to DBM.
+Prefixes and other additions to the project title should be avoided
+[2] A program is a group of activities and projects that contribute to a common particular outcome and should have the following: (a) unique expected results 
+or outcomes; (b) a clear target population or client group external to the agency; (c) a defined method of intervention to achieve the desired result; and (d) a 
+clear management structure that defines accountabilities.
+[3] Refers to a program being implemented on a regular basis
+[4] A project is a special undertaking  carried out within a definite time frame and intended to result in some predetermined measure of goods and services
+[5] Identify whether the project is part of a larger program
+[6] Specify the name of the Parent Program the project belongs under.
+For an ongoing program, the program title should be as reflected in the GAA, if applicable 
+[7] Identify the respective subprogram under the Parent Program of the project
+[8] Program Convergence Budgeting
+PCB is a budgeting approach to facilitate and incentivize agency collaboration to ensure that priority programs are planned, budgeted, and implemented in a 
+coordinated manner. It aims to focus the fiscal space on identified necessary programs and more importantly, to ensure that key agencies participating in or 
+contributing to the programs coordinate their targets and activities to facilitate holistic implementation
+[9] Identify the basis/es for the implementation of the program/project
+[10] Signed Agreements/International Commitments
+(e.g., Supplemental Toll Operation (STOA), Port Terminal Management Regulatory Framework (PTRMRF), etc.)
+[11] Ensure that the information provided on the implementation period is consistent with the years covered for the annual investment targets of the project
+[12] Ensure that the information provided on the implementation period is consistent with the years covered for the annual investment targets of the project
+[13] Select the appropriate spatial coverage of the program/project
+Nationwide
+- if the spatial coverage in terms of investment/cost of the program/project covers all regions (in parts of as a whole)
+Interregional
+- if the spatial coverage in terms of investment/cost of the P/P pertains to more than one region (in parts or as a whole) but not all regions
+Region Specific
+- if the spatial coverage in terms of investment/cost of the P/P pertains to one region (in parts or as a whole
+Abroad
+- if the spatial coverage in terms of investment/cost of a program/project is outside the country which will have an impact to Filipinos outside of the country 
+(e.g., Overseas Filipino Workers)
+For interregional and region-specific P/Ps, agencies are required to identify the spatial coverage of the P/Ps down to the provincial and city/municipality 
+level, if applicable
+===== PAGE 15 =====
+[13] Select the appropriate spatial coverage of the program/project
+Nationwide
+- if the spatial coverage in terms of investment/cost of the program/project covers all regions (in parts of as a whole)
+Interregional
+- if the spatial coverage in terms of investment/cost of the P/P pertains to more than one region (in parts or as a whole) but not all regions
+Region Specific
+- if the spatial coverage in terms of investment/cost of the P/P pertains to one region (in parts or as a whole
+Abroad
+- if the spatial coverage in terms of investment/cost of a program/project is outside the country which will have an impact to Filipinos outside of the country 
+(e.g., Overseas Filipino Workers)
+For interregional and region-specific P/Ps, agencies are required to identify the spatial coverage of the P/Ps down to the provincial and city/municipality 
+level, if applicable
+[14] Select the appropriate spatial coverage of the program/project
+Nationwide
+- if the spatial coverage in terms of impact of the program/project covers all regions (in parts or as a whole).
+Interregional
+- if the spatial coverage in terms of investment/cost of the P/P pertains to more than one region (in parts or as a whole) but not all regions
+Region Specific
+- if the spatial coverage in terms of investment/cost of the P/P pertains to one region (in parts or as a whole
+Abroad
+- if the spatial coverage of a program/project is outside the country which will have an impact to Filipinos outside of the country (e.g., Overseas Filipino 
+Workers)
+Agencies may provide Spatial Coverage - By impact on a provincial level
+[15] River Basins
+Select under which river basin/s the flood management PAP Covers
+Major River Basin refer to a river basin with a drainage area of more than 1,000 square kilometers. Select all that apply
+Principal River Basin refer to a river basin with a drainage area of more than 40 square kilometers. Select all that apply.
+[16] Major River Basin refer to a river basin with a drainage area of more than 1,000 square kilometers. Select all that apply
+===== PAGE 16 =====
+[17] Principal River Basin refer to a river basin with a drainage area of more than 40 square kilometers. Select all that apply.
+[18] The PIP contains priority PAPs to be implemented by NGAs, GOCCs, GFIs, and other NG offices (including SUCs) within the medium-term that 
+contribute to meeting the medium-term that contribute to meeting the targets in the PDP and achieving the outcomes in the Results Matrix.
+Select under which typology the P/Ps can be classified as provided in the guidelines:
+a) Capital Investment PAPs to deliver the goods and services that contribute specifically to the country's productive capacity (e.g infrastructure development 
+projects, delivery of social services);
+b) Technical assistance PAPs such as research and development, institutional development, human resource capacity building or system/ process 
+improvement PAPs;
+c) Relending PAPs to LGUs or other target beneficiaries;
+d) Government Facilities which include the construction, rehabilitation, and improvement of government facilities for the performance of the agencies' 
+function or mandate to support the attainment of the goals contained in the PDP 2023-2028 and its RMs
+For Gov.Facilities tagged as responsive to PDP Results Matrices' agencies are required to select PDP Chapter and RM outcome and indicator statements
+[19] The CIPs refer to the proposed big-ticket PAPs for Investment Coordination Committee (ICC) and/or Economy and Development Council (ED Council) 
+approval. Should the P/P be tagged as CIP, kindly indicate the level of ICC/ED Council approval in the level of Approval field
+For PPP PAPs requiring ICC and/or ED Council review and approval, refer to Section II of the ED-Council ICC Guidelines on the Review and Approval of 
+PPP Proposals Requiring ICC and/or ED Council Approval accessible through the DEPDev Website
+[20] The TRIP contains national government-funded infrastructure P/Ps irrespective of cost with emphasis on immediate priorities to be undertaken in the 
+three-year period.
+Only those infrastructure P/P with investment targets within FY2025-FY2027 could be successfully tagged.
+[21] The priority Agency Regional-National Investment Programs and Projects (ARNIPAPs) refer to the regional priority PAPs which were identified by the 
+Regional Development Councils and pilot agencies, and agreed for inclusion in the updating of the PIP 2023-2028 during the Regional National Investment 
+Programming Dialogue
+[22] Core Investment Programs and Projects (CIPs) – refers to the proposed big ticket PAPs for Investment Coordination Committee (ICC) and/or NEDA 
+Board action, and ongoing PAPs with ICC and/or NEDA Board approval
+[23] Non-CIPs – refers to proposed or ongoing priority PAPs that do not need to undergo ICC and/or NEDA Board review and approval process;
+===== PAGE 17 =====
+[24] Provide information on the potential or actual risks, if any, that may hinder the P/P from being implemented
+[25] Provide information on the corresponding strategy/strategies that may be done to mitigate the risks identified
+[26] The PAP Code refers to the 15-digit code within the Unified Accounts Code Structure (UACS) that provides reference to the Sector/Horizontal 
+Outcomes, Program/Project, Major Final Output/Project Category, Activity Level 1/Sub-Category and Activity Level 2/Project Title
+Agencies may refer to the respective budget proposal dump print, NEP, or the GAA excel file found in the DBM website for the corresponding PAP code 
+(Please see column on PREXC_FPAP_ID)
+[27] For proposed P/P, please indicate the physical status of the P/P in terms of project preparation, approval, funding, etc.
+If ongoing,  please provide information on the delivery of outputs, percentage of completion and financial status/accomplishment in terms of utilization rate
+[28] Indicate the date of reference of the updates provided i.e as of (month, day, year)
+[29] Once the funding sources have been identified, kindly proceed to provide the details of the project cost in terms of annual breakdown by funding source
+The funding source with the highest investment target will be automatically selected as Main Funding Source
+[30] Investment Targets
+Provide the details of the Project Cost in terms of the annual investment targets of the P/Ps by Funding Source in exact amount in PHP
+NG: if the funding shall be sourced from the National Government (NG) through the GAA
+ODA Loan: if the funding shall be sourced from official development assistance (ODA) loan
+ODA Grant: if the funding shall be sourced from ODA grant;
+GOCC/GFIL if the funding shall be sourced from the corporate/internal cash generated by GOCC or GFI
+LGU Counterpart: pertains to the counterpart funding from the LGU for NG-implemented P/P
+[31] Provide the annual information on the Amount Included in the NEP, Amount Allocated in the Budget/GAA and Actual Amount Disbursed by the agency 
+for the program/project, as applicable. The value to be indicated should be in exact amount in PHP
+[32] If the P/P cuts across sectors, Other PDP Chapters may be selected in addition to the Main PDP Chapter. Select as many as applicable
+[33] PDP RM Outcome/ Indicator Statements
+Select the outcome and indicator statements that the P/P is responsive to based on the PDP RM
+Copy can be accessed through this link: https://neda.go.ph/pdp-2023-2028-results-matirces/
+===== PAGE 18 =====
+[33] PDP RM Outcome/ Indicator Statements
+Select the outcome and indicator statements that the P/P is responsive to based on the PDP RM
+Copy can be accessed through this link: https://neda.go.ph/pdp-2023-2028-results-matirces/
+[34] Outcome/New Core Indicators
+PDP 2023-2028 Midterm Update as approved by the Economy and Development Council on 15 July 2025. The Full RM is currently being updated
+[35] PDP RM Outcome/ Indicator Statements
+Select the outcome and indicator statements that the P/P is responsive to based on the PDP RM
+Copy can be accessed through this link: https://neda.go.ph/pdp-2023-2028-results-matirces/
+[36] Main Infrastructure Sector
+Choose the main sector and main corresponding subsector to which a P/P is classified
+[37] Choose the other infrastructure sector and corresponding subsector to which a P/P is classified. A combination of subsectors may be chosen should the 
+P/P has different infrastructure components
+[38] Status of Implementation Readiness
+Choose among the requirements/indicators of implementation readiness the P/P have already been complied with. A check mark indicates that a particular 
+requirement has been complied with and that the same may be provided in that technical budget hearings or as may be requested by NEDA or DBM
+[39] Other remark or other pertinent information on the P/P

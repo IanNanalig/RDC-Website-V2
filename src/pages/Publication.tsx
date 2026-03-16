@@ -1,0 +1,494 @@
+import React, { useState, useEffect } from "react";
+import { useSearchParams, useNavigate } from "react-router-dom";
+
+type DocumentItem = {
+  id: string;
+  title: string;
+  year: string;
+  fileType: string;
+  fileSize: string;
+  url: string;
+};
+
+type Category = {
+  id: string;
+  title: string;
+  description: string;
+  icon: string;
+  color: string;
+  documents: DocumentItem[];
+};
+
+const CATEGORIES: Category[] = [
+  {
+    id: "greenprint",
+    title: "Greenprint 2030",
+    description:
+      "Strategic environmental and sustainability framework for Metro Manila",
+    icon: "🌱",
+    color: "from-green-600 to-emerald-500",
+    documents: [
+      {
+        id: "gp1",
+        title: "Greenprint 2030 Full Document",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "4.2 MB",
+        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/Greenprint-2030/GREENPRINT-2.pdf",
+      },
+      {
+        id: "gp2",
+        title: "Green Print Brochure",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "1.1 MB",
+        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/Greenprint-2030/Greeprint-brochure.pdf",
+      },
+    ],
+  },
+  {
+    id: "rdp",
+    title: "Regional Development Plans (RDP-NCR)",
+    description: "Comprehensive development blueprints and strategic plans",
+    icon: "📋",
+    color: "from-blue-600 to-cyan-500",
+    documents: [
+      {
+        id: "rdp1",
+        title: "RDP-NCR 2023–2028 (Full Version)",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "5.1 MB",
+        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/NCR-RDP-2017-2022/Full-Version/NCR-Regional-Development-Plan-2017-2022-resize.pdf",
+      },
+      {
+        id: "rdp2",
+        title: "RDP-NCR 2023–2028 (Abridged Version)",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "2.3 MB",
+        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/NCR-RDP-2017-2022/Abridged-Version/Abridged-Final-resize.pdf",
+      },
+      {
+        id: "rdp3",
+        title: "RDP-NCR 2023–2028 Brochure",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "890 KB",
+        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/NCR-RDP-2017-2022/Brochure/RDP-Brochure-Final.pdf",
+      },
+      {
+        id: "rdp4",
+        title: "RDP-NCR 2017- 2022 (Full Version)",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "890 KB",
+        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/NCR-RDP-2017-2022/Full-Version/RDP-NCR_Midterm_Update_2022.pdf",
+      },
+      {
+        id: "rdp5",
+        title: "RDP-NCR 2017- 2022 (Abridged Version)",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "890 KB",
+        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/NCR-RDP-2017-2022/Abridged-Version/Abridged-Final-resize.pdf",
+      },
+      {
+        id: "rdp6",
+        title: "RDP-NCR 2017- 2022 Brochure",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "890 KB",
+        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/NCR-RDP-2017-2022/Brochure/RDP-Brochure-Final.pdf",
+      },
+    ],
+  },
+  {
+    id: "rdip",
+    title: "Regional Development Investment Program (RDIP)",
+    description: "Priority investment programs and infrastructure projects",
+    icon: "💼",
+    color: "from-purple-600 to-indigo-500",
+    documents: [
+      {
+        id: "rdip1",
+        title: "RDIP-NCR 2023–2028",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "3.5 MB",
+        url: "https://drive.google.com/file/d/1F2OynBfSvdIcZ_mtcQKT-oy0dgnn3f6m/view",
+      },
+      {
+        id: "rdip2",
+        title: "RDIP-NCR 2020–2022",
+        year: "2020",
+        fileType: "PDF",
+        fileSize: "3.1 MB",
+        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/NCR-RDP-2017-2022/Full-Version/For_Concurrence_RDIP-NCR_Pre-final_2022.pdfs",
+      },
+      {
+        id: "rdip3",
+        title: "RDIP Updated List 2024",
+        year: "2024",
+        fileType: "PDF",
+        fileSize: "1.9 MB",
+        url: "https://docs.google.com/document/d/1UlpfePYCH1r_M041K3PaUqnlq0rqLNJ5_EEsPFKf8eQ/edit?tab=t.5yre1br7hyj2",
+      },
+      {
+        id: "rdip4",
+        title: "RDIP Updated List 2023",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "1.7 MB",
+        url: "https://drive.google.com/file/d/1ecMoQEp4HQsb4-ITnWfOcY-NSmTgsLmL/view",
+      },
+    ],
+  },
+  {
+    id: "rdr",
+    title: "Regional Development Report (RDR)",
+    description: "Annual progress reports and development outcomes",
+    icon: "📊",
+    color: "from-orange-600 to-red-500",
+    documents: [
+      {
+        id: "rdr1",
+        title: "RDR 2023",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "3.9 MB",
+        url: "https://mmda.gov.ph/images/Home/Development-Planning/RDR/RDRNCR2023.pdf",
+      },
+    ],
+  },
+  {
+    id: "res",
+    title: "Regional Economic Situationer (RES)",
+    description: "Economic performance and trends analysis",
+    icon: "📈",
+    color: "from-teal-600 to-green-500",
+    documents: [
+      {
+        id: "res1",
+        title: "RES Annual 2021",
+        year: "2024",
+        fileType: "PDF",
+        fileSize: "1.8 MB",
+        url: "https://bit.ly/RESNCR2021",
+      },
+      {
+        id: "res2",
+        title: "RES Annual 2022",
+        year: "2024",
+        fileType: "PDF",
+        fileSize: "1.7 MB",
+        url: "https://mmda.gov.ph/images/Home/Development-Planning/RES/RES_2022_v8.pdf",
+      },
+      {
+        id: "res4",
+        title: "RES Annual 2023",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "2.5 MB",
+        url: "https://mmda.gov.ph/images/Home/Development-Planning/RES/Res_2023_Final_Last_version.pdf",
+      },
+    ],
+  },
+  {
+    id: "sdg",
+    title: "SDG Catch-Up Plan",
+    description: "Sustainable Development Goals acceleration strategies",
+    icon: "🎯",
+    color: "from-pink-600 to-rose-500",
+    documents: [
+      {
+        id: "sdg1",
+        title: "SDG Catch-Up Plan 2023–2028",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "3.1 MB",
+        url: "https://your-actual-link.com/sdg-catch-up-plan-2023-2028.pdf",
+      },
+      {
+        id: "sdg2",
+        title: "SDG Progress Report 2023",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "2.4 MB",
+        url: "https://your-actual-link.com/sdg-progress-report-2023.pdf",
+      },
+      {
+        id: "sdg3",
+        title: "SDG Monitoring Framework",
+        year: "2024",
+        fileType: "PDF",
+        fileSize: "1.5 MB",
+        url: "https://your-actual-link.com/sdg-monitoring-framework-2024.pdf",
+      },
+    ],
+  },
+  {
+    id: "rpmes",
+    title: "Regional Project Monitoring and Evaluation System (RPMES)",
+    description: "Regional Project Monitoring and Evaluation System",
+    icon: "⚙️",
+    color: "from-slate-600 to-gray-500",
+    documents: [
+      {
+        id: "rpmes3",
+        title: "RPMES Operational Guidelines",
+        year: "2024",
+        fileType: "PDF",
+        fileSize: "950 KB",
+        url: "https://drive.google.com/file/d/1mX-WDaPziJi6shl8UaxVlAi9tLqPbTlm/view",
+      },
+    ],
+  },
+  {
+    id: "rrp",
+    title:
+      "Rehabilitation & Recovery Plan for the National Capital Region (RRP-NCR)",
+    description: "Post-disaster recovery and resilience strategies",
+    icon: "🔄",
+    color: "from-yellow-600 to-orange-500",
+    documents: [
+      {
+        id: "rrp1",
+        title: "RRP-NCR with Investment Program (Full Document)",
+        year: "2024",
+        fileType: "PDF",
+        fileSize: "4.3 MB",
+        url: "https://mmda.gov.ph/images/Home/Development-Planning/RRP-NCR/RRP-NCR_with_Investment_Program_for_posting.pdf",
+      },
+      {
+        id: "rrp2",
+        title: "RRP-NCR (Abridge Version)",
+        year: "2023",
+        fileType: "PDF",
+        fileSize: "2.9 MB",
+        url: "https://mmda.gov.ph/images/Home/Development-Planning/RRP-NCR/RRP-NCR_Abridged_version_for_posting.pdf",
+      },
+    ],
+  },
+];
+
+export default function Publications() {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const categoryParam = searchParams.get("category");
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(
+    categoryParam || null,
+  );
+
+  const activeCategory = CATEGORIES.find((c) => c.id === selectedCategory);
+
+  // Update selected category when URL parameter changes
+  useEffect(() => {
+    if (categoryParam) {
+      setSelectedCategory(categoryParam);
+    }
+  }, [categoryParam]);
+
+  const handleCategorySelect = (categoryId: string) => {
+    setSelectedCategory(categoryId);
+    navigate(`/publications?category=${categoryId}`);
+  };
+
+  const handleBackToCategories = () => {
+    setSelectedCategory(null);
+    navigate("/publications");
+  };
+
+  // Download action removed — view-only interface
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
+      {/* Header */}
+      <header className="bg-gradient-to-r from-[#012a5a] via-[#0b6fb7] to-[#0d8fb3] text-white">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+          <div className="text-center max-w-3xl mx-auto">
+            <h1 className="text-4xl md:text-5xl font-extrabold mb-4">
+              Publications & Official Documents
+            </h1>
+            <p className="text-lg text-white/90">
+              Plans, reports, and development programs for the National Capital
+              Region
+            </p>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        {!selectedCategory ? (
+          // Category Selection View
+          <div>
+            <div className="mb-8">
+              <h2 className="text-2xl font-bold text-slate-900 mb-2">
+                Browse by Category
+              </h2>
+              <p className="text-slate-600">
+                Select a category to view available documents
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+              {CATEGORIES.map((category) => (
+                <button
+                  key={category.id}
+                  onClick={() => handleCategorySelect(category.id)}
+                  className="bg-white rounded-2xl shadow-md hover:shadow-xl transition-all transform hover:-translate-y-1 p-6 text-left group border border-slate-100 h-full flex flex-col justify-between"
+                >
+                  <div
+                    className={`w-16 h-16 rounded-xl bg-gradient-to-br ${category.color} flex items-center justify-center text-3xl mb-4 group-hover:scale-110 transition-transform leading-none text-center`}
+                  >
+                    <span className="leading-none align-middle">
+                      {category.icon}
+                    </span>
+                  </div>
+                  <h3 className="text-lg font-bold text-slate-900 mb-2 group-hover:text-blue-600 transition">
+                    {category.title}
+                  </h3>
+                  <p className="text-sm text-slate-600 line-clamp-2">
+                    {category.description}
+                  </p>
+                  <div className="mt-4 flex items-center text-sm text-blue-600 font-medium">
+                    <span>View documents</span>
+                    <svg
+                      className="w-4 h-4 ml-1 group-hover:translate-x-1 transition"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      viewBox="0 0 24 24"
+                    >
+                      <path d="M9 5l7 7-7 7" />
+                    </svg>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          // Document Listing View
+          <div>
+            {/* Back Button & Category Header */}
+            <button
+              onClick={handleBackToCategories}
+              className="mb-6 flex items-center gap-2 text-blue-600 hover:text-blue-700 font-medium transition"
+            >
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                viewBox="0 0 24 24"
+              >
+                <path d="M15 19l-7-7 7-7" />
+              </svg>
+              Back to Categories
+            </button>
+
+            <div
+              className={`bg-gradient-to-br ${activeCategory?.color} rounded-2xl p-8 mb-8 text-white shadow-lg`}
+            >
+              <div className="flex items-start gap-4">
+                <div className="text-5xl leading-none text-center">
+                  {activeCategory?.icon}
+                </div>
+                <div>
+                  <h2 className="text-3xl font-bold mb-2">
+                    {activeCategory?.title}
+                  </h2>
+                  <p className="text-white/90 text-lg">
+                    {activeCategory?.description}
+                  </p>
+                  <div className="mt-4 text-sm text-white/80">
+                    {activeCategory?.documents.length} document(s) available
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Document Cards Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {activeCategory?.documents.map((doc) => (
+                <div
+                  key={doc.id}
+                  className="bg-white rounded-xl shadow-md hover:shadow-lg transition-all border border-slate-100 overflow-hidden group"
+                >
+                  <div
+                    className={`h-2 bg-gradient-to-r ${activeCategory.color}`}
+                  />
+
+                  <div className="p-6">
+                    {/* File Icon */}
+                    <div className="w-12 h-12 rounded-lg bg-slate-100 flex items-center justify-center mb-4 group-hover:bg-slate-200 transition">
+                      <svg
+                        className="w-6 h-6 text-slate-600"
+                        fill="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <polyline points="14 2 14 8 20 8" />
+                      </svg>
+                    </div>
+
+                    {/* Document Info */}
+                    <h3 className="font-bold text-slate-900 mb-2 line-clamp-2 group-hover:text-blue-600 transition">
+                      {doc.title}
+                    </h3>
+
+                    <div className="flex items-center gap-3 mb-4 text-sm text-slate-600">
+                      <span className="flex items-center gap-1">
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          viewBox="0 0 24 24"
+                        >
+                          <rect
+                            x="3"
+                            y="4"
+                            width="18"
+                            height="18"
+                            rx="2"
+                            ry="2"
+                          />
+                          <line x1="16" y1="2" x2="16" y2="6" />
+                          <line x1="8" y1="2" x2="8" y2="6" />
+                          <line x1="3" y1="10" x2="21" y2="10" />
+                        </svg>
+                        {doc.year}
+                      </span>
+                      <span className="w-1 h-1 bg-slate-400 rounded-full" />
+                      <span>{doc.fileSize}</span>
+                    </div>
+
+                    {/* File Type Badge */}
+                    <div className="mb-4">
+                      <span className="inline-block px-3 py-1 bg-red-100 text-red-700 text-xs font-semibold rounded-full">
+                        {doc.fileType}
+                      </span>
+                    </div>
+
+                    {/* Actions (view-only) */}
+                    <div>
+                      <a
+                        href={doc.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition text-center"
+                      >
+                        View
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}

@@ -1,0 +1,141 @@
+{
+  "title": "Project Profile Form",
+  "version": "1.0",
+  "steps": [
+    {
+      "id": "basic_info",
+      "title": "Basic Project Info",
+      "fields": [
+        { "name": "title", "label": "Project Title", "type": "text", "required": true },
+        { "name": "office_unit", "label": "MMDA Office / Unit-in-Charge", "type": "text", "required": true },
+        { "name": "project_type", "label": "Is it a Program or a Project?", "type": "select", "required": true,
+          "options": [ {"value":"program","label":"Program"}, {"value":"project","label":"Project"} ] },
+        { "name": "is_regular", "label": "Is it a regular program?", "type": "boolean", "required": false, "visible_when": {"project_type":"program"} },
+        { "name": "is_subproject", "label": "Is this part/subcomponent of a Program?", "type": "boolean", "required": false },
+        { "name": "parent_program_title", "label": "Parent Program Title", "type": "text", "required": false, "visible_when": {"is_subproject": true} },
+        { "name": "parent_program_pip_code", "label": "Parent Program PIP Code", "type": "text", "required": false }
+      ]
+    },
+
+    {
+      "id": "objective_description",
+      "title": "Objective & Description",
+      "fields": [
+        { "name": "objective", "label": "Project Objective", "type": "textarea", "required": true },
+        { "name": "description", "label": "Project Description", "type": "textarea", "required": false }
+      ]
+    },
+
+    {
+      "id": "implementation",
+      "title": "Implementation Details",
+      "fields": [
+        { "name": "implementing_agency", "label": "Implementing Agency", "type": "json", "required": false,
+          "schema": {"parent":"text","attached":"text","co_implementing":"array"} },
+        { "name": "start_year", "label": "Start Year", "type": "year", "required": false },
+        { "name": "completion_year", "label": "Year of Completion", "type": "year", "required": false },
+        { "name": "is_convergence_program", "label": "Part of convergence program (PCB)?", "type": "boolean", "required": false },
+        { "name": "basis_for_implementation", "label": "Basis for Implementation", "type": "array", "required": false,
+          "options": ["GAA/NEP", "NEP", "MYCA/MYCOA", "masterplan/study", "RDC-endorsed", "signed_agreements", "regular_program", "ARNIPAP", "other"] }
+      ]
+    },
+
+    {
+      "id": "spatial_coverage",
+      "title": "Spatial Coverage",
+      "fields": [
+        { "name": "coverage_type", "label": "Coverage Type", "type": "select", "options": [
+            {"value":"interregional","label":"Inter-regional"}, {"value":"region","label":"Region"}, {"value":"province","label":"Province"}, {"value":"locality","label":"Locality"}
+          ], "required": false },
+        { "name": "regions", "label": "Regions (list)", "type": "array", "required": false },
+        { "name": "provinces", "label": "Provinces (list)", "type": "array", "required": false },
+        { "name": "localities", "label": "Localities (list)", "type": "array", "required": false },
+        { "name": "river_basin", "label": "River Basin Details", "type": "json", "required": false, "schema": {"is_river_basin":"boolean","type":"select","name":"text"} }
+      ]
+    },
+
+    {
+      "id": "funding",
+      "title": "Funding & Procurement",
+      "fields": [
+        { "name": "funding_sources", "label": "Funding Sources", "type": "array", "required": false,
+          "options": ["NG","ODA Loan","ODA Grant","GOCC/GFIs","LGU Counterpart","Private Sector","Others"] },
+
+        { "name": "main_funding_sources", "label": "Main Funding Sources (details)", "type": "array_of_objects", "required": false,
+          "object_schema": {"source_type":"select","details":"text","is_main":"boolean"},
+          "object_schema_options": {"source_type":["ng","oda_loan","oda_grant","lgc","private","others"]} },
+
+        { "name": "procurement_modes", "label": "Mode of Implementation / Procurement", "type": "array", "required": false,
+          "options": ["Local Funds (RA 9184)","ODA (RA 8182)","PPP","BOT","Joint Venture","Others"] }
+      ]
+    },
+
+    {
+      "id": "costs",
+      "title": "Project Costs",
+      "fields": [
+        { "name": "project_costs", "label": "Project Cost Rows", "type": "array_of_objects", "required": false,
+          "object_schema": {"funding_source":"select","year_amounts":"json","overall_total":"decimal"},
+          "object_schema_options": {"funding_source":["ng","oda_loan","oda_grant","gocc","lgu","private","others"]},
+          "notes": "year_amounts example: {\"2023\":10000,\"2024\":20000}" }
+      ]
+    },
+
+    {
+      "id": "outputs",
+      "title": "Expected Outputs / Deliverables",
+      "fields": [
+        { "name": "expected_outputs", "label": "Outputs", "type": "array_of_objects", "required": false,
+          "object_schema": {"title":"text","indicator":"text","value":"text","unit":"text"} }
+      ]
+    },
+
+    {
+      "id": "pdp_sdg",
+      "title": "PDP / SDG / Socioeconomic",
+      "fields": [
+        { "name": "pdp_main_chapter", "label": "Main PDP Chapter", "type": "text", "required": false },
+        { "name": "pdp_other_chapters", "label": "Other PDP Chapters", "type": "array", "required": false },
+        { "name": "socioeconomic_agenda", "label": "8-Point Socioeconomic Agenda", "type": "array", "required": false },
+        { "name": "sdg_goals", "label": "SDG Goals", "type": "array", "required": false }
+      ]
+    },
+
+    {
+      "id": "readiness",
+      "title": "Project Readiness & Risks",
+      "fields": [
+        { "name": "project_readiness_flags", "label": "Project Readiness", "type": "json", "required": false,
+          "schema": {"pre_feasibility":"boolean","feasibility_study":"boolean","right_of_way":"boolean","resettlement_plan":"boolean","rdc_endorsement":"boolean","detailed_design":"boolean","env_compliance":"boolean","other":"text"} },
+        { "name": "implementation_risk", "label": "Implementation Risk", "type": "textarea", "required": false },
+        { "name": "mitigation_strategies", "label": "Mitigation Strategies", "type": "textarea", "required": false }
+      ]
+    },
+
+    {
+      "id": "contacts_attachments",
+      "title": "Contact Information & Attachments",
+      "fields": [
+        { "name": "focal_person", "label": "Focal Person", "type": "json", "required": false, "schema": {"name":"text","designation":"text","department":"text"} },
+        { "name": "alternative_representative", "label": "Alternative Representative", "type": "json", "required": false, "schema": {"name":"text","designation":"text"} },
+        { "name": "contact_details", "label": "Contact Details", "type": "json", "required": true, "schema": {"agency_office_address":"text","telephone_no":"text","email":"email"} },
+        { "name": "attachments", "label": "Attachments (supporting docs)", "type": "files", "required": false, "multiple": true }
+      ]
+    },
+
+    {
+      "id": "review_submit",
+      "title": "Review & Submit",
+      "fields": [
+        { "name": "remarks", "label": "Remarks", "type": "textarea", "required": false },
+        { "name": "save_as_draft", "label": "Save as draft", "type": "boolean", "required": false },
+        { "name": "submit_now", "label": "Submit for validation", "type": "boolean", "required": false }
+      ]
+    }
+  ],
+
+  "notes": {
+    "general": "Frontend should use this schema to render a multi-step wizard. Use react-hook-form + Zod/Yup for validation. Nested arrays are represented as array_of_objects with object_schema.",
+    "endpoint": "POST /api/projects/ expects top-level fields. For nested arrays (funding_rows/regional_breakdowns/outputs), include them as arrays in the payload. Use /api/projects/{id}/submit to change status."
+  }
+}

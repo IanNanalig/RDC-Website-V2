@@ -1,0 +1,633 @@
+
+===== PAGE 1 =====
+Classification PIP
+Choose Choose
+Program Capital Investment Program/Project 
+Project Technical Assistance Program/Project (such as Research and Development, Institutional Development, Human Resource Capacity Building, or System/Process Improvement PAPs) 
+Relending Program/Project of GFIs to LGUs or Target Beneficiary 
+Conditional Conditional Government Facilities
+Choose Choose
+Yes Yes CIP
+No Not Applicalbe Choose
+Locally-funded major capital program/project with total project cost of at least PHP 5 billion
+Basis for Implementation ODA grant-assisted program/project with total project cost of at least PhP 5 billion 
+Choose ODA loan-assisted program/project (including relending program/ project, 
+program loan such as budget support, etc.) regardless of amount requiring 
+national government guaranteeGeneral Appropriations Act (GAA) for FY 2023 Solicited national public-private partnership (PPP) project 
+National Expenditure Program (NEP) for FY 2024 Joint Venture (JV) project with government contribution of at least PhP150 
+millionMulti-Year Obligational Authority (MYOA)Multi-Year Contracting Authority (MYCA) New program/project which will require ICC approval based on existing laws, rules, and 
+regulationsExisting masterplan/sector studies/procurement plan Ongoing unsolicited national PPP project
+List of RDC-endorsed programs/projects Ongoing program/project that has been previously approved by NB/ICC but does not fall under 
+the aforementioned typologies (e.g., projects approved by ICC/NB in accordance with old 
+policies/rules on cost floor)Signed Agreements/International Commitments
+Regular program Status
+List of ARNIPAPs agreed during the Regional-National Invesment Programming Dialogue Choose
+Other existing laws, rules, or regulations Endorsed
+Spatial Coverage Yet to be endorsed
+Choose
+Nationwide
+Interregional TRIP
+Region-specific Choose
+Abroad Social Infrastructure
+Power-Electrification
+Transportation
+Levels of Approval Water Resources
+Choose Information and Communications Technology
+Yet to be submitted to the NEDA Secretariat Others
+Under NEDA review
+===== PAGE 2 =====
+ICC-TB Endorsed
+ICC-CC Approved Status of Implementatiion Readiness
+NB-Confirmed Choose
+Pre-Feasibility Study/Business Case
+Feasibility Study
+Level of Readiness Level of Approval
+Choose Right-of-Way Acquisition
+Level 1 CIP Resettlement Action Plan
+Level 2 CIP Environmental Compliance Certificate 
+Level 3 CIP RDC Endorsement
+Level 1 Non-CIP Detailed Engineering Design
+Level 2 Non-CIP Other Pre-Investment Activities
+Level 3 Non-CIP
+Main Infrastructure Sector/Subsector
+Choose Choose SocialInfra PowerElec Transportation
+Social Infrastructure Choose Health No subsector Roads and Bridges
+Power Electrification Education Water Transportation
+Transportation Solid Waste Management Air Transportation
+Water Resources Housing Rail Transportation
+Information and Communication Technology Public Safety/Security Urban Transportation
+Other Development Projects
+EOSocialInfraEOPowerElecEOTransportation
+Schools constructed/rehabilitatedAdditional Capacity providedLength of newly constructed roads
+Classrooms constructed/rehabilitatedUpgrading/Rehabilitation of Electrical SystemLength of roads rehabilitated/improved
+Hospitals constructed/rehabilitatedPower Lines (Constructed/Rehabilitated)Length of newly constructed bridges
+Barangay Health Stations (BHS) constructed/rehabilitatedPower-Electrification (Others)Length of bridges rehabilitated/improved
+Rural Health Units (RHUs)/Health Centers (HC) constructed/rehabilitatedNumber of newly constructed airports
+Academic Buildings/Libraries (SUCs) constructed/rehabilitatedLength of newly constructed/ rehabilitated railway
+Socialized Housing constructed/rehabilitatedLength of newly constructed/rehabilitated mass transit system other than railway (e.g. BRT, cable car)
+===== PAGE 3 =====
+Sanitary landfills (SLF) constructed/rehabilitatedNumber of newly constructed/rehabilitated public ports
+Other SWM facility constructed Length of bicycle lanes constructed
+Materials Recovery Facilities (MRF) constructedTransport Terminals
+Research/Laboratory Centers for schools/SUCs constructed/rehabilitatedTransportation (Others)
+Schools dormitories constructed/rehabilitatedAirports improved to international standards
+Social Infrastructure (Others)Ports improved to international standards
+Water, Sanitation and Hygiene (WASH) facilities established in public schoolsLength of newly constructed/rehabilitated toll roads
+No. of school provided with internet access
+No. of school provided with electricity connection
+===== PAGE 4 =====
+Main Infrastructure Sector/Subsector PDP Chapters
+Choose Choose Choose
+Social Infrastructure Choose Chapter 2.1 Boost Health
+Power Electrification Chapter 2.2 Improve Education and Lifelong Learning
+Transportation Chapter 2.3 Establish Livable Communities
+Water Resources Chapter 3.1 Ensure Food Security and Proper Nutrition
+Information and Communication Technology Chapter 3.2 Strengthen Social Protection
+Other Development Projects Chapter 4. Increase Income Earning Ability
+Chapter 5 Modernize Agriculture and Agribusiness
+PDP Chapter Outcome SO Chapter 6 Revitalize Industry
+Chapter 15 Accelerate Climate Action and Strengthen Disaster ResilienceCO15. SO15. Chapter 7 Reinvigorate Services
+For CO For Dropdown B17:J17 Chapter 8 Advance Research & Development, Technology, and Innovation
+Adaptive capacity and resilience of communities and ecosystems to climate change and natural hazards enhancedClimate and disaster risk resilience of communities and institutions increasedChapter 9 Promote Trade and Investments
+Ecosystem resilience enhanced Chapter 10 Promote Competition and Improve Regulatory Efficiency
+Low carbon economy transition enabled Chapter 11.1 Promote an Inclusive, Innovative, and Healthy Financial Sector
+No Statement applicable Chapter 11.2 Ensure Sound Fiscal Management and Improve the Tax Regime
+Chapter 12 Expand and Upgrade Infrastructure
+Chapter 13.1 Ensure Peace, Security, and Public Safety
+Chapter 13.2 Enhance Administration of Justice
+Chapter 14 Practice Good Governance and Improve Bureaucratic Efficiency
+Chapter 15 Accelerate Climate Action and Strengthen Disaster Resilience
+PDP SO SO Code CO2.1 CO2.2 CO2.3
+Climate and disaster risk resilience of communities and institutions increasedSO15A Human and social development promotedHuman and social development promotedHuman and social development promoted: Livable communities established
+Dropdown
+Number of deaths attributed to disasters per 100,000 population decreased
+Number of missing persons attributed to disasters per 100,000 population decreased
+Number of directly affected persons attributed to disasters per 100, 000 population decreased
+No Indicator applicable SO2.1 SO2.2 SO2.3
+===== PAGE 5 =====
+plese see PDP RM, and specifyplese see PDP RM, and specifyHealth Boosted
+Social environment promoted
+Environmental quality improved
+Built environment upgraded
+Responsive governance advanced
+No Statement applicable
+Climate and disaster risk resilience of communities and institutions increasedEcosystem resilience enhancedLow carbon economy transition enabled
+SO2.3 SO2.3A SO2.3B SO2.3C
+Average life expectancy increased (years)Number of civil society organizations (CSOs) accredited by the Provincial/ Municipal/ City Sanggunian increasedProportion of barangays (brgys) served by materials recovery facilities (MRFs) increased (%)
+Maternal mortality ratio decreased (per 100,000 live births)Number of Accredited Barangay-Based non-governmental organizations (NGOs) increasedProportion of cities/ municipalities served by sanitary landfill facilities (SLFs) increased (%)
+Neonatal mortality rate decreased (per 1,000 live births)Percentage of LGUs (P/C/M) with Local Culture and Arts Councils (LCACs) increased (cumulative)Percentage of plastic product footprint recovered increased
+Infant mortality rate decreased (per 1,000 live births)Number of LGUs with community-driven sporting and recreational activities aligned to the Philippine Sports Commission’s grassroots and sports for all programs increasedPercentage of highly urbanized and other major urban centers within ambient air quality guideline values for PM 10 and PM 2.5 increased
+Under-5 mortality rate decreased (per 1,000 live births)No Statement applicablePercentage of water bodies conforming with water quality guideline values for the following intended use improved
+Premature mortality rate attributed to cardiovascular disease, cancer, diabetes, and chronic respiratory diseases decreased (number of deaths per 1,000 population aged 30-70 years old)Percentage of hazardous waste managed maintained
+Death rate due to road traffic accidents decreased (per 100,000 population)Area of green spaces increased (in hectares)
+Tuberculosis incidence decreased (per 100,000 population)Proportion of cities that have adopted the City Biodiversity Index increased (%)
+No Statement applicable No Statement applicable
+SO12 SO12A SO12B SO12C
+No Indicator Travel time (decreased) via land per key corridor (hours)Safe water supply coverage (% of families)
+Travel time (decreased) via land per key corridor per mode (hours)Number of HHs provided access to safe water supply by the water districts (in cumulative million)
+Percentage of cycling households in the Philippines increased (% of HHs)Access to basic sanitation (% of families)
+Passenger trips via rail in Metro Manila increased (% share to total passenger trips, cumulative)No. of HHs provided access to improved sanitation by the WDs (cumulative)
+Passenger volume via rail in Metro Manila increased (in millions)Proportion of families with access to handwashing facility with soap and water (% of families)
+Passengers transported via air and sea increased (in million passengers, cumulative)Proportion of cities/ municipalities served by sewerage or septage management facilities to total number of cities/municipalities increased (%, cumulative)
+Cargo transported via air and sea increased (international and domestic) (in million MT, cumulative)Zero open defecation [ZOD] (in % municipalities with ZOD)
+Road traffic accident (crash) rate reduced (number of incidents per 100,000 population) - incidents of accidents (crash)Cropping intensity increased (in %)
+Road traffic crash (accident) rate reduced (number of incidents per 100,000 population) - incidents of crash (accidents)Ratio of actual irrigated area to the total potential irrigable area increased (%, cumulative) Note: Estimated irrigable area = 3.1M ha Total remaining area to be developed = 1.2M ha
+Toll road traffic accident rate reduced (in number of incidents per 100,000,000 vehicle-kilomter)Number of households safe from 25 year flood or flood depth of 20 cm for < 12 hours
+Reduced Median One-way Commute Time via Public Transportation (Door to door, in minutes)Number of households safe from 2 and 4-meter storm surge
+Increased Public Transport Availability (% of road network serviced by public transport modes)Percentage of implementation of programs and projects identified in the Integrated River Basin Master Plans (IRBMP)
+===== PAGE 6 =====
+No. of barangays within 250 meters of a fixed-route public transport service stopProportion of programs implemented and projects identified in the Integrated River Basin Master Plans
+Increased safety of road infrastructure (% of roads with 3-star or better iRAP safety rating)Percentage of major river basins with updated IRBMP
+Increase in coastal municipalities with ports (% of coastal municipalities with portsPercentage of River Basins with established River Basin Organizations (RBO)
+Reduced Flight Delays (% of delayed to total flights)No Indicator applicable
+Reduced Average Passenger Processing Time - from entry to boarding area (in minutes at peak)
+Increase in public transport connectivity of ports (no. of ports served by public transport)
+Increase in corridor capacity (no. of passengers per hour per direction at peak)
+Decreased transport spend among bottom 30% income-earning households (ratio of base fare to minimum wage)
+Reduced average age of transport fleet (in years)
+Reduced private transport trips (ratio of public and active transport to private transport trips on the road)
+Reduced private vehicle density (ratio of private vehicles per kilometer of road)
+Increase in transport services with night-time navigation
+Increase in public transport services incorporating facilities for Persons with Limited Mobility (PLMs)
+Decrease in service delays (compliance with approved timetable)
+Traffic volume via land (AADT) per mode (in millions)
+Number of cyclists/users of bicycle lanes (including number of small electric vehicle users) increased
+Average international roughness index (IRI) decreased
+Interregional connectivity index (across various modes) increased
+Number of sea routes opened increased
+Download speed (median) (in Mbps)
+Households with internet access (% of total HHs)
+Individuals using the internet (%)
+Affordability of mobile and fixed broadband service (% GNI per capita)
+No Indicator applicable
+SO15 SO15A SO15B SO15C
+Number of deaths attributed to disasters per 100,000 population decreasedForest cover increased (%)Mitigated GHG emissions increased (MtCO2e) - Energy
+Number of missing persons attributed to disasters per 100,000 population decreasedQuality of corals under NIPAS marine protected areas (MPAs) and other priority coastal and marine conservation areas maintainedMitigated GHG emissions increased (MtCO2e) - Industrial Process and Product Use
+Number of directly affected persons attributed to disasters per 100, 000 population decreasedEmployment generated from resource-based enterprises/industries increasedMitigated GHG emissions increased (MtCO2e) - Waste
+No Indicator applicableNo Indicator applicableMitigated GHG emissions increased (MtCO2e) - Transport
+No Indicator applicable
+===== PAGE 7 =====
+PDP Chapters
+Choose
+MU Chapter 2.1 Boost Health
+MU Chapter 2.2 Improve Education and Lifelong Learning
+MU Chapter 2.3 Establish Livable Communities
+MU Chapter 3.1 Ensure Food Security and Proper Nutrition
+MU Chapter 3.2 Strengthen Social Protection
+MU Chapter 4. Increase Income Earning Ability
+MU Chapter 5 Modernize Agriculture and Agribusiness
+PDP Chapter Outcome SO MU Chapter 6 Revitalize Industry
+Choose Choose MU Chapter 7 Reinvigorate Services
+For CO For Dropdown B17:J17 MU Chapter 8 Advance Research & Development, Technology, and Innovation
+Choose Choose MU Chapter 9 Promote Trade and Investments
+MU Chapter 10 Promote Competition and Improve Regulatory Efficiency
+MU Chapter 11.1 Promote an Inclusive, Innovative, and Healthy Financial Sector
+MU Chapter 11.2 Ensure Sound Fiscal Management and Improve the Tax Regime
+MU Chapter 12 Expand and Upgrade Infrastructure
+MU Chapter 13.1 Ensure Peace, Security, and Public Safety
+MU Chapter 13.2 Enhance Administration of Justice
+MU Chapter 14 Practice Good Governance and Improve Bureaucratic Efficiency
+MU Chapter 15 Accelerate Climate Action and Strengthen Disaster Resilience
+PDP SO SO Code MCO2.1 MCO2.2 MCO2.3
+Choose Promote Human and Social DevelopmentPromote Human and Social DevelopmentPromote Human and Social Development
+Dropdown
+Choose
+MSO2.1 MSO2.2 MSO2.3
+===== PAGE 8 =====
+plese see PDP Midterm Update, and specifyplese see PDP Midterm Update, and specifySocial environment promoted
+Environmental Quality Improved
+Built Environment Upgraded
+Responsive Governance Advanced
+No Statement applicable
+MSO2.3 MSO2.3A MSO2.3B MSO2.3C
+Percentage of LGUs (P/C/M) with Local Culture and Arts Councils (LCACs) increased (cumulative)Proportion of barangays (brgys) served by materials recovery facilities (MRFs) increased (%)Housing units started or financed
+Maternal mortality ratio decreased (per 100,000 live births)Proportion of cities/ municipalities served by sanitary landfill facilities (SLFs) increased (%)No Statement applicable
+No Statement applicableArea of green spaces increased (in hectares)
+Proportion of cities that have localized/adopted the City Biodiversity Index increased (%)
+No. of HUCs with Urban Carrying Capacity Assessment conducted
+Percentage of water bodies conforming with water quality guideline values for the following intended use: Water Supply
+Percentage of water bodies conforming with water quality guideline values for the following intended use: Food production
+Percentage of water bodies conforming with water quality guideline values for the following intended use: Water Supply
+Percentage of water bodies conforming with water quality guideline values for the following intended use: Primary Contact Recreation Use
+Percentage of highly urbanized and other major urban centers within ambient air quality guideline values for PM 10 and PM 2.5 increased
+No Statement applicable
+MSO12 MSO12A MSO12B MSO12C
+Public infrastructure spending increased (% share in GDP)Travel time (decreased) via land per key corridor (hours)Safe water supply coverage (% of families)
+No Statement applicablePercentage of cycling households in the Philippines increased (% of HHs)Access to basic sanitation (% of families)
+Passenger trips via rail in Metro Manila increased (% share to total passenger trips, cumulative)Zero open defecation [ZOD] (in % municipalities with ZOD)
+Passengers transported via air and sea increased (in million passengers, cumulative)Percentage of families practicing open defecation
+Cargo transported via air and sea increased (international and domestic) (MT, cumulative)Degree of IWRM implementation increased
+Road traffic accident (crash) rate reduced (number of incidents per 100,000 population) - incidents of accidents (crash)Cropping intensity increased (in %)
+Median download speed (Fixed broadband) (Mbps) Ratio of actual irrigated area to the potential irrigable area increased (% cumulative)
+Households with internet access (% of total HHs)No Indicator applicable
+Affordability of mobile and fixed broadband service (% GNI per capita): Mobile Broadband
+Affordability of mobile and fixed broadband service (% GNI per capita): Fixed Broadband
+No Indicator applicable
+===== PAGE 9 =====
+MSO15 MSO15A MSO15B MSO15C
+Number of deaths attributed to disasters per 100,000 population decreasedForest cover increased (%)Mitigated GHG emissions increased (MtCO2e) - Energy
+Number of missing persons attributed to disasters per 100,000 population decreasedEmployment generated from resource-based enterprises/industries increasedMitigated GHG emissions increased (MtCO2e) - Industrial Process and Product Use
+Number of directly affected persons attributed to disasters per 100, 000 population decreasedCoverage of protected areas in relation to marine areas increased (%)Mitigated GHG emissions increased (MtCO2e) - Waste
+No Indicator applicableRevenues generated from protected area operations and management increasedMitigated GHG emissions increased (MtCO2e) - Transport
+No Indicator applicableRE Share in Power Generation (%)
+Percentage share of climate expenditures under national budget (%)
+Material Productivity (PHP/kg) increased
+No Indicator applicable
+===== PAGE 10 =====
+Capital Investment Program/Project 
+Technical Assistance Program/Project (such as Research and Development, Institutional Development, Human Resource Capacity Building, or System/Process Improvement PAPs) 
+Relending Program/Project of GFIs to LGUs or Target Beneficiary 
+Government Facilities
+Subsector
+Choose
+Health
+Locally-funded major capital program/project with total project cost of at least PHP 5 billionEducation
+ODA grant-assisted program/project with total project cost of at least PhP 5 billion Solid Waste Management
+ODA loan-assisted program/project (including relending program/ project, 
+program loan such as budget support, etc.) regardless of amount requiring 
+national government guarantee
+Housing
+Solicited national public-private partnership (PPP) project Public Safety/Security
+Joint Venture (JV) project with government contribution of at least PhP150 
+million
+Urban/Heritage Renewal
+New program/project which will require ICC approval based on existing laws, rules, and 
+regulations
+Roads and Bridges
+Ongoing unsolicited national PPP project Water Transportation
+Ongoing program/project that has been previously approved by NB/ICC but does not fall under 
+the aforementioned typologies (e.g., projects approved by ICC/NB in accordance with old 
+policies/rules on cost floor)
+Air Transportation
+Rail Transportation
+Urban Transportation
+Irrigation
+Water Supply
+Yet to be endorsed Flood Management
+Sanitation/Sewerage/Sepatage
+Reclamation
+Government Building
+Multipurpose Facilities
+Social Infrastructure Others
+Power-Electrification
+Level of Gender Responsiveness
+Choose
+Information and Communications Technology GAD is invisible in the program/project
+Program/Project has promising GAD prospects
+Program/Project is gender-sensitive
+===== PAGE 11 =====
+Program/Project is gender-responsive
+Status of Implementatiion Readiness
+Pre-Feasibility Study/Business Case Category
+Choose
+Tier 1
+Right-of-Way Acquisition Tier 2- New
+Resettlement Action Plan Tier 2- Expanded
+Environmental Compliance Certificate 
+RDC Endorsement
+Detailed Engineering Design
+Other Pre-Investment Activities
+WaterResourcesICT OtherDevProjects
+Irrigation No subsector Research and Development Facilities
+Water Supply Urban Heritage Renewal
+Flood Management Others
+Sanitation/Sewerage/Septage
+Urban Transportation
+EOWaterResourcesEOICT EOOtherDevProjects MAIN Main Infra Left Indicator Dropdown
+Irrigation canals constructedSite/Stations/Centers comprised of active equipmentGovernment/administrative buildings for frontline services constructed/rehabilitatedSocial Infrastructure - HealthWater Resources - Flood ManagementW EOWaterResources
+Box Culverts constructedNumber of free Wifi sites constructed (special type of above)Gymnasium/sports facilities constructed/rehabilitatedSocial Infrastructure - Education For Dropdown B17:J17
+Drainage Lines constructedPassive Infrastructure (cables) installedDormintories/barracks/living quarters constructed/rehabilitatedSocial Infrastructure - Solid Waste ManagementIrrigation canals constructed
+River Bank Protection structures constructedICT equipment procured (equipment used as standalone)Prison/Jail facilities constructed/rehabilitatedSocial Infrastructure - Housing Box Culverts constructed
+Dike/ Revetment/ Shore Protection System constructedInformation and Communication Technology (Others)Evacuation centers constructed/rehabilitatedSocial Infrastructure - Public Safety/SecurityDrainage Lines constructed
+Level I/ Level II Water System installedOther Public Infrastructure Power Electrification River Bank Protection structures constructed
+Length of water pipes installedResearch and Development Facilities constructed/rehabilitatedTransportation - Roads and Bridges Dike/ Revetment/ Shore Protection System constructed
+===== PAGE 12 =====
+Water Treatment Plant constructed Transportation - Water Transportation Level I/ Level II Water System installed
+Rain Collector System constructed Transportation - Air Transportation Length of water pipes installed
+Sewerage system constructed Transportation - Rail Transportation Water Treatment Plant constructed
+Canal System installed Transportation - Urban Transportation Rain Collector System constructed
+Dam constructed Water Resources - Irrigation Sewerage system constructed
+Water Resources (Others) Water Resources - Water Supply Canal System installed
+Irrigation canals rehabilitated Water Resources - Flood Management Dam constructed
+Irrigation canals upgraded Water Resources - Sanitation/Sewerage/SeptageWater Resources (Others)
+Box Culverts rehabilitated ICT Irrigation canals rehabilitated
+Box Culverts upgraded Other Development Projects - Research and Development FacilitiesIrrigation canals upgraded
+Drainage Lines rehabilitated Other Development Projects - Urban Heritage RenewalBox Culverts rehabilitated
+Drainage Lines upgraded Other Development Projects - Others Box Culverts upgraded
+Slope Protection structures rehabilitated Drainage Lines rehabilitated
+Slope Protection structures upgraded Drainage Lines upgraded
+Dike/ Revetment/ Shore Protection System rehabilitated Slope Protection structures rehabilitated
+Dike/ Revetment/ Shore Protection System upgraded Slope Protection structures upgraded
+Level I/ Level II Water System rehabilitated Dike/ Revetment/ Shore Protection System rehabilitated
+Length of water pipes rehabilitated Dike/ Revetment/ Shore Protection System upgraded
+Length of water pipes upgraded Level I/ Level II Water System rehabilitated
+Water Treatment Plant rehabilitated Length of water pipes rehabilitated
+Water Treatment Plant upgraded Length of water pipes upgraded
+Rain Collector System rehabilitated Water Treatment Plant rehabilitated
+Rain Collector System upgraded Water Treatment Plant upgraded
+Sewerage/ Septate Treatment Plan rehabilitated Rain Collector System rehabilitated
+Sewerage/ Septate Treatment Plan upgraded Rain Collector System upgraded
+Dam rehabilitated Sewerage/ Septate Treatment Plan rehabilitated
+Dam upgraded Sewerage/ Septate Treatment Plan upgraded
+Groundwater monitoring well constructed Dam rehabilitated
+Groundwater monitoring well rehabilitated Dam upgraded
+Groundwater monitoring well constructed
+Groundwater monitoring well rehabilitated
+===== PAGE 13 =====
+Chapter 2.2 Improve Education and Lifelong Learning
+Chapter 3.1 Ensure Food Security and Proper Nutrition
+Chapter 8 Advance Research & Development, Technology, and Innovation
+Chapter 10 Promote Competition and Improve Regulatory Efficiency
+Chapter 11.1 Promote an Inclusive, Innovative, and Healthy Financial Sector
+Chapter 11.2 Ensure Sound Fiscal Management and Improve the Tax Regime
+Chapter 13.1 Ensure Peace, Security, and Public Safety
+Chapter 14 Practice Good Governance and Improve Bureaucratic Efficiency
+Chapter 15 Accelerate Climate Action and Strengthen Disaster Resilience
+CO3.1 CO3.2 CO4 CO5 CO6 CO7 CO8 CO9 CO10
+Vulnerabilities reduced and purchasing power protectedVulnerabilities reduced and purchasing power protectedIncome-earning ability increasedAgriculture and agribusiness modernizedIndustry revitalized: science, technology and innovation-driven industrializationServices ReinvigoratedBasic research and development and knowledge creation strengthenedPromote trade and investments in goods and servicesConsumer welfare improved
+Market-driven and customer-centered research and development advancedMarket efficiency improved
+Technology adoption, utilization, and commercialization scaled up
+Innovation and entrepreneurship accelerated
+SO3.1 SO3.2 SO4 SO5 SO6 SO7 SO8 SO9 SO10
+===== PAGE 14 =====
+plese see PDP RM, and specifyplese see PDP RM, and specifyplese see PDP RMplese see PDP RM, and specifyplese see PDP RM, and specifyplese see PDP RM, and specifyplese see PDP RM, and specifyplese see PDP RM, and specifyplese see PDP RM, and specify
+SO2.3D SO2.3E
+Housing units started/financed increased (in million)Percentage of local government units (LGUs) preparing risk-informed plans increased
+No Statement applicablePercentage of LGUs with Local Housing Boards created increased
+Percentage of plastic product footprint recovered increasedNo Statement applicable
+Percentage of highly urbanized and other major urban centers within ambient air quality guideline values for PM 10 and PM 2.5 increased
+Percentage of water bodies conforming with water quality guideline values for the following intended use improved
+Percentage of hazardous waste managed maintained
+Area of green spaces increased (in hectares)
+Proportion of cities that have adopted the City Biodiversity Index increased (%)
+No Statement applicable
+SO12D SO12E
+Proportion of households with access to electricity increased (% of total HHs)Percent of provinces with adequate bed-to-population ratios increased (%)
+Electricity Consumption (in real terms) per capita increased (kWh/person)Percent of provinces with adequate primary care facilities increased (%)
+Share of renewable energy (RE) in the power generation mix increased (%)Classroom-to-pupil ratio
+Power requirements met (in % available capacity over peak demand)Water and sanitation (Watsan) facility to pupil ratio
+Energy intensity measured in terms of primary energy and GDPProportion of public schools with adequate water and sanitation facilities
+No Indicator applicableProportion of public schools with access to basic handwashing facilities
+Zero open defecation [ZOD] (in % municipalities with ZOD)Proportion of public schools with internet access
+Cropping intensity increased (in %)Proportion of public schools with functional computers
+Ratio of actual irrigated area to the total potential irrigable area increased (%, cumulative) Note: Estimated irrigable area = 3.1M ha Total remaining area to be developed = 1.2M haProportion of public schools with connection to electricity to total number of public schools
+Number of households safe from 25 year flood or flood depth of 20 cm for < 12 hoursProportion of barangays served by MRFs
+Number of households safe from 2 and 4-meter storm surgeProportion of cities/ municipalities served by SLFs
+Percentage of implementation of programs and projects identified in the Integrated River Basin Master Plans (IRBMP)No Indicator applicable
+===== PAGE 15 =====
+Proportion of programs implemented and projects identified in the Integrated River Basin Master Plans
+Percentage of major river basins with updated IRBMP
+Percentage of River Basins with established River Basin Organizations (RBO)
+No Indicator applicable
+Reduced Average Passenger Processing Time - from entry to boarding area (in minutes at peak)
+Increase in public transport connectivity of ports (no. of ports served by public transport)
+Increase in corridor capacity (no. of passengers per hour per direction at peak)
+Decreased transport spend among bottom 30% income-earning households (ratio of base fare to minimum wage)
+Reduced average age of transport fleet (in years)
+Reduced private transport trips (ratio of public and active transport to private transport trips on the road)
+Reduced private vehicle density (ratio of private vehicles per kilometer of road)
+Increase in transport services with night-time navigation
+Increase in public transport services incorporating facilities for Persons with Limited Mobility (PLMs)
+Decrease in service delays (compliance with approved timetable)
+Traffic volume via land (AADT) per mode (in millions)
+Number of cyclists/users of bicycle lanes (including number of small electric vehicle users) increased
+Average international roughness index (IRI) decreased
+Interregional connectivity index (across various modes) increased
+Number of sea routes opened increased
+Households with internet access (% of total HHs)
+Affordability of mobile and fixed broadband service (% GNI per capita)
+Mitigated GHG emissions increased (MtCO2e) - Energy
+Mitigated GHG emissions increased (MtCO2e) - Industrial Process and Product Use
+Mitigated GHG emissions increased (MtCO2e) - Waste
+Mitigated GHG emissions increased (MtCO2e) - Transport
+No Indicator applicable
+===== PAGE 16 =====
+MU Chapter 2.2 Improve Education and Lifelong Learning
+MU Chapter 3.1 Ensure Food Security and Proper Nutrition
+MU Chapter 5 Modernize Agriculture and Agribusiness
+MU Chapter 8 Advance Research & Development, Technology, and Innovation
+MU Chapter 10 Promote Competition and Improve Regulatory Efficiency
+MU Chapter 11.1 Promote an Inclusive, Innovative, and Healthy Financial Sector
+MU Chapter 11.2 Ensure Sound Fiscal Management and Improve the Tax Regime
+MU Chapter 13.1 Ensure Peace, Security, and Public Safety
+MU Chapter 14 Practice Good Governance and Improve Bureaucratic Efficiency
+MU Chapter 15 Accelerate Climate Action and Strengthen Disaster Resilience
+MCO3.1 MCO3.2 MCO4 MCO5 MCO6 MCO7 MCO8 MCO9 MCO10
+Reduce Vulnerabilities and Protect Purchasing PowerReduce Vulnerabilities and Protect Purchasing PowerIncrease Income-Earning AbilityModernized Agriculture and BusinessRevitalized IndustryReinvigorate ServicesBasic research and development and knowledge creation strengthenedPromote trade and investments in goods and servicesConsumer welfare improved
+Market-driven and customer-centered research and development advancedMarket efficiency improved
+Technology adoption, utilization, and commercialization scaled up
+Innovation and entrepreneurship accelerated
+MSO3.1 MSO3.2 MSO4 MSO5 MSO6 MSO7 MSO8 MSO9 MSO10
+===== PAGE 17 =====
+plese see PDP Midterm Update, and specifyplese see PDP Midterm Update, and specifyplese see PDP Midterm Update, and specifyplese see PDP Midterm Update, and specifyplese see PDP Midterm Update, and specifyplese see PDP Midterm Update, and specifyplese see PDP Midterm Update, and specifyplese see PDP Midterm Update, and specifyplese see PDP Midterm Update, and specify
+MSO2.3D
+Percentage of (LGUs) with Comprehensive Land Use Plan (CLUPs)
+No Statement applicable
+Area of green spaces increased (in hectares)
+Proportion of cities that have localized/adopted the City Biodiversity Index increased (%)
+No. of HUCs with Urban Carrying Capacity Assessment conducted
+Percentage of water bodies conforming with water quality guideline values for the following intended use: Water Supply
+Percentage of water bodies conforming with water quality guideline values for the following intended use: Food production
+Percentage of water bodies conforming with water quality guideline values for the following intended use: Water Supply
+Percentage of water bodies conforming with water quality guideline values for the following intended use: Primary Contact Recreation Use
+Percentage of highly urbanized and other major urban centers within ambient air quality guideline values for PM 10 and PM 2.5 increased
+MSO12D MSO12E
+Proportion of households with access to electricity increased (% of total HHs)Percent of provinces with adequate bed-to-population ratios increased (%)
+Electricity Consumption (in real terms) per capita increased (kWh/person)Percent of provinces with adequate primary care facilities increased (%)
+Share of renewable energy (RE) in the power generation mix increased (%)Proportion of public schools within standard classroom-to-student ratio
+No Indicator applicableWater and sanitation (Watsan) facility to pupil ratio
+Proportion of public schools with adequate water and sanitation facilities
+Proportion of public schools with access to basic handwashing facilities
+Proportion of public schools with internet access
+Proportion of public schools with functional computers
+Proportion of public schools with connection to electricity to total number of public schools
+Proportion of barangays served by MRFs
+Proportion of cities/ municipalities served by SLFs
+===== PAGE 18 =====
+No Indicator applicable
+Mitigated GHG emissions increased (MtCO2e) - Energy
+Mitigated GHG emissions increased (MtCO2e) - Industrial Process and Product Use
+Mitigated GHG emissions increased (MtCO2e) - Waste
+Mitigated GHG emissions increased (MtCO2e) - Transport
+RE Share in Power Generation (%)
+Percentage share of climate expenditures under national budget (%)
+Material Productivity (PHP/kg) increased
+No Indicator applicable
+===== PAGE 19 =====
+Sources PDP Chapters
+Choose Choose
+Agencia Espanola de Cooperation International para el Desarollo Chapter 2.1 Boost Health
+Asian Development Bank Chapter 2.2 Improve Education and Lifelong Learning
+Australia Chapter 2.3 Establish Livable Communities
+Austria Chapter 3.1 Ensure Food Security and Proper Nutrition
+Belgium Chapter 3.2 Strengthen Social Protection
+Canada Chapter 4. Increase Income Earning Ability
+China Chapter 5 Modernize Agriculture and Agribusiness
+Denmark Chapter 6 Revitalize Industry
+Department of Foreign Affairs and Trade – Development Cooperation Branch Chapter 7 Reinvigorate Services
+European Investment Bank Chapter 8 Advance Research & Development, Technology, and Innovation
+European Union Chapter 9 Promote Trade and Investments
+Federal Ministry for Economic Cooperation and Development Chapter 10 Promote Competition and Improve Regulatory Efficiency
+Food and Agriculture Organization Chapter 11.1 Promote an Inclusive, Innovative, and Healthy Financial Sector
+France Chapter 11.2 Ensure Sound Fiscal Management and Improve the Tax Regime
+French Development Agency Philippines Chapter 12 Expand and Upgrade Infrastructure
+German Development Bank Chapter 13.1 Ensure Peace, Security, and Public Safety
+Germany Chapter 13.2 Enhance Administration of Justice
+Germany Agency for International Cooperation Chapter 14 Practice Good Governance and Improve Bureaucratic Efficiency
+Global Affairs Canada Chapter 15 Accelerate Climate Action and Strengthen Disaster Resilience
+Global Environment Facility 
+Global Green Growth Institute Chapter 2.1 Boost HealthChapter 2.2 Improve Education and Lifelong LearningChapter 2.3 Establish Livable CommunitiesChapter 3.1 Ensure Food Security and Proper Nutrition
+Green Climate Fund Human and social development promotedHuman and social development promotedHuman and social development promotedVulnerabilities reduced and purchasing power protected
+Hungary
+International Atomic Energy Agency
+International Fund for Agricultural Development
+International Labor Organization
+International Maritime Organization 
+International Organization for Migration 
+International Trade Centre 
+Israel
+Italy
+===== PAGE 20 =====
+Japan
+Japan International Cooperation Agency
+Korea
+Korea Eximbank Resident Mission / Economic Development Cooperation Fund
+Korea International Cooperation Agency
+Mindanao Trust Fund 
+Netherlands
+New Zealand
+Nordic Investment Bank
+Norway
+OPEC Fund for International Development
+Poland
+Russia
+Saudi Arabia
+Saudi Fund for Development
+Sovereign Military Hospitaller Order of St. John of Jerusalem, of Rhodes, and of Malta 
+Spain
+Suriname
+Sweden
+Sweden / Swedish International Development Cooperation Agency
+Switzerland
+United Kingdom
+United Nations Children's Fund
+United Nations Coordination Office
+United Nations Development Programme
+United Nations Economic and Social Commission for Asia and the Pacific 
+United Nations Environment Programme 
+United Nations High Commissioner for Refugees 
+United Nations Industrial Development Organization
+United Nations Population Fund
+United Nations Programme on HIV/AIDS 
+United States
+===== PAGE 21 =====
+United States Agency for International Development
+World Bank
+World Food Programme
+World Health Organization
+To be determined
+Slope Protection structures rehabilitated
+Dike/ Revetment/ Shore Protection System rehabilitated
+Dike/ Revetment/ Shore Protection System upgraded
+Level I/ Level II Water System rehabilitated
+Sewerage/ Septate Treatment Plan rehabilitated
+Sewerage/ Septate Treatment Plan upgraded
+Groundwater monitoring well constructed
+Groundwater monitoring well rehabilitated
+===== PAGE 22 =====
+CO11.1 CO11.2 CO12 CO13.1 CO13.2 CO14 CO15
+Promote an Inclusive, Innovative and Healthy Financial SectorEnsure Sound Fiscal Management and Improve the Tax RegimeSustainable, resilient, integrated, and modernized infrastructure facilities and services deliveredPeace and Security Ensured and Administration of Justice EnhancedPeace and Security Ensured and Administration of Justice EnhancedPractice good governance and improve bureaucratic efficiencyAdaptive capacity and resilience of communities and ecosystems to climate change and natural hazards enhanced
+SO11.1 SO11.2 SO12 SO13.1 CO13.2 SO14 SO15
+===== PAGE 23 =====
+plese see PDP RM, and specifyplese see PDP RM, and specifyPlanning, programming, and asset management in infrastructure enhancedplese see PDP RM, and specifyplese see PDP RM, and specifyplese see PDP RM, and specifyClimate and disaster risk resilience of communities and institutions increased
+Seamless and inclusive connectivity achieved (via local and international linkages)Ecosystem resilience enhanced
+Water security, ecological integrity of water systems, and resiliency to water hazards attainedLow carbon economy transition enabled
+Affordable, accessible, reliable, and clean energy providedNo Statement applicable
+Enhanced support to social development provided
+No Statement applicable
+===== PAGE 24 =====
+
+===== PAGE 25 =====
+MCO11.1 MCO11.2 MCO12 MCO13.1 MCO13.2 MCO14 MCO15
+Promote an Inclusive, Innovative and Healthy Financial SectorEnsure Sound Fiscal Management and Improve the Efficiency of the Tax SystemSustainable, resilient, integrated, and modernized infrastructure facilities and services deliveredPeace and Security Ensured and Administration of Justice EnhancedPeace and Security Ensured and Administration of Justice EnhancedPractice good governance and improve bureaucratic efficiencyAdaptive capacity and resilience of communities and ecosystems to climate change and natural hazards enhanced
+MSO11.1 MSO11.2 MSO12 MSO13.1 MSO13.2 MSO14 MSO15
+===== PAGE 26 =====
+plese see PDP Midterm Update, and specifyplese see PDP Midterm Update, and specifyPlanning, programming, and asset management in infrastructure enhancedplese see PDP Midterm Update, and specifyplese see PDP Midterm Update, and specifyplese see PDP Midterm Update, and specifyClimate and disaster risk resilience of communities and institutions increased
+Seamless and inclusive connectivity achieved (via local and international linkages)Ecosystem resilience enhanced
+Water security, ecological integrity of water systems, and resiliency to water hazards attainedLow carbon economy transition enabled
+Affordable, accessible, reliable, and clean energy providedNo Statement applicable
+Enhanced support to social development provided
+No Statement applicable
+===== PAGE 27 =====
+
+===== PAGE 28 =====
+PCB Regions Province LGUs
+Choose NCR – National Capital RegionAll Metro Manila DistrictAll Metro Manila LGUs
+National Program on Population and Family Planning (NPPFP)Region I – Ilocos Region 1st Dist. (Mnl) CAL
+Zero Hunger Program (ZHP) Region II – Cagayan Valley 2nd Dist. (Manda, Mrk, Psg, QC, SJ)LSP
+Agricultural Development Program (ADP) Region III – Central Luzon 3rd Dist. (Cal, Mal, Nav, Val)MAK
+Export Development Program (EDP) Region IV‑A – CALABARZON 4th Dist. (LsP, Mak, Munti, Prq, Psy, Pat, Tag)MAL
+Tourism Development Program (TDP) MIMAROPA Region MANDA
+Pasig River Urban Development (PRUD) Region V – Bicol Region MNL
+Risk Resiliency Program (RRP) Region VI – Western Visayas MRK
+Justice Sector Convergence Program (JSCP) Region VII – Central Visayas MUNTI
+Philippine Anti-Illegal Drug Strategy (PADS) Region VIII – Eastern Visayas NAV
+Chapter 8 Advance Research & Development, Technology, and InnovationWater Resources Program (WRP) Region IX – Zamboanga Peninsula PRQ
+PCB on the Sustainable Development Goals (SDGs) Region X – Northern Mindanao PSY
+PCB on Livelihood and Employment Region XI – Davao Region PSG
+Chapter 11.1 Promote an Inclusive, Innovative, and Healthy Financial Sector Region XII – SOCCSKSARGEN PAT
+Chapter 11.2 Ensure Sound Fiscal Management and Improve the Tax Regime Region XIII – Caraga QC
+CAR – Cordillera Administrative Region SJ
+BARMM – Bangsamoro Autonomous Region in Muslim MindanaoTAG
+VAL
+Chapter 14 Practice Good Governance and Improve Bureaucratic Efficiency
+Chapter 15 Accelerate Climate Action and Strengthen Disaster Resilience
+Chapter 3.2 Strengthen Social ProtectionChapter 4. Increase Income Earning AbilityChapter 5 Modernize Agriculture and AgribusinessChapter 6 Revitalize IndustryChapter 7 Reinvigorate ServicesChapter 8 Advance Research & Development, Technology, and InnovationChapter 9 Promote Trade and InvestmentsChapter 10 Promote Competition and Improve Regulatory EfficiencyChapter 11.1 Promote an Inclusive, Innovative, and Healthy Financial Sector
+Vulnerabilities reduced and purchasing power protectedIncome-earning ability increasedAgriculture and agribusiness modernizedIndustry revitalized: science, technology and innovation-driven industrializationServices reinvigoratedBasic research and development and knowledge creation strengthenedPromote trade and investments in goods and servicesConsumer welfare improvedPromote an Inclusive, Innovative, and Healthy Financial Sector
+Market-driven and customer-centered research and development advancedMarket efficiency improved
+Technology adoption, utilization, and commercialization scaled up
+Innovation and entrepreneurship accelerated
+===== PAGE 29 =====
+
+===== PAGE 30 =====
+
+===== PAGE 31 =====
+
+===== PAGE 32 =====
+
+===== PAGE 33 =====
+
+===== PAGE 34 =====
+
+===== PAGE 35 =====
+
+===== PAGE 36 =====
+
+===== PAGE 37 =====
+Major RB Principal RB RDC Endorsement
+All Metro Manila LGUs Choose Choose Choose
+Pasig-Laguna BayMarikina Endorsed
+Others, pls. specifyOthers, pls. specifyYet to be Endorsed
+Not Applicable
+Chapter 11.2 Ensure Sound Fiscal Management and Improve the Tax RegimeChapter 12 Expand and Upgrade InfrastructureChapter 13.1 Ensure Peace, Security, and Public SafetyChapter 13.2 Enhance Administration of JusticeChapter 14 Practice Good Governance and Improve Bureaucratic EfficiencyChapter 15 Accelerate Climate Action and Strengthen Disaster Resilience
+Ensure Sound Fiscal Management and Improve the Tax RegimSustainable, resilient, integrated, and modernized infrastructure facilities and services deliveredPeace and Security Ensured and Administration of Justice EnhancedPeace and Security Ensured and Administration of Justice EnhancedPractice good governance and improve bureaucratic efficiencyAdaptive capacity and resilience of communities and ecosystems to climate change and natural hazards enhanced
+Planning, programming, and asset management in infrastructure enhanced
+Seamless and inclusive connectivity achieved (via local and international linkages)
+Water security, ecological integrity of water systems, and resiliency to water hazards attained
+Affordable, accessible, reliable, and clean energy provided
+Enhanced support to social development provided
+===== PAGE 38 =====
+
+===== PAGE 39 =====
+
+===== PAGE 40 =====
+
+===== PAGE 41 =====
+
+===== PAGE 42 =====
+
+===== PAGE 43 =====
+
+===== PAGE 44 =====
+
+===== PAGE 45 =====

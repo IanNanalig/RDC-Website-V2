@@ -1,0 +1,267 @@
+from django.urls import reverse
+from rest_framework import status
+from rest_framework.test import APITestCase
+from .models import Project, SystemSetting, User, UserActivity
+
+
+class PortalWorkflowTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username="admin_t", password="password", role="admin", email="admin_t@example.com"
+        )
+        self.validator = User.objects.create_user(
+            username="validator_t", password="password", role="validator", email="validator_t@example.com"
+        )
+        # Employee-equivalent role in current schema.
+        self.employee = User.objects.create_user(
+            username="employee_t", password="password", role="staff", email="employee_t@example.com"
+        )
+
+    def _as(self, user):
+        self.client.force_authenticate(user=user)
+
+    def test_employee_to_validator_to_admin_flow(self):
+        self._as(self.employee)
+        create_res = self.client.post(
+            "/api/employee/projects/",
+            {
+                "title": "Workflow Project",
+                "agency": "MMDA",
+                "budget": 100000,
+                "completion": 0,
+                "status": "draft",
+                "description": "Integration flow",
+            },
+            format="json",
+        )
+        self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
+        project_id = create_res.data["id"]
+
+        submit_res = self.client.post(f"/api/employee/projects/{project_id}/submit/", {}, format="json")
+        self.assertEqual(submit_res.status_code, status.HTTP_200_OK)
+
+        self._as(self.validator)
+        validator_list = self.client.get("/api/validator/projects/")
+        self.assertEqual(validator_list.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(p["id"] == project_id for p in validator_list.data))
+
+        approve_res = self.client.post(
+            f"/api/validator/projects/{project_id}/validate/",
+            {"action": "approve"},
+            format="json",
+        )
+        self.assertEqual(approve_res.status_code, status.HTTP_200_OK)
+
+        self._as(self.admin)
+        admin_list = self.client.get("/api/admin/projects/")
+        self.assertEqual(admin_list.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(p["id"] == project_id for p in admin_list.data))
+
+        dashboard = self.client.get("/api/dashboard/")
+        self.assertEqual(dashboard.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(dashboard.data.get("approved_projects", 0), 1)
+
+    def test_role_access_restrictions(self):
+        # Employee cannot access admin and validator list endpoints.
+        self._as(self.employee)
+        self.assertEqual(self.client.get("/api/admin/projects/").status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.get("/api/validator/projects/").status_code, status.HTTP_403_FORBIDDEN)
+
+        # Validator cannot access admin users endpoint.
+        self._as(self.validator)
+        self.assertEqual(self.client.get("/api/admin/users/").status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_can_archive_project(self):
+        project = Project.objects.create(
+            name="Archive Candidate",
+            implementing_agency="MMDA",
+            municipality="NCR",
+            status="proposed",
+            cost=5000,
+            description="to archive",
+            latitude=14.5,
+            agency="MMDA",
+            budget=5000,
+            completion=10,
+            created_by=self.employee,
+        )
+
+        self._as(self.admin)
+        res = self.client.post(f"/api/admin/projects/{project.id}/archive/", {}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        project.refresh_from_db()
+        self.assertTrue(project.archived)
+        self.assertFalse(project.is_active)
+
+    def test_employee_write_blocked_when_encoding_closed(self):
+        SystemSetting.objects.create(
+            key="portal_encoding_window",
+            value='{"enabled": false, "start_at": "", "end_at": ""}',
+        )
+
+        self._as(self.employee)
+        create_res = self.client.post(
+            "/api/employee/projects/",
+            {
+                "title": "Blocked Project",
+                "agency": "MMDA",
+                "budget": 100000,
+                "completion": 0,
+                "status": "draft",
+                "description": "should fail",
+            },
+            format="json",
+        )
+        self.assertEqual(create_res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_can_update_encoding_window(self):
+        self._as(self.admin)
+        res = self.client.post(
+            "/api/encoding-window/",
+            {"enabled": True, "start_at": "", "end_at": ""},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        get_res = self.client.get("/api/encoding-window/")
+        self.assertEqual(get_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(get_res.data.get("is_open"))
+
+    def test_employee_cannot_edit_after_submit(self):
+        self._as(self.employee)
+        create_res = self.client.post(
+            "/api/employee/projects/",
+            {
+                "title": "Lock After Submit",
+                "agency": "MMDA",
+                "budget": 50000,
+                "completion": 0,
+                "status": "draft",
+                "description": "before submit",
+            },
+            format="json",
+        )
+        self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
+        project_id = create_res.data["id"]
+        self.assertEqual(
+            self.client.post(f"/api/employee/projects/{project_id}/submit/", {}, format="json").status_code,
+            status.HTTP_200_OK,
+        )
+        update_res = self.client.put(
+            f"/api/employee/projects/{project_id}/",
+            {"title": "Edited after submit", "agency": "MMDA", "budget": 50000},
+            format="json",
+        )
+        self.assertEqual(update_res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_only_admin_can_delete_project(self):
+        project = Project.objects.create(
+            name="Delete Candidate",
+            implementing_agency="MMDA",
+            municipality="NCR",
+            status="planning",
+            cost=1000,
+            description="candidate",
+            latitude=14.5,
+            agency="MMDA",
+            budget=1000,
+            completion=0,
+            created_by=self.employee,
+        )
+
+        self._as(self.employee)
+        self.assertEqual(
+            self.client.delete(f"/api/employee/projects/{project.id}/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+        self._as(self.validator)
+        self.assertEqual(
+            self.client.delete(f"/api/validator/projects/{project.id}/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+        self._as(self.admin)
+        self.assertEqual(
+            self.client.delete(f"/api/admin/projects/{project.id}/").status_code,
+            status.HTTP_204_NO_CONTENT,
+        )
+
+    def test_real_login_endpoint_works_for_db_users(self):
+        res = self.client.post(
+            "/api/auth/login/",
+            {"username": "employee_t", "password": "password"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["user"]["role"], "employee")
+        self.assertTrue("access" in res.data)
+
+    def test_admin_can_view_activity_feed(self):
+        self._as(self.employee)
+        create_res = self.client.post(
+            "/api/employee/projects/",
+            {"title": "Activity Project", "agency": "MMDA", "budget": 1, "status": "draft"},
+            format="json",
+        )
+        self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(UserActivity.objects.filter(user=self.employee, event="project_create").exists())
+
+        self._as(self.admin)
+        feed_res = self.client.get("/api/admin/activity/?limit=10")
+        self.assertEqual(feed_res.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(feed_res.data), 1)
+
+    def test_employee_can_save_rich_profile_data_json(self):
+        self._as(self.employee)
+        payload = {
+            "title": "Profile Data Project",
+            "agency": "MMDA",
+            "budget": 150000,
+            "completion": 0,
+            "status": "draft",
+            "profile_data": {
+                "projectTitle": "Profile Data Project",
+                "programOrProject": "Project",
+                "mainPdpChapter": "Chapter 12 Expand and Upgrade Infrastructure",
+                "mainPdpOutcome": "Sustainable, resilient, integrated, and modernized infrastructure facilities and services delivered",
+                "projectCostRows": [
+                    {
+                        "source": "NG",
+                        "y2022Prior": "0",
+                        "y2023": "1000",
+                        "y2024": "2000",
+                        "y2025": "3000",
+                        "y2026": "4000",
+                        "y2027": "5000",
+                        "y2028": "6000",
+                        "y2029": "7000",
+                        "continuingYears": "8000",
+                        "overall": "36000",
+                    }
+                ],
+                "pipBudgetRows": [{"year": "2025", "osbps": "100", "nep": "90", "gaa": "80"}],
+                "provincialRows": [{"province": "NCR", "y2025": "5000", "overall": "5000"}],
+                "projectReadinessItems": ["Feasibility Study"],
+                "otherInfrastructureSectors": ["Transportation - Roads and Bridges"],
+            },
+        }
+        create_res = self.client.post("/api/employee/projects/", payload, format="json")
+        self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
+        project_id = create_res.data["id"]
+        project = Project.objects.get(id=project_id)
+        self.assertIsInstance(project.profile_data, dict)
+        self.assertEqual(project.profile_data.get("projectTitle"), "Profile Data Project")
+        self.assertEqual(len(project.profile_data.get("projectCostRows", [])), 1)
+
+    def test_employee_profile_data_must_be_json_object(self):
+        self._as(self.employee)
+        payload = {
+            "title": "Invalid Profile Data",
+            "agency": "MMDA",
+            "budget": 1000,
+            "status": "draft",
+            "profile_data": ["invalid", "shape"],
+        }
+        create_res = self.client.post("/api/employee/projects/", payload, format="json")
+        self.assertEqual(create_res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("profile_data", create_res.data)
