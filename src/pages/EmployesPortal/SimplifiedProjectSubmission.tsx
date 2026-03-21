@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
 
-type FormAction = "save" | "submit";
+type FormAction = "save" | "submit" | "draft" | "reviewed" | "endorsed";
 type YesNo = "Yes" | "No";
 
 type SimplifiedForm = {
@@ -98,6 +98,7 @@ const initialForm: SimplifiedForm = {
 };
 
 const yesNoOptions = ["Yes", "No"];
+const yesNoNaOptions = ["Yes", "No", "Not Applicable"];
 const fundingSourceOptions = [
   "NG-Local Funds (GAA)",
   "ODA",
@@ -350,13 +351,16 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const [formReady, setFormReady] = useState(false);
   const [restoreNotice, setRestoreNotice] = useState("");
   const [lastLocalSaveAt, setLastLocalSaveAt] = useState("");
+  const [serverUpdatedAt, setServerUpdatedAt] = useState<string | null>(null);
   const [validatorNotes, setValidatorNotes] = useState("");
+  const [validatorReviewStatus, setValidatorReviewStatus] = useState("");
   const [diffMap, setDiffMap] = useState<Record<string, DiffField>>({});
   const [diffEntries, setDiffEntries] = useState<Array<{ field: string; before: string; after: string }>>([]);
   const isValidator = user?.role === "validator";
   const isAdmin = user?.role === "admin";
   const isEmployee = user?.role === "employee";
   const isDiffMode = isAdmin && searchParams.get("mode") === "diff";
+  const normalizedReviewStatus = validatorReviewStatus === "validated" ? "endorsed" : validatorReviewStatus;
 
   const draftStorageKey = useMemo(() => {
     const identity =
@@ -396,6 +400,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
         const base = isValidator ? "validator" : isAdmin ? "admin" : "employee";
         const data = await api.get(`${base}/projects/${id}/`);
         setProjectStatus(data?.status || "planning");
+        if (data?.updated_at) {
+          setServerUpdatedAt(String(data.updated_at));
+        }
         const pd = (data?.profile_data || {}) as Record<string, unknown>;
         const validatorReview = pd?.validator_review as Record<string, unknown> | undefined;
         const contributorSnapshot =
@@ -412,12 +419,6 @@ const SimplifiedProjectSubmission: React.FC = () => {
           ? (isDiffMode ? workingCopy : contributorSnapshot)
           : pd;
         const simplified = (sourceData.simplified_form || sourceData) as Partial<SimplifiedForm>;
-        if (pd.submission_type && pd.submission_type !== "simplified") {
-          if (isValidator) navigate(`/validator/projects/${id}/review/detailed`, { replace: true });
-          else if (isAdmin) navigate(`/admin/projects/${id}/view/detailed${isDiffMode ? "?mode=diff" : ""}`, { replace: true });
-          else navigate(`/employee/projects/${id}/edit/detailed`, { replace: true });
-          return;
-        }
         setForm({
           ...initialForm,
           ...simplified,
@@ -426,6 +427,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
         });
         if (isValidator && validatorReview) {
           setValidatorNotes(String(validatorReview.review_notes || ""));
+          const status = String(validatorReview.review_status || "").toLowerCase();
+          setValidatorReviewStatus(status === "validated" ? "endorsed" : status);
+        } else if (isValidator) {
+          setValidatorReviewStatus("");
         }
         if (isAdmin && isDiffMode && Array.isArray(validatorReview?.edited_fields)) {
           const nextDiffs: Record<string, DiffField> = {};
@@ -463,13 +468,20 @@ const SimplifiedProjectSubmission: React.FC = () => {
       if (!raw) return;
       const parsed = JSON.parse(raw) as { form?: Partial<SimplifiedForm>; savedAt?: string };
       if (!parsed?.form || typeof parsed.form !== "object") return;
+      if (parsed.savedAt && serverUpdatedAt) {
+        const localTime = new Date(parsed.savedAt).getTime();
+        const serverTime = new Date(serverUpdatedAt).getTime();
+        if (!Number.isNaN(localTime) && !Number.isNaN(serverTime) && localTime <= serverTime) {
+          return;
+        }
+      }
       setForm((prev) => ({ ...prev, ...parsed.form }));
       if (parsed.savedAt) setLastLocalSaveAt(parsed.savedAt);
       setRestoreNotice("Recovered your unsaved local inputs from this browser.");
     } catch (error) {
       console.error("Failed to restore simplified local draft:", error);
     }
-  }, [isEmployee, formReady, draftStorageKey]);
+  }, [isEmployee, formReady, draftStorageKey, serverUpdatedAt]);
 
   useEffect(() => {
     if (!isEmployee || !formReady || !draftStorageKey) return;
@@ -506,8 +518,18 @@ const SimplifiedProjectSubmission: React.FC = () => {
         console.error("Failed to persist simplified local draft before unload:", error);
       }
     };
+    const handleVisibility = () => {
+      if (document.hidden) persistNow();
+    };
+    const handlePageHide = () => persistNow();
     window.addEventListener("beforeunload", persistNow);
-    return () => window.removeEventListener("beforeunload", persistNow);
+    window.addEventListener("pagehide", handlePageHide);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.removeEventListener("beforeunload", persistNow);
+      window.removeEventListener("pagehide", handlePageHide);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
   }, [isEmployee, form, draftStorageKey, formReady]);
 
   const startYearNum = useMemo(() => parseYear(form.startYear), [form.startYear]);
@@ -587,7 +609,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
     [form.aa2022Prior, form.aa2023, form.aa2024, form.aa2025, form.aa2026, form.aa2027, form.aa2028, form.aaContinuing],
   );
 
-  const isReadOnly = isAdmin || (isEmployee && !canEncode) || (isEmployee && isEditMode && projectStatus !== "planning");
+  const isReadOnly =
+    isAdmin ||
+    (isEmployee && !canEncode) ||
+    (isEmployee && isEditMode && projectStatus !== "planning") ||
+    (isValidator && normalizedReviewStatus === "endorsed");
   const diffOf = (field: keyof SimplifiedForm) => diffMap[field as string];
 
   const setField = <K extends keyof SimplifiedForm>(key: K, value: SimplifiedForm[K]) => {
@@ -655,13 +681,45 @@ const SimplifiedProjectSubmission: React.FC = () => {
       };
 
       if (isValidator && id) {
-        await api.post(`validator/projects/${id}/validate/`, {
-          action: action === "save" ? "save_reviewed" : "validate",
+        const validatorAction =
+          action === "draft"
+            ? "save_draft"
+            : action === "reviewed"
+            ? "save_reviewed"
+            : action === "endorsed"
+            ? "endorse"
+            : "save_reviewed";
+        if (
+          validatorAction === "endorse" &&
+          normalizedReviewStatus !== "reviewed" &&
+          normalizedReviewStatus !== "endorsed"
+        ) {
+          const ok = window.confirm(
+            "This will endorse the project without a prior Reviewed state. Continue?",
+          );
+          if (!ok) {
+            setLoading(false);
+            return;
+          }
+        }
+        const response = await api.post(`validator/projects/${id}/validate/`, {
+          action: validatorAction,
           notes: validatorNotes,
           edited_profile_data: normalizedProfileData,
         });
         localStorage.setItem("projects_last_update", Date.now().toString());
-        alert(action === "save" ? "Saved as reviewed." : "Project validated.");
+        if (response?.warning) {
+          alert(response.warning);
+        }
+        const nextStatus = String(response?.review_status || "");
+        if (nextStatus) setValidatorReviewStatus(nextStatus);
+        alert(
+          action === "draft"
+            ? "Saved as draft."
+            : action === "reviewed"
+            ? "Saved as reviewed."
+            : "Project endorsed.",
+        );
         navigate("/validator/projects");
         return;
       }
@@ -730,9 +788,6 @@ const SimplifiedProjectSubmission: React.FC = () => {
       userName={user.username}
       topActions={
         <>
-          {isEmployee && (
-            <button type="button" onClick={() => navigate("/employee/projects/new")} className="portal-btn portal-btn-ghost">Back to Form Type</button>
-          )}
           <button type="button" onClick={() => navigate(isValidator ? "/validator/projects" : isAdmin ? "/admin/projects" : "/employee/projects")} className="portal-btn portal-btn-ghost">Back to Projects</button>
         </>
       }
@@ -756,6 +811,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
       {isValidator && (
         <div className="portal-card p-3 mb-3 border-indigo-200 bg-indigo-50 text-indigo-800 text-sm">
           You are editing a validator review copy. Contributor original form remains unchanged.
+        </div>
+      )}
+      {isValidator && normalizedReviewStatus === "endorsed" && (
+        <div className="portal-card p-3 mb-3 border-emerald-200 bg-emerald-50 text-emerald-800 text-sm">
+          This project is already endorsed and is now view-only.
         </div>
       )}
       {isAdmin && (
@@ -857,7 +917,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
               <TextField label="UACS Code (if GAA-funded)" value={form.uacsCode} onChange={(v) => setField("uacsCode", v)} diffBefore={diffOf("uacsCode")?.before} />
               <SelectField label="PIP Included" value={form.pipIncluded} onChange={(v) => setField("pipIncluded", v as YesNo)} options={yesNoOptions} required diffBefore={diffOf("pipIncluded")?.before} />
               <SelectField label="ARNIPAP Included" value={form.arnipapIncluded} onChange={(v) => setField("arnipapIncluded", v as YesNo)} options={yesNoOptions} required diffBefore={diffOf("arnipapIncluded")?.before} />
-              <SelectField label="LUDIP (for SUCs)" value={form.ludipIncluded} onChange={(v) => setField("ludipIncluded", v as YesNo)} options={yesNoOptions} required diffBefore={diffOf("ludipIncluded")?.before} />
+              <SelectField label="LUDIP (for SUCs)" value={form.ludipIncluded} onChange={(v) => setField("ludipIncluded", v as YesNo)} options={yesNoNaOptions} required diffBefore={diffOf("ludipIncluded")?.before} />
               <SelectField label="IFPs Included" value={form.ifpsIncluded} onChange={(v) => setField("ifpsIncluded", v as YesNo)} options={yesNoOptions} required diffBefore={diffOf("ifpsIncluded")?.before} />
               <SelectField
                 label="Part of the Convergence Program (PCB)"
@@ -921,12 +981,43 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
           {!isAdmin && (
             <div className="pt-4 border-t flex flex-wrap gap-3 justify-end">
-              <button type="button" onClick={(e) => save(e as unknown as React.FormEvent, "save")} className="portal-btn portal-btn-ghost" disabled={loading || isReadOnly}>
-                {loading ? "Saving..." : isValidator ? "Save as Reviewed" : "Save Draft"}
-              </button>
-              <button type="submit" className="portal-btn portal-btn-primary" disabled={loading || isReadOnly}>
-                {loading ? "Submitting..." : isValidator ? "Validated" : "Submit for Validation"}
-              </button>
+              {isValidator ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={(e) => save(e as unknown as React.FormEvent, "draft")}
+                    className="portal-btn portal-btn-ghost"
+                    disabled={loading || isReadOnly}
+                  >
+                    {loading ? "Saving..." : "Save as Draft"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => save(e as unknown as React.FormEvent, "reviewed")}
+                    className="portal-btn portal-btn-ghost"
+                    disabled={loading || isReadOnly}
+                  >
+                    {loading ? "Saving..." : "Save as Reviewed"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => save(e as unknown as React.FormEvent, "endorsed")}
+                    className="portal-btn portal-btn-primary"
+                    disabled={loading || isReadOnly}
+                  >
+                    {loading ? "Submitting..." : "Save as Endorsed"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="button" onClick={(e) => save(e as unknown as React.FormEvent, "save")} className="portal-btn portal-btn-ghost" disabled={loading || isReadOnly}>
+                    {loading ? "Saving..." : "Save Draft"}
+                  </button>
+                  <button type="submit" className="portal-btn portal-btn-primary" disabled={loading || isReadOnly}>
+                    {loading ? "Submitting..." : "Submit for Validation"}
+                  </button>
+                </>
+              )}
             </div>
           )}
         </fieldset>

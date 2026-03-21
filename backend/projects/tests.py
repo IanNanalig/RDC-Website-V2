@@ -47,7 +47,7 @@ class PortalWorkflowTests(APITestCase):
 
         approve_res = self.client.post(
             f"/api/validator/projects/{project_id}/validate/",
-            {"action": "approve"},
+            {"action": "endorse"},
             format="json",
         )
         self.assertEqual(approve_res.status_code, status.HTTP_200_OK)
@@ -189,7 +189,7 @@ class PortalWorkflowTests(APITestCase):
     def test_real_login_endpoint_works_for_db_users(self):
         res = self.client.post(
             "/api/auth/login/",
-            {"username": "employee_t", "password": "password"},
+            {"email": "employee_t@example.com", "password": "password"},
             format="json",
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)

@@ -46,16 +46,6 @@ const statusBadge = (status?: string) => {
   }
 };
 
-const getSubmissionType = (p: ApiProject): "simplified" | "detailed" => {
-  const pd = p.profile_data as Record<string, unknown> | undefined;
-  const st = String(pd?.submission_type || "").toLowerCase();
-  const template = String(pd?.templateName || "").toLowerCase();
-  if (st === "simplified" || template.includes("rdip")) return "simplified";
-  return "detailed";
-};
-
-const submissionTypeLabel = (p: ApiProject) => (getSubmissionType(p) === "simplified" ? "Simplified" : "Detailed");
-
 const getValidatorReview = (p: ApiProject) => {
   const pd = p.profile_data as Record<string, unknown> | undefined;
   const vr = pd?.validator_review;
@@ -66,8 +56,9 @@ const getValidatorReview = (p: ApiProject) => {
 const reviewStateLabel = (p: ApiProject) => {
   const vr = getValidatorReview(p);
   const status = String(vr?.review_status || "").toLowerCase();
+  if (status === "draft") return "Draft";
   if (status === "reviewed") return "Reviewed";
-  if (status === "validated") return "Validated";
+  if (status === "endorsed" || status === "validated") return "Endorsed";
   if (status === "rejected") return "Rejected";
   return "Not Reviewed";
 };
@@ -75,8 +66,9 @@ const reviewStateLabel = (p: ApiProject) => {
 const reviewStateBadge = (p: ApiProject) => {
   const vr = getValidatorReview(p);
   const status = String(vr?.review_status || "").toLowerCase();
+  if (status === "draft") return "bg-slate-100 text-slate-700";
   if (status === "reviewed") return "bg-violet-100 text-violet-700";
-  if (status === "validated") return "bg-emerald-100 text-emerald-700";
+  if (status === "endorsed" || status === "validated") return "bg-emerald-100 text-emerald-700";
   if (status === "rejected") return "bg-rose-100 text-rose-700";
   return "bg-slate-100 text-slate-700";
 };
@@ -129,8 +121,8 @@ const ValidatorReviewHistory: React.FC = () => {
 
   return (
     <PortalLayout
-      title="Reviewed & Validated"
-      subtitle="Projects you already reviewed or validated"
+      title="Reviewed & Endorsed"
+      subtitle="Projects you already reviewed or endorsed"
       role="validator"
       userName={user.username}
       topActions={<button onClick={loadProjects} className="portal-btn portal-btn-ghost">Refresh</button>}
@@ -150,7 +142,7 @@ const ValidatorReviewHistory: React.FC = () => {
         {loading ? (
           <div className="portal-card-body text-slate-500">Loading reviewed history...</div>
         ) : filtered.length === 0 ? (
-          <div className="portal-card-body text-slate-500">No reviewed/validated projects found yet.</div>
+          <div className="portal-card-body text-slate-500">No reviewed/endorsed projects found yet.</div>
         ) : (
           <table className="portal-table">
             <thead>
@@ -160,7 +152,6 @@ const ValidatorReviewHistory: React.FC = () => {
                 <th className="hidden lg:table-cell">Agency</th>
                 <th className="hidden xl:table-cell">Budget</th>
                 <th>Status</th>
-                <th className="hidden md:table-cell">Form Type</th>
                 <th>Review State</th>
                 <th className="hidden 2xl:table-cell">Updated</th>
                 <th>Actions</th>
@@ -178,11 +169,6 @@ const ValidatorReviewHistory: React.FC = () => {
                   <td>
                     <span className={`px-2 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${statusBadge(p.status)}`}>
                       {statusLabel(p.status)}
-                    </span>
-                  </td>
-                  <td className="hidden md:table-cell">
-                    <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getSubmissionType(p) === "simplified" ? "bg-emerald-100 text-emerald-700" : "bg-indigo-100 text-indigo-700"}`}>
-                      {submissionTypeLabel(p)}
                     </span>
                   </td>
                   <td>
@@ -210,4 +196,3 @@ const ValidatorReviewHistory: React.FC = () => {
 };
 
 export default ValidatorReviewHistory;
-

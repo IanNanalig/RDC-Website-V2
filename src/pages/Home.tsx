@@ -155,7 +155,6 @@ const Home: React.FC = () => {
       quickLinks: [
         { label: "RDIP DOCUMENTS", link: "/publications?category=rdip" },
         { label: "RDIP DASHBOARD", link: "/Projects" },
-        { label: "RDIP ONLINE SYSTEM", link: "/Login" },
       ],
     },
   ];

@@ -99,8 +99,14 @@ const Navbar: React.FC = () => {
             ))}
           </ul>
 
-          {/* Right side: only mobile toggle (login removed) */}
+          {/* Right side: login + mobile toggle */}
           <div className="flex items-center gap-3 ml-auto">
+            <Link
+              to="/login"
+              className="hidden lg:inline-flex items-center px-4 py-2 rounded-full bg-white text-green-700 font-semibold shadow-sm hover:bg-green-50 transition-colors"
+            >
+              Login
+            </Link>
             <button
               onClick={toggleMobileMenu}
               className="lg:hidden text-white hover:text-gray-200 focus:outline-none"
@@ -163,6 +169,15 @@ const Navbar: React.FC = () => {
                 </Link>
               </li>
             ))}
+            <li className="px-4 pt-2">
+              <Link
+                to="/login"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="block w-full text-center px-4 py-2 rounded-full bg-white text-green-700 font-semibold"
+              >
+                Login
+              </Link>
+            </li>
           </ul>
         </div>
       </nav>

@@ -375,6 +375,13 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
 
         action_value = (request.data.get("action") or "").lower()
         profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
+        existing_review = profile_data.get("validator_review")
+        if isinstance(existing_review, dict):
+            existing_status = str(existing_review.get("review_status") or "").lower()
+        else:
+            existing_status = ""
+        if existing_status in ("endorsed", "validated") and action_value not in ("endorse", "validate", "approve"):
+            return Response({"detail": "Endorsed reviews are final and cannot be reverted."}, status=400)
         contributor_snapshot = profile_data.get("contributor_snapshot")
         if not isinstance(contributor_snapshot, dict):
             contributor_snapshot = _strip_validator_meta(profile_data)
@@ -397,16 +404,23 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         reviewed_at = timezone.now().isoformat()
         update_fields = ["profile_data", "updated_at"]
 
-        if action_value in ("save_reviewed", "reviewed", "review", "save"):
+        warning = ""
+        if action_value in ("save_draft", "draft"):
+            review_state = "draft"
+            project.validated = False
+            event = "validator_draft"
+        elif action_value in ("save_reviewed", "reviewed", "review", "save"):
             review_state = "reviewed"
             project.validated = False
-            event = "project_update"
-        elif action_value in ("approve", "validate"):
-            review_state = "validated"
+            event = "validator_reviewed"
+        elif action_value in ("endorse", "approve", "validate"):
+            review_state = "endorsed"
             project.status = "completed"
             project.validated = True
             update_fields.extend(["status", "validated"])
-            event = "project_approve"
+            event = "validator_endorsed"
+            if existing_status not in ("reviewed", "endorsed", "validated"):
+                warning = "Endorsed without a prior reviewed state."
         elif action_value == "reject":
             review_state = "rejected"
             project.status = "planning"
@@ -414,7 +428,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             update_fields.extend(["status", "validated"])
             event = "project_reject"
         else:
-            return Response({"detail": "action must be save_reviewed/validate/reject"}, status=400)
+            return Response({"detail": "action must be save_draft/save_reviewed/endorse/reject"}, status=400)
 
         profile_data["validator_review"] = {
             "review_status": review_state,
@@ -429,17 +443,15 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         }
         project.profile_data = profile_data
         project.save(update_fields=list(dict.fromkeys(update_fields)))
-        _log_activity(
-            request,
-            event,
-            project,
-            {
-                "status": project.status,
-                "review_status": review_state,
-                "edited": len(edited_fields) > 0,
-                "edited_fields_count": len(edited_fields),
-            },
-        )
+        details = {
+            "status": project.status,
+            "review_status": review_state,
+            "edited": len(edited_fields) > 0,
+            "edited_fields_count": len(edited_fields),
+        }
+        if warning:
+            details["warning"] = warning
+        _log_activity(request, event, project, details)
         return Response(
             {
                 "status": project.status,
@@ -447,6 +459,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 "edited": len(edited_fields) > 0,
                 "edited_fields_count": len(edited_fields),
                 "reviewed_at": reviewed_at,
+                "warning": warning,
             }
         )
 
@@ -528,6 +541,13 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
         user = self.request.user
         all_projects = Project.objects.all().order_by("-created_at")
         scope = (self.request.query_params.get("scope") or "").strip().lower()
+        def review_status_for(project):
+            pd = project.profile_data if isinstance(project.profile_data, dict) else {}
+            vr = pd.get("validator_review")
+            if not isinstance(vr, dict):
+                return ""
+            status = str(vr.get("review_status") or "").lower()
+            return "endorsed" if status == "validated" else status
 
         def reviewed_by_validator(project):
             pd = project.profile_data if isinstance(project.profile_data, dict) else {}
@@ -538,14 +558,27 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
                 reviewed_by_id = int(vr.get("reviewed_by_id"))
             except (TypeError, ValueError):
                 return False
-            review_status = str(vr.get("review_status") or "").lower()
-            return reviewed_by_id == user.id and review_status in ("reviewed", "validated", "rejected")
+            review_status = review_status_for(project)
+            return reviewed_by_id == user.id and review_status in ("draft", "reviewed", "endorsed", "rejected")
 
         if self.action == "list":
             if scope == "history":
-                ids = [p.id for p in all_projects if reviewed_by_validator(p)]
+                ids = [
+                    p.id
+                    for p in all_projects
+                    if reviewed_by_validator(p)
+                    and review_status_for(p) in ("reviewed", "endorsed", "rejected")
+                ]
                 return Project.objects.filter(id__in=ids).order_by("-updated_at")
-            return Project.objects.filter(status="proposed").order_by("-created_at")
+            draft_review_ids = [
+                p.id
+                for p in all_projects
+                if reviewed_by_validator(p)
+                and review_status_for(p) in ("draft", "reviewed")
+            ]
+            return Project.objects.filter(
+                Q(status="proposed") | Q(id__in=draft_review_ids)
+            ).order_by("-created_at")
 
         allowed_ids = [p.id for p in all_projects if p.status == "proposed" or reviewed_by_validator(p)]
         return Project.objects.filter(id__in=allowed_ids).order_by("-created_at")

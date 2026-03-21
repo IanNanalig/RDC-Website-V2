@@ -100,6 +100,9 @@ const UserManagement = () => {
     project_approve: "Project Approved",
     project_reject: "Project Rejected",
     project_archive: "Project Archived",
+    validator_draft: "Validator Draft Saved",
+    validator_reviewed: "Validator Reviewed",
+    validator_endorsed: "Validator Endorsed",
   };
 
   const eventSeverity: Record<string, "info" | "warn" | "error"> = {
@@ -114,6 +117,9 @@ const UserManagement = () => {
     project_approve: "info",
     project_reject: "warn",
     project_archive: "warn",
+    validator_draft: "info",
+    validator_reviewed: "info",
+    validator_endorsed: "info",
   };
 
   const severityClass = (event: string) => {
@@ -121,6 +127,110 @@ const UserManagement = () => {
     if (level === "error") return "bg-rose-100 text-rose-700";
     if (level === "warn") return "bg-amber-100 text-amber-700";
     return "bg-emerald-100 text-emerald-700";
+  };
+
+  const detailLabelOverrides: Record<string, string> = {
+    email: "Email",
+    role: "Role",
+    status: "Status",
+    review_status: "Review Status",
+    edited_fields_count: "Edited Fields",
+    warning: "Warning",
+    action: "Action",
+    project_id: "Project ID",
+    project_title: "Project",
+    reviewed_by: "Reviewed By",
+    reviewed_at: "Reviewed At",
+    requested_ip: "Requested IP",
+    ip: "IP",
+    user_agent: "User Agent",
+    method: "Method",
+  };
+
+  const formatDetailLabel = (key: string) => {
+    const override = detailLabelOverrides[key];
+    if (override) return override;
+    return key
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (m) => m.toUpperCase());
+  };
+
+  const formatDetailValue = (value: unknown) => {
+    if (value === null || value === undefined || value === "") return "-";
+    if (Array.isArray(value)) return value.join(", ");
+    if (typeof value === "object") return JSON.stringify(value);
+    return String(value);
+  };
+
+  const formatReviewStatus = (value: unknown) => {
+    const status = String(value || "").toLowerCase();
+    if (status === "draft") return "Draft";
+    if (status === "reviewed") return "Reviewed";
+    if (status === "endorsed" || status === "validated") return "Endorsed";
+    if (status === "rejected") return "Rejected";
+    return status ? status : "-";
+  };
+
+  const formatProjectStatus = (value: unknown) => {
+    const status = String(value || "").toLowerCase();
+    if (status === "planning") return "Draft";
+    if (status === "proposed") return "Submitted";
+    if (status === "completed") return "Endorsed";
+    if (status === "ongoing") return "Ongoing";
+    if (status === "rejected") return "Rejected";
+    return status ? status : "-";
+  };
+
+  const buildDetailEntries = (item: ActivityItem): Array<[string, string]> => {
+    const details = item.details || {};
+    const entries: Array<[string, string]> = [];
+    const used = new Set<string>();
+
+    const push = (key: string, label: string, value: string) => {
+      if (!value || value === "-") return;
+      entries.push([label, value]);
+      used.add(key);
+    };
+
+    if (item.event.startsWith("validator_")) {
+      if ("review_status" in details) {
+        push("review_status", "Review Status", formatReviewStatus(details.review_status));
+      }
+      if ("edited_fields_count" in details) {
+        push("edited_fields_count", "Edited Fields", String(details.edited_fields_count ?? 0));
+      } else if ("edited" in details) {
+        push("edited", "Edited", String(details.edited ? "Yes" : "No"));
+      }
+      if ("warning" in details) {
+        push("warning", "Warning", String(details.warning));
+      }
+    } else {
+      if ("status" in details) {
+        push("status", "Status", formatProjectStatus(details.status));
+      }
+      if ("review_status" in details) {
+        push("review_status", "Review Status", formatReviewStatus(details.review_status));
+      }
+      if ("role" in details) {
+        push("role", "Role", labelRole(String(details.role)));
+      }
+    }
+
+    Object.entries(details)
+      .filter(([key, value]) => !used.has(key) && value !== undefined && value !== null && value !== "")
+      .forEach(([key, value]) => {
+        if (entries.length >= 3) return;
+        const label = formatDetailLabel(key);
+        const formatted =
+          key === "status"
+            ? formatProjectStatus(value)
+            : key === "review_status"
+            ? formatReviewStatus(value)
+            : formatDetailValue(value);
+        push(key, label, formatted);
+      });
+
+    return entries.slice(0, 3);
   };
 
   const showToast = (message: string, type: "info" | "success" | "warn" | "error" = "info") => {
@@ -555,9 +665,18 @@ const UserManagement = () => {
                         {[item.ip_address, item.location_hint].filter(Boolean).join(" | ") || "-"}
                       </td>
                       <td className="hidden xl:table-cell text-xs text-slate-500">
-                        {item.details && Object.keys(item.details).length > 0
-                          ? JSON.stringify(item.details)
-                          : "-"}
+                        {item.details && Object.keys(item.details).length > 0 ? (
+                          <div className="space-y-1">
+                            {buildDetailEntries(item).map(([label, value]) => (
+                              <div key={`${item.id}-${label}`}>
+                                <span className="text-slate-500">{label}:</span>{" "}
+                                <span className="text-slate-700">{value}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          "-"
+                        )}
                       </td>
                       <td>{new Date(item.created_at).toLocaleString()}</td>
                     </tr>

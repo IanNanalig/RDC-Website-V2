@@ -17,15 +17,7 @@ type ApiProject = {
   profile_data?: Record<string, unknown>;
 };
 
-type ReviewState = "all" | "reviewed" | "validated" | "rejected" | "not_reviewed";
-
-const getSubmissionType = (p: ApiProject): "simplified" | "detailed" => {
-  const pd = p.profile_data as Record<string, unknown> | undefined;
-  const st = String(pd?.submission_type || "").toLowerCase();
-  const template = String(pd?.templateName || "").toLowerCase();
-  if (st === "simplified" || template.includes("rdip")) return "simplified";
-  return "detailed";
-};
+type ReviewState = "all" | "draft" | "reviewed" | "endorsed" | "rejected" | "not_reviewed";
 
 const getValidatorReview = (p: ApiProject): Record<string, unknown> | null => {
   const pd = p.profile_data as Record<string, unknown> | undefined;
@@ -37,16 +29,18 @@ const getValidatorReview = (p: ApiProject): Record<string, unknown> | null => {
 const stateLabel = (value: string) => {
   const normalized = String(value || "").toLowerCase();
   if (!normalized) return "Not Reviewed";
+  if (normalized === "draft") return "Draft";
   if (normalized === "reviewed") return "Reviewed";
-  if (normalized === "validated") return "Validated";
+  if (normalized === "endorsed" || normalized === "validated") return "Endorsed";
   if (normalized === "rejected") return "Rejected";
   return normalized;
 };
 
 const stateBadge = (value: string) => {
   const normalized = String(value || "").toLowerCase();
+  if (normalized === "draft") return "bg-slate-100 text-slate-700";
   if (normalized === "reviewed") return "bg-violet-100 text-violet-700";
-  if (normalized === "validated") return "bg-emerald-100 text-emerald-700";
+  if (normalized === "endorsed" || normalized === "validated") return "bg-emerald-100 text-emerald-700";
   if (normalized === "rejected") return "bg-rose-100 text-rose-700";
   return "bg-slate-100 text-slate-700";
 };
@@ -84,7 +78,8 @@ const AdminValidatorDiffs: React.FC = () => {
     if (reviewState !== "all") {
       list = list.filter((p) => {
         const vr = getValidatorReview(p);
-        const status = String(vr?.review_status || "").toLowerCase();
+        let status = String(vr?.review_status || "").toLowerCase();
+        if (status === "validated") status = "endorsed";
         if (reviewState === "not_reviewed") return !status;
         return status === reviewState;
       });
@@ -133,8 +128,9 @@ const AdminValidatorDiffs: React.FC = () => {
             className="border border-slate-200 rounded-xl px-3 py-2"
           >
             <option value="all">All states</option>
+            <option value="draft">Draft</option>
             <option value="reviewed">Reviewed</option>
-            <option value="validated">Validated</option>
+            <option value="endorsed">Endorsed</option>
             <option value="rejected">Rejected</option>
             <option value="not_reviewed">Not Reviewed</option>
           </select>
@@ -156,7 +152,6 @@ const AdminValidatorDiffs: React.FC = () => {
               <tr>
                 <th>Title</th>
                 <th className="hidden md:table-cell">Contributor</th>
-                <th className="hidden lg:table-cell">Form Type</th>
                 <th>Review State</th>
                 <th className="hidden lg:table-cell">Edited Fields</th>
                 <th className="hidden xl:table-cell">Validator</th>
@@ -175,11 +170,6 @@ const AdminValidatorDiffs: React.FC = () => {
                       {p.title || p.name || "Untitled"}
                     </td>
                     <td className="hidden md:table-cell">{p.submitted_by_name || p.submitted_by?.username || "-"}</td>
-                    <td className="hidden lg:table-cell">
-                      <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getSubmissionType(p) === "simplified" ? "bg-emerald-100 text-emerald-700" : "bg-indigo-100 text-indigo-700"}`}>
-                        {getSubmissionType(p) === "simplified" ? "Simplified" : "Detailed"}
-                      </span>
-                    </td>
                     <td>
                       <span className={`px-2 py-1 rounded-full text-xs font-semibold ${stateBadge(reviewStatus)}`}>
                         {stateLabel(reviewStatus)}
@@ -192,13 +182,7 @@ const AdminValidatorDiffs: React.FC = () => {
                     </td>
                     <td>
                       <button
-                        onClick={() =>
-                          navigate(
-                            getSubmissionType(p) === "simplified"
-                              ? `/admin/projects/${p.id}/view/simplified?mode=diff`
-                              : `/admin/projects/${p.id}/view/detailed?mode=diff`,
-                          )
-                        }
+                        onClick={() => navigate(`/admin/projects/${p.id}/view?mode=diff`)}
                         className="text-blue-600 hover:underline whitespace-nowrap"
                       >
                         View Diffs

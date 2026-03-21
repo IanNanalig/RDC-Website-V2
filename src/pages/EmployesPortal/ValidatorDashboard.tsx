@@ -55,7 +55,7 @@ const ValidatorDashboard: React.FC = () => {
   ];
   const queueMix = [
     { label: "Pending", count: stats.pending_projects || 0 },
-    { label: "Validated", count: stats.total_validated || 0 },
+    { label: "Endorsed", count: stats.total_validated || 0 },
   ];
 
   return (
@@ -76,11 +76,11 @@ const ValidatorDashboard: React.FC = () => {
           <p className="portal-stat-value text-blue-600">{loading ? "..." : stats.pending_projects || 0}</p>
         </div>
         <div className="portal-stat">
-          <p className="portal-stat-title">Validated Today</p>
+          <p className="portal-stat-title">Endorsed Today</p>
           <p className="portal-stat-value text-emerald-600">{loading ? "..." : stats.validated_today || 0}</p>
         </div>
         <div className="portal-stat">
-          <p className="portal-stat-title">Total Validated</p>
+          <p className="portal-stat-title">Total Endorsed</p>
           <p className="portal-stat-value">{loading ? "..." : stats.total_validated || 0}</p>
         </div>
       </div>
@@ -137,8 +137,8 @@ const ValidatorDashboard: React.FC = () => {
               <p className="text-sm text-slate-500 mt-1">Review full template forms and issue approve/reject actions.</p>
             </Link>
             <Link to="/validator/projects/history" className="portal-card p-4 hover:shadow-md transition-shadow">
-              <p className="font-semibold">Reviewed & Validated History</p>
-              <p className="text-sm text-slate-500 mt-1">See projects you already reviewed/validated and open them again.</p>
+              <p className="font-semibold">Reviewed & Endorsed History</p>
+              <p className="text-sm text-slate-500 mt-1">See projects you already reviewed/endorsed and open them again.</p>
             </Link>
           </div>
         </div>

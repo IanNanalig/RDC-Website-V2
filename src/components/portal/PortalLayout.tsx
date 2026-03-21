@@ -36,7 +36,7 @@ const navByRole: Record<Role, NavItem[]> = {
   validator: [
     { label: "Dashboard", to: "/validator/dashboard" },
     { label: "Review Queue", to: "/validator/projects" },
-    { label: "Reviewed & Validated", to: "/validator/projects/history" },
+    { label: "Reviewed & Endorsed", to: "/validator/projects/history" },
   ],
   employee: [
     { label: "Dashboard", to: "/employee/dashboard" },

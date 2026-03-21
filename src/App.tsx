@@ -31,9 +31,7 @@ import AdminDashboard from "./pages/EmployesPortal/AdminDashboard";
 import ValidatorDashboard from "./pages/EmployesPortal/ValidatorDashboard";
 import ValidatorReviewHistory from "./pages/EmployesPortal/ValidatorReviewHistory";
 import ProjectsPage from "./pages/EmployesPortal/ProjectsPage";
-import ProjectSubmission from "./pages/EmployesPortal/ProjectSubmission";
 import SimplifiedProjectSubmission from "./pages/EmployesPortal/SimplifiedProjectSubmission";
-import SubmissionTypeChooser from "./pages/EmployesPortal/SubmissionTypeChooser";
 import ProjectReview from "./pages/EmployesPortal/ProjectReview";
 import AdminProjects from "./pages/EmployesPortal/AdminProjects";
 import AdminValidatorDiffs from "./pages/EmployesPortal/AdminValidatorDiffs";
@@ -229,7 +227,7 @@ const ValidatorDashboardPage = () => (
 );
 
 const ValidatorReviewHistoryPage = () => (
-  <PortalPageWrapper pageTitle="Reviewed & Validated">
+  <PortalPageWrapper pageTitle="Reviewed & Endorsed">
     <ValidatorReviewHistory />
   </PortalPageWrapper>
 );
@@ -240,21 +238,9 @@ const ProjectsPageComponent = () => (
   </PortalPageWrapper>
 );
 
-const ProjectSubmissionPage = () => (
-  <PortalPageWrapper pageTitle="Project Submission">
-    <ProjectSubmission />
-  </PortalPageWrapper>
-);
-
 const SimplifiedProjectSubmissionPage = () => (
   <PortalPageWrapper pageTitle="Simplified Project Submission">
     <SimplifiedProjectSubmission />
-  </PortalPageWrapper>
-);
-
-const SubmissionTypeChooserPage = () => (
-  <PortalPageWrapper pageTitle="Choose Submission Type">
-    <SubmissionTypeChooser />
   </PortalPageWrapper>
 );
 
@@ -327,15 +313,7 @@ export default function App() {
           path="/employee/projects/new"
           element={
             <ProtectedRoute roles={["employee"]}>
-              <SubmissionTypeChooserPage />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/employee/projects/new/detailed"
-          element={
-            <ProtectedRoute roles={["employee"]}>
-              <ProjectSubmissionPage />
+              <SimplifiedProjectSubmissionPage />
             </ProtectedRoute>
           }
         />
@@ -351,15 +329,7 @@ export default function App() {
           path="/employee/projects/:id/edit"
           element={
             <ProtectedRoute roles={["employee"]}>
-              <ProjectSubmissionPage />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/employee/projects/:id/edit/detailed"
-          element={
-            <ProtectedRoute roles={["employee"]}>
-              <ProjectSubmissionPage />
+              <SimplifiedProjectSubmissionPage />
             </ProtectedRoute>
           }
         />
@@ -409,15 +379,7 @@ export default function App() {
           path="/validator/projects/:id/review"
           element={
             <ProtectedRoute roles={["validator"]}>
-              <ProjectReviewPage />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/validator/projects/:id/review/detailed"
-          element={
-            <ProtectedRoute roles={["validator"]}>
-              <ProjectSubmissionPage />
+              <SimplifiedProjectSubmissionPage />
             </ProtectedRoute>
           }
         />
@@ -464,10 +426,10 @@ export default function App() {
           }
         />
         <Route
-          path="/admin/projects/:id/view/detailed"
+          path="/admin/projects/:id/view"
           element={
             <ProtectedRoute roles={["admin"]}>
-              <ProjectSubmissionPage />
+              <SimplifiedProjectSubmissionPage />
             </ProtectedRoute>
           }
         />

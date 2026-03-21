@@ -151,6 +151,9 @@ class UserActivity(models.Model):
         ("project_approve", "Project Approve"),
         ("project_reject", "Project Reject"),
         ("project_archive", "Project Archive"),
+        ("validator_draft", "Validator Draft"),
+        ("validator_reviewed", "Validator Reviewed"),
+        ("validator_endorsed", "Validator Endorsed"),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="activities")

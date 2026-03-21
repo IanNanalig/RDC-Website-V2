@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../../services/api";
-import ProjectProfileReadOnly from "./ProjectProfileReadOnly";
 import PortalLayout from "../../components/portal/PortalLayout";
 import PrintAppendix from "./PrintAppendix";
 
@@ -22,19 +21,21 @@ type ApiProject = {
   };
 };
 
-const getSubmissionType = (project: ApiProject | null): "simplified" | "detailed" => {
-  if (!project?.profile_data) return "detailed";
-  const st = String(project.profile_data.submission_type || "").toLowerCase();
-  const template = String(project.profile_data.templateName || "").toLowerCase();
-  if (st === "simplified" || template.includes("rdip")) return "simplified";
-  return "detailed";
-};
-
 const getValidatorReview = (project: ApiProject | null): Record<string, any> | null => {
   if (!project?.profile_data) return null;
   const vr = project.profile_data.validator_review;
   if (!vr || typeof vr !== "object") return null;
   return vr as Record<string, any>;
+};
+
+const formatReviewStatus = (raw: string) => {
+  const normalized = String(raw || "").toLowerCase();
+  if (!normalized) return "Not Reviewed";
+  if (normalized === "draft") return "Draft";
+  if (normalized === "reviewed") return "Reviewed";
+  if (normalized === "endorsed" || normalized === "validated") return "Endorsed";
+  if (normalized === "rejected") return "Rejected";
+  return normalized.replaceAll("_", " ");
 };
 
 const ProjectReview: React.FC = () => {
@@ -98,7 +99,6 @@ const ProjectReview: React.FC = () => {
     return <div className="p-8 text-red-600">Project not found.</div>;
   }
 
-  const submissionType = getSubmissionType(project);
   const simplified = project.profile_data?.simplified_form as Record<string, any> | undefined;
   const validatorReview = getValidatorReview(project);
 
@@ -139,7 +139,7 @@ const ProjectReview: React.FC = () => {
           </div>
           <div>
             <p className="text-xs text-gray-500">Form Type</p>
-            <p>{submissionType === "simplified" ? "Simplified (RDIP)" : "Detailed (Template 2025v1)"}</p>
+            <p>Simplified (RDIP)</p>
           </div>
           {(isAdmin || isValidator) && (
             <div className="md:col-span-2">
@@ -154,7 +154,7 @@ const ProjectReview: React.FC = () => {
             <p>
               State:{" "}
               <span className="font-medium">
-                {String(validatorReview?.review_status || "not reviewed").replaceAll("_", " ")}
+                {formatReviewStatus(String(validatorReview?.review_status || ""))}
               </span>
             </p>
             <p>Edited by validator: {validatorReview?.edited ? "Yes" : "No"}</p>
@@ -168,51 +168,55 @@ const ProjectReview: React.FC = () => {
         )}
         <div className="border-t pt-4">
           <h3 className="font-semibold mb-3">Complete Submitted Profile</h3>
-          {submissionType === "simplified" ? (
-            <div className="space-y-3 text-sm">
-              <div className="grid md:grid-cols-2 gap-3">
-                <div className="border rounded p-3"><p className="text-xs text-slate-500">Responsible Agency/LGU</p><p>{simplified?.agencyName || project.agency || "-"}</p></div>
-                <div className="border rounded p-3"><p className="text-xs text-slate-500">Program</p><p>{simplified?.program || "-"}</p></div>
-                <div className="border rounded p-3"><p className="text-xs text-slate-500">Project/Activity</p><p>{simplified?.projectActivity || project.title || "-"}</p></div>
-                <div className="border rounded p-3"><p className="text-xs text-slate-500">Location</p><p>{simplified?.location || "-"}</p></div>
-                <div className="border rounded p-3"><p className="text-xs text-slate-500">Implementation Period</p><p>{simplified?.startYear || "-"} to {simplified?.endYear || "-"}</p></div>
-                <div className="border rounded p-3"><p className="text-xs text-slate-500">Funding Source</p><p>{simplified?.fundingSource || "-"}</p></div>
-                <div className="border rounded p-3"><p className="text-xs text-slate-500">UACS Code</p><p>{simplified?.uacsCode || "-"}</p></div>
-                <div className="border rounded p-3"><p className="text-xs text-slate-500">Status</p><p>{simplified?.status || "-"}</p></div>
-                <div className="border rounded p-3"><p className="text-xs text-slate-500">RDC-NCR Development Sector</p><p>{simplified?.developmentSector || "-"}</p></div>
-                <div className="border rounded p-3"><p className="text-xs text-slate-500">RDP-NCR Main Chapter</p><p>{simplified?.rdpMainChapter || "-"}</p></div>
+          <div className="space-y-3 text-sm">
+            {!simplified ? (
+              <div className="border rounded p-3 text-slate-600">
+                No simplified form data found for this project.
               </div>
-              <div className="grid md:grid-cols-2 gap-3">
-                <div className="border rounded p-3">
-                  <p className="font-medium mb-2">Funding Requirement</p>
-                  <p>2022 & Prior: {simplified?.fr2022Prior || "0"} | 2023: {simplified?.fr2023 || "0"} | 2024: {simplified?.fr2024 || "0"}</p>
-                  <p>2025: {simplified?.fr2025 || "0"} | 2026: {simplified?.fr2026 || "0"} | 2027: {simplified?.fr2027 || "0"}</p>
-                  <p>2028: {simplified?.fr2028 || "0"} | Continuing: {simplified?.frContinuing || "0"}</p>
-                  <p className="mt-1">Total: {Number(simplified?.fundingRequirementTotal || 0).toLocaleString()}</p>
+            ) : (
+              <>
+                <div className="grid md:grid-cols-2 gap-3">
+                  <div className="border rounded p-3"><p className="text-xs text-slate-500">Responsible Agency/LGU</p><p>{simplified?.agencyName || project.agency || "-"}</p></div>
+                  <div className="border rounded p-3"><p className="text-xs text-slate-500">Program</p><p>{simplified?.program || "-"}</p></div>
+                  <div className="border rounded p-3"><p className="text-xs text-slate-500">Project/Activity</p><p>{simplified?.projectActivity || project.title || "-"}</p></div>
+                  <div className="border rounded p-3"><p className="text-xs text-slate-500">Location</p><p>{simplified?.location || "-"}</p></div>
+                  <div className="border rounded p-3"><p className="text-xs text-slate-500">Implementation Period</p><p>{simplified?.startYear || "-"} to {simplified?.endYear || "-"}</p></div>
+                  <div className="border rounded p-3"><p className="text-xs text-slate-500">Funding Source</p><p>{simplified?.fundingSource || "-"}</p></div>
+                  <div className="border rounded p-3"><p className="text-xs text-slate-500">UACS Code</p><p>{simplified?.uacsCode || "-"}</p></div>
+                  <div className="border rounded p-3"><p className="text-xs text-slate-500">Status</p><p>{simplified?.status || "-"}</p></div>
+                  <div className="border rounded p-3"><p className="text-xs text-slate-500">RDC-NCR Development Sector</p><p>{simplified?.developmentSector || "-"}</p></div>
+                  <div className="border rounded p-3"><p className="text-xs text-slate-500">RDP-NCR Main Chapter</p><p>{simplified?.rdpMainChapter || "-"}</p></div>
+                </div>
+                <div className="grid md:grid-cols-2 gap-3">
+                  <div className="border rounded p-3">
+                    <p className="font-medium mb-2">Funding Requirement</p>
+                    <p>2022 & Prior: {simplified?.fr2022Prior || "0"} | 2023: {simplified?.fr2023 || "0"} | 2024: {simplified?.fr2024 || "0"}</p>
+                    <p>2025: {simplified?.fr2025 || "0"} | 2026: {simplified?.fr2026 || "0"} | 2027: {simplified?.fr2027 || "0"}</p>
+                    <p>2028: {simplified?.fr2028 || "0"} | Continuing: {simplified?.frContinuing || "0"}</p>
+                    <p className="mt-1">Total: {Number(simplified?.fundingRequirementTotal || 0).toLocaleString()}</p>
+                  </div>
+                  <div className="border rounded p-3">
+                    <p className="font-medium mb-2">Actual/Approved Funding</p>
+                    <p>2022 & Prior: {simplified?.aa2022Prior || "0"} | 2023: {simplified?.aa2023 || "0"} | 2024: {simplified?.aa2024 || "0"}</p>
+                    <p>2025: {simplified?.aa2025 || "0"} | 2026: {simplified?.aa2026 || "0"} | 2027: {simplified?.aa2027 || "0"}</p>
+                    <p>2028: {simplified?.aa2028 || "0"} | Continuing: {simplified?.aaContinuing || "0"}</p>
+                    <p className="mt-1">Total: {Number(simplified?.actualApprovedTotal || 0).toLocaleString()}</p>
+                  </div>
                 </div>
                 <div className="border rounded p-3">
-                  <p className="font-medium mb-2">Actual/Approved Funding</p>
-                  <p>2022 & Prior: {simplified?.aa2022Prior || "0"} | 2023: {simplified?.aa2023 || "0"} | 2024: {simplified?.aa2024 || "0"}</p>
-                  <p>2025: {simplified?.aa2025 || "0"} | 2026: {simplified?.aa2026 || "0"} | 2027: {simplified?.aa2027 || "0"}</p>
-                  <p>2028: {simplified?.aa2028 || "0"} | Continuing: {simplified?.aaContinuing || "0"}</p>
-                  <p className="mt-1">Total: {Number(simplified?.actualApprovedTotal || 0).toLocaleString()}</p>
+                  <p className="font-medium mb-1">Flags</p>
+                  <p>RDC Endorsed: {simplified?.rdcEndorsed || "-"}</p>
+                  <p>PIP Included: {simplified?.pipIncluded || "-"}</p>
+                  <p>ARNIPAP Included: {simplified?.arnipapIncluded || "-"}</p>
+                  <p>IFPs Included: {simplified?.ifpsIncluded || "-"}</p>
                 </div>
-              </div>
-              <div className="border rounded p-3">
-                <p className="font-medium mb-1">Flags</p>
-                <p>RDC Endorsed: {simplified?.rdcEndorsed || "-"}</p>
-                <p>PIP Included: {simplified?.pipIncluded || "-"}</p>
-                <p>ARNIPAP Included: {simplified?.arnipapIncluded || "-"}</p>
-                <p>IFPs Included: {simplified?.ifpsIncluded || "-"}</p>
-              </div>
-              <div className="border rounded p-3">
-                <p className="font-medium mb-1">Remarks</p>
-                <p>{simplified?.remarks || "-"}</p>
-              </div>
-            </div>
-          ) : (
-            <ProjectProfileReadOnly profileData={project.profile_data} />
-          )}
+                <div className="border rounded p-3">
+                  <p className="font-medium mb-1">Remarks</p>
+                  <p>{simplified?.remarks || "-"}</p>
+                </div>
+              </>
+            )}
+          </div>
           {(isAdmin || isValidator) && Array.isArray(validatorReview?.edited_fields) && validatorReview.edited_fields.length > 0 && (
             <div className="mt-4 border rounded p-3">
               <p className="font-semibold mb-2">Edited Fields by Validator</p>
@@ -246,13 +250,7 @@ const ProjectReview: React.FC = () => {
           </label>
           {isValidator && (
             <button
-              onClick={() =>
-                navigate(
-                  submissionType === "simplified"
-                    ? `/validator/projects/${project.id}/review/simplified`
-                    : `/validator/projects/${project.id}/review/detailed`,
-                )
-              }
+              onClick={() => navigate(`/validator/projects/${project.id}/review`)}
               className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
             >
               Open Editable Review Form
