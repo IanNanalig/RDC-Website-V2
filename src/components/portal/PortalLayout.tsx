@@ -30,7 +30,7 @@ const navByRole: Record<Role, NavItem[]> = {
   admin: [
     { label: "Dashboard", to: "/admin/dashboard" },
     { label: "Projects", to: "/admin/projects" },
-    { label: "Validator Diffs", to: "/admin/validator-diffs" },
+    { label: "Validator Tracker", to: "/admin/validator-diffs" },
     { label: "Users & Access", to: "/admin/users" },
   ],
   validator: [

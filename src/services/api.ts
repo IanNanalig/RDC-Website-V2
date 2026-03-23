@@ -34,6 +34,8 @@ function isPublicRequest(path: string, method: string) {
   const m = method.toUpperCase();
   return (
     path === "analytics/" ||
+    (path === "contact/" && m === "POST") ||
+    path.startsWith("public-chat/") ||
     path === "token/refresh/" ||
     (path === "access-requests/" && m === "POST") ||
     (path === "password-reset-requests/" && m === "POST") ||

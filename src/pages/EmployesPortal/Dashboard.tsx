@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
-import { Area, AreaChart, Bar, BarChart, CartesianGrid, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 interface DashboardStats {
   my_projects?: number;
@@ -47,14 +47,6 @@ const Dashboard: React.FC = () => {
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
 
-  const trendData = [
-    { month: "Jan", value: Math.max(0, (stats.my_projects || 0) - 4) },
-    { month: "Feb", value: Math.max(0, (stats.my_projects || 0) - 3) },
-    { month: "Mar", value: Math.max(0, (stats.my_projects || 0) - 2) },
-    { month: "Apr", value: Math.max(0, (stats.my_projects || 0) - 1) },
-    { month: "May", value: stats.my_projects || 0 },
-    { month: "Jun", value: (stats.my_projects || 0) + 1 },
-  ];
   const funnelData = [
     { name: "Draft", value: stats.draft_projects || 0 },
     { name: "Submitted", value: stats.submitted_projects || 0 },
@@ -92,46 +84,8 @@ const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4 mb-4">
-        <div className="portal-card lg:col-span-2 2xl:col-span-2">
-          <div className="portal-card-header">
-            <h2 className="text-lg font-semibold">Submission Trend</h2>
-          </div>
-          <div className="portal-card-body h-[210px] md:h-[230px] 2xl:h-[240px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={trendData}>
-                <defs>
-                  <linearGradient id="contribTrend" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#2563eb" stopOpacity={0.5} />
-                    <stop offset="95%" stopColor="#0ea5e9" stopOpacity={0.06} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#d9e2f5" />
-                <XAxis dataKey="month" />
-                <YAxis allowDecimals={false} />
-                <Tooltip />
-                <Area type="monotone" dataKey="value" stroke="#1d4ed8" fill="url(#contribTrend)" strokeWidth={2.2} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+      <div className="grid grid-cols-1 gap-4">
         <div className="portal-card">
-          <div className="portal-card-header">
-            <h2 className="text-lg font-semibold">Pipeline Mix</h2>
-          </div>
-          <div className="portal-card-body h-[210px] md:h-[230px] 2xl:h-[240px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={funnelData} dataKey="value" nameKey="name" outerRadius={85} innerRadius={45} fill="#1d4ed8" />
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4">
-        <div className="portal-card lg:col-span-2 2xl:col-span-2">
           <div className="portal-card-header">
             <h2 className="text-lg font-semibold">Workflow Shortcuts</h2>
           </div>
@@ -150,18 +104,6 @@ const Dashboard: React.FC = () => {
             </Link>
           </div>
         </div>
-
-        <div className="portal-card">
-          <div className="portal-card-header">
-            <h2 className="text-lg font-semibold">Status Guide</h2>
-          </div>
-          <div className="portal-card-body text-sm text-slate-600 space-y-2">
-            <p><span className="font-semibold text-amber-700">Draft:</span> editable while encoding window is open.</p>
-            <p><span className="font-semibold text-blue-700">Submitted:</span> queued for validator review.</p>
-            <p><span className="font-semibold text-emerald-700">Approved:</span> accepted and visible for reporting.</p>
-            <p><span className="font-semibold text-slate-700">Reminder:</span> submitted projects are view-only.</p>
-          </div>
-        </div>
       </div>
 
       <div className="portal-card mt-4">
@@ -170,12 +112,21 @@ const Dashboard: React.FC = () => {
         </div>
         <div className="portal-card-body h-[190px] md:h-[210px]">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={funnelData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e6edfb" />
-              <XAxis dataKey="name" />
-              <YAxis allowDecimals={false} />
-              <Tooltip />
-              <Bar dataKey="value" fill="#0ea5e9" radius={[8, 8, 0, 0]} />
+            <BarChart data={funnelData} barCategoryGap={18}>
+              <defs>
+                <linearGradient id="contribBreakdown" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#2563eb" stopOpacity={0.9} />
+                  <stop offset="100%" stopColor="#38bdf8" stopOpacity={0.7} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="4 4" stroke="#e6edfb" />
+              <XAxis dataKey="name" tickLine={false} axisLine={false} />
+              <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+              <Tooltip
+                cursor={{ fill: "rgba(37, 99, 235, 0.08)" }}
+                contentStyle={{ borderRadius: 12, borderColor: "#e2e8f0" }}
+              />
+              <Bar dataKey="value" fill="url(#contribBreakdown)" radius={[10, 10, 6, 6]} barSize={32} />
             </BarChart>
           </ResponsiveContainer>
         </div>

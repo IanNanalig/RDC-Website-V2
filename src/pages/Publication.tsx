@@ -1,5 +1,23 @@
 import React, { useState, useEffect } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
+import greenprintFull from "../assets/Documents/GREENPRINT-2.pdf";
+import greenprintBrochure from "../assets/Documents/Greeprint-brochure.pdf";
+import rdp2023Full from "../assets/Documents/Full_Version_RDP-NCR_2023-2028.pdf";
+import rdp2023Abridged from "../assets/Documents/Abridged_Version_RDP-NCR_2023-2028.pdf";
+import rdp2023Brochure from "../assets/Documents/Brochure_RDP-NCR_2023-2028.pdf";
+import rdp2017Full from "../assets/Documents/NCR-Regional-Development-Plan-2017-2022-resize (2).pdf";
+import rdp2017Abridged from "../assets/Documents/Abridged-Final-resize.pdf";
+import rdp2017Brochure from "../assets/Documents/RDP-Brochure-Final.pdf";
+import rdip2023 from "../assets/Documents/Regional Development Investment Program 2023-2028_1.pdf";
+import rdip2020 from "../assets/Documents/For_Concurrence_RDIP-NCR_Pre-final_2022.pdf";
+import rdipUpdated2023 from "../assets/Documents/[FY 2023] List of Updated Investment Program.pdf";
+import rdr2023 from "../assets/Documents/RDRNCR2023.pdf";
+import res2021 from "../assets/Documents/res layout_jan 3.pdf";
+import res2022 from "../assets/Documents/RES_2022_v8.pdf";
+import res2023 from "../assets/Documents/Res_2023_Final_Last_version.pdf";
+import rpmesGuidelines from "../assets/Documents/20231016_RPMES-Operational-Guidelines.pdf";
+import rrpFull from "../assets/Documents/RRP-NCR_with_Investment_Program_for_posting.pdf";
+import rrpAbridged from "../assets/Documents/RRP-NCR_Abridged_version_for_posting.pdf";
 
 type DocumentItem = {
   id: string;
@@ -33,16 +51,16 @@ const CATEGORIES: Category[] = [
         title: "Greenprint 2030 Full Document",
         year: "2023",
         fileType: "PDF",
-        fileSize: "4.2 MB",
-        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/Greenprint-2030/GREENPRINT-2.pdf",
+        fileSize: "6.9 MB",
+        url: greenprintFull,
       },
       {
         id: "gp2",
         title: "Green Print Brochure",
         year: "2023",
         fileType: "PDF",
-        fileSize: "1.1 MB",
-        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/Greenprint-2030/Greeprint-brochure.pdf",
+        fileSize: "2.8 MB",
+        url: greenprintBrochure,
       },
     ],
   },
@@ -58,48 +76,48 @@ const CATEGORIES: Category[] = [
         title: "RDP-NCR 2023–2028 (Full Version)",
         year: "2023",
         fileType: "PDF",
-        fileSize: "5.1 MB",
-        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/NCR-RDP-2017-2022/Full-Version/NCR-Regional-Development-Plan-2017-2022-resize.pdf",
+        fileSize: "36.4 MB",
+        url: rdp2023Full,
       },
       {
         id: "rdp2",
         title: "RDP-NCR 2023–2028 (Abridged Version)",
         year: "2023",
         fileType: "PDF",
-        fileSize: "2.3 MB",
-        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/NCR-RDP-2017-2022/Abridged-Version/Abridged-Final-resize.pdf",
+        fileSize: "10.6 MB",
+        url: rdp2023Abridged,
       },
       {
         id: "rdp3",
         title: "RDP-NCR 2023–2028 Brochure",
         year: "2023",
         fileType: "PDF",
-        fileSize: "890 KB",
-        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/NCR-RDP-2017-2022/Brochure/RDP-Brochure-Final.pdf",
+        fileSize: "2.2 MB",
+        url: rdp2023Brochure,
       },
       {
         id: "rdp4",
         title: "RDP-NCR 2017- 2022 (Full Version)",
         year: "2023",
         fileType: "PDF",
-        fileSize: "890 KB",
-        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/NCR-RDP-2017-2022/Full-Version/RDP-NCR_Midterm_Update_2022.pdf",
+        fileSize: "8.0 MB",
+        url: rdp2017Full,
       },
       {
         id: "rdp5",
         title: "RDP-NCR 2017- 2022 (Abridged Version)",
         year: "2023",
         fileType: "PDF",
-        fileSize: "890 KB",
-        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/NCR-RDP-2017-2022/Abridged-Version/Abridged-Final-resize.pdf",
+        fileSize: "1.1 MB",
+        url: rdp2017Abridged,
       },
       {
         id: "rdp6",
         title: "RDP-NCR 2017- 2022 Brochure",
         year: "2023",
         fileType: "PDF",
-        fileSize: "890 KB",
-        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/NCR-RDP-2017-2022/Brochure/RDP-Brochure-Final.pdf",
+        fileSize: "5.3 MB",
+        url: rdp2017Brochure,
       },
     ],
   },
@@ -115,16 +133,16 @@ const CATEGORIES: Category[] = [
         title: "RDIP-NCR 2023–2028",
         year: "2023",
         fileType: "PDF",
-        fileSize: "3.5 MB",
-        url: "https://drive.google.com/file/d/1F2OynBfSvdIcZ_mtcQKT-oy0dgnn3f6m/view",
+        fileSize: "12.4 MB",
+        url: rdip2023,
       },
       {
         id: "rdip2",
         title: "RDIP-NCR 2020–2022",
         year: "2020",
         fileType: "PDF",
-        fileSize: "3.1 MB",
-        url: "https://mmda.gov.ph/images/Home/Development-Planning/Plan-Formulation/NCR-RDP-2017-2022/Full-Version/For_Concurrence_RDIP-NCR_Pre-final_2022.pdfs",
+        fileSize: "10.4 MB",
+        url: rdip2020,
       },
       {
         id: "rdip3",
@@ -139,8 +157,8 @@ const CATEGORIES: Category[] = [
         title: "RDIP Updated List 2023",
         year: "2023",
         fileType: "PDF",
-        fileSize: "1.7 MB",
-        url: "https://drive.google.com/file/d/1ecMoQEp4HQsb4-ITnWfOcY-NSmTgsLmL/view",
+        fileSize: "7.3 MB",
+        url: rdipUpdated2023,
       },
     ],
   },
@@ -156,8 +174,8 @@ const CATEGORIES: Category[] = [
         title: "RDR 2023",
         year: "2023",
         fileType: "PDF",
-        fileSize: "3.9 MB",
-        url: "https://mmda.gov.ph/images/Home/Development-Planning/RDR/RDRNCR2023.pdf",
+        fileSize: "43.6 MB",
+        url: rdr2023,
       },
     ],
   },
@@ -173,24 +191,24 @@ const CATEGORIES: Category[] = [
         title: "RES Annual 2021",
         year: "2024",
         fileType: "PDF",
-        fileSize: "1.8 MB",
-        url: "https://bit.ly/RESNCR2021",
+        fileSize: "7.9 MB",
+        url: res2021,
       },
       {
         id: "res2",
         title: "RES Annual 2022",
         year: "2024",
         fileType: "PDF",
-        fileSize: "1.7 MB",
-        url: "https://mmda.gov.ph/images/Home/Development-Planning/RES/RES_2022_v8.pdf",
+        fileSize: "10.5 MB",
+        url: res2022,
       },
       {
         id: "res4",
         title: "RES Annual 2023",
         year: "2023",
         fileType: "PDF",
-        fileSize: "2.5 MB",
-        url: "https://mmda.gov.ph/images/Home/Development-Planning/RES/Res_2023_Final_Last_version.pdf",
+        fileSize: "17.8 MB",
+        url: res2023,
       },
     ],
   },
@@ -239,8 +257,8 @@ const CATEGORIES: Category[] = [
         title: "RPMES Operational Guidelines",
         year: "2024",
         fileType: "PDF",
-        fileSize: "950 KB",
-        url: "https://drive.google.com/file/d/1mX-WDaPziJi6shl8UaxVlAi9tLqPbTlm/view",
+        fileSize: "8.4 MB",
+        url: rpmesGuidelines,
       },
     ],
   },
@@ -257,16 +275,16 @@ const CATEGORIES: Category[] = [
         title: "RRP-NCR with Investment Program (Full Document)",
         year: "2024",
         fileType: "PDF",
-        fileSize: "4.3 MB",
-        url: "https://mmda.gov.ph/images/Home/Development-Planning/RRP-NCR/RRP-NCR_with_Investment_Program_for_posting.pdf",
+        fileSize: "31.5 MB",
+        url: rrpFull,
       },
       {
         id: "rrp2",
         title: "RRP-NCR (Abridge Version)",
         year: "2023",
         fileType: "PDF",
-        fileSize: "2.9 MB",
-        url: "https://mmda.gov.ph/images/Home/Development-Planning/RRP-NCR/RRP-NCR_Abridged_version_for_posting.pdf",
+        fileSize: "2.5 MB",
+        url: rrpAbridged,
       },
     ],
   },
@@ -471,15 +489,24 @@ export default function Publications() {
                       </span>
                     </div>
 
-                    {/* Actions (view-only) */}
-                    <div>
+                    {/* Actions */}
+                    <div className="flex gap-2">
                       <a
                         href={doc.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="block w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition text-center"
+                        className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition text-center"
                       >
                         View
+                      </a>
+                      <a
+                        href={doc.url}
+                        download
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex-1 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition text-center"
+                      >
+                        Download
                       </a>
                     </div>
                   </div>

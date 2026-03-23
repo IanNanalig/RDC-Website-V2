@@ -212,3 +212,46 @@ class PasswordResetRequest(models.Model):
 
     def __str__(self):
         return f"{self.email} - {self.status}"
+
+
+class PublicContent(models.Model):
+    LANGUAGE_CHOICES = [
+        ("en", "English"),
+        ("tl", "Tagalog"),
+    ]
+
+    slug = models.CharField(max_length=150)
+    title = models.CharField(max_length=200)
+    body = models.TextField(blank=True)
+    summary = models.TextField(blank=True)
+    tags = models.JSONField(default=list, blank=True)
+    url = models.CharField(max_length=200, blank=True)
+    language = models.CharField(max_length=10, choices=LANGUAGE_CHOICES, default="en")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("slug", "language")
+        ordering = ["slug", "language"]
+
+    def __str__(self):
+        return f"{self.slug} ({self.language})"
+
+
+class PublicChatFAQ(models.Model):
+    question_normalized = models.CharField(max_length=255, unique=True)
+    question_sample = models.CharField(max_length=255, blank=True)
+    count = models.IntegerField(default=1)
+    last_asked = models.DateTimeField(default=timezone.now)
+    last_matched_content = models.ForeignKey(
+        PublicContent,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="faq_matches",
+    )
+
+    class Meta:
+        ordering = ["-count", "-last_asked"]
+
+    def __str__(self):
+        return f"{self.question_normalized} ({self.count})"

@@ -75,7 +75,7 @@ const UserManagement = () => {
     role: "",
     event: "",
     user: "",
-    limit: "20",
+    limit: "10",
   });
 
   const userRaw = localStorage.getItem("user");
@@ -627,9 +627,9 @@ const UserManagement = () => {
                   value={activityFilters.limit}
                   onChange={(e) => setActivityFilters((p) => ({ ...p, limit: e.target.value }))}
                 >
+                  <option value="10">10</option>
+                  <option value="15">15</option>
                   <option value="20">20</option>
-                  <option value="50">50</option>
-                  <option value="100">100</option>
                 </select>
               </div>
             </div>

@@ -8,7 +8,8 @@ import {
 import { useEffect, useState } from "react";
 import Navbar from "./components/Navbar";
 import Footer from "./components/Footer";
-import Feedback from "./components/Feedback";
+import PublicChatbot from "./components/PublicChatbot";
+import SafeBoundary from "./components/SafeBoundary";
 import Home from "./pages/Home";
 import NewsPage from "./pages/News";
 import Publication from "./pages/Publication";
@@ -149,7 +150,9 @@ const withLayout = (Component: React.ComponentType) => {
       <Navbar />
       <Component />
       <Footer />
-      <Feedback />
+      <SafeBoundary>
+        <PublicChatbot />
+      </SafeBoundary>
     </>
   );
 };
@@ -160,7 +163,9 @@ const withNavbarOnly = (Component: React.ComponentType) => {
     <>
       <Navbar />
       <Component />
-      <Feedback />
+      <SafeBoundary>
+        <PublicChatbot />
+      </SafeBoundary>
     </>
   );
 };
@@ -257,7 +262,7 @@ const AdminProjectsPage = () => (
 );
 
 const AdminValidatorDiffsPage = () => (
-  <PortalPageWrapper pageTitle="Validator Diffs">
+        <PortalPageWrapper pageTitle="Validator Tracker">
     <AdminValidatorDiffs />
   </PortalPageWrapper>
 );
@@ -473,7 +478,9 @@ export default function App() {
               <Navbar />
               <Reports />
               <Footer />
-              <Feedback />
+              <SafeBoundary>
+                <PublicChatbot />
+              </SafeBoundary>
             </ProtectedRoute>
           }
         />
@@ -484,7 +491,9 @@ export default function App() {
               <Navbar />
               <Directory />
               <Footer />
-              <Feedback />
+              <SafeBoundary>
+                <PublicChatbot />
+              </SafeBoundary>
             </ProtectedRoute>
           }
         />
@@ -495,7 +504,9 @@ export default function App() {
               <Navbar />
               <Updates />
               <Footer />
-              <Feedback />
+              <SafeBoundary>
+                <PublicChatbot />
+              </SafeBoundary>
             </ProtectedRoute>
           }
         />

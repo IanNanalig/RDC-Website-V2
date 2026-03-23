@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import annexA from "../assets/Documents/Annex_A__20020717-EO-0113-GMA.pdf";
+import annexB from "../assets/Documents/Annex_B_MMDA-Reso-02-47.pdf";
 
 type LegalDocument = {
   id: string;
@@ -20,9 +22,9 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
       "Redefining the functions and composition of the Regional Development Council, establishing the framework for regional planning and development coordination.",
     icon: "📜",
     color: "from-blue-600 to-cyan-500",
-    url: "https://mmda.gov.ph/images/Home/Development-Planning/files-updated/Annex_A__20020717-EO-0113-GMA.pdf",
+    url: annexA,
     fileType: "PDF",
-    fileSize: "2.4 MB",
+    fileSize: "1.1 MB",
     pages: 24,
   },
   {
@@ -32,9 +34,9 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
       "Metropolitan Manila Development Authority resolution establishing coordination mechanisms and procedures for regional development activities.",
     icon: "⚖️",
     color: "from-green-600 to-emerald-500",
-    url: "https://mmda.gov.ph/images/Home/Development-Planning/files-updated/Annex_B_MMDA-Reso-02-47.pdf",
+    url: annexB,
     fileType: "PDF",
-    fileSize: "3.2 MB",
+    fileSize: "10.8 MB",
     pages: 32,
   },
   {
@@ -897,11 +899,11 @@ export default function AboutRDC() {
                     </div>
                   </div>
 
-                  {/* Actions (download removed) */}
-                  <div className="mt-auto">
+                  {/* Actions */}
+                  <div className="mt-auto flex gap-2">
                     <button
                       onClick={(e) => handleView(doc, e)}
-                      className={`w-full px-4 py-3 text-center font-medium rounded-lg transition flex items-center justify-center gap-2 ${
+                      className={`flex-1 px-4 py-3 text-center font-medium rounded-lg transition flex items-center justify-center gap-2 ${
                         doc.url === "#"
                           ? "bg-slate-300 text-slate-500 cursor-not-allowed"
                           : "bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white hover:shadow-md"
@@ -926,8 +928,21 @@ export default function AboutRDC() {
                           d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
                         />
                       </svg>
-                      View Document
+                      View
                     </button>
+                    <a
+                      href={doc.url}
+                      download
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={`flex-1 px-4 py-3 text-center font-medium rounded-lg transition ${
+                        doc.url === "#"
+                          ? "bg-slate-200 text-slate-400 cursor-not-allowed pointer-events-none"
+                          : "bg-slate-100 hover:bg-slate-200 text-slate-700"
+                      }`}
+                    >
+                      Download
+                    </a>
                   </div>
                 </div>
               </div>
@@ -1027,345 +1042,185 @@ export default function AboutRDC() {
             </p>
           </div>
 
-          {/* Modern Org Chart */}
-          <div className="bg-white rounded-3xl shadow-xl p-8 border border-slate-200">
-            {/* Top Level - Leadership */}
-            <div className="flex justify-center gap-12 mb-8">
-              {/* Chairperson */}
-              <div className="flex flex-col items-center">
+          {/* Modern Executive Org Chart */}
+          <div className="relative rounded-3xl border border-slate-200/70 bg-gradient-to-br from-white via-slate-50 to-slate-100/60 shadow-2xl p-6 md:p-10 overflow-hidden">
+            <div className="pointer-events-none absolute inset-0 opacity-[0.06] bg-[radial-gradient(circle_at_1px_1px,#1f2937_1px,transparent_0)] [background-size:20px_20px]" />
+            <div className="hidden md:block absolute left-1/2 top-10 bottom-10 w-px bg-gradient-to-b from-transparent via-slate-300 to-transparent" />
+
+            <div className="relative space-y-10 md:space-y-12">
+              <div className="flex justify-center">
+                <div className="flex flex-col items-center">
+                  <span className="h-3 w-3 rounded-full bg-blue-600 shadow ring-4 ring-white" />
+                  <span className="mt-2 h-8 w-px bg-gradient-to-b from-blue-300/70 to-transparent" />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-10 items-stretch">
                 <div
-                  className={`w-56 rounded-2xl bg-gradient-to-r from-blue-600 to-blue-700 text-white p-5 text-center shadow-lg cursor-pointer transform transition-all duration-300 ${
-                    selectedNode === "chairperson" ? "scale-105 shadow-2xl" : ""
-                  }`}
                   onClick={() => setSelectedNode("chairperson")}
-                >
-                  <div className="font-bold text-lg mb-1">Chairperson</div>
-                  <div className="text-xs opacity-90">
-                    NEDA Regional Director
-                  </div>
-                </div>
-                {/* Arrow down */}
-                <div className="w-0.5 h-12 bg-blue-600"></div>
-                <svg
-                  className="w-6 h-6 text-blue-600"
-                  fill="currentColor"
-                  viewBox="0 0 20 20"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M10 18l-6-6h4V4h4v8h4l-6 6z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-              </div>
-
-              {/* Vice-Chairperson */}
-              <div className="flex flex-col items-center">
-                <div
-                  className={`w-56 rounded-2xl bg-gradient-to-r from-blue-600 to-blue-700 text-white p-5 text-center shadow-lg cursor-pointer transform transition-all duration-300 ${
-                    selectedNode === "vice-chair" ? "scale-105 shadow-2xl" : ""
+                  className={`group cursor-pointer rounded-2xl border border-slate-200/70 bg-white/80 backdrop-blur px-6 py-5 shadow-sm transition-all hover:shadow-[0_18px_40px_-22px_rgba(37,99,235,0.55)] ${
+                    selectedNode === "chairperson" ? "shadow-lg ring-2 ring-blue-500/60" : "hover:shadow-lg"
                   }`}
+                >
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Leadership</div>
+                  <div className="mt-2 text-lg font-bold text-slate-900">Chairperson</div>
+                  <div className="text-sm text-slate-500">NEDA Regional Director</div>
+                </div>
+                <div
                   onClick={() => setSelectedNode("vice-chair")}
+                  className={`group cursor-pointer rounded-2xl border border-slate-200/70 bg-white/80 backdrop-blur px-6 py-5 shadow-sm transition-all hover:shadow-[0_18px_40px_-22px_rgba(37,99,235,0.55)] ${
+                    selectedNode === "vice-chair" ? "shadow-lg ring-2 ring-blue-500/60" : "hover:shadow-lg"
+                  }`}
                 >
-                  <div className="font-bold text-lg mb-1">Vice-Chairperson</div>
-                  <div className="text-xs opacity-90">
-                    Designated Representative
-                  </div>
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Leadership</div>
+                  <div className="mt-2 text-lg font-bold text-slate-900">Vice-Chairperson</div>
+                  <div className="text-sm text-slate-500">Designated Representative</div>
                 </div>
               </div>
-            </div>
 
-            {/* Second Level - Secretariat and Secretary */}
-            <div className="flex justify-center gap-12 mb-8 relative">
-              {/* Left: Secretariat */}
-              <div className="flex flex-col items-center">
+              <div className="flex justify-center">
+                <div className="flex flex-col items-center">
+                  <span className="h-3 w-3 rounded-full bg-slate-400 shadow ring-4 ring-white" />
+                  <span className="mt-2 h-8 w-px bg-gradient-to-b from-slate-300/80 to-transparent" />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8 items-stretch">
                 <div
-                  className={`w-48 rounded-2xl bg-blue-600 text-white p-4 text-center shadow-lg cursor-pointer transform transition-all duration-300 ${
-                    selectedNode === "secretariat" ? "scale-105 shadow-2xl" : ""
-                  }`}
                   onClick={() => setSelectedNode("secretariat")}
-                >
-                  <div className="font-bold mb-1">Secretariat</div>
-                  <div className="text-xs opacity-90">NCR Regional Office</div>
-                </div>
-              </div>
-
-              {/* Center: Secretary with arrow down */}
-              <div className="flex flex-col items-center">
-                <div className="w-56 rounded-2xl bg-gradient-to-r from-blue-600 to-blue-700 text-white p-5 text-center shadow-lg">
-                  <div className="font-bold text-lg mb-1">Secretary</div>
-                  <div className="text-xs opacity-90">Coordinating Officer</div>
-                </div>
-                {/* Arrow down */}
-                <div className="w-0.5 h-12 bg-blue-600"></div>
-                <svg
-                  className="w-6 h-6 text-blue-600"
-                  fill="currentColor"
-                  viewBox="0 0 20 20"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M10 18l-6-6h4V4h4v8h4l-6 6z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-              </div>
-
-              {/* Right: Executive Committee */}
-              <div className="flex flex-col items-center">
-                <div
-                  className={`w-48 rounded-2xl bg-blue-600 text-white p-4 text-center shadow-lg cursor-pointer transform transition-all duration-300 ${
-                    selectedNode === "executive-committee"
-                      ? "scale-105 shadow-2xl"
-                      : ""
+                  className={`cursor-pointer rounded-2xl border border-slate-200/70 bg-white/80 backdrop-blur px-5 py-4 shadow-sm transition-all hover:shadow-[0_16px_36px_-22px_rgba(15,23,42,0.45)] ${
+                    selectedNode === "secretariat" ? "shadow-lg ring-2 ring-blue-500/60" : "hover:shadow-lg"
                   }`}
-                  onClick={() => setSelectedNode("executive-committee")}
                 >
-                  <div className="font-bold mb-1">Executive Committee</div>
-                  <div className="text-xs opacity-90">Core Decision Body</div>
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Core Office</div>
+                  <div className="mt-2 text-base font-semibold text-slate-900">Secretariat</div>
+                  <div className="text-sm text-slate-500">NCR Regional Office</div>
+                </div>
+                <div className="rounded-2xl border border-blue-500/40 bg-gradient-to-br from-blue-600 to-blue-700 px-6 py-5 text-white shadow-lg hover:shadow-[0_20px_45px_-22px_rgba(37,99,235,0.65)] transition-shadow">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-white/80">Core Office</div>
+                  <div className="mt-2 text-lg font-bold">Secretary</div>
+                  <div className="text-sm text-white/80">Coordinating Officer</div>
+                </div>
+                <div
+                  onClick={() => setSelectedNode("executive-committee")}
+                  className={`cursor-pointer rounded-2xl border border-slate-200/70 bg-white/80 backdrop-blur px-5 py-4 shadow-sm transition-all hover:shadow-[0_16px_36px_-22px_rgba(15,23,42,0.45)] ${
+                    selectedNode === "executive-committee" ? "shadow-lg ring-2 ring-blue-500/60" : "hover:shadow-lg"
+                  }`}
+                >
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Decision Body</div>
+                  <div className="mt-2 text-base font-semibold text-slate-900">Executive Committee</div>
+                  <div className="text-sm text-slate-500">Core Decision Body</div>
                 </div>
               </div>
 
-              {/* Horizontal connection line */}
-              <div className="absolute top-10 left-1/2 transform -translate-x-1/2 w-96 h-0.5 bg-blue-300"></div>
-            </div>
-
-            {/* Third Level - Members Box */}
-            <div className="flex justify-center mb-8">
-              <div className="relative">
-                {/* Main Members Box */}
-                <div className="rounded-2xl border-4 border-blue-600 bg-blue-50 p-6 max-w-4xl">
-                  <div className="grid grid-cols-2 gap-6">
-                    {/* Left Column: Voting Members */}
-                    <div>
-                      <div
-                        className={`rounded-xl bg-blue-600 text-white p-4 mb-3 text-center font-bold cursor-pointer transform transition-all duration-300 ${
-                          selectedNode === "voting-members"
-                            ? "scale-105 shadow-xl"
-                            : ""
-                        }`}
-                        onClick={() => setSelectedNode("voting-members")}
-                      >
-                        Voting Members
-                      </div>
-                      <div className="space-y-2 text-sm">
-                        <div className="bg-white rounded-lg p-3 border border-blue-200">
-                          • 17 MM Mayors
-                        </div>
-                        <div className="bg-white rounded-lg p-3 border border-blue-200">
-                          • President of MMVML
-                        </div>
-                        <div className="bg-white rounded-lg p-3 border border-blue-200">
-                          • President of MMCL
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Right Column: Non-Voting Members */}
-                    <div>
-                      <div
-                        className={`rounded-xl bg-blue-600 text-white p-4 mb-3 text-center font-bold cursor-pointer transform transition-all duration-300 ${
-                          selectedNode === "non-voting-members"
-                            ? "scale-105 shadow-xl"
-                            : ""
-                        }`}
-                        onClick={() => setSelectedNode("non-voting-members")}
-                      >
-                        Non-Voting Members
-                      </div>
-                      <div className="space-y-2 text-sm">
-                        <div className="bg-white rounded-lg p-3 border border-blue-200">
-                          Secretary/Head of Agency
-                        </div>
-                        <div className="bg-white rounded-lg p-3 border border-blue-200">
-                          Regional Directors (DOF, DOTI, DICT, etc.)
-                        </div>
-                        <div className="bg-white rounded-lg p-3 border border-blue-200">
-                          PSO/NGO Representatives
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Special Non-Voting Members at bottom */}
-                  <div className="mt-4 pt-4 border-t-2 border-dashed border-blue-300">
-                    <div className="rounded-xl bg-slate-500 text-white p-3 text-center font-bold cursor-pointer transform transition-all duration-300">
-                      Designation of Special Non-Voting Members (SNVMs)
-                    </div>
-                    <div className="text-xs text-center mt-2 text-slate-700">
-                      Members of House of Representatives, NEDA Central Office,
-                      Other Agencies
-                    </div>
-                  </div>
-                </div>
-
-                {/* Arrow down from center */}
+              <div className="flex justify-center">
                 <div className="flex flex-col items-center">
-                  <div className="w-0.5 h-12 bg-blue-600"></div>
-                  <svg
-                    className="w-6 h-6 text-blue-600"
-                    fill="currentColor"
-                    viewBox="0 0 20 20"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M10 18l-6-6h4V4h4v8h4l-6 6z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
+                  <span className="h-3 w-3 rounded-full bg-slate-400 shadow ring-4 ring-white" />
+                  <span className="mt-2 h-8 w-px bg-gradient-to-b from-slate-300/80 to-transparent" />
                 </div>
               </div>
-            </div>
-
-            {/* Bottom Level - Committees */}
-            <div className="grid grid-cols-4 gap-6">
-              {/* Sectoral Committees */}
-              <div
-                className={`cursor-pointer transform transition-all duration-300 ${
-                  selectedNode === "sectoral-committees" ? "scale-105" : ""
-                }`}
-                onClick={() => setSelectedNode("sectoral-committees")}
-              >
-                <div className="rounded-2xl bg-gradient-to-b from-yellow-400 to-yellow-500 p-4 text-center shadow-lg">
-                  <div className="font-bold text-slate-900 mb-3">
-                    Sectoral Committees
+              <div className="rounded-3xl border border-slate-200/80 bg-white/90 backdrop-blur px-6 py-6 shadow-lg">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <div
+                      onClick={() => setSelectedNode("voting-members")}
+                      className={`cursor-pointer rounded-xl bg-gradient-to-r from-blue-600 to-blue-700 text-white px-4 py-3 text-center font-semibold shadow-sm transition-all hover:shadow-[0_16px_36px_-22px_rgba(37,99,235,0.55)] ${
+                        selectedNode === "voting-members" ? "shadow-lg ring-2 ring-blue-400/60" : ""
+                      }`}
+                    >
+                      Voting Members
+                    </div>
+                    <div className="mt-3 space-y-2 text-sm text-slate-600">
+                      <div className="rounded-lg border border-slate-200/70 bg-white px-3 py-2">17 MM Mayors</div>
+                      <div className="rounded-lg border border-slate-200/70 bg-white px-3 py-2">President of MMVML</div>
+                      <div className="rounded-lg border border-slate-200/70 bg-white px-3 py-2">President of MMCL</div>
+                    </div>
                   </div>
-                  <div className="space-y-2 text-xs">
-                    <div className="bg-yellow-300 rounded-lg p-2 text-slate-900">
-                      Economic & Environment
+                  <div>
+                    <div
+                      onClick={() => setSelectedNode("non-voting-members")}
+                      className={`cursor-pointer rounded-xl bg-gradient-to-r from-blue-600 to-blue-700 text-white px-4 py-3 text-center font-semibold shadow-sm transition-all hover:shadow-[0_16px_36px_-22px_rgba(37,99,235,0.55)] ${
+                        selectedNode === "non-voting-members" ? "shadow-lg ring-2 ring-blue-400/60" : ""
+                      }`}
+                    >
+                      Non-Voting Members
                     </div>
-                    <div className="bg-yellow-300 rounded-lg p-2 text-slate-900">
-                      Finance & Dev Admin
-                    </div>
-                    <div className="bg-yellow-300 rounded-lg p-2 text-slate-900">
-                      Infrastructure
-                    </div>
-                    <div className="bg-yellow-300 rounded-lg p-2 text-slate-900">
-                      Social Development
+                    <div className="mt-3 space-y-2 text-sm text-slate-600">
+                      <div className="rounded-lg border border-slate-200/70 bg-white px-3 py-2">Secretary/Head of Agency</div>
+                      <div className="rounded-lg border border-slate-200/70 bg-white px-3 py-2">Regional Directors (DOF, DOTI, DICT, etc.)</div>
+                      <div className="rounded-lg border border-slate-200/70 bg-white px-3 py-2">PSO/NGO Representatives</div>
                     </div>
                   </div>
                 </div>
-                {/* Arrow up */}
+                <div className="mt-6 border-t border-dashed border-slate-300 pt-4 text-center">
+                  <div className="rounded-xl bg-slate-800 text-white px-4 py-3 font-semibold">
+                    Designation of Special Non-Voting Members (SNVMs)
+                  </div>
+                  <div className="mt-2 text-xs text-slate-500">
+                    Members of House of Representatives, NEDA Central Office, Other Agencies
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-center">
                 <div className="flex flex-col items-center">
-                  <svg
-                    className="w-6 h-6 text-yellow-500 transform rotate-180"
-                    fill="currentColor"
-                    viewBox="0 0 20 20"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M10 18l-6-6h4V4h4v8h4l-6 6z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                  <div className="w-0.5 h-8 bg-yellow-500"></div>
+                  <span className="h-3 w-3 rounded-full bg-slate-400 shadow ring-4 ring-white" />
+                  <span className="mt-2 h-8 w-px bg-gradient-to-b from-slate-300/80 to-transparent" />
                 </div>
               </div>
-
-              {/* Special Committees */}
-              <div
-                className={`cursor-pointer transform transition-all duration-300 ${
-                  selectedNode === "special-committees" ? "scale-105" : ""
-                }`}
-                onClick={() => setSelectedNode("special-committees")}
-              >
-                <div className="rounded-2xl bg-gradient-to-b from-blue-500 to-blue-600 text-white p-4 text-center shadow-lg">
-                  <div className="font-bold mb-3">Special Committees</div>
-                  <div className="space-y-2 text-xs">
-                    <div className="bg-blue-400 rounded-lg p-2">
-                      Project Monitoring (RPMES)
-                    </div>
-                    <div className="bg-blue-400 rounded-lg p-2">
-                      Land Use (RLUC)
-                    </div>
-                    <div className="bg-blue-400 rounded-lg p-2">
-                      Research & Innovation
-                    </div>
-                    <div className="bg-blue-400 rounded-lg p-2">
-                      Dev Committees
-                    </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+                <div
+                  onClick={() => setSelectedNode("sectoral-committees")}
+                  className={`cursor-pointer rounded-2xl border border-amber-200/60 bg-gradient-to-br from-amber-100 to-amber-200/60 px-5 py-4 shadow-sm transition-all hover:shadow-[0_16px_36px_-22px_rgba(245,158,11,0.45)] ${
+                    selectedNode === "sectoral-committees" ? "shadow-lg ring-2 ring-amber-400/60" : "hover:shadow-lg"
+                  }`}
+                >
+                  <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">Committees</div>
+                  <div className="mt-2 text-base font-semibold text-slate-900">Sectoral Committees</div>
+                  <div className="mt-3 space-y-2 text-xs text-amber-900/80">
+                    <div className="rounded-lg bg-white/80 px-3 py-2">Economic & Environment</div>
+                    <div className="rounded-lg bg-white/80 px-3 py-2">Finance & Dev Admin</div>
+                    <div className="rounded-lg bg-white/80 px-3 py-2">Infrastructure</div>
+                    <div className="rounded-lg bg-white/80 px-3 py-2">Social Development</div>
                   </div>
                 </div>
-                {/* Arrow up */}
-                <div className="flex flex-col items-center">
-                  <svg
-                    className="w-6 h-6 text-blue-600 transform rotate-180"
-                    fill="currentColor"
-                    viewBox="0 0 20 20"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M10 18l-6-6h4V4h4v8h4l-6 6z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                  <div className="w-0.5 h-8 bg-blue-600"></div>
-                </div>
-              </div>
 
-              {/* Affiliate Committees */}
-              <div
-                className={`cursor-pointer transform transition-all duration-300 ${
-                  selectedNode === "affiliate-committees" ? "scale-105" : ""
-                }`}
-                onClick={() => setSelectedNode("affiliate-committees")}
-              >
-                <div className="rounded-2xl bg-gradient-to-b from-blue-500 to-blue-600 text-white p-4 text-center shadow-lg">
-                  <div className="font-bold mb-3">Affiliate Committees</div>
-                  <div className="space-y-2 text-xs">
-                    <div className="bg-blue-400 rounded-lg p-2">
-                      Welfare of Children (RCWC)
-                    </div>
-                    <div className="bg-blue-400 rounded-lg p-2">
-                      SME Development (RSMEDC)
-                    </div>
-                    <div className="bg-blue-400 rounded-lg p-2">
-                      Statistical Committee (RSC)
-                    </div>
-                    <div className="bg-blue-400 rounded-lg p-2">
-                      Peace & Order (RPOC)
-                    </div>
+                <div
+                  onClick={() => setSelectedNode("special-committees")}
+                  className={`cursor-pointer rounded-2xl border border-blue-200/60 bg-gradient-to-br from-blue-50 to-blue-100/60 px-5 py-4 shadow-sm transition-all hover:shadow-[0_16px_36px_-22px_rgba(37,99,235,0.45)] ${
+                    selectedNode === "special-committees" ? "shadow-lg ring-2 ring-blue-400/60" : "hover:shadow-lg"
+                  }`}
+                >
+                  <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">Committees</div>
+                  <div className="mt-2 text-base font-semibold text-slate-900">Special Committees</div>
+                  <div className="mt-3 space-y-2 text-xs text-blue-900/80">
+                    <div className="rounded-lg bg-white/80 px-3 py-2">Project Monitoring (RPMES)</div>
+                    <div className="rounded-lg bg-white/80 px-3 py-2">Land Use (RLUC)</div>
+                    <div className="rounded-lg bg-white/80 px-3 py-2">Research & Innovation</div>
+                    <div className="rounded-lg bg-white/80 px-3 py-2">Dev Committees</div>
                   </div>
                 </div>
-                {/* Arrow up */}
-                <div className="flex flex-col items-center">
-                  <svg
-                    className="w-6 h-6 text-blue-600 transform rotate-180"
-                    fill="currentColor"
-                    viewBox="0 0 20 20"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M10 18l-6-6h4V4h4v8h4l-6 6z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                  <div className="w-0.5 h-8 bg-blue-600"></div>
-                </div>
-              </div>
 
-              {/* Advisory Committee */}
-              <div className="cursor-pointer transform transition-all duration-300">
-                <div className="rounded-2xl bg-gradient-to-b from-blue-500 to-blue-600 text-white p-4 text-center shadow-lg">
-                  <div className="font-bold mb-2">Advisory Committee</div>
-                  <div className="text-xs bg-blue-400 rounded-lg p-2">
+                <div
+                  onClick={() => setSelectedNode("affiliate-committees")}
+                  className={`cursor-pointer rounded-2xl border border-indigo-200/60 bg-gradient-to-br from-indigo-50 to-indigo-100/60 px-5 py-4 shadow-sm transition-all hover:shadow-[0_16px_36px_-22px_rgba(79,70,229,0.45)] ${
+                    selectedNode === "affiliate-committees" ? "shadow-lg ring-2 ring-indigo-400/60" : "hover:shadow-lg"
+                  }`}
+                >
+                  <div className="text-xs font-semibold uppercase tracking-wide text-indigo-700">Committees</div>
+                  <div className="mt-2 text-base font-semibold text-slate-900">Affiliate Committees</div>
+                  <div className="mt-3 space-y-2 text-xs text-indigo-900/80">
+                    <div className="rounded-lg bg-white/80 px-3 py-2">Welfare of Children (RCWC)</div>
+                    <div className="rounded-lg bg-white/80 px-3 py-2">SME Development (RSMEDC)</div>
+                    <div className="rounded-lg bg-white/80 px-3 py-2">Statistical Committee (RSC)</div>
+                    <div className="rounded-lg bg-white/80 px-3 py-2">Peace & Order (RPOC)</div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200/70 bg-white/80 backdrop-blur px-5 py-4 shadow-sm hover:shadow-[0_16px_36px_-22px_rgba(15,23,42,0.35)] transition-all">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Advisory</div>
+                  <div className="mt-2 text-base font-semibold text-slate-900">Advisory Committee</div>
+                  <div className="mt-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
                     Expert Consultation Body
                   </div>
-                </div>
-                {/* Arrow up */}
-                <div className="flex flex-col items-center">
-                  <svg
-                    className="w-6 h-6 text-blue-600 transform rotate-180"
-                    fill="currentColor"
-                    viewBox="0 0 20 20"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M10 18l-6-6h4V4h4v8h4l-6 6z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                  <div className="w-0.5 h-8 bg-blue-600"></div>
                 </div>
               </div>
             </div>
@@ -1706,3 +1561,4 @@ export default function AboutRDC() {
     </div>
   );
 }
+

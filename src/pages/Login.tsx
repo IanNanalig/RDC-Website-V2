@@ -310,15 +310,6 @@ const Login: React.FC = () => {
 
             {/* Simple Footer */}
             <div className="mt-6 pt-4 border-t border-gray-200/70 text-center">
-              <p className="text-xs text-gray-600">
-                Need access?{" "}
-                <Link
-                  to="/request-access"
-                  className="text-blue-600 hover:text-blue-800 font-medium transition-colors"
-                >
-                  Contact admin
-                </Link>
-              </p>
               <p className="text-xs text-gray-500 mt-1">
                 Trouble signing in?{" "}
                 <Link
@@ -372,4 +363,3 @@ const Login: React.FC = () => {
 };
 
 export default Login;
-

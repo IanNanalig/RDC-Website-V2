@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { api } from "../services/api";
 
 type InquiryForm = {
   name: string;
@@ -42,10 +43,13 @@ const Contact: React.FC = () => {
     }
 
     setInquiryLoading(true);
-
-    setTimeout(() => {
-      console.log("📧 Inquiry Submitted:", inquiryForm);
-      setInquiryLoading(false);
+    try {
+      await api.post("contact/", {
+        name: inquiryForm.name.trim(),
+        email: inquiryForm.email.trim(),
+        subject: inquiryForm.subject.trim(),
+        message: inquiryForm.message.trim(),
+      });
       setInquirySubmitted(true);
       setTimeout(() => {
         setInquirySubmitted(false);
@@ -56,7 +60,20 @@ const Contact: React.FC = () => {
           message: "",
         });
       }, 2000);
-    }, 800);
+    } catch (error) {
+      let message = "Failed to send your message. Please try again.";
+      if (error instanceof Error && error.message) {
+        try {
+          const parsed = JSON.parse(error.message);
+          message = parsed?.detail || error.message;
+        } catch {
+          message = error.message;
+        }
+      }
+      alert(message);
+    } finally {
+      setInquiryLoading(false);
+    }
   };
 
   // feedback submit handled in Feedback component
@@ -403,3 +420,4 @@ const Contact: React.FC = () => {
 };
 
 export default Contact;
+

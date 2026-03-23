@@ -108,7 +108,7 @@ const AdminValidatorDiffs: React.FC = () => {
 
   return (
     <PortalLayout
-      title="Validator Diffs"
+      title="Validator Tracker"
       subtitle="Track reviewed copies, edited fields, and validator decisions"
       role="admin"
       userName={user.username}

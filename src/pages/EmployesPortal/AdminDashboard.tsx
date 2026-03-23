@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
-import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 interface DashboardStats {
   total_projects?: number;
@@ -13,24 +13,18 @@ interface DashboardStats {
   reviewed_projects?: number;
   validator_edited_projects?: number;
   users?: number;
-}
-
-interface ActivityItem {
-  id: number;
-  username: string;
-  role: string;
-  event: string;
-  project_title?: string;
-  ip_address?: string;
-  location_hint?: string;
-  created_at: string;
+  admin_users?: number;
+  validator_users?: number;
+  contributor_users?: number;
+  review_draft?: number;
+  review_reviewed?: number;
+  review_endorsed?: number;
 }
 
 const AdminDashboard: React.FC = () => {
   const navigate = useNavigate();
   const [user, setUser] = useState<any>(null);
   const [stats, setStats] = useState<DashboardStats>({});
-  const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -39,12 +33,9 @@ const AdminDashboard: React.FC = () => {
       try {
         const data = await api.get("dashboard/");
         if (mounted) setStats(data);
-        const feed = await api.get("admin/activity/?limit=10");
-        if (mounted) setActivity(Array.isArray(feed) ? feed : []);
       } catch {
         if (mounted) {
           setStats({});
-          setActivity([]);
         }
       } finally {
         if (mounted) setLoading(false);
@@ -68,17 +59,17 @@ const AdminDashboard: React.FC = () => {
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
 
-  const portfolioData = [
-    { name: "Draft", value: stats.draft_projects || 0, color: "#f59e0b" },
-    { name: "Pending", value: stats.pending_projects || 0, color: "#2563eb" },
-    { name: "Approved", value: stats.approved_projects || 0, color: "#10b981" },
-    { name: "Archived", value: stats.archived_projects || 0, color: "#64748b" },
+  const userRoleData = [
+    { label: "Admins", count: stats.admin_users || 0 },
+    { label: "Validators", count: stats.validator_users || 0 },
+    { label: "Contributors", count: stats.contributor_users || 0 },
   ];
 
-  const opsData = [
-    { label: "Projects", count: stats.total_projects || 0 },
-    { label: "Users", count: stats.users || 0 },
-    { label: "Pending", count: stats.pending_projects || 0 },
+  const projectStatusData = [
+    { label: "Draft", count: stats.draft_projects || 0 },
+    { label: "Submitted", count: stats.pending_projects || 0 },
+    { label: "Reviewed", count: stats.review_reviewed || 0 },
+    { label: "Endorsed", count: stats.review_endorsed || 0 },
   ];
 
   return (
@@ -94,8 +85,6 @@ const AdminDashboard: React.FC = () => {
             try {
               const data = await api.get("dashboard/");
               setStats(data);
-              const feed = await api.get("admin/activity/?limit=10");
-              setActivity(Array.isArray(feed) ? feed : []);
             } finally {
               setLoading(false);
             }
@@ -117,44 +106,61 @@ const AdminDashboard: React.FC = () => {
         <div className="portal-stat"><p className="portal-stat-title">Users</p><p className="portal-stat-value">{loading ? "..." : stats.users || 0}</p></div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4 mb-4">
-        <div className="portal-card lg:col-span-2 2xl:col-span-2">
-          <div className="portal-card-header">
-            <h2 className="text-lg font-semibold">Operations Snapshot</h2>
-          </div>
-          <div className="portal-card-body h-[210px] md:h-[230px] 2xl:h-[240px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={opsData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f7" />
-                <XAxis dataKey="label" />
-                <YAxis allowDecimals={false} />
-                <Tooltip />
-                <Bar dataKey="count" fill="#1d4ed8" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
         <div className="portal-card">
           <div className="portal-card-header">
-            <h2 className="text-lg font-semibold">Portfolio Mix</h2>
+            <h2 className="text-lg font-semibold">User Roles</h2>
           </div>
           <div className="portal-card-body h-[210px] md:h-[230px] 2xl:h-[240px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={portfolioData} dataKey="value" nameKey="name" outerRadius={90} innerRadius={42}>
-                  {portfolioData.map((entry) => (
-                    <Cell key={entry.name} fill={entry.color} />
-                  ))}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={userRoleData} barCategoryGap={18}>
+              <defs>
+                <linearGradient id="adminUsers" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#1d4ed8" stopOpacity={0.9} />
+                  <stop offset="100%" stopColor="#60a5fa" stopOpacity={0.7} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="4 4" stroke="#e2e8f7" />
+              <XAxis dataKey="label" tickLine={false} axisLine={false} />
+              <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+              <Tooltip
+                cursor={{ fill: "rgba(37, 99, 235, 0.08)" }}
+                contentStyle={{ borderRadius: 12, borderColor: "#e2e8f0" }}
+              />
+              <Bar dataKey="count" fill="url(#adminUsers)" radius={[10, 10, 6, 6]} barSize={34} />
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       </div>
+        <div className="portal-card">
+          <div className="portal-card-header">
+            <h2 className="text-lg font-semibold">Project Status</h2>
+          </div>
+          <div className="portal-card-body h-[210px] md:h-[230px] 2xl:h-[240px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={projectStatusData} barCategoryGap={18}>
+              <defs>
+                <linearGradient id="adminProjects" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#0ea5e9" stopOpacity={0.9} />
+                  <stop offset="100%" stopColor="#22d3ee" stopOpacity={0.7} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="4 4" stroke="#e2e8f7" />
+              <XAxis dataKey="label" tickLine={false} axisLine={false} />
+              <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+              <Tooltip
+                cursor={{ fill: "rgba(14, 165, 233, 0.08)" }}
+                contentStyle={{ borderRadius: 12, borderColor: "#e2e8f0" }}
+              />
+              <Bar dataKey="count" fill="url(#adminProjects)" radius={[10, 10, 6, 6]} barSize={34} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+      </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4">
-        <div className="portal-card lg:col-span-2 2xl:col-span-2">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="portal-card lg:col-span-2">
           <div className="portal-card-header">
             <h2 className="text-lg font-semibold">Administration Workflows</h2>
           </div>
@@ -168,60 +174,10 @@ const AdminDashboard: React.FC = () => {
               <p className="text-sm text-slate-500 mt-1">View all projects, archive or delete with admin-only authority.</p>
             </Link>
             <Link to="/admin/validator-diffs" className="portal-card p-4 hover:shadow-md transition-shadow">
-              <p className="font-semibold">Validator Diffs</p>
+              <p className="font-semibold">Validator Tracker</p>
               <p className="text-sm text-slate-500 mt-1">Review edited fields, reviewed copies, and validator decisions.</p>
             </Link>
           </div>
-        </div>
-
-        <div className="portal-card">
-          <div className="portal-card-header">
-            <h2 className="text-lg font-semibold">Governance Notes</h2>
-          </div>
-          <div className="portal-card-body text-sm text-slate-600 space-y-2">
-            <p>Only admin can archive/delete projects.</p>
-            <p>Encoding schedule controls contributor edit/submit access.</p>
-            <p>Submitted projects are contributor view-only.</p>
-            <p>Use User & Access for activation and password reset.</p>
-          </div>
-        </div>
-      </div>
-
-      <div className="portal-card mt-4 portal-table-wrap">
-        <div className="portal-card-header">
-          <h2 className="text-lg font-semibold">User Activity Feed</h2>
-        </div>
-        <div className="portal-card-body p-0">
-          {activity.length === 0 ? (
-            <div className="p-4 text-sm text-slate-500">No recent user activity.</div>
-          ) : (
-            <table className="portal-table">
-              <thead>
-                <tr>
-                  <th>User</th>
-                  <th className="hidden md:table-cell">Role</th>
-                  <th>Event</th>
-                  <th className="hidden lg:table-cell">Project</th>
-                  <th className="hidden xl:table-cell">IP / Location</th>
-                  <th>Time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activity.map((item) => (
-                  <tr key={item.id}>
-                    <td>{item.username}</td>
-                    <td className="hidden md:table-cell">{item.role === "staff" ? "contributor" : item.role}</td>
-                    <td>{item.event.replaceAll("_", " ")}</td>
-                    <td className="hidden lg:table-cell">{item.project_title || "-"}</td>
-                    <td className="hidden xl:table-cell">
-                      {[item.ip_address, item.location_hint].filter(Boolean).join(" | ") || "-"}
-                    </td>
-                    <td>{new Date(item.created_at).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
         </div>
       </div>
     </PortalLayout>

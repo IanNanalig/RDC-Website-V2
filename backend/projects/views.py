@@ -1,13 +1,16 @@
 import json
 import os
 import re
+import difflib
 import urllib.parse
 import urllib.request
 from copy import deepcopy
 from datetime import datetime, timedelta
 from django.conf import settings
 from django.core.cache import cache
-from django.core.mail import send_mail
+from django.core.mail import send_mail, EmailMessage
+from django.core.validators import validate_email
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.crypto import get_random_string
 from django.db.models import Q
@@ -18,7 +21,17 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import AccessRequest, PasswordResetRequest, PasswordSetupToken, Project, SystemSetting, User, UserActivity
+from .models import (
+    AccessRequest,
+    PasswordResetRequest,
+    PasswordSetupToken,
+    Project,
+    PublicChatFAQ,
+    PublicContent,
+    SystemSetting,
+    User,
+    UserActivity,
+)
 from .serializers import AccessRequestSerializer, PasswordResetRequestSerializer, ProjectSerializer, UserActivitySerializer, UserSerializer
 
 
@@ -27,6 +40,423 @@ PASSWORD_SETUP_TTL_HOURS = 24
 PASSWORD_RESET_WINDOW_SECONDS = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_WINDOW", 3600))
 PASSWORD_RESET_LIMIT_EMAIL = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_EMAIL", 2))
 PASSWORD_RESET_LIMIT_IP = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_IP", 5))
+
+PUBLIC_CHAT_MAX_SUGGESTIONS = 6
+PUBLIC_CHAT_MIN_SCORE = 1.0
+
+TAGALOG_HINTS = {
+    "saan",
+    "paano",
+    "ano",
+    "anong",
+    "bakit",
+    "kailan",
+    "alin",
+    "nasaan",
+    "mga",
+    "ang",
+    "ng",
+    "sa",
+    "para",
+    "tungkol",
+    "dito",
+    "doon",
+    "po",
+    "opo",
+    "magkano",
+    "ganito",
+    "ganyan",
+    "hindi",
+    "oo",
+    "salamat",
+    "pwede",
+    "pede",
+    "puwede",
+    "kasi",
+    "ngayon",
+    "sino",
+    "paki",
+}
+
+PUBLIC_CHAT_BLOCKLIST = [
+    "password",
+    "admin",
+    "database",
+    "sql",
+    "hack",
+    "exploit",
+    "token",
+    "api key",
+    "apikey",
+    "credentials",
+    "login",
+    "reset",
+    "otp",
+    "bypass",
+    "dump",
+]
+
+CONTACT_KEYWORDS = {
+    "contact",
+    "contact us",
+    "contact form",
+    "message",
+    "send message",
+    "magpadala",
+    "mensahe",
+    "magmessage",
+    "mag-message",
+    "mag message",
+    "inquiry",
+    "inquiries",
+    "email",
+    "e-mail",
+    "email address",
+    "reach",
+    "reach out",
+    "pakikipag-ugnayan",
+    "pakipag-ugnayan",
+    "makipag-ugnayan",
+    "address",
+    "location",
+    "office",
+    "opisina",
+    "map",
+    "maps",
+    "directions",
+    "direksyon",
+}
+
+PUBLIC_CONTACT_MAP_URL = (
+    "https://www.google.com/maps/dir/?api=1&destination=MMDA+Head+Office,+Julia+Vargas+Avenue,+Pasig,+Metro+Manila"
+)
+PUBLIC_CONTACT_ADDRESS = (
+    "16th Floor, MMDA Head Office, Dofia Julia Vargas Avenue corner Molawe St., "
+    "Barangay Ugong, Pasig City"
+)
+PUBLIC_CONTACT_EMAIL = "rdc.ncr@mmda.gov.ph"
+PUBLIC_CONTACT_HOURS_EN = "Monday - Friday: 7:00 AM - 4:00 PM; Saturday, Sunday & Holidays: Closed"
+PUBLIC_CONTACT_HOURS_TL = "Lunes hanggang Biyernes: 7:00 AM - 4:00 PM; Sabado, Linggo at Holidays: Sarado"
+
+CONTACT_MESSAGE_TERMS = {
+    "message",
+    "send message",
+    "mensahe",
+    "magpadala",
+    "magmessage",
+    "mag-message",
+    "mag message",
+    "inquiry",
+    "tanong",
+    "contact",
+}
+CONTACT_EMAIL_TERMS = {"email", "e-mail", "gmail", "mail", "email address"}
+CONTACT_ADDRESS_TERMS = {
+    "address",
+    "location",
+    "office",
+    "opisina",
+    "map",
+    "maps",
+    "directions",
+    "direksyon",
+    "makapunta",
+    "papunta",
+    "punta",
+    "get there",
+    "how to get there",
+    "how can i get there",
+}
+CONTACT_HOURS_TERMS = {"hours", "office hours", "oras", "bukas", "schedule", "open", "time", "available"}
+CONTACT_INTENT_TERMS = CONTACT_KEYWORDS | CONTACT_EMAIL_TERMS | CONTACT_ADDRESS_TERMS | CONTACT_HOURS_TERMS
+INTENT_PUBLICATIONS = {
+    "publication",
+    "publications",
+    "document",
+    "documents",
+    "rdip",
+    "rdip-ncr",
+    "pdf",
+    "brochure",
+    "download",
+    "manual",
+    "annex",
+    "forms",
+}
+INTENT_NEWS = {
+    "news",
+    "balita",
+    "update",
+    "updates",
+    "announcement",
+    "announcements",
+    "advisory",
+    "event",
+    "events",
+    "calendar",
+    "schedule",
+    "meeting",
+    "forum",
+}
+INTENT_PROJECTS = {"project", "projects", "dashboard", "portfolio", "investment", "pipeline", "public projects"}
+INTENT_PROFILE = {
+    "regional profile",
+    "profile",
+    "statistics",
+    "indicator",
+    "indicators",
+    "ncr data",
+    "data",
+    "lgu",
+    "lgus",
+    "local government",
+    "cities",
+    "city",
+    "municipality",
+    "metro manila",
+    "pateros",
+    "population",
+    "economy",
+    "area",
+}
+INTENT_ABOUT = {
+    "about",
+    "mandate",
+    "structure",
+    "committee",
+    "committees",
+    "council",
+    "rdc-ncr",
+    "organizational",
+    "resolution",
+    "resolutions",
+}
+INTENT_HOME = {"home", "main page", "homepage", "start"}
+
+INTENT_KEYWORDS = {
+    "contact": CONTACT_INTENT_TERMS,
+    "publications": INTENT_PUBLICATIONS,
+    "news": INTENT_NEWS,
+    "projects-dashboard": INTENT_PROJECTS,
+    "regional-profile": INTENT_PROFILE,
+    "about-rdc": INTENT_ABOUT,
+    "home": INTENT_HOME,
+}
+
+
+def _build_contact_answer(raw: str, language: str):
+    normalized = _normalize_text(raw)
+    wants_email = any(term in normalized for term in CONTACT_EMAIL_TERMS)
+    wants_address = any(term in normalized for term in CONTACT_ADDRESS_TERMS)
+    wants_hours = any(term in normalized for term in CONTACT_HOURS_TERMS)
+    wants_message = any(term in normalized for term in CONTACT_MESSAGE_TERMS)
+
+    if not (wants_email or wants_address or wants_hours or wants_message):
+        wants_message = True
+
+    lines = []
+    if language == "tl":
+        if wants_message:
+            lines.append("Para magpadala ng mensahe, gamitin ang Contact page ng RDC-NCR.")
+        if wants_email:
+            lines.append(f"Email: {PUBLIC_CONTACT_EMAIL}")
+        if wants_address:
+            lines.append(f"Address: {PUBLIC_CONTACT_ADDRESS}.")
+        if wants_hours:
+            lines.append(f"Office hours: {PUBLIC_CONTACT_HOURS_TL}.")
+    else:
+        if wants_message:
+            lines.append("To send a message, use the RDC-NCR Contact page.")
+        if wants_email:
+            lines.append(f"Email: {PUBLIC_CONTACT_EMAIL}")
+        if wants_address:
+            lines.append(f"Address: {PUBLIC_CONTACT_ADDRESS}.")
+        if wants_hours:
+            lines.append(f"Office hours: {PUBLIC_CONTACT_HOURS_EN}.")
+
+    include_map = wants_address or ("map" in normalized) or ("directions" in normalized)
+    include_email = wants_email
+    return "\n".join(lines), include_map, include_email
+
+
+SYNONYM_MAP = {
+    "san": {"saan"},
+    "sna": {"saan"},
+    "pano": {"paano"},
+    "pnu": {"paano"},
+    "anu": {"ano"},
+    "ano": {"anong"},
+    "pwd": {"pwede", "pede"},
+    "pede": {"pwede"},
+    "puwede": {"pwede"},
+    "msg": {"message", "mensahe"},
+    "chat": {"message", "mensahe"},
+    "email": {"e-mail", "mail"},
+    "mapa": {"map", "maps"},
+    "kalendaryo": {"calendar", "schedule", "events"},
+    "calendar": {"schedule", "events"},
+    "oras": {"hours", "schedule"},
+    "balita": {"news", "updates"},
+    "update": {"updates", "news"},
+    "updates": {"news"},
+    "dokumento": {"documents", "document", "publications"},
+    "document": {"documents", "publications"},
+    "documents": {"publications"},
+    "download": {"documents", "publications"},
+    "proyekto": {"project", "projects", "dashboard"},
+    "projects": {"project", "dashboard"},
+    "dashboard": {"projects"},
+    "profile": {"regional", "regional profile"},
+    "mandato": {"mandate", "about"},
+    "komite": {"committee", "committees"},
+    "lgus": {"lgu", "local government"},
+    "lgu": {"lgus", "local government"},
+    "opisina": {"office", "address", "location"},
+}
+
+
+def _expand_tokens(tokens: set) -> set:
+    expanded = set(tokens)
+    for token in tokens:
+        for synonym in SYNONYM_MAP.get(token, set()):
+            expanded.add(synonym)
+    return expanded
+
+
+def _phrase_tokens(raw: str) -> set:
+    normalized = _normalize_text(raw)
+    parts = [p for p in normalized.split() if p]
+    phrases = set()
+    for i in range(len(parts) - 1):
+        phrases.add(f"{parts[i]} {parts[i + 1]}")
+    for i in range(len(parts) - 2):
+        phrases.add(f"{parts[i]} {parts[i + 1]} {parts[i + 2]}")
+    return phrases
+
+
+def _fuzzy_match(token: str, candidate: str, threshold: float = 0.86) -> bool:
+    if not token or not candidate:
+        return False
+    if token == candidate:
+        return True
+    ratio = difflib.SequenceMatcher(a=token, b=candidate).ratio()
+    return ratio >= threshold
+
+
+def _fuzzy_overlap(tokens: set, candidates: set) -> int:
+    if not tokens or not candidates:
+        return 0
+    matches = 0
+    for token in tokens:
+        for candidate in candidates:
+            if _fuzzy_match(token, candidate):
+                matches += 1
+                break
+    return matches
+
+
+def _intent_score(normalized: str, tokens: set, phrases: set, keywords: set) -> float:
+    score = 0.0
+    for kw in keywords:
+        if " " in kw:
+            if kw in normalized or kw in phrases:
+                score += 2.5
+            continue
+        if kw in tokens:
+            score += 1.8
+        elif _fuzzy_overlap({kw}, tokens):
+            score += 1.0
+    return score
+
+
+def _detect_intent_slug(raw: str) -> str | None:
+    normalized = _normalize_text(raw)
+    tokens = _expand_tokens(_tokenize(normalized, "tl"))
+    phrases = _phrase_tokens(normalized)
+
+    scores = {}
+    for slug, keywords in INTENT_KEYWORDS.items():
+        scores[slug] = _intent_score(normalized, tokens, phrases, keywords)
+
+    best_slug = None
+    best_score = 0.0
+    for slug, score in scores.items():
+        if score > best_score:
+            best_score = score
+            best_slug = slug
+
+    return best_slug if best_score >= 2.0 else None
+
+
+def _build_generic_answer(question: str, content: PublicContent, language: str) -> str:
+    normalized = _normalize_text(question)
+    slug = content.slug
+    if slug == "publications":
+        if language == "tl":
+            if any(term in normalized for term in {"rdip", "manual", "annex", "brochure"}):
+                return "Makikita ang RDIP at iba pang dokumento (manuals, annexes, brochure) sa Publications page."
+            if any(term in normalized for term in {"download", "pdf", "document", "documents"}):
+                return "Makikita ang mga dokumento sa Publications page. Pumili ng kategorya at i-click ang View o Download."
+            return "Para sa mga dokumento ng RDC-NCR, pumunta sa Publications page."
+        if any(term in normalized for term in {"rdip", "manual", "annex", "brochure"}):
+            return "RDIP and other documents (manuals, annexes, brochures) are available on the Publications page."
+        if any(term in normalized for term in {"download", "pdf", "document", "documents"}):
+            return "You can access documents on the Publications page. Pick a category and click View or Download."
+        return "For RDC-NCR documents, visit the Publications page."
+    if slug == "news":
+        if language == "tl":
+            if any(term in normalized for term in {"calendar", "schedule", "events", "meeting"}):
+                return "Walang hiwalay na calendar page. Para sa schedules o events, tingnan ang News page (announcements)."
+            return "Makikita ang mga balita at anunsyo sa News page."
+        if any(term in normalized for term in {"calendar", "schedule", "events", "meeting"}):
+            return "There isn’t a separate calendar page yet. Schedules and events are posted in News announcements."
+        return "You can read updates and announcements on the News page."
+    if slug == "projects-dashboard":
+        if language == "tl":
+            if any(term in normalized for term in {"filter", "status", "agency", "ahensya"}):
+                return "Sa Projects Dashboard, puwede kang mag‑filter ayon sa ahensya o status at makita ang project details."
+            return "Pumunta sa Projects Dashboard page para makita ang public project data at gamitin ang filters."
+        if any(term in normalized for term in {"filter", "status", "agency"}):
+            return "In the Projects Dashboard you can filter by agency or status and view project details."
+        return "Go to the Projects Dashboard page to view public project data and use filters."
+    if slug == "regional-profile":
+        if any(term in normalized for term in {"lgu", "lgus", "local government", "cities", "city", "municipality", "sakop", "coverage"}):
+            if language == "tl":
+                return (
+                    "Ang NCR ay binubuo ng 16 na lungsod at 1 munisipalidad: "
+                    "Caloocan, Malabon, Navotas, Valenzuela, Quezon City, Marikina, Pasig, "
+                    "Taguig, Makati, Manila, Mandaluyong, San Juan, Pasay, Parañaque, Las Piñas, "
+                    "Muntinlupa, at ang munisipalidad ng Pateros."
+                )
+            return (
+                "NCR is composed of 16 cities and 1 municipality: Caloocan, Malabon, Navotas, "
+                "Valenzuela, Quezon City, Marikina, Pasig, Taguig, Makati, Manila, Mandaluyong, "
+                "San Juan, Pasay, Parañaque, Las Piñas, Muntinlupa, and the municipality of Pateros."
+            )
+        if language == "tl":
+            return "Makikita ang NCR statistics at indicators sa Regional Profile page."
+        return "NCR statistics and indicators are available on the Regional Profile page."
+    if slug == "about-rdc":
+        if any(term in normalized for term in {"resolution", "resolutions"}):
+            if language == "tl":
+                return "Makikita sa About RDC page ang Resolutions Archive ng RDC-NCR."
+            return "The About RDC page contains the RDC-NCR Resolutions Archive."
+        if any(term in normalized for term in {"lgu", "lgus", "mayor", "mayors"}):
+            if language == "tl":
+                return "Sa About RDC organizational structure, nakalista ang 17 MM Mayors bilang voting members."
+            return "The About RDC organizational structure lists 17 MM Mayors as voting members."
+        if language == "tl":
+            return "Ang About RDC page ay may mandato, istruktura, at mga komite ng RDC-NCR."
+        return "The About RDC page covers the RDC-NCR mandate, structure, and committees."
+    if slug == "home":
+        if language == "tl":
+            return "Sa Home page may mabilis na links papunta sa News, Publications, Projects, at iba pang public pages."
+        return "The Home page provides quick links to News, Publications, Projects, and other public pages."
+    base_text = content.body or content.summary or ""
+    snippet = _select_relevant_snippet(base_text, _expand_tokens(_tokenize(question, language)), language)
+    if language == "tl":
+        return f"Narito ang impormasyon mula sa pampublikong website: {snippet}"
+    return f"Here is what I found on the RDC-NCR public website: {snippet}"
 
 
 def _frontend_role(role: str):
@@ -207,6 +637,318 @@ def _verify_turnstile(token: str, ip: str = "") -> bool:
             return bool(payload.get("success"))
     except Exception:
         return False
+
+
+CHAT_REPLACEMENTS = {
+    "rdcncr": "rdc ncr",
+    "rdc-ncr": "rdc ncr",
+    "rdc ncr": "rdc ncr",
+    "lgus": "lgu",
+    "l.g.u": "lgu",
+    "mmda": "mmda",
+    "pls": "please",
+    "plz": "please",
+}
+
+
+def _normalize_text(raw: str) -> str:
+    text = (raw or "").lower()
+    for key, value in CHAT_REPLACEMENTS.items():
+        text = text.replace(key, value)
+    text = re.sub(r"(.)\1{2,}", r"\1\1", text)
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _sanitize_question_sample(raw: str) -> str:
+    text = (raw or "").strip()
+    text = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", "[email]", text)
+    text = re.sub(r"\b\d{6,}\b", "[number]", text)
+    return text[:255]
+
+
+def _detect_language(raw: str) -> str:
+    normalized = _normalize_text(raw)
+    tokens = set(normalized.split())
+    if tokens.intersection(TAGALOG_HINTS):
+        return "tl"
+    return "en"
+
+
+def _tokenize(raw: str, language: str) -> set:
+    normalized = _normalize_text(raw)
+    tokens = [t for t in normalized.split() if len(t) > 1]
+    if language == "tl":
+        stop = {
+            "ang",
+            "ng",
+            "sa",
+            "mga",
+            "na",
+            "ay",
+            "para",
+            "ito",
+            "iyan",
+            "iyon",
+            "po",
+            "opo",
+            "daw",
+        }
+    else:
+        stop = {
+            "the",
+            "and",
+            "or",
+            "for",
+            "with",
+            "this",
+            "that",
+            "from",
+            "what",
+            "where",
+            "how",
+            "can",
+            "are",
+            "is",
+            "to",
+            "in",
+        }
+    return {t for t in tokens if t not in stop}
+
+
+def _contains_blocked_topic(raw: str) -> bool:
+    normalized = (raw or "").lower()
+    return any(term in normalized for term in PUBLIC_CHAT_BLOCKLIST)
+
+
+def _contact_intent(raw: str) -> bool:
+    normalized = _normalize_text(raw)
+    return any(term in normalized for term in CONTACT_INTENT_TERMS)
+
+
+def _score_content(question_tokens: set, question_phrases: set, content: PublicContent, contact_intent: bool) -> float:
+    title_tokens = _tokenize(content.title, content.language)
+    summary_tokens = _tokenize(content.summary, content.language)
+    body_tokens = _tokenize(content.body, content.language)
+    tag_tokens = {str(t).lower() for t in (content.tags or [])}
+    title_phrases = _phrase_tokens(content.title)
+    summary_phrases = _phrase_tokens(content.summary or "")
+    tag_phrases = {t for t in (content.tags or []) if isinstance(t, str) and " " in t}
+
+    score = 0.0
+    score += len(question_tokens.intersection(title_tokens)) * 2.5
+    score += len(question_tokens.intersection(tag_tokens)) * 2.0
+    score += len(question_tokens.intersection(summary_tokens)) * 1.2
+    score += len(question_tokens.intersection(body_tokens)) * 0.8
+    score += len(question_phrases.intersection(title_phrases)) * 2.5
+    score += len(question_phrases.intersection(summary_phrases)) * 1.8
+    score += len(question_phrases.intersection(tag_phrases)) * 2.0
+    score += _fuzzy_overlap(question_tokens, title_tokens) * 0.8
+    score += _fuzzy_overlap(question_tokens, tag_tokens) * 0.6
+    if contact_intent and content.slug == "contact":
+        score += 8.0
+    return score
+
+
+def _select_relevant_snippet(text: str, question_tokens: set, language: str) -> str:
+    if not text:
+        return ""
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    best_sentence = ""
+    best_score = 0
+    for sentence in sentences:
+        tokens = _tokenize(sentence, language)
+        score = len(tokens.intersection(question_tokens))
+        if score > best_score:
+            best_score = score
+            best_sentence = sentence
+    return best_sentence if best_sentence else sentences[0]
+
+
+def _default_suggestions(language: str):
+    if language == "tl":
+        return [
+            "Saan ko makikita ang mga dokumento ng RDIP?",
+            "Paano makita ang public projects dashboard?",
+            "Saan mababasa ang balita ng RDC-NCR?",
+            "Ano ang tungkol sa RDC-NCR?",
+        ]
+    return [
+        "Where can I download RDIP documents?",
+        "How do I view the public projects dashboard?",
+        "Where can I read RDC-NCR news?",
+        "What is the RDC-NCR and its role?",
+    ]
+
+
+def _get_top_questions(limit: int):
+    qs = PublicChatFAQ.objects.order_by("-count", "-last_asked").values_list("question_sample", flat=True)[:limit]
+    return [q for q in qs if q]
+
+
+class PublicChatAskView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        question = str(request.data.get("question") or "").strip()
+        if not question:
+            return Response({"detail": "Question is required."}, status=400)
+
+        language = _detect_language(question)
+        suggested = _get_top_questions(PUBLIC_CHAT_MAX_SUGGESTIONS) or _default_suggestions(language)
+
+        if _contains_blocked_topic(question):
+            answer = (
+                "I can only answer questions about the RDC-NCR public website. "
+                "Please ask about the public pages, documents, or dashboard."
+            )
+            if language == "tl":
+                answer = (
+                    "Makakasagot lang ako tungkol sa pampublikong website ng RDC-NCR. "
+                    "Magtanong tungkol sa mga public page, dokumento, o dashboard."
+                )
+            return Response(
+                {
+                    "answer": answer,
+                    "confidence": 0.0,
+                    "sources": [],
+                    "language": language,
+                    "suggested_questions": suggested,
+                }
+            )
+
+        question_tokens = _expand_tokens(_tokenize(question, language))
+        question_phrases = _phrase_tokens(question)
+        contact_intent = _contact_intent(question)
+        intent_slug = _detect_intent_slug(question)
+        content_qs = PublicContent.objects.filter(language=language)
+        if not content_qs.exists():
+            content_qs = PublicContent.objects.all()
+
+        best = None
+        best_score = 0.0
+        forced_contact = False
+        intent_locked = False
+        ranked = []
+        if intent_slug:
+            intent_match = content_qs.filter(slug=intent_slug).first()
+            if intent_match:
+                best = intent_match
+                best_score = PUBLIC_CHAT_MIN_SCORE + 1.0
+                forced_contact = intent_slug == "contact"
+                intent_locked = True
+        if contact_intent and not best:
+            contact_match = content_qs.filter(slug="contact").first()
+            if contact_match:
+                best = contact_match
+                best_score = PUBLIC_CHAT_MIN_SCORE + 1.0
+                forced_contact = True
+        if not forced_contact and not intent_locked:
+            for content in content_qs:
+                score = _score_content(question_tokens, question_phrases, content, contact_intent)
+                ranked.append((score, content))
+                if score > best_score:
+                    best_score = score
+                    best = content
+            ranked.sort(key=lambda item: item[0], reverse=True)
+
+        normalized = _normalize_text(question)
+        faq, created = PublicChatFAQ.objects.get_or_create(
+            question_normalized=normalized,
+            defaults={
+                "question_sample": _sanitize_question_sample(question),
+                "count": 1,
+                "last_asked": timezone.now(),
+                "last_matched_content": best,
+            },
+        )
+        if not created:
+            faq.count += 1
+            faq.last_asked = timezone.now()
+            faq.last_matched_content = best
+            if not faq.question_sample:
+                faq.question_sample = _sanitize_question_sample(question)
+            faq.save(update_fields=["count", "last_asked", "last_matched_content", "question_sample"])
+
+        if not best or best_score < PUBLIC_CHAT_MIN_SCORE:
+            fallback = (
+                "I can help with questions about the RDC-NCR public website. "
+                "Try asking about News, Publications, Projects, or Regional Profile."
+            )
+            if language == "tl":
+                fallback = (
+                    "Makakatulong ako sa mga tanong tungkol sa pampublikong website ng RDC-NCR. "
+                    "Subukang magtanong tungkol sa News, Publications, Projects, o Regional Profile."
+                )
+            alternatives = []
+            for score, content in ranked[:2]:
+                if score > 0 and content.url:
+                    alternatives.append({"title": content.title, "url": content.url})
+            if alternatives:
+                alt_note = (
+                    "These pages might be related to your question."
+                    if language == "en"
+                    else "Baka makatulong ang mga pahinang ito sa tanong mo."
+                )
+                return Response(
+                    {
+                        "answer": f"{fallback} {alt_note}",
+                        "confidence": 0.2,
+                        "sources": alternatives,
+                        "language": language,
+                        "suggested_questions": suggested,
+                    }
+                )
+            return Response(
+                {
+                    "answer": fallback,
+                    "confidence": 0.2,
+                    "sources": [],
+                    "language": language,
+                    "suggested_questions": suggested,
+                }
+            )
+
+        if best.slug == "contact" or contact_intent:
+            answer, include_map, include_email = _build_contact_answer(question, language)
+        else:
+            answer = _build_generic_answer(question, best, language)
+
+        confidence = min(1.0, best_score / max(1.0, len(question_tokens) + 1))
+        sources = [{"title": best.title, "url": best.url}] if best.url else []
+        if best.slug == "contact" or contact_intent:
+            if include_map:
+                sources.append(
+                    {"title": "RDC-NCR Office Location (Google Maps)", "url": PUBLIC_CONTACT_MAP_URL}
+                )
+            if include_email:
+                sources.append({"title": "Email RDC-NCR", "url": f"mailto:{PUBLIC_CONTACT_EMAIL}"})
+        return Response(
+            {
+                "answer": answer,
+                "confidence": round(confidence, 2),
+                "sources": sources,
+                "language": language,
+                "suggested_questions": suggested,
+            }
+        )
+
+
+class PublicChatFAQView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        limit = PUBLIC_CHAT_MAX_SUGGESTIONS
+        raw_limit = request.query_params.get("limit")
+        if raw_limit:
+            try:
+                limit = max(1, min(12, int(raw_limit)))
+            except Exception:
+                limit = PUBLIC_CHAT_MAX_SUGGESTIONS
+
+        questions = _get_top_questions(limit)
+        return Response({"questions": questions})
 
 
 def _validate_password_policy(password: str):
@@ -877,6 +1619,9 @@ class DashboardView(APIView):
             all_projects = Project.objects.all()
             reviewed_projects = 0
             validator_edited_projects = 0
+            review_draft = 0
+            review_reviewed = 0
+            review_endorsed = 0
             for project in all_projects:
                 pd = project.profile_data if isinstance(project.profile_data, dict) else {}
                 vr = pd.get("validator_review")
@@ -885,6 +1630,16 @@ class DashboardView(APIView):
                         reviewed_projects += 1
                     if bool(vr.get("edited")):
                         validator_edited_projects += 1
+                    status = str(vr.get("review_status") or "").lower()
+                    if status == "draft":
+                        review_draft += 1
+                    elif status == "reviewed":
+                        review_reviewed += 1
+                    elif status == "endorsed":
+                        review_endorsed += 1
+            admin_users = User.objects.filter(role="admin").count()
+            validator_users = User.objects.filter(role="validator").count()
+            contributor_users = User.objects.filter(role="staff").count()
             data = {
                 "total_projects": all_projects.count(),
                 "draft_projects": all_projects.filter(status="planning").count(),
@@ -894,12 +1649,33 @@ class DashboardView(APIView):
                 "reviewed_projects": reviewed_projects,
                 "validator_edited_projects": validator_edited_projects,
                 "users": User.objects.count(),
+                "admin_users": admin_users,
+                "validator_users": validator_users,
+                "contributor_users": contributor_users,
+                "review_draft": review_draft,
+                "review_reviewed": review_reviewed,
+                "review_endorsed": review_endorsed,
             }
         elif role == "validator":
+            review_draft = 0
+            review_reviewed = 0
+            review_endorsed = 0
+            for project in Project.objects.all():
+                pd = project.profile_data if isinstance(project.profile_data, dict) else {}
+                vr = pd.get("validator_review")
+                if not isinstance(vr, dict):
+                    continue
+                status = str(vr.get("review_status") or "").lower()
+                if status == "draft":
+                    review_draft += 1
+                elif status == "reviewed":
+                    review_reviewed += 1
+                elif status == "endorsed":
+                    review_endorsed += 1
             data = {
-                "pending_projects": Project.objects.filter(status="proposed").count(),
-                "validated_today": Project.objects.filter(validated=True).count(),
-                "total_validated": Project.objects.filter(validated=True).count(),
+                "review_draft": review_draft,
+                "review_reviewed": review_reviewed,
+                "review_endorsed": review_endorsed,
             }
         else:
             my = Project.objects.filter(created_by=user)
@@ -949,6 +1725,65 @@ class AnalyticsView(APIView):
             data["avg_daily"] = data["pageviews"] // 30
         self._save(data)
         return Response(data)
+
+
+class PublicContactView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        name = str(request.data.get("name") or "").strip()
+        email = str(request.data.get("email") or "").strip()
+        subject = str(request.data.get("subject") or "").strip()
+        message = str(request.data.get("message") or "").strip()
+
+        if not name or not email or not message:
+            return Response(
+                {"detail": "Name, email, and message are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            validate_email(email)
+        except ValidationError:
+            return Response(
+                {"detail": "Email address is invalid."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        receiver = getattr(settings, "CONTACT_RECEIVER_EMAIL", "")
+        if not receiver:
+            return Response(
+                {"detail": "Contact receiver is not configured."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        safe_subject = subject or "Contact Form Inquiry"
+        full_subject = f"[RDC Portal] {safe_subject}"
+        body = (
+            "New contact message received via RDC-NCR website.\n\n"
+            f"Name: {name}\n"
+            f"Email: {email}\n"
+            f"Subject: {subject or '-'}\n\n"
+            "Message:\n"
+            f"{message}\n"
+        )
+
+        try:
+            email_msg = EmailMessage(
+                full_subject,
+                body,
+                settings.DEFAULT_FROM_EMAIL,
+                [receiver],
+                reply_to=[email],
+            )
+            email_msg.send(fail_silently=False)
+        except Exception:
+            return Response(
+                {"detail": "Failed to send message. Please try again later."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response({"status": "sent"})
 
 
 class MeView(APIView):
