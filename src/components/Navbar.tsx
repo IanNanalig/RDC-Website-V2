@@ -1,10 +1,12 @@
 import { Link, useLocation } from "react-router-dom";
 import { useState, useEffect } from "react";
 import rdcLogo from "../assets/Photo-Corousel/Photos/RDC-NCR LOGO.png";
+import bagongPilipinasLogo from "../assets/Photo-Corousel/Photos/Bagong_Pilipinas_logo.png.webp";
+import mmdaLogo from "../assets/Photo-Corousel/Photos/MMDA_Logo.png";
 
 const navLinks = [
   { to: "/", label: "Home" },
-  { to: "/regional-profile", label: "RegionProfile" },
+  { to: "/regional-profile", label: "Region Profile" },
   { to: "/documents", label: "Publications" },
   { to: "/projects", label: "Dashboard" },
   { to: "/news", label: "News" },
@@ -68,9 +70,27 @@ const Navbar: React.FC = () => {
               <p className="text-xs sm:text-sm">National Capital Region</p>
             </div>
           </div>
-          <div className="text-right hidden md:block">
-            <p className="text-sm">Philippine Standard Time:</p>
-            <p className="text-lg font-semibold">{formatTime(currentTime)}</p>
+          <div className="hidden md:flex items-center gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-16 h-16 sm:w-20 sm:h-20 flex items-center justify-center flex-shrink-0">
+                <img
+                  src={bagongPilipinasLogo}
+                  alt="Bagong Pilipinas Logo"
+                  className="w-[85%] h-[85%] object-contain"
+                />
+              </div>
+              <div className="w-16 h-16 sm:w-20 sm:h-20 flex items-center justify-center flex-shrink-0">
+                <img
+                  src={mmdaLogo}
+                  alt="MMDA Logo"
+                  className="w-[85%] h-[85%] object-contain"
+                />
+              </div>
+            </div>
+            <div className="text-right">
+              <p className="text-xs">Philippine Standard Time:</p>
+              <p className="text-sm font-semibold">{formatTime(currentTime)}</p>
+            </div>
           </div>
         </div>
       </div>
