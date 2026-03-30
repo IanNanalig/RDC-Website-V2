@@ -583,14 +583,14 @@ def _send_setup_email(user: User, token: PasswordSetupToken, purpose: str = "cre
     if is_reset:
         message = (
             "A password reset was approved for your RDC Portal account.\n\n"
-            "Please click the link below to set a new password (valid for 24 hours):\n"
+            "Please click the link below to complete your profile and set a new password (valid for 24 hours):\n"
             f"{link}\n\n"
             "If you did not request this reset, please contact the RDC Portal administrator immediately."
         )
     else:
         message = (
             "Your RDC Portal account has been created.\n\n"
-            "Please click the link below to set your password (valid for 24 hours):\n"
+            "Please click the link below to complete your profile and set your password (valid for 24 hours):\n"
             f"{link}\n\n"
             "If you did not request this account, please contact the RDC Portal administrator."
         )
@@ -872,30 +872,39 @@ class PublicChatAskView(APIView):
             faq.save(update_fields=["count", "last_asked", "last_matched_content", "question_sample"])
 
         if not best or best_score < PUBLIC_CHAT_MIN_SCORE:
-            fallback = (
-                "I can help with questions about the RDC-NCR public website. "
-                "Try asking about News, Publications, Projects, or Regional Profile."
-            )
+            contact_content = content_qs.filter(slug="contact").first()
+            contact_url = contact_content.url if contact_content and contact_content.url else "/contact"
             if language == "tl":
                 fallback = (
-                    "Makakatulong ako sa mga tanong tungkol sa pampublikong website ng RDC-NCR. "
-                    "Subukang magtanong tungkol sa News, Publications, Projects, o Regional Profile."
+                    "Wala akong tiyak na sagot para diyan sa pampublikong website. "
+                    "Para sa espesyal na tanong o paglilinaw, puwede kang magpadala ng mensahe sa Contact page."
                 )
+            else:
+                fallback = (
+                    "That question isn’t covered in the RDC-NCR public website content. "
+                    "For a specific inquiry, please message us via the Contact page."
+                )
+            sources = []
+            if contact_url:
+                sources.append({"title": "Contact", "url": contact_url})
+            if PUBLIC_CONTACT_EMAIL:
+                sources.append({"title": "Email RDC-NCR", "url": f"mailto:{PUBLIC_CONTACT_EMAIL}"})
             alternatives = []
             for score, content in ranked[:2]:
                 if score > 0 and content.url:
                     alternatives.append({"title": content.title, "url": content.url})
             if alternatives:
                 alt_note = (
-                    "These pages might be related to your question."
+                    "These pages might also be related to your question."
                     if language == "en"
-                    else "Baka makatulong ang mga pahinang ito sa tanong mo."
+                    else "Baka makatulong din ang mga pahinang ito sa tanong mo."
                 )
+                sources = alternatives + sources
                 return Response(
                     {
                         "answer": f"{fallback} {alt_note}",
                         "confidence": 0.2,
-                        "sources": alternatives,
+                        "sources": sources,
                         "language": language,
                         "suggested_questions": suggested,
                     }
@@ -904,7 +913,7 @@ class PublicChatAskView(APIView):
                 {
                     "answer": fallback,
                     "confidence": 0.2,
-                    "sources": [],
+                    "sources": sources,
                     "language": language,
                     "suggested_questions": suggested,
                 }
@@ -1791,7 +1800,22 @@ class MeView(APIView):
 
     def get(self, request):
         u = request.user
-        return Response({"id": u.id, "username": u.username, "email": u.email, "role": _frontend_role(u.role)})
+        return Response(
+            {
+                "id": u.id,
+                "username": u.username,
+                "email": u.email,
+                "role": _frontend_role(u.role),
+                "full_name": u.full_name,
+                "agency": u.agency,
+                "agency_head": u.agency_head,
+                "office": u.office,
+                "division": u.division,
+                "position": u.position,
+                "contact_number": u.contact_number,
+                "phone_number": u.phone_number,
+            }
+        )
 
 
 class LoginView(APIView):
@@ -1822,6 +1846,14 @@ class LoginView(APIView):
                     "email": user.email,
                     "role": _frontend_role(user.role),
                     "must_change_password": user.must_change_password,
+                    "full_name": user.full_name,
+                    "agency": user.agency,
+                    "agency_head": user.agency_head,
+                    "office": user.office,
+                    "division": user.division,
+                    "position": user.position,
+                    "contact_number": user.contact_number,
+                    "phone_number": user.phone_number,
                 },
             }
         )
@@ -1829,6 +1861,30 @@ class LoginView(APIView):
 
 class SetupPasswordView(APIView):
     permission_classes = [AllowAny]
+
+    def get(self, request):
+        token_value = (request.query_params.get("token") or "").strip()
+        if not token_value:
+            return Response({"detail": "Token is required."}, status=400)
+        token = PasswordSetupToken.objects.select_related("user").filter(token=token_value).first()
+        if not token or not token.is_valid():
+            return Response({"detail": "Token is invalid or expired."}, status=400)
+        user = token.user
+        return Response(
+            {
+                "email": user.email,
+                "profile": {
+                    "full_name": user.full_name,
+                    "agency": user.agency,
+                    "agency_head": user.agency_head,
+                    "office": user.office,
+                    "division": user.division,
+                    "position": user.position,
+                    "contact_number": user.contact_number,
+                    "phone_number": user.phone_number,
+                },
+            }
+        )
 
     def post(self, request):
         token_value = (request.data.get("token") or "").strip()
@@ -1838,14 +1894,49 @@ class SetupPasswordView(APIView):
         token = PasswordSetupToken.objects.select_related("user").filter(token=token_value).first()
         if not token or not token.is_valid():
             return Response({"detail": "Token is invalid or expired."}, status=400)
+        required_fields = [
+            "full_name",
+            "agency",
+            "agency_head",
+            "office",
+            "division",
+            "position",
+            "contact_number",
+            "phone_number",
+        ]
+        missing = [f for f in required_fields if not str(request.data.get(f) or "").strip()]
+        if missing:
+            return Response({"detail": f"Missing required fields: {', '.join(missing)}"}, status=400)
         policy_error = _validate_password_policy(new_password)
         if policy_error:
             return Response({"detail": policy_error}, status=400)
         user = token.user
+        user.full_name = str(request.data.get("full_name") or "").strip()
+        user.agency = str(request.data.get("agency") or "").strip()
+        user.agency_head = str(request.data.get("agency_head") or "").strip()
+        user.office = str(request.data.get("office") or "").strip()
+        user.division = str(request.data.get("division") or "").strip()
+        user.position = str(request.data.get("position") or "").strip()
+        user.contact_number = str(request.data.get("contact_number") or "").strip()
+        user.phone_number = str(request.data.get("phone_number") or "").strip()
         user.set_password(new_password)
         user.must_change_password = False
         user.last_password_change = timezone.now()
-        user.save(update_fields=["password", "must_change_password", "last_password_change"])
+        user.save(
+            update_fields=[
+                "full_name",
+                "agency",
+                "agency_head",
+                "office",
+                "division",
+                "position",
+                "contact_number",
+                "phone_number",
+                "password",
+                "must_change_password",
+                "last_password_change",
+            ]
+        )
         token.used_at = timezone.now()
         token.save(update_fields=["used_at"])
         return Response({"status": "ok"})

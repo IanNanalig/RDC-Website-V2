@@ -484,6 +484,13 @@ const SimplifiedProjectSubmission: React.FC = () => {
   }, [isEmployee, formReady, draftStorageKey, serverUpdatedAt]);
 
   useEffect(() => {
+    if (!isEmployee || isEditMode || !formReady) return;
+    if (user?.agency && !form.agencyName.trim()) {
+      setForm((prev) => ({ ...prev, agencyName: String(user.agency || "") }));
+    }
+  }, [isEmployee, isEditMode, formReady, user?.agency, form.agencyName]);
+
+  useEffect(() => {
     if (!isEmployee || !formReady || !draftStorageKey) return;
     const timer = window.setTimeout(() => {
       try {

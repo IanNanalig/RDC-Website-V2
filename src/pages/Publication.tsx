@@ -18,6 +18,13 @@ import res2023 from "../assets/Documents/Res_2023_Final_Last_version.pdf";
 import rpmesGuidelines from "../assets/Documents/20231016_RPMES-Operational-Guidelines.pdf";
 import rrpFull from "../assets/Documents/RRP-NCR_with_Investment_Program_for_posting.pdf";
 import rrpAbridged from "../assets/Documents/RRP-NCR_Abridged_version_for_posting.pdf";
+import coverGreenprint2030 from "../assets/PublicationCovers/Greenprint 2030.png";
+import coverGreenprintBrochure from "../assets/PublicationCovers/GP2030 Brochure Cover_page-0001.jpg";
+import coverRdp2023 from "../assets/PublicationCovers/Regional Development Plans 2023-2028.png";
+import coverRdpLegacy from "../assets/PublicationCovers/Regional Development Plans.png";
+import coverRdip from "../assets/PublicationCovers/Regional Development Investment Program .png";
+import coverRdr from "../assets/PublicationCovers/Regional Development Report .png";
+import coverRes from "../assets/PublicationCovers/Regional Economic Situationer .png";
 
 type DocumentItem = {
   id: string;
@@ -26,6 +33,8 @@ type DocumentItem = {
   fileType: string;
   fileSize: string;
   url: string;
+  coverImage?: string;
+  coverAlt?: string;
 };
 
 type Category = {
@@ -53,6 +62,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "6.9 MB",
         url: greenprintFull,
+        coverImage: coverGreenprint2030,
+        coverAlt: "Greenprint 2030 cover",
       },
       {
         id: "gp2",
@@ -61,6 +72,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "2.8 MB",
         url: greenprintBrochure,
+        coverImage: coverGreenprintBrochure,
+        coverAlt: "Greenprint 2030 brochure cover",
       },
     ],
   },
@@ -78,6 +91,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "36.4 MB",
         url: rdp2023Full,
+        coverImage: coverRdp2023,
+        coverAlt: "RDP-NCR 2023-2028 cover",
       },
       {
         id: "rdp2",
@@ -86,6 +101,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "10.6 MB",
         url: rdp2023Abridged,
+        coverImage: coverRdp2023,
+        coverAlt: "RDP-NCR 2023-2028 cover",
       },
       {
         id: "rdp3",
@@ -94,6 +111,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "2.2 MB",
         url: rdp2023Brochure,
+        coverImage: coverRdp2023,
+        coverAlt: "RDP-NCR 2023-2028 cover",
       },
       {
         id: "rdp4",
@@ -102,6 +121,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "8.0 MB",
         url: rdp2017Full,
+        coverImage: coverRdpLegacy,
+        coverAlt: "RDP-NCR 2017-2022 cover",
       },
       {
         id: "rdp5",
@@ -110,6 +131,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "1.1 MB",
         url: rdp2017Abridged,
+        coverImage: coverRdpLegacy,
+        coverAlt: "RDP-NCR 2017-2022 cover",
       },
       {
         id: "rdp6",
@@ -118,6 +141,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "5.3 MB",
         url: rdp2017Brochure,
+        coverImage: coverRdpLegacy,
+        coverAlt: "RDP-NCR 2017-2022 cover",
       },
     ],
   },
@@ -135,6 +160,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "12.4 MB",
         url: rdip2023,
+        coverImage: coverRdip,
+        coverAlt: "RDIP-NCR cover",
       },
       {
         id: "rdip2",
@@ -143,6 +170,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "10.4 MB",
         url: rdip2020,
+        coverImage: coverRdip,
+        coverAlt: "RDIP-NCR cover",
       },
       {
         id: "rdip3",
@@ -151,6 +180,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "1.9 MB",
         url: "https://docs.google.com/document/d/1UlpfePYCH1r_M041K3PaUqnlq0rqLNJ5_EEsPFKf8eQ/edit?tab=t.5yre1br7hyj2",
+        coverImage: coverRdip,
+        coverAlt: "RDIP-NCR cover",
       },
       {
         id: "rdip4",
@@ -159,6 +190,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "7.3 MB",
         url: rdipUpdated2023,
+        coverImage: coverRdip,
+        coverAlt: "RDIP-NCR cover",
       },
     ],
   },
@@ -176,6 +209,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "43.6 MB",
         url: rdr2023,
+        coverImage: coverRdr,
+        coverAlt: "Regional Development Report cover",
       },
     ],
   },
@@ -193,6 +228,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "7.9 MB",
         url: res2021,
+        coverImage: coverRes,
+        coverAlt: "Regional Economic Situationer cover",
       },
       {
         id: "res2",
@@ -201,6 +238,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "10.5 MB",
         url: res2022,
+        coverImage: coverRes,
+        coverAlt: "Regional Economic Situationer cover",
       },
       {
         id: "res4",
@@ -209,6 +248,8 @@ const CATEGORIES: Category[] = [
         fileType: "PDF",
         fileSize: "17.8 MB",
         url: res2023,
+        coverImage: coverRes,
+        coverAlt: "Regional Economic Situationer cover",
       },
     ],
   },
@@ -438,49 +479,34 @@ export default function Publications() {
                   />
 
                   <div className="p-6">
-                    {/* File Icon */}
-                    <div className="w-12 h-12 rounded-lg bg-slate-100 flex items-center justify-center mb-4 group-hover:bg-slate-200 transition">
-                      <svg
-                        className="w-6 h-6 text-slate-600"
-                        fill="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                        <polyline points="14 2 14 8 20 8" />
-                      </svg>
+                    {/* Cover */}
+                    <div className="mb-4">
+                      <div className="w-full aspect-[3/4] rounded-lg overflow-hidden border border-slate-100 bg-slate-50">
+                        {doc.coverImage ? (
+                          <img
+                            src={doc.coverImage}
+                            alt={doc.coverAlt || doc.title}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div
+                            className={`w-full h-full bg-gradient-to-br ${activeCategory.color} flex flex-col items-center justify-center text-white/90 px-4 text-center`}
+                          >
+                            <p className="text-xs uppercase tracking-wider font-semibold text-white/80">
+                              Publication Cover
+                            </p>
+                            <p className="mt-2 text-sm font-semibold line-clamp-4">
+                              {doc.title}
+                            </p>
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     {/* Document Info */}
                     <h3 className="font-bold text-slate-900 mb-2 line-clamp-2 group-hover:text-blue-600 transition">
                       {doc.title}
                     </h3>
-
-                    <div className="flex items-center gap-3 mb-4 text-sm text-slate-600">
-                      <span className="flex items-center gap-1">
-                        <svg
-                          className="w-4 h-4"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          viewBox="0 0 24 24"
-                        >
-                          <rect
-                            x="3"
-                            y="4"
-                            width="18"
-                            height="18"
-                            rx="2"
-                            ry="2"
-                          />
-                          <line x1="16" y1="2" x2="16" y2="6" />
-                          <line x1="8" y1="2" x2="8" y2="6" />
-                          <line x1="3" y1="10" x2="21" y2="10" />
-                        </svg>
-                        {doc.year}
-                      </span>
-                      <span className="w-1 h-1 bg-slate-400 rounded-full" />
-                      <span>{doc.fileSize}</span>
-                    </div>
 
                     {/* File Type Badge */}
                     <div className="mb-4">

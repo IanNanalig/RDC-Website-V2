@@ -53,13 +53,17 @@ const Navbar: React.FC = () => {
         <div className="container mx-auto px-4 flex justify-between items-center">
           <div className="flex items-center gap-4">
             {/* Updated logo container without white background */}
-            <div className="w-16 h-16 sm:w-20 sm:h-20 flex items-center justify-center flex-shrink-0">
+            <Link
+              to="/"
+              className="w-20 h-20 sm:w-24 sm:h-24 flex items-center justify-center flex-shrink-0"
+              aria-label="Go to RDC-NCR Home"
+            >
               <img
                 src={rdcLogo}
                 alt="RDC Logo"
                 className="w-full h-full object-contain"
               />
-            </div>
+            </Link>
             <div>
               <p className="text-xs sm:text-sm font-semibold">
                 Republic of the Philippines
@@ -72,20 +76,26 @@ const Navbar: React.FC = () => {
           </div>
           <div className="hidden md:flex items-center gap-4">
             <div className="flex items-center gap-3">
-              <div className="w-16 h-16 sm:w-20 sm:h-20 flex items-center justify-center flex-shrink-0">
+              <div className="w-20 h-20 sm:w-24 sm:h-24 flex items-center justify-center flex-shrink-0">
                 <img
                   src={bagongPilipinasLogo}
                   alt="Bagong Pilipinas Logo"
                   className="w-[85%] h-[85%] object-contain"
                 />
               </div>
-              <div className="w-16 h-16 sm:w-20 sm:h-20 flex items-center justify-center flex-shrink-0">
+              <a
+                href="https://mmda.gov.ph"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-20 h-20 sm:w-24 sm:h-24 flex items-center justify-center flex-shrink-0"
+                aria-label="Open MMDA website"
+              >
                 <img
                   src={mmdaLogo}
                   alt="MMDA Logo"
                   className="w-[85%] h-[85%] object-contain"
                 />
-              </div>
+              </a>
             </div>
             <div className="text-right">
               <p className="text-xs">Philippine Standard Time:</p>

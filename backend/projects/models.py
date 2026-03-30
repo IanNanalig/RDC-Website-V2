@@ -11,6 +11,14 @@ class User(AbstractUser):
     ]
     email = models.EmailField(unique=True, null=True, blank=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    full_name = models.CharField(max_length=200, blank=True, default="")
+    agency = models.CharField(max_length=200, blank=True, default="")
+    agency_head = models.CharField(max_length=200, blank=True, default="")
+    office = models.CharField(max_length=200, blank=True, default="")
+    division = models.CharField(max_length=200, blank=True, default="")
+    position = models.CharField(max_length=200, blank=True, default="")
+    contact_number = models.CharField(max_length=50, blank=True, default="")
+    phone_number = models.CharField(max_length=50, blank=True, default="")
     created_by = models.ForeignKey(
         "self",
         on_delete=models.SET_NULL,

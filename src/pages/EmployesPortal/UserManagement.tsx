@@ -463,12 +463,29 @@ const UserManagement = () => {
         <div className="portal-card">
           <div className="portal-card-header"><h2 className="text-lg font-semibold">Create Account</h2></div>
           <form onSubmit={createAccount} className="portal-card-body grid grid-cols-1 xl:grid-cols-2 gap-3">
-            <input className="border rounded-xl px-3 py-2" type="email" placeholder="Email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} required />
-            <select className="border rounded-xl px-3 py-2" value={form.role} onChange={(e) => setForm((p) => ({ ...p, role: e.target.value }))}>
-              <option value="contributor">Contributor</option>
-              <option value="validator">Validator</option>
-              <option value="admin">Admin</option>
-            </select>
+            <label className="block">
+              <span className="text-sm text-slate-700">Email</span>
+              <input
+                className="mt-1 border rounded-xl px-3 py-2 w-full"
+                type="email"
+                placeholder="Email"
+                value={form.email}
+                onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))}
+                required
+              />
+            </label>
+            <label className="block">
+              <span className="text-sm text-slate-700">User Type</span>
+              <select
+                className="mt-1 border rounded-xl px-3 py-2 w-full"
+                value={form.role}
+                onChange={(e) => setForm((p) => ({ ...p, role: e.target.value }))}
+              >
+                <option value="contributor">Contributor</option>
+                <option value="validator">Validator</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
             <button type="submit" className="portal-btn portal-btn-primary xl:col-span-2">Create User</button>
           </form>
         </div>
@@ -566,13 +583,14 @@ const UserManagement = () => {
             ) : (
               <table className="portal-table">
                 <thead>
-                  <tr><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th></tr>
+                  <tr><th>Username</th><th>Email</th><th>Agency</th><th>Role</th><th>Status</th><th>Actions</th></tr>
                 </thead>
                 <tbody>
                   {users.map((u) => (
                     <tr key={u.id}>
                       <td>{u.username}</td>
                       <td>{u.email || "-"}</td>
+                      <td>{(u as any).agency || "-"}</td>
                       <td>{labelRole(u.role)}</td>
                       <td>
                         <span className={`px-2 py-1 rounded-full text-xs font-semibold ${u.is_active ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-700"}`}>

@@ -7,7 +7,22 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["id", "username", "email", "role", "is_active", "password"]
+        fields = [
+            "id",
+            "username",
+            "email",
+            "role",
+            "is_active",
+            "password",
+            "full_name",
+            "agency",
+            "agency_head",
+            "office",
+            "division",
+            "position",
+            "contact_number",
+            "phone_number",
+        ]
 
     def create(self, validated_data):
         password = validated_data.pop("password", None) or "ChangeMe123!"
@@ -88,6 +103,8 @@ class ProjectSerializer(serializers.ModelSerializer):
     def get_submitted_by_name(self, obj):
         if not obj.created_by:
             return ""
+        if getattr(obj.created_by, "full_name", "").strip():
+            return obj.created_by.full_name
         if obj.created_by.get_full_name():
             return obj.created_by.get_full_name()
         return obj.created_by.username
