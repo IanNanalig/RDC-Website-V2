@@ -26,13 +26,21 @@ from .models import (
     PasswordResetRequest,
     PasswordSetupToken,
     Project,
+    ProjectComment,
     PublicChatFAQ,
     PublicContent,
     SystemSetting,
     User,
     UserActivity,
 )
-from .serializers import AccessRequestSerializer, PasswordResetRequestSerializer, ProjectSerializer, UserActivitySerializer, UserSerializer
+from .serializers import (
+    AccessRequestSerializer,
+    PasswordResetRequestSerializer,
+    ProjectCommentSerializer,
+    ProjectSerializer,
+    UserActivitySerializer,
+    UserSerializer,
+)
 
 
 ENCODING_WINDOW_KEY = "portal_encoding_window"
@@ -1059,6 +1067,128 @@ def _json_diff(before, after, path=""):
     return changes
 
 
+def _parse_year_value(value):
+    try:
+        n = int(str(value or "").strip())
+    except Exception:
+        return None
+    if n < 1900 or n > 2200:
+        return None
+    return n
+
+
+def _validate_simplified_funding(profile_data):
+    if not isinstance(profile_data, dict):
+        return None
+    simplified = profile_data.get("simplified_form")
+    if not isinstance(simplified, dict):
+        return None
+    start = _parse_year_value(simplified.get("startYear"))
+    end = _parse_year_value(simplified.get("endYear"))
+    if start is None or end is None:
+        return "Start Year and End Year must be valid years."
+    start, end = (start, end) if start <= end else (end, start)
+    if end - start > 15:
+        return "Year range is too large (max 15 years)."
+    allowed = set()
+    if start <= 2022:
+        allowed.add("2022_prior")
+        first = max(2023, start)
+    else:
+        first = start
+    for year in range(first, end + 1):
+        allowed.add(str(year))
+    for field in ("fundingRequirementByYear", "actualFundingByYear"):
+        raw = simplified.get(field) or {}
+        if not isinstance(raw, dict):
+            return f"{field} must be an object."
+        for key in raw.keys():
+            key_str = str(key)
+            if key_str not in allowed:
+                return f"{field} contains out-of-range key: {key_str}."
+    return None
+
+
+def _normalize_simplified_field_path(path: str) -> str:
+    if path.startswith("sdgSelections."):
+        return "sdgSelections"
+    return path
+
+
+def _collect_simplified_field_paths(simplified):
+    if not isinstance(simplified, dict):
+        return set()
+    paths = set()
+    for key, value in simplified.items():
+        if key in ("fundingRequirementTotal", "actualApprovedTotal"):
+            continue
+        if key in ("fundingRequirementByYear", "actualFundingByYear") and isinstance(value, dict):
+            for sub_key in value.keys():
+                paths.add(f"{key}.{sub_key}")
+        else:
+            paths.add(str(key))
+    return paths
+
+
+def _apply_simplified_meta(incoming_profile, existing_profile, user):
+    if not isinstance(incoming_profile, dict):
+        return incoming_profile, []
+    simplified = incoming_profile.get("simplified_form")
+    if not isinstance(simplified, dict):
+        return incoming_profile, []
+    previous = {}
+    if isinstance(existing_profile, dict) and isinstance(existing_profile.get("simplified_form"), dict):
+        previous = existing_profile.get("simplified_form") or {}
+
+    diff = _json_diff(previous, simplified)
+    changed_fields = []
+    before_values = {}
+    for entry in diff:
+        raw_field = str(entry.get("field") or "")
+        if not raw_field or raw_field == "(root)":
+            continue
+        if raw_field in ("fundingRequirementTotal", "actualApprovedTotal"):
+            continue
+        normalized = _normalize_simplified_field_path(raw_field)
+        if normalized not in before_values:
+            before_values[normalized] = str(entry.get("before") or "")
+        if normalized not in changed_fields:
+            changed_fields.append(normalized)
+
+    valid_paths = _collect_simplified_field_paths(simplified)
+    meta_source = incoming_profile.get("simplified_form_meta")
+    if not isinstance(meta_source, dict) and isinstance(existing_profile, dict):
+        meta_source = existing_profile.get("simplified_form_meta")
+    field_edits = {}
+    if isinstance(meta_source, dict):
+        edits_raw = meta_source.get("field_edits")
+        if isinstance(edits_raw, dict):
+            for key, value in edits_raw.items():
+                if str(key) in valid_paths:
+                    field_edits[str(key)] = value
+
+    if changed_fields:
+        display_name = getattr(user, "full_name", "").strip() or user.get_full_name() or user.username
+        timestamp = timezone.now().isoformat()
+        for field in changed_fields:
+            field_edits[field] = {
+                "by": user.username,
+                "name": display_name,
+                "at": timestamp,
+                "before": before_values.get(field, ""),
+            }
+        incoming_profile["simplified_form_meta"] = {
+            "field_edits": field_edits,
+            "last_edit": {"by": user.username, "name": display_name, "at": timestamp},
+        }
+    else:
+        incoming_profile["simplified_form_meta"] = {
+            "field_edits": field_edits,
+            "last_edit": meta_source.get("last_edit") if isinstance(meta_source, dict) else {},
+        }
+    return incoming_profile, changed_fields
+
+
 class ProjectPermission(permissions.BasePermission):
     def has_permission(self, request, view):
         return bool(request.user and request.user.is_authenticated)
@@ -1068,8 +1198,20 @@ class ProjectPermission(permissions.BasePermission):
         if role in ("admin", "validator"):
             return True
         if request.method in permissions.SAFE_METHODS:
-            return obj.created_by_id == request.user.id
-        return obj.created_by_id == request.user.id
+            if obj.created_by_id == request.user.id:
+                return True
+            if role in ("staff", "employee"):
+                user_agency = (getattr(request.user, "agency", "") or "").strip().lower()
+                project_agency = (getattr(obj, "agency", "") or "").strip().lower()
+                return bool(user_agency and user_agency == project_agency)
+            return False
+        if obj.created_by_id == request.user.id:
+            return True
+        if role in ("staff", "employee") and getattr(obj, "status", "") == "planning":
+            user_agency = (getattr(request.user, "agency", "") or "").strip().lower()
+            project_agency = (getattr(obj, "agency", "") or "").strip().lower()
+            return bool(user_agency and user_agency == project_agency)
+        return False
 
 
 class EmployeeRolePermission(permissions.BasePermission):
@@ -1150,6 +1292,10 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 return Response({"detail": "edited_profile_data must be a JSON object"}, status=400)
             edited_profile = incoming_edited
 
+        funding_error = _validate_simplified_funding(edited_profile)
+        if funding_error:
+            return Response({"detail": funding_error}, status=400)
+
         edited_fields = _json_diff(contributor_snapshot, edited_profile)
         review_notes = str(request.data.get("comment") or request.data.get("notes") or "").strip()
         reviewed_at = timezone.now().isoformat()
@@ -1225,6 +1371,37 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         _log_activity(request, "project_archive", project, {"archived": True})
         return Response({"status": "archived"})
 
+    @action(detail=True, methods=["get", "post"])
+    def comments(self, request, pk=None):
+        project = self.get_object()
+        role = getattr(request.user, "role", "")
+        if role not in ("admin", "validator", "staff"):
+            raise PermissionDenied("Unauthorized")
+        if role == "staff":
+            user_agency = (request.user.agency or "").strip()
+            project_agency = (project.agency or "").strip()
+            if not user_agency or user_agency.lower() != project_agency.lower():
+                raise PermissionDenied("Only same-agency contributors can access comments.")
+
+        if request.method.lower() == "get":
+            qs = ProjectComment.objects.filter(project=project).select_related("user")
+            serializer = ProjectCommentSerializer(qs, many=True)
+            return Response(serializer.data)
+
+        comment_text = str(request.data.get("comment") or "").strip()
+        if not comment_text:
+            return Response({"detail": "Comment is required."}, status=400)
+        comment = ProjectComment.objects.create(
+            project=project,
+            user=request.user,
+            role=role,
+            agency=request.user.agency or "",
+            comment=comment_text,
+        )
+        _log_activity(request, "project_comment", project, {"comment": comment_text[:160]})
+        serializer = ProjectCommentSerializer(comment)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
     def destroy(self, request, *args, **kwargs):
         if getattr(request.user, "role", "") != "admin":
             raise PermissionDenied("Only admin can delete projects")
@@ -1240,6 +1417,9 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
     permission_classes = [IsAuthenticated, EmployeeRolePermission, ProjectPermission]
 
     def get_queryset(self):
+        agency = (self.request.user.agency or "").strip()
+        if agency:
+            return Project.objects.filter(agency__iexact=agency).order_by("-created_at")
         return Project.objects.filter(created_by=self.request.user).order_by("-created_at")
 
     def _ensure_encoding_open(self):
@@ -1253,26 +1433,81 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
 
     def create(self, request, *args, **kwargs):
         self._ensure_encoding_open()
-        response = super().create(request, *args, **kwargs)
-        if response.status_code == status.HTTP_201_CREATED:
-            project_id = response.data.get("id")
-            project = Project.objects.filter(id=project_id).first()
-            _log_activity(request, "project_create", project, {"status": response.data.get("status")})
-        return response
+        data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+        changed_fields = []
+        profile_data = data.get("profile_data")
+        if isinstance(profile_data, str):
+            try:
+                profile_data = json.loads(profile_data)
+            except Exception:
+                profile_data = None
+        if isinstance(profile_data, dict):
+            updated_profile, changed_fields = _apply_simplified_meta(profile_data, {}, request.user)
+            data["profile_data"] = updated_profile
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        project = serializer.instance
+        _log_activity(
+            request,
+            "project_create",
+            project,
+            {"status": serializer.data.get("status"), "edited_fields_count": len(changed_fields), "changed_fields": changed_fields[:10]},
+        )
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     def update(self, request, *args, **kwargs):
         self._ensure_encoding_open()
-        self._ensure_mutable_project(self.get_object())
-        response = super().update(request, *args, **kwargs)
-        _log_activity(request, "project_update", self.get_object(), {"status": response.data.get("status") if hasattr(response, "data") else ""})
-        return response
+        project = self.get_object()
+        self._ensure_mutable_project(project)
+        data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+        changed_fields = []
+        profile_data = data.get("profile_data")
+        if isinstance(profile_data, str):
+            try:
+                profile_data = json.loads(profile_data)
+            except Exception:
+                profile_data = None
+        if isinstance(profile_data, dict):
+            updated_profile, changed_fields = _apply_simplified_meta(profile_data, project.profile_data or {}, request.user)
+            data["profile_data"] = updated_profile
+        serializer = self.get_serializer(project, data=data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        _log_activity(
+            request,
+            "project_update",
+            project,
+            {"status": serializer.data.get("status") if hasattr(serializer, "data") else "", "edited_fields_count": len(changed_fields), "changed_fields": changed_fields[:10]},
+        )
+        return Response(serializer.data)
 
     def partial_update(self, request, *args, **kwargs):
         self._ensure_encoding_open()
-        self._ensure_mutable_project(self.get_object())
-        response = super().partial_update(request, *args, **kwargs)
-        _log_activity(request, "project_update", self.get_object(), {"partial": True})
-        return response
+        project = self.get_object()
+        self._ensure_mutable_project(project)
+        data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+        changed_fields = []
+        profile_data = data.get("profile_data")
+        if isinstance(profile_data, str):
+            try:
+                profile_data = json.loads(profile_data)
+            except Exception:
+                profile_data = None
+        if isinstance(profile_data, dict):
+            updated_profile, changed_fields = _apply_simplified_meta(profile_data, project.profile_data or {}, request.user)
+            data["profile_data"] = updated_profile
+        serializer = self.get_serializer(project, data=data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        _log_activity(
+            request,
+            "project_update",
+            project,
+            {"partial": True, "edited_fields_count": len(changed_fields), "changed_fields": changed_fields[:10]},
+        )
+        return Response(serializer.data)
 
     def destroy(self, request, *args, **kwargs):
         raise PermissionDenied("Only admin can delete projects")
@@ -1966,5 +2201,28 @@ class AdminActivityView(APIView):
             except Exception:
                 limit = 50
 
+        serializer = UserActivitySerializer(qs[:limit], many=True)
+        return Response(serializer.data)
+
+
+class AgencyActivityView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        agency = (request.user.agency or "").strip()
+        if not agency:
+            return Response([])
+        project_events = {"project_create", "project_update", "project_submit", "project_comment"}
+        qs = UserActivity.objects.select_related("user", "project").filter(
+            user__agency__iexact=agency,
+            event__in=project_events,
+        )
+        limit = 10
+        raw_limit = request.query_params.get("limit")
+        if raw_limit:
+            try:
+                limit = max(1, min(30, int(raw_limit)))
+            except Exception:
+                limit = 10
         serializer = UserActivitySerializer(qs[:limit], many=True)
         return Response(serializer.data)

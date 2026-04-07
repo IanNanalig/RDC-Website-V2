@@ -38,6 +38,30 @@ const formatReviewStatus = (raw: string) => {
   return normalized.replaceAll("_", " ");
 };
 
+const formatFundingEntries = (raw?: Record<string, string>, legacy?: Record<string, any>, prefix?: "fr" | "aa") => {
+  const entries: Array<[string, string]> = [];
+  if (raw && typeof raw === "object") {
+    Object.entries(raw).forEach(([key, value]) => entries.push([key, String(value ?? "")]));
+  }
+  if (entries.length === 0 && legacy && prefix) {
+    const priorKey = `${prefix}2022Prior`;
+    if (legacy[priorKey] !== undefined && legacy[priorKey] !== null && String(legacy[priorKey]).trim() !== "") {
+      entries.push(["2022_prior", String(legacy[priorKey])]);
+    }
+    for (let year = 2023; year <= 2028; year += 1) {
+      const key = `${prefix}${year}`;
+      if (legacy[key] !== undefined && legacy[key] !== null && String(legacy[key]).trim() !== "") {
+        entries.push([String(year), String(legacy[key])]);
+      }
+    }
+  }
+  const prior = entries.filter(([key]) => key === "2022_prior");
+  const years = entries
+    .filter(([key]) => key !== "2022_prior")
+    .sort((a, b) => Number(a[0]) - Number(b[0]));
+  return [...prior, ...years] as Array<[string, string]>;
+};
+
 const ProjectReview: React.FC = () => {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -190,16 +214,32 @@ const ProjectReview: React.FC = () => {
                 <div className="grid md:grid-cols-2 gap-3">
                   <div className="border rounded p-3">
                     <p className="font-medium mb-2">Funding Requirement</p>
-                    <p>2022 & Prior: {simplified?.fr2022Prior || "0"} | 2023: {simplified?.fr2023 || "0"} | 2024: {simplified?.fr2024 || "0"}</p>
-                    <p>2025: {simplified?.fr2025 || "0"} | 2026: {simplified?.fr2026 || "0"} | 2027: {simplified?.fr2027 || "0"}</p>
-                    <p>2028: {simplified?.fr2028 || "0"} | Continuing: {simplified?.frContinuing || "0"}</p>
+                    {formatFundingEntries(simplified?.fundingRequirementByYear, simplified, "fr").length === 0 ? (
+                      <p className="text-slate-500">No funding entries.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {formatFundingEntries(simplified?.fundingRequirementByYear, simplified, "fr").map(([key, value]) => (
+                          <p key={`fr-${key}`}>
+                            {key === "2022_prior" ? "2022 & Prior" : key}: {value || "0"}
+                          </p>
+                        ))}
+                      </div>
+                    )}
                     <p className="mt-1">Total: {Number(simplified?.fundingRequirementTotal || 0).toLocaleString()}</p>
                   </div>
                   <div className="border rounded p-3">
                     <p className="font-medium mb-2">Actual/Approved Funding</p>
-                    <p>2022 & Prior: {simplified?.aa2022Prior || "0"} | 2023: {simplified?.aa2023 || "0"} | 2024: {simplified?.aa2024 || "0"}</p>
-                    <p>2025: {simplified?.aa2025 || "0"} | 2026: {simplified?.aa2026 || "0"} | 2027: {simplified?.aa2027 || "0"}</p>
-                    <p>2028: {simplified?.aa2028 || "0"} | Continuing: {simplified?.aaContinuing || "0"}</p>
+                    {formatFundingEntries(simplified?.actualFundingByYear, simplified, "aa").length === 0 ? (
+                      <p className="text-slate-500">No funding entries.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {formatFundingEntries(simplified?.actualFundingByYear, simplified, "aa").map(([key, value]) => (
+                          <p key={`aa-${key}`}>
+                            {key === "2022_prior" ? "2022 & Prior" : key}: {value || "0"}
+                          </p>
+                        ))}
+                      </div>
+                    )}
                     <p className="mt-1">Total: {Number(simplified?.actualApprovedTotal || 0).toLocaleString()}</p>
                   </div>
                 </div>

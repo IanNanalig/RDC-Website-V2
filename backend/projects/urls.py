@@ -15,6 +15,7 @@ urlpatterns = [
     path("", include(router.urls)),
     path("dashboard/", views.DashboardView.as_view(), name="dashboard"),
     path("admin/activity/", views.AdminActivityView.as_view(), name="admin-activity"),
+    path("agency/activity/", views.AgencyActivityView.as_view(), name="agency-activity"),
     path("encoding-window/", views.EncodingWindowView.as_view(), name="encoding-window"),
     path("analytics/", views.AnalyticsView.as_view(), name="analytics"),
     path("contact/", views.PublicContactView.as_view(), name="public-contact"),

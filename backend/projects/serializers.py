@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import AccessRequest, PasswordResetRequest, Project, User, UserActivity
+from .models import AccessRequest, PasswordResetRequest, Project, ProjectComment, User, UserActivity
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -124,7 +124,45 @@ class ProjectSerializer(serializers.ModelSerializer):
             return None
         if not isinstance(value, dict):
             raise serializers.ValidationError("profile_data must be a JSON object.")
+        simplified = value.get("simplified_form")
+        if isinstance(simplified, dict):
+            self._validate_simplified_funding(simplified)
         return value
+
+    def _parse_year(self, value):
+        try:
+            n = int(str(value or "").strip())
+        except Exception:
+            return None
+        if n < 1900 or n > 2200:
+            return None
+        return n
+
+    def _validate_simplified_funding(self, simplified):
+        start = self._parse_year(simplified.get("startYear"))
+        end = self._parse_year(simplified.get("endYear"))
+        if start is None or end is None:
+            raise serializers.ValidationError("Start Year and End Year must be valid years.")
+        start, end = (start, end) if start <= end else (end, start)
+        if end - start > 15:
+            raise serializers.ValidationError("Year range is too large (max 15 years).")
+        allowed = set()
+        if start <= 2022:
+            allowed.add("2022_prior")
+            first = max(2023, start)
+        else:
+            first = start
+        for year in range(first, end + 1):
+            allowed.add(str(year))
+
+        for field in ("fundingRequirementByYear", "actualFundingByYear"):
+            raw = simplified.get(field) or {}
+            if not isinstance(raw, dict):
+                raise serializers.ValidationError(f"{field} must be an object.")
+            for key in raw.keys():
+                key_str = str(key)
+                if key_str not in allowed:
+                    raise serializers.ValidationError(f"{field} contains out-of-range key: {key_str}.")
 
     def create(self, validated_data):
         validated_data["created_by"] = self.context["request"].user
@@ -164,6 +202,7 @@ class AccessRequestSerializer(serializers.ModelSerializer):
 
 class UserActivitySerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username", read_only=True)
+    full_name = serializers.SerializerMethodField()
     project_title = serializers.SerializerMethodField()
 
     class Meta:
@@ -171,6 +210,7 @@ class UserActivitySerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "username",
+            "full_name",
             "role",
             "event",
             "project",
@@ -185,6 +225,35 @@ class UserActivitySerializer(serializers.ModelSerializer):
         if not obj.project:
             return ""
         return obj.project.title
+
+    def get_full_name(self, obj):
+        user = getattr(obj, "user", None)
+        if not user:
+            return ""
+        if getattr(user, "full_name", "").strip():
+            return user.full_name
+        full = user.get_full_name()
+        return full or user.username
+
+
+class ProjectCommentSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source="user.username", read_only=True)
+    full_name = serializers.CharField(source="user.full_name", read_only=True)
+
+    class Meta:
+        model = ProjectComment
+        fields = [
+            "id",
+            "project",
+            "user",
+            "username",
+            "full_name",
+            "role",
+            "agency",
+            "comment",
+            "created_at",
+        ]
+        read_only_fields = ["id", "project", "user", "username", "full_name", "role", "agency", "created_at"]
 
 
 class PasswordResetRequestSerializer(serializers.ModelSerializer):

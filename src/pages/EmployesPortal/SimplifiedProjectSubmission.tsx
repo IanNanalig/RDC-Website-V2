@@ -15,22 +15,8 @@ type SimplifiedForm = {
   objective: string;
   startYear: string;
   endYear: string;
-  fr2022Prior: string;
-  fr2023: string;
-  fr2024: string;
-  fr2025: string;
-  fr2026: string;
-  fr2027: string;
-  fr2028: string;
-  frContinuing: string;
-  aa2022Prior: string;
-  aa2023: string;
-  aa2024: string;
-  aa2025: string;
-  aa2026: string;
-  aa2027: string;
-  aa2028: string;
-  aaContinuing: string;
+  fundingRequirementByYear: Record<string, string>;
+  actualFundingByYear: Record<string, string>;
   fundingSource: string;
   uacsCode: string;
   rdcEndorsed: YesNo | "";
@@ -49,6 +35,23 @@ type SimplifiedForm = {
   remarks: string;
 };
 
+type ProjectComment = {
+  id: number;
+  comment: string;
+  created_at: string;
+  username?: string;
+  full_name?: string;
+  role?: string;
+  agency?: string;
+};
+
+type EditMeta = {
+  by?: string;
+  name?: string;
+  at?: string;
+  before?: string;
+};
+
 type DiffField = {
   before: string;
   after: string;
@@ -61,24 +64,10 @@ const initialForm: SimplifiedForm = {
   location: "",
   description: "",
   objective: "",
-  startYear: "2025",
-  endYear: "2025",
-  fr2022Prior: "",
-  fr2023: "",
-  fr2024: "",
-  fr2025: "",
-  fr2026: "",
-  fr2027: "",
-  fr2028: "",
-  frContinuing: "",
-  aa2022Prior: "",
-  aa2023: "",
-  aa2024: "",
-  aa2025: "",
-  aa2026: "",
-  aa2027: "",
-  aa2028: "",
-  aaContinuing: "",
+  startYear: "",
+  endYear: "",
+  fundingRequirementByYear: {},
+  actualFundingByYear: {},
   fundingSource: "",
   uacsCode: "",
   rdcEndorsed: "",
@@ -201,7 +190,40 @@ const normalizeSimplifiedDiffPath = (path: string) => {
   if (!next) return "";
   if (next.startsWith("profile_data.")) next = next.slice("profile_data.".length);
   if (next.startsWith("simplified_form.")) next = next.slice("simplified_form.".length);
-  next = next.replace(/\.\d+(?=\.|$)/g, "");
+  if (!next.startsWith("fundingRequirementByYear.") && !next.startsWith("actualFundingByYear.")) {
+    next = next.replace(/\.\d+(?=\.|$)/g, "");
+  }
+  return next;
+};
+
+const normalizeFundingMap = (
+  raw: unknown,
+  legacy: Record<string, unknown>,
+  prefix: "fr" | "aa",
+): Record<string, string> => {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const next: Record<string, string> = {};
+    Object.entries(raw as Record<string, unknown>).forEach(([key, value]) => {
+      if (value === undefined || value === null) return;
+      next[String(key)] = String(value);
+    });
+    return next;
+  }
+  const next: Record<string, string> = {};
+  const priorKey = `${prefix}2022Prior`;
+  if (Object.prototype.hasOwnProperty.call(legacy, priorKey)) {
+    const value = legacy[priorKey];
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      next["2022_prior"] = String(value);
+    }
+  }
+  for (let year = 2023; year <= 2028; year += 1) {
+    const key = `${prefix}${year}`;
+    if (!Object.prototype.hasOwnProperty.call(legacy, key)) continue;
+    const value = legacy[key];
+    if (value === undefined || value === null || String(value).trim() === "") continue;
+    next[String(year)] = String(value);
+  }
   return next;
 };
 
@@ -211,11 +233,18 @@ const TextField: React.FC<{
   onChange: (v: string) => void;
   required?: boolean;
   diffBefore?: string;
-}> = ({ label, value, onChange, required, diffBefore }) => (
+  editMeta?: EditMeta;
+}> = ({ label, value, onChange, required, diffBefore, editMeta }) => {
+  const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
+  const metaLabel = hasEditMeta
+    ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
+    : "";
+  const showPrevious = hasEditMeta && editMeta?.before !== undefined;
+  return (
   <label className="block">
     <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
     <input
-      className={`mt-1 w-full border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : ""}`}
+      className={`mt-1 w-full border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       required={required}
@@ -223,8 +252,15 @@ const TextField: React.FC<{
     {diffBefore !== undefined && (
       <p className="text-xs text-amber-700 mt-1">Original: {diffBefore || "(empty)"}</p>
     )}
+    {showPrevious && (
+      <p className="text-xs text-cyan-700 mt-1">Original: {editMeta?.before || "(empty)"}</p>
+    )}
+    {hasEditMeta && (
+      <p className="text-xs text-cyan-700 mt-1">{metaLabel}</p>
+    )}
   </label>
-);
+  );
+};
 
 const TextAreaField: React.FC<{
   label: string;
@@ -233,11 +269,18 @@ const TextAreaField: React.FC<{
   required?: boolean;
   rows?: number;
   diffBefore?: string;
-}> = ({ label, value, onChange, required, rows = 3, diffBefore }) => (
+  editMeta?: EditMeta;
+}> = ({ label, value, onChange, required, rows = 3, diffBefore, editMeta }) => {
+  const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
+  const metaLabel = hasEditMeta
+    ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
+    : "";
+  const showPrevious = hasEditMeta && editMeta?.before !== undefined;
+  return (
   <label className="block">
     <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
     <textarea
-      className={`mt-1 w-full border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : ""}`}
+      className={`mt-1 w-full border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
       rows={rows}
       value={value}
       onChange={(e) => onChange(e.target.value)}
@@ -246,8 +289,15 @@ const TextAreaField: React.FC<{
     {diffBefore !== undefined && (
       <p className="text-xs text-amber-700 mt-1">Original: {diffBefore || "(empty)"}</p>
     )}
+      {showPrevious && (
+        <p className="text-xs text-cyan-700 mt-1">Original: {editMeta?.before || "(empty)"}</p>
+      )}
+    {hasEditMeta && (
+      <p className="text-xs text-cyan-700 mt-1">{metaLabel}</p>
+    )}
   </label>
-);
+  );
+};
 
 const NumberField: React.FC<{
   label: string;
@@ -256,7 +306,14 @@ const NumberField: React.FC<{
   required?: boolean;
   disabled?: boolean;
   diffBefore?: string;
-}> = ({ label, value, onChange, required, disabled, diffBefore }) => (
+  editMeta?: EditMeta;
+}> = ({ label, value, onChange, required, disabled, diffBefore, editMeta }) => {
+  const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
+  const metaLabel = hasEditMeta
+    ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
+    : "";
+  const showPrevious = hasEditMeta && editMeta?.before !== undefined;
+  return (
   <label className="block">
     <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
     <input
@@ -264,7 +321,7 @@ const NumberField: React.FC<{
       inputMode="decimal"
       step="any"
       min="0"
-      className={`mt-1 w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-400" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : ""}`}
+      className={`mt-1 w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-400" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       required={required}
@@ -273,8 +330,15 @@ const NumberField: React.FC<{
     {diffBefore !== undefined && (
       <p className="text-xs text-amber-700 mt-1">Original: {diffBefore || "(empty)"}</p>
     )}
+    {showPrevious && (
+      <p className="text-xs text-cyan-700 mt-1">Original: {editMeta?.before || "(empty)"}</p>
+    )}
+    {hasEditMeta && (
+      <p className="text-xs text-cyan-700 mt-1">{metaLabel}</p>
+    )}
   </label>
-);
+  );
+};
 
 const CheckboxGroup: React.FC<{
   label: string;
@@ -282,10 +346,17 @@ const CheckboxGroup: React.FC<{
   values: string[];
   onChange: (values: string[]) => void;
   diffBefore?: string;
-}> = ({ label, options, values, onChange, diffBefore }) => (
+  editMeta?: EditMeta;
+}> = ({ label, options, values, onChange, diffBefore, editMeta }) => {
+  const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
+  const metaLabel = hasEditMeta
+    ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
+    : "";
+  const showPrevious = hasEditMeta && editMeta?.before !== undefined;
+  return (
   <div>
     <p className="text-sm text-slate-700 mb-1">{label}</p>
-    <div className={`grid sm:grid-cols-2 lg:grid-cols-3 gap-2 border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : ""}`}>
+    <div className={`grid sm:grid-cols-2 lg:grid-cols-3 gap-2 border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}>
       {options.map((option) => {
         const checked = values.includes(option);
         return (
@@ -307,8 +378,15 @@ const CheckboxGroup: React.FC<{
     {diffBefore !== undefined && (
       <p className="text-xs text-amber-700 mt-1">Original: {diffBefore || "(empty)"}</p>
     )}
+    {showPrevious && (
+      <p className="text-xs text-cyan-700 mt-1">Original: {editMeta?.before || "(empty)"}</p>
+    )}
+    {hasEditMeta && (
+      <p className="text-xs text-cyan-700 mt-1">{metaLabel}</p>
+    )}
   </div>
-);
+  );
+};
 
 const SelectField: React.FC<{
   label: string;
@@ -317,11 +395,18 @@ const SelectField: React.FC<{
   options: string[];
   required?: boolean;
   diffBefore?: string;
-}> = ({ label, value, onChange, options, required, diffBefore }) => (
+  editMeta?: EditMeta;
+}> = ({ label, value, onChange, options, required, diffBefore, editMeta }) => {
+  const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
+  const metaLabel = hasEditMeta
+    ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
+    : "";
+  const showPrevious = hasEditMeta && editMeta?.before !== undefined;
+  return (
   <label className="block">
     <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
     <select
-      className={`mt-1 w-full border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : ""}`}
+      className={`mt-1 w-full border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       required={required}
@@ -332,8 +417,15 @@ const SelectField: React.FC<{
     {diffBefore !== undefined && (
       <p className="text-xs text-amber-700 mt-1">Original: {diffBefore || "(empty)"}</p>
     )}
+    {showPrevious && (
+      <p className="text-xs text-cyan-700 mt-1">Original: {editMeta?.before || "(empty)"}</p>
+    )}
+    {hasEditMeta && (
+      <p className="text-xs text-cyan-700 mt-1">{metaLabel}</p>
+    )}
   </label>
-);
+  );
+};
 
 const SimplifiedProjectSubmission: React.FC = () => {
   const navigate = useNavigate();
@@ -356,6 +448,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const [validatorReviewStatus, setValidatorReviewStatus] = useState("");
   const [diffMap, setDiffMap] = useState<Record<string, DiffField>>({});
   const [diffEntries, setDiffEntries] = useState<Array<{ field: string; before: string; after: string }>>([]);
+  const [fieldEditMeta, setFieldEditMeta] = useState<Record<string, EditMeta>>({});
+  const [comments, setComments] = useState<ProjectComment[]>([]);
+  const [commentInput, setCommentInput] = useState("");
+  const [commentLoading, setCommentLoading] = useState(false);
   const isValidator = user?.role === "validator";
   const isAdmin = user?.role === "admin";
   const isEmployee = user?.role === "employee";
@@ -370,7 +466,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       user?.role ||
       "";
     if (!identity) return "";
-    return `simplified_submission_draft_v1_${identity}_${id || "new"}`;
+    return `simplified_submission_draft_v3_${identity}_${id || "new"}`;
   }, [user?.username, user?.email, user?.id, user?.role, id]);
 
   useEffect(() => {
@@ -404,6 +500,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
           setServerUpdatedAt(String(data.updated_at));
         }
         const pd = (data?.profile_data || {}) as Record<string, unknown>;
+        const metaRaw = pd?.simplified_form_meta;
+        const editsRaw =
+          metaRaw && typeof metaRaw === "object" && (metaRaw as Record<string, unknown>).field_edits;
+        if (editsRaw && typeof editsRaw === "object") {
+          setFieldEditMeta(editsRaw as Record<string, EditMeta>);
+        } else {
+          setFieldEditMeta({});
+        }
         const validatorReview = pd?.validator_review as Record<string, unknown> | undefined;
         const contributorSnapshot =
           pd?.contributor_snapshot && typeof pd.contributor_snapshot === "object"
@@ -418,10 +522,22 @@ const SimplifiedProjectSubmission: React.FC = () => {
           : isAdmin
           ? (isDiffMode ? workingCopy : contributorSnapshot)
           : pd;
-        const simplified = (sourceData.simplified_form || sourceData) as Partial<SimplifiedForm>;
+        const simplified = (sourceData.simplified_form || sourceData) as Partial<SimplifiedForm> & Record<string, unknown>;
+        const fundingRequirementByYear = normalizeFundingMap(
+          simplified.fundingRequirementByYear,
+          simplified,
+          "fr",
+        );
+        const actualFundingByYear = normalizeFundingMap(
+          simplified.actualFundingByYear,
+          simplified,
+          "aa",
+        );
         setForm({
           ...initialForm,
           ...simplified,
+          fundingRequirementByYear,
+          actualFundingByYear,
           agencyName: String(simplified.agencyName || data?.agency || ""),
           projectActivity: String(simplified.projectActivity || data?.title || data?.name || ""),
         });
@@ -482,6 +598,41 @@ const SimplifiedProjectSubmission: React.FC = () => {
       console.error("Failed to restore simplified local draft:", error);
     }
   }, [isEmployee, formReady, draftStorageKey, serverUpdatedAt]);
+
+  const commentEndpointBase = isAdmin
+    ? "admin/projects"
+    : isValidator
+    ? "validator/projects"
+    : "employee/projects";
+
+  const loadComments = async () => {
+    if (!id) return;
+    try {
+      const data = await api.get(`${commentEndpointBase}/${id}/comments/`);
+      setComments(Array.isArray(data) ? data : []);
+    } catch {
+      setComments([]);
+    }
+  };
+
+  const submitComment = async () => {
+    if (!id || !commentInput.trim()) return;
+    setCommentLoading(true);
+    try {
+      const data = await api.post(`${commentEndpointBase}/${id}/comments/`, { comment: commentInput.trim() });
+      setComments((prev) => [data, ...prev]);
+      setCommentInput("");
+    } catch (error) {
+      console.error("Failed to add comment:", error);
+    } finally {
+      setCommentLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!id) return;
+    loadComments();
+  }, [id]);
 
   useEffect(() => {
     if (!isEmployee || isEditMode || !formReady) return;
@@ -544,76 +695,72 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const fundingRange = useMemo(() => {
     if (startYearNum === null || endYearNum === null) return null;
     return {
-      minYear: Math.min(startYearNum, endYearNum),
-      maxYear: Math.max(startYearNum, endYearNum),
+      start: Math.min(startYearNum, endYearNum),
+      end: Math.max(startYearNum, endYearNum),
     };
   }, [startYearNum, endYearNum]);
 
-  const canEditYear = (year: number) => {
-    if (!fundingRange) return true;
-    return year >= fundingRange.minYear && year <= fundingRange.maxYear;
+  const rangeTooLarge = useMemo(() => {
+    if (!fundingRange) return false;
+    return fundingRange.end - fundingRange.start > 15;
+  }, [fundingRange]);
+
+  const showPriorBucket = useMemo(() => {
+    if (!fundingRange) return false;
+    return fundingRange.start <= 2022;
+  }, [fundingRange]);
+
+  const yearKeys = useMemo(() => {
+    if (!fundingRange) return [] as string[];
+    const keys: string[] = [];
+    if (showPriorBucket) keys.push("2022_prior");
+    const firstYear = showPriorBucket ? Math.max(2023, fundingRange.start) : fundingRange.start;
+    for (let year = firstYear; year <= fundingRange.end; year += 1) {
+      keys.push(String(year));
+    }
+    return keys;
+  }, [fundingRange, showPriorBucket]);
+
+  const pruneMap = (map: Record<string, string>, keys: string[]) => {
+    const next: Record<string, string> = {};
+    keys.forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(map, key)) {
+        next[key] = String(map[key] ?? "");
+      }
+    });
+    return next;
   };
-  const canEdit2022Prior = !fundingRange || fundingRange.minYear <= 2022;
-  const canEditContinuing = !fundingRange || fundingRange.maxYear > 2028;
+
+  const mapsEqual = (a: Record<string, string>, b: Record<string, string>) => {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    if (aKeys.length !== bKeys.length) return false;
+    return aKeys.every((key) => a[key] === b[key]);
+  };
 
   useEffect(() => {
-    if (!fundingRange) return;
+    if (!yearKeys.length) return;
     setForm((prev) => {
-      const next = { ...prev };
-      let changed = false;
-
-      const clearIfDisabled = (enabled: boolean, key: keyof SimplifiedForm) => {
-        if (!enabled && String(next[key] || "").trim()) {
-          next[key] = "" as never;
-          changed = true;
-        }
+      const nextFr = pruneMap(prev.fundingRequirementByYear, yearKeys);
+      const nextAa = pruneMap(prev.actualFundingByYear, yearKeys);
+      if (mapsEqual(prev.fundingRequirementByYear, nextFr) && mapsEqual(prev.actualFundingByYear, nextAa)) {
+        return prev;
+      }
+      return {
+        ...prev,
+        fundingRequirementByYear: nextFr,
+        actualFundingByYear: nextAa,
       };
-
-      clearIfDisabled(canEdit2022Prior, "fr2022Prior");
-      clearIfDisabled(canEditYear(2023), "fr2023");
-      clearIfDisabled(canEditYear(2024), "fr2024");
-      clearIfDisabled(canEditYear(2025), "fr2025");
-      clearIfDisabled(canEditYear(2026), "fr2026");
-      clearIfDisabled(canEditYear(2027), "fr2027");
-      clearIfDisabled(canEditYear(2028), "fr2028");
-      clearIfDisabled(canEditContinuing, "frContinuing");
-
-      clearIfDisabled(canEdit2022Prior, "aa2022Prior");
-      clearIfDisabled(canEditYear(2023), "aa2023");
-      clearIfDisabled(canEditYear(2024), "aa2024");
-      clearIfDisabled(canEditYear(2025), "aa2025");
-      clearIfDisabled(canEditYear(2026), "aa2026");
-      clearIfDisabled(canEditYear(2027), "aa2027");
-      clearIfDisabled(canEditYear(2028), "aa2028");
-      clearIfDisabled(canEditContinuing, "aaContinuing");
-
-      return changed ? next : prev;
     });
-  }, [fundingRange, canEdit2022Prior, canEditContinuing]);
+  }, [yearKeys.join("|")]);
 
   const frTotal = useMemo(
-    () =>
-      toNumber(form.fr2022Prior) +
-      toNumber(form.fr2023) +
-      toNumber(form.fr2024) +
-      toNumber(form.fr2025) +
-      toNumber(form.fr2026) +
-      toNumber(form.fr2027) +
-      toNumber(form.fr2028) +
-      toNumber(form.frContinuing),
-    [form.fr2022Prior, form.fr2023, form.fr2024, form.fr2025, form.fr2026, form.fr2027, form.fr2028, form.frContinuing],
+    () => yearKeys.reduce((sum, key) => sum + toNumber(form.fundingRequirementByYear[key] || ""), 0),
+    [yearKeys, form.fundingRequirementByYear],
   );
   const aaTotal = useMemo(
-    () =>
-      toNumber(form.aa2022Prior) +
-      toNumber(form.aa2023) +
-      toNumber(form.aa2024) +
-      toNumber(form.aa2025) +
-      toNumber(form.aa2026) +
-      toNumber(form.aa2027) +
-      toNumber(form.aa2028) +
-      toNumber(form.aaContinuing),
-    [form.aa2022Prior, form.aa2023, form.aa2024, form.aa2025, form.aa2026, form.aa2027, form.aa2028, form.aaContinuing],
+    () => yearKeys.reduce((sum, key) => sum + toNumber(form.actualFundingByYear[key] || ""), 0),
+    [yearKeys, form.actualFundingByYear],
   );
 
   const isReadOnly =
@@ -621,7 +768,19 @@ const SimplifiedProjectSubmission: React.FC = () => {
     (isEmployee && !canEncode) ||
     (isEmployee && isEditMode && projectStatus !== "planning") ||
     (isValidator && normalizedReviewStatus === "endorsed");
-  const diffOf = (field: keyof SimplifiedForm) => diffMap[field as string];
+  const formatDiffFieldLabel = (field: string) => {
+    if (field.startsWith("fundingRequirementByYear.")) {
+      const key = field.split(".")[1] || "";
+      return `Funding Requirement ${key === "2022_prior" ? "2022 & Prior" : key}`;
+    }
+    if (field.startsWith("actualFundingByYear.")) {
+      const key = field.split(".")[1] || "";
+      return `Actual Funding ${key === "2022_prior" ? "2022 & Prior" : key}`;
+    }
+    return field;
+  };
+  const diffOf = (field: string) => diffMap[field];
+  const editMetaOf = (field: string) => fieldEditMeta[field];
 
   const setField = <K extends keyof SimplifiedForm>(key: K, value: SimplifiedForm[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -635,6 +794,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
     }
     if (isValidator && !id) {
       alert("Validator review requires an existing project.");
+      return;
+    }
+    if (rangeTooLarge) {
+      alert("Year range is too large. Please keep the span within 15 years.");
       return;
     }
     const required: Array<keyof SimplifiedForm> = [
@@ -849,7 +1012,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
               <tbody>
                 {diffEntries.slice(0, 200).map((entry, idx) => (
                   <tr key={`${entry.field}-${idx}`} className="border-t border-slate-100 align-top">
-                    <td className="px-2 py-1 font-mono">{entry.field}</td>
+                    <td className="px-2 py-1 font-mono">{formatDiffFieldLabel(entry.field)}</td>
                     <td className="px-2 py-1 whitespace-pre-wrap break-words">{entry.before || "(empty)"}</td>
                     <td className="px-2 py-1 whitespace-pre-wrap break-words">{entry.after || "(empty)"}</td>
                   </tr>
@@ -863,20 +1026,20 @@ const SimplifiedProjectSubmission: React.FC = () => {
       <form onSubmit={(e) => save(e, "submit")} className="portal-card p-3 sm:p-4 lg:p-6 space-y-6">
         <fieldset disabled={isReadOnly} className="space-y-6">
           <div className="rounded-lg border border-slate-200 p-4 space-y-4">
-            <TextField label="Agency Name" value={form.agencyName} onChange={(v) => setField("agencyName", v)} required diffBefore={diffOf("agencyName")?.before} />
-            <TextField label="Program" value={form.program} onChange={(v) => setField("program", v)} required diffBefore={diffOf("program")?.before} />
-            <TextField label="Project/Activity" value={form.projectActivity} onChange={(v) => setField("projectActivity", v)} required diffBefore={diffOf("projectActivity")?.before} />
-            <TextField label="Location" value={form.location} onChange={(v) => setField("location", v)} required diffBefore={diffOf("location")?.before} />
-            <TextAreaField label="Description" value={form.description} onChange={(v) => setField("description", v)} required rows={4} diffBefore={diffOf("description")?.before} />
-            <TextAreaField label="Objective" value={form.objective} onChange={(v) => setField("objective", v)} required rows={4} diffBefore={diffOf("objective")?.before} />
+            <TextField label="Agency Name" value={form.agencyName} onChange={(v) => setField("agencyName", v)} required diffBefore={diffOf("agencyName")?.before} editMeta={editMetaOf("agencyName")} />
+            <TextField label="Program" value={form.program} onChange={(v) => setField("program", v)} required diffBefore={diffOf("program")?.before} editMeta={editMetaOf("program")} />
+            <TextField label="Project/Activity" value={form.projectActivity} onChange={(v) => setField("projectActivity", v)} required diffBefore={diffOf("projectActivity")?.before} editMeta={editMetaOf("projectActivity")} />
+            <TextField label="Location" value={form.location} onChange={(v) => setField("location", v)} required diffBefore={diffOf("location")?.before} editMeta={editMetaOf("location")} />
+            <TextAreaField label="Description" value={form.description} onChange={(v) => setField("description", v)} required rows={4} diffBefore={diffOf("description")?.before} editMeta={editMetaOf("description")} />
+            <TextAreaField label="Objective" value={form.objective} onChange={(v) => setField("objective", v)} required rows={4} diffBefore={diffOf("objective")?.before} editMeta={editMetaOf("objective")} />
           </div>
 
           <div className="rounded-lg border border-slate-200 p-4 space-y-4">
             <div className="space-y-2">
               <h3 className="font-semibold">Implementation Period</h3>
               <div className="grid sm:grid-cols-2 gap-4">
-                <NumberField label="Start Year" value={form.startYear} onChange={(v) => setField("startYear", v)} required diffBefore={diffOf("startYear")?.before} />
-                <NumberField label="End Year" value={form.endYear} onChange={(v) => setField("endYear", v)} required diffBefore={diffOf("endYear")?.before} />
+                <NumberField label="Start Year" value={form.startYear} onChange={(v) => setField("startYear", v)} required diffBefore={diffOf("startYear")?.before} editMeta={editMetaOf("startYear")} />
+                <NumberField label="End Year" value={form.endYear} onChange={(v) => setField("endYear", v)} required diffBefore={diffOf("endYear")?.before} editMeta={editMetaOf("endYear")} />
               </div>
             </div>
 
@@ -885,47 +1048,78 @@ const SimplifiedProjectSubmission: React.FC = () => {
             <div className="grid xl:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <h3 className="font-semibold">Funding Requirement (PHP)</h3>
-                <div className="grid sm:grid-cols-3 gap-2">
-                  <NumberField label="2022 & Prior" value={form.fr2022Prior} onChange={(v) => setField("fr2022Prior", v)} disabled={!canEdit2022Prior} diffBefore={diffOf("fr2022Prior")?.before} />
-                  <NumberField label="2023" value={form.fr2023} onChange={(v) => setField("fr2023", v)} disabled={!canEditYear(2023)} diffBefore={diffOf("fr2023")?.before} />
-                  <NumberField label="2024" value={form.fr2024} onChange={(v) => setField("fr2024", v)} disabled={!canEditYear(2024)} diffBefore={diffOf("fr2024")?.before} />
-                  <NumberField label="2025" value={form.fr2025} onChange={(v) => setField("fr2025", v)} disabled={!canEditYear(2025)} diffBefore={diffOf("fr2025")?.before} />
-                  <NumberField label="2026" value={form.fr2026} onChange={(v) => setField("fr2026", v)} disabled={!canEditYear(2026)} diffBefore={diffOf("fr2026")?.before} />
-                  <NumberField label="2027" value={form.fr2027} onChange={(v) => setField("fr2027", v)} disabled={!canEditYear(2027)} diffBefore={diffOf("fr2027")?.before} />
-                  <NumberField label="2028" value={form.fr2028} onChange={(v) => setField("fr2028", v)} disabled={!canEditYear(2028)} diffBefore={diffOf("fr2028")?.before} />
-                  <NumberField label="Continuing Years" value={form.frContinuing} onChange={(v) => setField("frContinuing", v)} disabled={!canEditContinuing} diffBefore={diffOf("frContinuing")?.before} />
-                </div>
+                {yearKeys.length === 0 ? (
+                  <p className="text-sm text-slate-500">Enter Start Year and End Year to generate fields.</p>
+                ) : (
+                  <div className="grid sm:grid-cols-3 gap-2">
+                    {yearKeys.map((key) => (
+                      <NumberField
+                        key={`fr-${key}`}
+                        label={key === "2022_prior" ? "2022 & Prior" : key}
+                        value={form.fundingRequirementByYear[key] || ""}
+                        onChange={(v) =>
+                          setForm((prev) => ({
+                            ...prev,
+                            fundingRequirementByYear: { ...prev.fundingRequirementByYear, [key]: v },
+                          }))
+                        }
+                        diffBefore={diffOf(`fundingRequirementByYear.${key}`)?.before}
+                        editMeta={editMetaOf(`fundingRequirementByYear.${key}`)}
+                      />
+                    ))}
+                  </div>
+                )}
                 <p className="text-sm text-slate-600">Total: <strong>{fmtNumber(frTotal)}</strong></p>
               </div>
               <div className="space-y-2">
                 <h3 className="font-semibold">Actual/Approved Funding (PHP)</h3>
-                <div className="grid sm:grid-cols-3 gap-2">
-                  <NumberField label="2022 & Prior" value={form.aa2022Prior} onChange={(v) => setField("aa2022Prior", v)} disabled={!canEdit2022Prior} diffBefore={diffOf("aa2022Prior")?.before} />
-                  <NumberField label="2023" value={form.aa2023} onChange={(v) => setField("aa2023", v)} disabled={!canEditYear(2023)} diffBefore={diffOf("aa2023")?.before} />
-                  <NumberField label="2024" value={form.aa2024} onChange={(v) => setField("aa2024", v)} disabled={!canEditYear(2024)} diffBefore={diffOf("aa2024")?.before} />
-                  <NumberField label="2025" value={form.aa2025} onChange={(v) => setField("aa2025", v)} disabled={!canEditYear(2025)} diffBefore={diffOf("aa2025")?.before} />
-                  <NumberField label="2026" value={form.aa2026} onChange={(v) => setField("aa2026", v)} disabled={!canEditYear(2026)} diffBefore={diffOf("aa2026")?.before} />
-                  <NumberField label="2027" value={form.aa2027} onChange={(v) => setField("aa2027", v)} disabled={!canEditYear(2027)} diffBefore={diffOf("aa2027")?.before} />
-                  <NumberField label="2028" value={form.aa2028} onChange={(v) => setField("aa2028", v)} disabled={!canEditYear(2028)} diffBefore={diffOf("aa2028")?.before} />
-                  <NumberField label="Continuing Years" value={form.aaContinuing} onChange={(v) => setField("aaContinuing", v)} disabled={!canEditContinuing} diffBefore={diffOf("aaContinuing")?.before} />
-                </div>
+                {yearKeys.length === 0 ? (
+                  <p className="text-sm text-slate-500">Enter Start Year and End Year to generate fields.</p>
+                ) : (
+                  <div className="grid sm:grid-cols-3 gap-2">
+                    {yearKeys.map((key) => (
+                      <NumberField
+                        key={`aa-${key}`}
+                        label={key === "2022_prior" ? "2022 & Prior" : key}
+                        value={form.actualFundingByYear[key] || ""}
+                        onChange={(v) =>
+                          setForm((prev) => ({
+                            ...prev,
+                            actualFundingByYear: { ...prev.actualFundingByYear, [key]: v },
+                          }))
+                        }
+                        diffBefore={diffOf(`actualFundingByYear.${key}`)?.before}
+                        editMeta={editMetaOf(`actualFundingByYear.${key}`)}
+                      />
+                    ))}
+                  </div>
+                )}
                 <p className="text-sm text-slate-600">Total: <strong>{fmtNumber(aaTotal)}</strong></p>
               </div>
             </div>
+            {rangeTooLarge && (
+              <p className="text-xs text-rose-600">Year range is too large. Please keep the span within 15 years.</p>
+            )}
             <p className="text-xs text-slate-600">
               Editable budget fields are controlled by Start Year and End Year.
-              Current range: {fundingRange ? `${fundingRange.minYear} to ${fundingRange.maxYear}` : "not set"}.
+              Current range: {fundingRange ? (showPriorBucket
+                ? fundingRange.end < 2023
+                  ? "2022 & Prior"
+                  : `2022 & Prior, ${Math.max(2023, fundingRange.start)} to ${fundingRange.end}`
+                : fundingRange.start === fundingRange.end
+                ? String(fundingRange.start)
+                : `${fundingRange.start} to ${fundingRange.end}`) : "not set"}.
             </p>
           </div>
 
           <div className="rounded-lg border border-slate-200 p-4 space-y-4">
             <div className="grid xl:grid-cols-2 gap-4">
-              <SelectField label="Funding Source" value={form.fundingSource} onChange={(v) => setField("fundingSource", v)} options={fundingSourceOptions} required diffBefore={diffOf("fundingSource")?.before} />
-              <TextField label="UACS Code (if GAA-funded)" value={form.uacsCode} onChange={(v) => setField("uacsCode", v)} diffBefore={diffOf("uacsCode")?.before} />
-              <SelectField label="PIP Included" value={form.pipIncluded} onChange={(v) => setField("pipIncluded", v as YesNo)} options={yesNoOptions} required diffBefore={diffOf("pipIncluded")?.before} />
-              <SelectField label="ARNIPAP Included" value={form.arnipapIncluded} onChange={(v) => setField("arnipapIncluded", v as YesNo)} options={yesNoOptions} required diffBefore={diffOf("arnipapIncluded")?.before} />
-              <SelectField label="LUDIP (for SUCs)" value={form.ludipIncluded} onChange={(v) => setField("ludipIncluded", v as YesNo)} options={yesNoNaOptions} required diffBefore={diffOf("ludipIncluded")?.before} />
-              <SelectField label="IFPs Included" value={form.ifpsIncluded} onChange={(v) => setField("ifpsIncluded", v as YesNo)} options={yesNoOptions} required diffBefore={diffOf("ifpsIncluded")?.before} />
+              <SelectField label="Funding Source" value={form.fundingSource} onChange={(v) => setField("fundingSource", v)} options={fundingSourceOptions} required diffBefore={diffOf("fundingSource")?.before} editMeta={editMetaOf("fundingSource")} />
+              <TextField label="UACS Code (if GAA-funded)" value={form.uacsCode} onChange={(v) => setField("uacsCode", v)} diffBefore={diffOf("uacsCode")?.before} editMeta={editMetaOf("uacsCode")} />
+              <SelectField label="PIP Included" value={form.pipIncluded} onChange={(v) => setField("pipIncluded", v as YesNo)} options={yesNoOptions} required diffBefore={diffOf("pipIncluded")?.before} editMeta={editMetaOf("pipIncluded")} />
+              <SelectField label="ARNIPAP Included" value={form.arnipapIncluded} onChange={(v) => setField("arnipapIncluded", v as YesNo)} options={yesNoOptions} required diffBefore={diffOf("arnipapIncluded")?.before} editMeta={editMetaOf("arnipapIncluded")} />
+              <SelectField label="LUDIP (for SUCs)" value={form.ludipIncluded} onChange={(v) => setField("ludipIncluded", v as YesNo)} options={yesNoNaOptions} required diffBefore={diffOf("ludipIncluded")?.before} editMeta={editMetaOf("ludipIncluded")} />
+              <SelectField label="IFPs Included" value={form.ifpsIncluded} onChange={(v) => setField("ifpsIncluded", v as YesNo)} options={yesNoOptions} required diffBefore={diffOf("ifpsIncluded")?.before} editMeta={editMetaOf("ifpsIncluded")} />
               <SelectField
                 label="Part of the Convergence Program (PCB)"
                 value={form.pcbIncluded}
@@ -939,6 +1133,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                 options={yesNoOptions}
                 required
                 diffBefore={diffOf("pcbIncluded")?.before}
+                editMeta={editMetaOf("pcbIncluded")}
               />
               {form.pcbIncluded === "Yes" && (
                 <SelectField
@@ -948,12 +1143,13 @@ const SimplifiedProjectSubmission: React.FC = () => {
                   options={pcbProgramOptions}
                   required
                   diffBefore={diffOf("pcbProgram")?.before}
+                  editMeta={editMetaOf("pcbProgram")}
                 />
               )}
-              <SelectField label="RDC-NCR Endorsed" value={form.rdcEndorsed} onChange={(v) => setField("rdcEndorsed", v as YesNo)} options={yesNoOptions} required diffBefore={diffOf("rdcEndorsed")?.before} />
-              <SelectField label="RDC-NCR Development Sector" value={form.developmentSector} onChange={(v) => setField("developmentSector", v)} options={developmentSectorOptions} required diffBefore={diffOf("developmentSector")?.before} />
-              <SelectField label="RDP-NCR Main Chapter" value={form.rdpMainChapter} onChange={(v) => setField("rdpMainChapter", v)} options={rdpChapterOptions} required diffBefore={diffOf("rdpMainChapter")?.before} />
-              <SelectField label="Status" value={form.status} onChange={(v) => setField("status", v)} options={statusOptions} required diffBefore={diffOf("status")?.before} />
+              <SelectField label="RDC-NCR Endorsed" value={form.rdcEndorsed} onChange={(v) => setField("rdcEndorsed", v as YesNo)} options={yesNoOptions} required diffBefore={diffOf("rdcEndorsed")?.before} editMeta={editMetaOf("rdcEndorsed")} />
+              <SelectField label="RDC-NCR Development Sector" value={form.developmentSector} onChange={(v) => setField("developmentSector", v)} options={developmentSectorOptions} required diffBefore={diffOf("developmentSector")?.before} editMeta={editMetaOf("developmentSector")} />
+              <SelectField label="RDP-NCR Main Chapter" value={form.rdpMainChapter} onChange={(v) => setField("rdpMainChapter", v)} options={rdpChapterOptions} required diffBefore={diffOf("rdpMainChapter")?.before} editMeta={editMetaOf("rdpMainChapter")} />
+              <SelectField label="Status" value={form.status} onChange={(v) => setField("status", v)} options={statusOptions} required diffBefore={diffOf("status")?.before} editMeta={editMetaOf("status")} />
             </div>
 
             <CheckboxGroup
@@ -962,13 +1158,16 @@ const SimplifiedProjectSubmission: React.FC = () => {
               values={form.sdgSelections}
               onChange={(values) => setField("sdgSelections", values)}
               diffBefore={diffOf("sdgSelections")?.before}
+              editMeta={editMetaOf("sdgSelections")}
             />
 
-            <div className="grid xl:grid-cols-2 gap-4">
-              <TextAreaField label="Physical Accomplishment" value={form.physicalAccomplishment} onChange={(v) => setField("physicalAccomplishment", v)} required rows={3} diffBefore={diffOf("physicalAccomplishment")?.before} />
-              <TextAreaField label="Financial Accomplishment" value={form.financialAccomplishment} onChange={(v) => setField("financialAccomplishment", v)} required rows={3} diffBefore={diffOf("financialAccomplishment")?.before} />
-            </div>
-            <TextAreaField label="Remarks" value={form.remarks} onChange={(v) => setField("remarks", v)} rows={4} diffBefore={diffOf("remarks")?.before} />
+            {form.status !== "New" && (
+              <div className="grid xl:grid-cols-2 gap-4">
+                <TextAreaField label="Physical Accomplishment" value={form.physicalAccomplishment} onChange={(v) => setField("physicalAccomplishment", v)} required rows={3} diffBefore={diffOf("physicalAccomplishment")?.before} editMeta={editMetaOf("physicalAccomplishment")} />
+                <TextAreaField label="Financial Accomplishment" value={form.financialAccomplishment} onChange={(v) => setField("financialAccomplishment", v)} required rows={3} diffBefore={diffOf("financialAccomplishment")?.before} editMeta={editMetaOf("financialAccomplishment")} />
+              </div>
+            )}
+            <TextAreaField label="Remarks" value={form.remarks} onChange={(v) => setField("remarks", v)} rows={4} diffBefore={diffOf("remarks")?.before} editMeta={editMetaOf("remarks")} />
           </div>
 
           {isValidator && (
@@ -994,7 +1193,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                     type="button"
                     onClick={(e) => save(e as unknown as React.FormEvent, "draft")}
                     className="portal-btn portal-btn-ghost"
-                    disabled={loading || isReadOnly}
+                    disabled={loading || isReadOnly || rangeTooLarge}
                   >
                     {loading ? "Saving..." : "Save as Draft"}
                   </button>
@@ -1002,7 +1201,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                     type="button"
                     onClick={(e) => save(e as unknown as React.FormEvent, "reviewed")}
                     className="portal-btn portal-btn-ghost"
-                    disabled={loading || isReadOnly}
+                    disabled={loading || isReadOnly || rangeTooLarge}
                   >
                     {loading ? "Saving..." : "Save as Reviewed"}
                   </button>
@@ -1010,17 +1209,17 @@ const SimplifiedProjectSubmission: React.FC = () => {
                     type="button"
                     onClick={(e) => save(e as unknown as React.FormEvent, "endorsed")}
                     className="portal-btn portal-btn-primary"
-                    disabled={loading || isReadOnly}
+                    disabled={loading || isReadOnly || rangeTooLarge}
                   >
                     {loading ? "Submitting..." : "Save as Endorsed"}
                   </button>
                 </>
               ) : (
                 <>
-                  <button type="button" onClick={(e) => save(e as unknown as React.FormEvent, "save")} className="portal-btn portal-btn-ghost" disabled={loading || isReadOnly}>
+                  <button type="button" onClick={(e) => save(e as unknown as React.FormEvent, "save")} className="portal-btn portal-btn-ghost" disabled={loading || isReadOnly || rangeTooLarge}>
                     {loading ? "Saving..." : "Save Draft"}
                   </button>
-                  <button type="submit" className="portal-btn portal-btn-primary" disabled={loading || isReadOnly}>
+                  <button type="submit" className="portal-btn portal-btn-primary" disabled={loading || isReadOnly || rangeTooLarge}>
                     {loading ? "Submitting..." : "Submit for Validation"}
                   </button>
                 </>
@@ -1029,6 +1228,51 @@ const SimplifiedProjectSubmission: React.FC = () => {
           )}
         </fieldset>
       </form>
+      {id && (
+        <div className="portal-card mt-4">
+          <div className="portal-card-header">
+            <h2 className="text-lg font-semibold">Project Comments</h2>
+          </div>
+          <div className="portal-card-body space-y-4">
+            <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1">
+              {comments.length === 0 ? (
+                <p className="text-sm text-slate-500">No comments yet.</p>
+              ) : (
+                comments.map((c) => (
+                  <div key={c.id} className="border rounded-lg p-3">
+                    <p className="text-sm text-slate-800">{c.comment}</p>
+                    <p className="text-xs text-slate-500 mt-2">
+                      {c.full_name || c.username || "User"}{" "}
+                      <span className="uppercase">{c.role || ""}</span>{" "}
+                      {c.created_at ? `- ${new Date(c.created_at).toLocaleString()}` : ""}
+                    </p>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="border-t pt-3">
+              <label className="block text-sm text-slate-700 mb-2">Add a comment</label>
+              <textarea
+                value={commentInput}
+                onChange={(e) => setCommentInput(e.target.value)}
+                rows={3}
+                className="w-full border rounded-lg px-3 py-2"
+                placeholder="Write a note for your agency team..."
+              />
+              <div className="mt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={submitComment}
+                  disabled={commentLoading || !commentInput.trim()}
+                  className="portal-btn portal-btn-primary"
+                >
+                  {commentLoading ? "Posting..." : "Post Comment"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </PortalLayout>
   );
 };

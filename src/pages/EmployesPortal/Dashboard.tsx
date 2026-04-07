@@ -16,6 +16,9 @@ const Dashboard: React.FC = () => {
   const [user, setUser] = useState<any>(null);
   const [stats, setStats] = useState<DashboardStats>({});
   const [loading, setLoading] = useState(true);
+  const [activity, setActivity] = useState<any[]>([]);
+  const [activityLoading, setActivityLoading] = useState(true);
+  const [activityLimit, setActivityLimit] = useState("10");
 
   useEffect(() => {
     let mounted = true;
@@ -30,20 +33,34 @@ const Dashboard: React.FC = () => {
       }
     };
 
+    const fetchActivity = async () => {
+      try {
+        const data = await api.get(`agency/activity/?limit=${activityLimit}`);
+        if (mounted) setActivity(Array.isArray(data) ? data : []);
+      } catch {
+        if (mounted) setActivity([]);
+      } finally {
+        if (mounted) setActivityLoading(false);
+      }
+    };
+
     const userData = localStorage.getItem("user");
     if (userData) setUser(JSON.parse(userData));
     else navigate("/login");
 
     fetchStats();
+    fetchActivity();
     const onStorage = (e: StorageEvent) => e.key === "projects_last_update" && fetchStats();
     const pollId = window.setInterval(fetchStats, 10000);
+    const activityPoll = window.setInterval(fetchActivity, 15000);
     window.addEventListener("storage", onStorage);
     return () => {
       mounted = false;
       window.clearInterval(pollId);
+      window.clearInterval(activityPoll);
       window.removeEventListener("storage", onStorage);
     };
-  }, [navigate]);
+  }, [navigate, activityLimit]);
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
 
@@ -130,6 +147,55 @@ const Dashboard: React.FC = () => {
             </BarChart>
           </ResponsiveContainer>
         </div>
+      </div>
+
+      <div className="portal-card mt-4">
+        <div className="portal-card-header">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-lg font-semibold">Recent Agency Activity</h2>
+            <label className="text-xs text-slate-500 flex items-center gap-2">
+              Show
+              <select
+                value={activityLimit}
+                onChange={(e) => setActivityLimit(e.target.value)}
+                className="border rounded px-2 py-1 text-xs"
+              >
+                {["10", "20", "30"].map((value) => (
+                  <option key={value} value={value}>{value}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+        {activityLoading ? (
+          <div className="portal-card-body text-slate-500">Loading activity...</div>
+        ) : activity.length === 0 ? (
+          <div className="portal-card-body text-slate-500">No recent activity for your agency.</div>
+        ) : (
+          <div className="portal-card-body">
+            <div className="space-y-3">
+              {activity.map((item) => (
+                <div key={item.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-100 pb-3 last:border-b-0 last:pb-0">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-800">
+                      {item.full_name || item.username || "User"}{" "}
+                      <span className="text-slate-500 font-normal">- {item.event?.replaceAll("_", " ")}</span>
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {item.project_title ? `Project: ${item.project_title}` : "Project: -"}
+                    </p>
+                    {item.details?.edited_fields_count !== undefined && (
+                      <p className="text-xs text-slate-500">Edited fields: {item.details.edited_fields_count}</p>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    {item.created_at ? new Date(item.created_at).toLocaleString() : "-"}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </PortalLayout>
   );

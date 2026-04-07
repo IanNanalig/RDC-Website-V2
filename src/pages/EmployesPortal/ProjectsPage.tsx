@@ -219,7 +219,9 @@ const ProjectsPage: React.FC = () => {
             <thead>
               <tr>
                 <th>Title</th>
-                {(role === "admin" || role === "validator") && <th className="min-w-[160px]">Contributor</th>}
+                {(role === "admin" || role === "validator" || role === "employee") && (
+                  <th className="min-w-[160px]">Contributor</th>
+                )}
                 <th className="hidden lg:table-cell">Agency</th>
                 <th className="hidden xl:table-cell">Budget</th>
                 <th>Status</th>
@@ -232,7 +234,7 @@ const ProjectsPage: React.FC = () => {
               {filtered.map((p) => (
                 <tr key={p.id}>
                   <td className="max-w-[220px] truncate" title={p.title || p.name || "Untitled"}>{p.title || p.name || "Untitled"}</td>
-                  {(role === "admin" || role === "validator") && (
+                  {(role === "admin" || role === "validator" || role === "employee") && (
                     <td className="max-w-[180px] truncate" title={p.submitted_by_name || p.submitted_by?.username || "Unknown"}>
                       {p.submitted_by_name || p.submitted_by?.username || "Unknown"}
                     </td>

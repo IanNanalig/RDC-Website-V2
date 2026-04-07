@@ -159,6 +159,7 @@ class UserActivity(models.Model):
         ("project_approve", "Project Approve"),
         ("project_reject", "Project Reject"),
         ("project_archive", "Project Archive"),
+        ("project_comment", "Project Comment"),
         ("validator_draft", "Validator Draft"),
         ("validator_reviewed", "Validator Reviewed"),
         ("validator_endorsed", "Validator Endorsed"),
@@ -178,6 +179,21 @@ class UserActivity(models.Model):
 
     def __str__(self):
         return f"{self.user.username} {self.event} {self.created_at.isoformat()}"
+
+
+class ProjectComment(models.Model):
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="comments")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="project_comments")
+    role = models.CharField(max_length=20, blank=True)
+    agency = models.CharField(max_length=200, blank=True)
+    comment = models.TextField()
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.project_id} {self.user.username} {self.created_at.isoformat()}"
 
 
 class PasswordSetupToken(models.Model):
