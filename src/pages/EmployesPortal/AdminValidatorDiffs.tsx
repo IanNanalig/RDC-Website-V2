@@ -49,6 +49,7 @@ const AdminValidatorDiffs: React.FC = () => {
   const navigate = useNavigate();
   const userRaw = localStorage.getItem("user");
   const user = userRaw ? JSON.parse(userRaw) : { username: "admin" };
+  const displayName = user?.full_name || user?.username || "Admin";
 
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState<ApiProject[]>([]);
@@ -111,7 +112,7 @@ const AdminValidatorDiffs: React.FC = () => {
       title="Validator Tracker"
       subtitle="Track reviewed copies, edited fields, and validator decisions"
       role="admin"
-      userName={user.username}
+      userName={displayName}
       topActions={<button onClick={load} className="portal-btn portal-btn-ghost">Refresh</button>}
     >
       <div className="portal-card mb-3">

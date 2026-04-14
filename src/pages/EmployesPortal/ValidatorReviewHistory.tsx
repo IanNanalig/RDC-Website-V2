@@ -80,6 +80,7 @@ const ValidatorReviewHistory: React.FC = () => {
   const [query, setQuery] = useState("");
   const userData = localStorage.getItem("user");
   const user = userData ? JSON.parse(userData) : null;
+  const displayName = user?.full_name || user?.username || "Validator";
 
   const loadProjects = async () => {
     setLoading(true);
@@ -124,7 +125,7 @@ const ValidatorReviewHistory: React.FC = () => {
       title="Reviewed & Endorsed"
       subtitle="Projects you already reviewed or endorsed"
       role="validator"
-      userName={user.username}
+      userName={displayName}
       topActions={<button onClick={loadProjects} className="portal-btn portal-btn-ghost">Refresh</button>}
     >
       <div className="portal-card mb-3">

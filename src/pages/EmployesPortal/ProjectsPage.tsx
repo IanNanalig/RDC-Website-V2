@@ -162,6 +162,7 @@ const ProjectsPage: React.FC = () => {
   };
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
+  const displayName = user?.full_name || user?.username || "User";
 
   const title = role === "admin" ? "Projects Governance" : role === "validator" ? "Validation Queue" : "My Projects";
   const subtitle =
@@ -176,7 +177,7 @@ const ProjectsPage: React.FC = () => {
       title={title}
       subtitle={subtitle}
       role={role || "employee"}
-      userName={user.username}
+      userName={displayName}
       topActions={
         <>
           {role === "employee" && (

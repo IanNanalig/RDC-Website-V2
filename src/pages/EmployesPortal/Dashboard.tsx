@@ -63,6 +63,7 @@ const Dashboard: React.FC = () => {
   }, [navigate, activityLimit]);
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
+  const displayName = user?.full_name || user?.username || "User";
 
   const funnelData = [
     { name: "Draft", value: stats.draft_projects || 0 },
@@ -75,7 +76,7 @@ const Dashboard: React.FC = () => {
       title="Contributor Dashboard"
       subtitle="Monitor submissions, deadlines, and project completion"
       role="employee"
-      userName={user.username}
+      userName={displayName}
       topActions={
         <Link to="/employee/projects/new" className="portal-btn portal-btn-primary">
           + New Submission

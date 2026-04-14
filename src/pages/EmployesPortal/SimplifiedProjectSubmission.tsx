@@ -819,9 +819,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
       "developmentSector",
       "rdpMainChapter",
       "status",
-      "physicalAccomplishment",
-      "financialAccomplishment",
     ];
+    if (form.status !== "New") {
+      required.push("physicalAccomplishment", "financialAccomplishment");
+    }
     if (!isValidator && action === "submit") {
       const missing = required.filter((k) => !String(form[k] || "").trim());
       if (missing.length > 0) {
@@ -933,6 +934,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   const localSavedLabel = lastLocalSaveAt ? new Date(lastLocalSaveAt).toLocaleString() : "";
+  const displayName = user?.full_name || user?.username || "User";
 
   return (
     <PortalLayout
@@ -955,7 +957,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
           : "RDIP 2023-2028 list of projects format (data-type aligned)"
       }
       role={(user.role || "employee") as "admin" | "validator" | "employee"}
-      userName={user.username}
+      userName={displayName}
       topActions={
         <>
           <button type="button" onClick={() => navigate(isValidator ? "/validator/projects" : isAdmin ? "/admin/projects" : "/employee/projects")} className="portal-btn portal-btn-ghost">Back to Projects</button>

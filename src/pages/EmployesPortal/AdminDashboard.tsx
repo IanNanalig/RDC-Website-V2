@@ -58,6 +58,7 @@ const AdminDashboard: React.FC = () => {
   }, [navigate]);
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
+  const displayName = user?.full_name || user?.username || "Admin";
 
   const userRoleData = [
     { label: "Admins", count: stats.admin_users || 0 },
@@ -77,7 +78,7 @@ const AdminDashboard: React.FC = () => {
       title="Admin Command Center"
       subtitle="Control access, deadlines, and full portal governance"
       role="admin"
-      userName={user.username}
+      userName={displayName}
       topActions={
         <button
           onClick={async () => {

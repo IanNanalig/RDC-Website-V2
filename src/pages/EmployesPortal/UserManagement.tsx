@@ -80,6 +80,7 @@ const UserManagement = () => {
 
   const userRaw = localStorage.getItem("user");
   const user = userRaw ? JSON.parse(userRaw) : { username: "admin" };
+  const displayName = user?.full_name || user?.username || "Admin";
 
   const labelRole = (role: string) => {
     if (role === "staff" || role === "employee" || role === "contributor") return "Contributor";
@@ -411,7 +412,7 @@ const UserManagement = () => {
       title="Users & Access Control"
       subtitle="Account provisioning, request approvals, and encoding schedule"
       role="admin"
-      userName={user.username}
+      userName={displayName}
       topActions={<button onClick={load} className="portal-btn portal-btn-ghost">Refresh</button>}
     >
       {toast && (

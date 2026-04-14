@@ -45,6 +45,7 @@ const ValidatorDashboard: React.FC = () => {
   }, [navigate]);
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
+  const displayName = user?.full_name || user?.username || "Validator";
 
   const queueMix = [
     { label: "Draft", count: stats.review_draft || 0 },
@@ -57,7 +58,7 @@ const ValidatorDashboard: React.FC = () => {
       title="Validator Dashboard"
       subtitle="Review queue, decision throughput, and validation workflow"
       role="validator"
-      userName={user.username}
+      userName={displayName}
       topActions={
         <Link to="/validator/projects" className="portal-btn portal-btn-primary">
           Review Queue

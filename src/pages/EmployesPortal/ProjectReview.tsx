@@ -79,6 +79,7 @@ const ProjectReview: React.FC = () => {
   const role = user?.role as "admin" | "validator" | "employee" | undefined;
   const isAdmin = role === "admin";
   const isValidator = role === "validator";
+  const displayName = user?.full_name || user?.username || "User";
 
   const load = async () => {
     if (!id) return;
@@ -131,7 +132,7 @@ const ProjectReview: React.FC = () => {
       title="Project View & Review"
       subtitle="Template-aligned submitted profile with print/PDF export"
       role={(role || "employee") as "admin" | "validator" | "employee"}
-      userName={user?.username || "User"}
+      userName={displayName}
       topActions={
         <button onClick={onPrint} className="portal-btn portal-btn-primary no-print">
           Print / Save PDF
