@@ -1132,10 +1132,10 @@ def _collect_simplified_field_paths(simplified):
 
 def _apply_simplified_meta(incoming_profile, existing_profile, user):
     if not isinstance(incoming_profile, dict):
-        return incoming_profile, []
+        return incoming_profile, [], []
     simplified = incoming_profile.get("simplified_form")
     if not isinstance(simplified, dict):
-        return incoming_profile, []
+        return incoming_profile, [], []
     previous = {}
     if isinstance(existing_profile, dict) and isinstance(existing_profile.get("simplified_form"), dict):
         previous = existing_profile.get("simplified_form") or {}
@@ -1143,6 +1143,7 @@ def _apply_simplified_meta(incoming_profile, existing_profile, user):
     diff = _json_diff(previous, simplified)
     changed_fields = []
     before_values = {}
+    changes_by_field = {}
     for entry in diff:
         raw_field = str(entry.get("field") or "")
         if not raw_field or raw_field == "(root)":
@@ -1150,8 +1151,17 @@ def _apply_simplified_meta(incoming_profile, existing_profile, user):
         if raw_field in ("fundingRequirementTotal", "actualApprovedTotal"):
             continue
         normalized = _normalize_simplified_field_path(raw_field)
+        before_value = str(entry.get("before") or "")
+        after_value = str(entry.get("after") or "")
+        if raw_field.startswith("sdgSelections."):
+            before_list = previous.get("sdgSelections") if isinstance(previous, dict) else []
+            after_list = simplified.get("sdgSelections") if isinstance(simplified, dict) else []
+            before_value = ", ".join([str(v) for v in before_list]) if isinstance(before_list, list) else str(before_list or "")
+            after_value = ", ".join([str(v) for v in after_list]) if isinstance(after_list, list) else str(after_list or "")
         if normalized not in before_values:
-            before_values[normalized] = str(entry.get("before") or "")
+            before_values[normalized] = before_value
+        if normalized not in changes_by_field:
+            changes_by_field[normalized] = {"field": normalized, "before": before_value, "after": after_value}
         if normalized not in changed_fields:
             changed_fields.append(normalized)
 
@@ -1186,7 +1196,8 @@ def _apply_simplified_meta(incoming_profile, existing_profile, user):
             "field_edits": field_edits,
             "last_edit": meta_source.get("last_edit") if isinstance(meta_source, dict) else {},
         }
-    return incoming_profile, changed_fields
+    changes = [changes_by_field[field] for field in changed_fields if field in changes_by_field]
+    return incoming_profile, changed_fields, changes
 
 
 class ProjectPermission(permissions.BasePermission):
@@ -1442,8 +1453,12 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             except Exception:
                 profile_data = None
         if isinstance(profile_data, dict):
-            updated_profile, changed_fields = _apply_simplified_meta(profile_data, {}, request.user)
-            data["profile_data"] = updated_profile
+            # Initial save should establish the baseline, not mark every non-empty field as "edited".
+            profile_data.pop("simplified_form_meta", None)
+            data["profile_data"] = profile_data
+            changes = []
+        else:
+            changes = []
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
@@ -1453,7 +1468,12 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             request,
             "project_create",
             project,
-            {"status": serializer.data.get("status"), "edited_fields_count": len(changed_fields), "changed_fields": changed_fields[:10]},
+            {
+                "status": serializer.data.get("status"),
+                "edited_fields_count": len(changed_fields),
+                "changed_fields": changed_fields[:30],
+                "changes": changes[:30],
+            },
         )
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
@@ -1470,8 +1490,12 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             except Exception:
                 profile_data = None
         if isinstance(profile_data, dict):
-            updated_profile, changed_fields = _apply_simplified_meta(profile_data, project.profile_data or {}, request.user)
+            updated_profile, changed_fields, changes = _apply_simplified_meta(
+                profile_data, project.profile_data or {}, request.user
+            )
             data["profile_data"] = updated_profile
+        else:
+            changes = []
         serializer = self.get_serializer(project, data=data)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
@@ -1479,7 +1503,12 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             request,
             "project_update",
             project,
-            {"status": serializer.data.get("status") if hasattr(serializer, "data") else "", "edited_fields_count": len(changed_fields), "changed_fields": changed_fields[:10]},
+            {
+                "status": serializer.data.get("status") if hasattr(serializer, "data") else "",
+                "edited_fields_count": len(changed_fields),
+                "changed_fields": changed_fields[:30],
+                "changes": changes[:30],
+            },
         )
         return Response(serializer.data)
 
@@ -1496,8 +1525,12 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             except Exception:
                 profile_data = None
         if isinstance(profile_data, dict):
-            updated_profile, changed_fields = _apply_simplified_meta(profile_data, project.profile_data or {}, request.user)
+            updated_profile, changed_fields, changes = _apply_simplified_meta(
+                profile_data, project.profile_data or {}, request.user
+            )
             data["profile_data"] = updated_profile
+        else:
+            changes = []
         serializer = self.get_serializer(project, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
@@ -1505,7 +1538,12 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             request,
             "project_update",
             project,
-            {"partial": True, "edited_fields_count": len(changed_fields), "changed_fields": changed_fields[:10]},
+            {
+                "partial": True,
+                "edited_fields_count": len(changed_fields),
+                "changed_fields": changed_fields[:30],
+                "changes": changes[:30],
+            },
         )
         return Response(serializer.data)
 

@@ -19,6 +19,131 @@ const Dashboard: React.FC = () => {
   const [activity, setActivity] = useState<any[]>([]);
   const [activityLoading, setActivityLoading] = useState(true);
   const [activityLimit, setActivityLimit] = useState("10");
+  const [activityModal, setActivityModal] = useState<{
+    open: boolean;
+    title: string;
+    changes: Array<{ field: string; before: string; after: string }>;
+    editor: string;
+    at: string;
+    comment: string;
+    commentAt: string;
+    loadingComment: boolean;
+  }>({ open: false, title: "", changes: [], editor: "", at: "", comment: "", commentAt: "", loadingComment: false });
+
+  const simplifiedFieldLabels: Record<string, string> = {
+    agencyName: "Agency Name",
+    program: "Program",
+    projectActivity: "Project/Activity",
+    location: "Location",
+    description: "Description",
+    objective: "Objective",
+    startYear: "Start Year",
+    endYear: "End Year",
+    fundingSource: "Funding Source",
+    uacsCode: "UACS Code (if GAA-funded)",
+    rdcEndorsed: "RDC-NCR Endorsed",
+    pipIncluded: "PIP Included",
+    arnipapIncluded: "ARNIPAP Included",
+    ludipIncluded: "LUDIP (for SUCs)",
+    ifpsIncluded: "IFPs Included",
+    pcbIncluded: "Part of the Convergence Program (PCB)",
+    pcbProgram: "Convergence Program (PCB)",
+    developmentSector: "RDC-NCR Development Sector",
+    rdpMainChapter: "RDP-NCR Main Chapter",
+    sdgSelections: "Sustainable Development Goals",
+    status: "Status",
+    physicalAccomplishment: "Physical Accomplishment",
+    financialAccomplishment: "Financial Accomplishment",
+    remarks: "Remarks",
+  };
+
+  const formatChangedFieldLabel = (field: string) => {
+    if (!field) return "Field";
+    if (field.startsWith("fundingRequirementByYear.")) {
+      const key = field.split(".")[1] || "";
+      return `Funding Requirement (PHP) ${key === "2022_prior" ? "2022 & Prior" : key}`;
+    }
+    if (field.startsWith("actualFundingByYear.")) {
+      const key = field.split(".")[1] || "";
+      return `Actual/Approved Funding (PHP) ${key === "2022_prior" ? "2022 & Prior" : key}`;
+    }
+    if (simplifiedFieldLabels[field]) return simplifiedFieldLabels[field];
+    const base = field.includes(".") ? field.split(".")[0] : field;
+    if (simplifiedFieldLabels[base]) return simplifiedFieldLabels[base];
+    return base
+      .replace(/_/g, " ")
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
+
+  const openChangesModal = async (item: any) => {
+    const changesRaw = item?.details?.changes;
+    const changes = Array.isArray(changesRaw)
+      ? changesRaw
+          .map((c) => ({
+            field: String(c?.field || ""),
+            before: String(c?.before ?? ""),
+            after: String(c?.after ?? ""),
+          }))
+          .filter((c) => c.field)
+      : [];
+    const editorUsername = String(item?.username || "");
+    const activityTime = item?.created_at ? new Date(item.created_at).getTime() : 0;
+
+    setActivityModal({
+      open: true,
+      title: item?.project_title ? `Changes: ${item.project_title}` : "Changes",
+      changes,
+      editor: String(item?.full_name || item?.username || "User"),
+      at: item?.created_at ? new Date(item.created_at).toLocaleString() : "",
+      comment: "",
+      commentAt: "",
+      loadingComment: true,
+    });
+
+    const projectId = item?.project;
+    if (!projectId) {
+      setActivityModal((prev) => ({ ...prev, loadingComment: false }));
+      return;
+    }
+
+    try {
+      const comments = await api.get(`employee/projects/${projectId}/comments/`);
+      const list = Array.isArray(comments) ? comments : [];
+      const parsed = list
+        .map((c: any) => ({
+          comment: String(c?.comment || ""),
+          username: String(c?.username || ""),
+          full_name: String(c?.full_name || ""),
+          created_at: String(c?.created_at || ""),
+          created_ms: c?.created_at ? new Date(c.created_at).getTime() : 0,
+        }))
+        .filter((c) => c.comment);
+
+      let best = null as null | typeof parsed[number];
+      const bySameUser = editorUsername ? parsed.filter((c) => c.username === editorUsername) : [];
+      const inWindow = activityTime
+        ? bySameUser.filter((c) => Math.abs(c.created_ms - activityTime) <= 15 * 60 * 1000)
+        : [];
+      if (inWindow.length > 0) {
+        best = inWindow.sort((a, b) => Math.abs(a.created_ms - activityTime) - Math.abs(b.created_ms - activityTime))[0];
+      } else if (bySameUser.length > 0) {
+        best = bySameUser.sort((a, b) => b.created_ms - a.created_ms)[0];
+      } else if (parsed.length > 0) {
+        best = parsed.sort((a, b) => b.created_ms - a.created_ms)[0];
+      }
+
+      setActivityModal((prev) => ({
+        ...prev,
+        comment: best?.comment || "",
+        commentAt: best?.created_at ? new Date(best.created_at).toLocaleString() : "",
+        loadingComment: false,
+      }));
+    } catch {
+      setActivityModal((prev) => ({ ...prev, loadingComment: false }));
+    }
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -188,16 +313,135 @@ const Dashboard: React.FC = () => {
                     {item.details?.edited_fields_count !== undefined && (
                       <p className="text-xs text-slate-500">Edited fields: {item.details.edited_fields_count}</p>
                     )}
+                    {item.event === "project_update" && (
+                      <>
+                        {Array.isArray(item.details?.changes) && item.details.changes.length > 0 ? (
+                          <p className="text-xs text-slate-500">
+                            Changed:{" "}
+                            {item.details.changes
+                              .slice(0, 3)
+                              .map((c: any) => formatChangedFieldLabel(String(c?.field || "")))
+                              .filter(Boolean)
+                              .join(", ")}
+                            {item.details.changes.length > 3 ? ` (+${item.details.changes.length - 3} more)` : ""}
+                          </p>
+                        ) : Array.isArray(item.details?.changed_fields) && item.details.changed_fields.length > 0 ? (
+                          <p className="text-xs text-slate-500">
+                            Changed:{" "}
+                            {item.details.changed_fields
+                              .slice(0, 3)
+                              .map((f: any) => formatChangedFieldLabel(String(f || "")))
+                              .filter(Boolean)
+                              .join(", ")}
+                            {item.details.changed_fields.length > 3 ? ` (+${item.details.changed_fields.length - 3} more)` : ""}
+                          </p>
+                        ) : null}
+                      </>
+                    )}
                   </div>
-                  <p className="text-xs text-slate-500">
-                    {item.created_at ? new Date(item.created_at).toLocaleString() : "-"}
-                  </p>
+                  <div className="flex items-center gap-3">
+                    {item.event === "project_update" && Array.isArray(item.details?.changes) && item.details.changes.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => openChangesModal(item)}
+                        className="text-xs text-blue-600 hover:underline"
+                      >
+                        View changes
+                      </button>
+                    )}
+                    <p className="text-xs text-slate-500">
+                      {item.created_at ? new Date(item.created_at).toLocaleString() : "-"}
+                    </p>
+                  </div>
                 </div>
               ))}
             </div>
           </div>
         )}
       </div>
+
+      {activityModal.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="portal-card w-full max-w-3xl max-h-[85vh] overflow-hidden">
+            <div className="portal-card-header flex items-center justify-between gap-3">
+              <h3 className="text-lg font-semibold">{activityModal.title}</h3>
+              <button
+                type="button"
+                onClick={() =>
+                  setActivityModal({
+                    open: false,
+                    title: "",
+                    changes: [],
+                    editor: "",
+                    at: "",
+                    comment: "",
+                    commentAt: "",
+                    loadingComment: false,
+                  })
+                }
+                className="portal-btn portal-btn-ghost"
+              >
+                Close
+              </button>
+            </div>
+            <div className="portal-card-body overflow-auto">
+              <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                <p>
+                  <span className="font-semibold">{activityModal.editor}</span>
+                  {activityModal.at ? ` • ${activityModal.at}` : ""}
+                </p>
+                <p className="mt-1 text-slate-600">
+                  Comment:{" "}
+                  {activityModal.loadingComment ? (
+                    <span className="text-slate-400">Loading...</span>
+                  ) : activityModal.comment ? (
+                    <span className="text-slate-800">{activityModal.comment}</span>
+                  ) : (
+                    <span className="text-slate-400">(none)</span>
+                  )}
+                  {!activityModal.loadingComment && activityModal.commentAt ? (
+                    <span className="text-slate-400">{` • ${activityModal.commentAt}`}</span>
+                  ) : null}
+                </p>
+              </div>
+              {activityModal.changes.length === 0 ? (
+                <p className="text-sm text-slate-500">No change details available for this activity.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className="text-left px-3 py-2 text-xs font-semibold text-slate-600">Field</th>
+                        <th className="text-left px-3 py-2 text-xs font-semibold text-slate-600">From</th>
+                        <th className="text-left px-3 py-2 text-xs font-semibold text-slate-600">To</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activityModal.changes.map((c, idx) => (
+                        <tr key={`${c.field}-${idx}`} className="border-t">
+                          <td className="px-3 py-2 align-top font-medium text-slate-800 whitespace-nowrap">
+                            {formatChangedFieldLabel(c.field)}
+                          </td>
+                          <td className="px-3 py-2 align-top text-slate-700">
+                            <div className="max-w-[260px] truncate" title={c.before || ""}>
+                              {c.before || <span className="text-slate-400">(empty)</span>}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 align-top text-slate-700">
+                            <div className="max-w-[260px] truncate" title={c.after || ""}>
+                              {c.after || <span className="text-slate-400">(empty)</span>}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </PortalLayout>
   );
 };

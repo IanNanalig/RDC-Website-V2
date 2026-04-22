@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from datetime import datetime
 from .models import AccessRequest, PasswordResetRequest, Project, ProjectComment, User, UserActivity
 
 
@@ -128,6 +129,73 @@ class ProjectSerializer(serializers.ModelSerializer):
         if isinstance(simplified, dict):
             self._validate_simplified_funding(simplified)
         return value
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        request = self.context.get("request")
+        role = getattr(getattr(request, "user", None), "role", "") if request else ""
+        if role not in ("staff", "employee"):
+            return rep
+        profile_data = rep.get("profile_data")
+        if not isinstance(profile_data, dict):
+            return rep
+        meta = profile_data.get("simplified_form_meta")
+        if not isinstance(meta, dict):
+            return rep
+        edits = meta.get("field_edits")
+        if not isinstance(edits, dict) or not edits:
+            return rep
+
+        def parse_at(value):
+            if not value:
+                return None
+            raw = str(value).strip()
+            if raw.endswith("Z"):
+                raw = raw[:-1] + "+00:00"
+            try:
+                return datetime.fromisoformat(raw)
+            except Exception:
+                return None
+
+        entries = []
+        for key, val in edits.items():
+            if not isinstance(val, dict):
+                continue
+            at = val.get("at")
+            if not at:
+                continue
+            entries.append((str(key), val, str(at), parse_at(at)))
+        if len(entries) < 6:
+            return rep
+
+        # Heuristic for legacy drafts: initial fill created edit meta for almost every field at the same timestamp.
+        # If so, hide that initial-fill batch so only post-baseline edits are highlighted.
+        counts = {}
+        earliest = None
+        for _, _, at_str, at_dt in entries:
+            counts[at_str] = counts.get(at_str, 0) + 1
+            if at_dt is not None:
+                earliest = at_dt if earliest is None else min(earliest, at_dt)
+
+        earliest_at_str = None
+        if earliest is not None:
+            for _, _, at_str, at_dt in entries:
+                if at_dt == earliest:
+                    earliest_at_str = at_str
+                    break
+        if earliest_at_str is None:
+            earliest_at_str = sorted(counts.keys())[0]
+
+        total = len(entries)
+        earliest_count = counts.get(earliest_at_str, 0)
+        if earliest_count >= max(8, int(total * 0.6)):
+            next_edits = {k: v for k, v in edits.items() if not (isinstance(v, dict) and str(v.get("at") or "") == earliest_at_str)}
+            next_meta = dict(meta)
+            next_meta["field_edits"] = next_edits
+            next_profile = dict(profile_data)
+            next_profile["simplified_form_meta"] = next_meta
+            rep["profile_data"] = next_profile
+        return rep
 
     def _parse_year(self, value):
         try:
