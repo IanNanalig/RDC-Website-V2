@@ -247,6 +247,88 @@ class ProjectSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class PublicProjectSerializer(serializers.ModelSerializer):
+    # Public-safe projection for the public website dashboard.
+    title = serializers.CharField(source="name", read_only=True)
+    agency = serializers.SerializerMethodField()
+    implementation_status = serializers.SerializerMethodField()
+    year = serializers.SerializerMethodField()
+    lgu = serializers.SerializerMethodField()
+    location_raw = serializers.SerializerMethodField()
+    description = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Project
+        fields = [
+            "id",
+            "title",
+            "agency",
+            "implementation_status",
+            "budget",
+            "year",
+            "lgu",
+            "location_raw",
+            "description",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def _simplified(self, obj) -> dict:
+        pd = getattr(obj, "profile_data", None)
+        if isinstance(pd, dict):
+            sf = pd.get("simplified_form")
+            if isinstance(sf, dict):
+                return sf
+        return {}
+
+    def get_agency(self, obj):
+        sf = self._simplified(obj)
+        value = str(sf.get("agencyName") or "").strip()
+        if value:
+            return value
+        return str(getattr(obj, "agency", "") or "").strip()
+
+    def get_implementation_status(self, obj):
+        # Prefer RDIP status from simplified form (Completed/New/Updated/Ongoing/etc.).
+        sf = self._simplified(obj)
+        value = str(sf.get("status") or "").strip()
+        if value:
+            return value
+        return str(getattr(obj, "status", "") or "").strip()
+
+    def get_year(self, obj):
+        sf = self._simplified(obj)
+        raw = str(sf.get("startYear") or "").strip()
+        try:
+            year = int(raw)
+            if 1900 <= year <= 2200:
+                return year
+        except Exception:
+            pass
+        return getattr(obj, "year", None)
+
+    def get_description(self, obj):
+        sf = self._simplified(obj)
+        value = str(sf.get("description") or "").strip()
+        if value:
+            return value
+        return str(getattr(obj, "description", "") or "").strip()
+
+    def get_location_raw(self, obj):
+        sf = self._simplified(obj)
+        return str(sf.get("location") or "").strip()
+
+    def get_lgu(self, obj):
+        # Populated in the view as a computed property; serializer fallback derives again when needed.
+        # Import locally to avoid circular import issues.
+        try:
+            from .utils import derive_ncr_lgu
+
+            return derive_ncr_lgu(self.get_location_raw(obj))
+        except Exception:
+            return None
+
+
 class AccessRequestSerializer(serializers.ModelSerializer):
     reviewed_by = UserSerializer(read_only=True)
 

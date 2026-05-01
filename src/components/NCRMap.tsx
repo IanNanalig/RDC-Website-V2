@@ -9,23 +9,28 @@ import {
 } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { type Project } from "../services/projectsData";
+import { type PublicProject as Project } from "../services/publicProjectsApi";
 import { ncrCityCenters } from "../services/ncrCityCenters";
 
 type NCRMapProps = {
   projects: Project[]; // already filtered by UI (year/status/agency/search)
   selectedCity?: string | undefined;
-  selectedStatus?: Project["status"] | "all";
+  selectedStatus?: string | "all";
   onCitySelect?: (city?: string) => void;
   showCityMarker?: boolean;
   height?: number | string;
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  completed: "#10B981",
-  ongoing: "#F59E0B",
-  proposed: "#3B82F6",
-  planning: "#8B5CF6",
+  Completed: "#10B981",
+  Ongoing: "#F59E0B",
+  New: "#3B82F6",
+  Updated: "#6366F1",
+  Discontinued: "#EF4444",
+  "Not Implemented": "#94A3B8",
+  Dropped: "#F97316",
+  "N/A": "#64748B",
+  Unspecified: "#94A3B8",
 };
 
 const NCR_BOUNDS: [[number, number], [number, number]] = [
@@ -126,7 +131,8 @@ const NCRMap: React.FC<NCRMapProps> = ({
         const countsByStatus: Record<string, number> = {};
         ps.forEach(
           (p) =>
-            (countsByStatus[p.status] = (countsByStatus[p.status] || 0) + 1)
+            (countsByStatus[p.implementation_status] =
+              (countsByStatus[p.implementation_status] || 0) + 1)
         );
         // choose color based on highest count status
         let dominantStatus = Object.keys(countsByStatus)[0];
@@ -220,7 +226,9 @@ const NCRMap: React.FC<NCRMapProps> = ({
                   <ul style={{ marginTop: 8, paddingLeft: 16 }}>
                     {m.projects.slice(0, 5).map((p) => (
                       <li key={p.id} style={{ fontSize: 13 }}>
-                        <strong style={{ color: "#0ea5a6" }}>{p.status}</strong>{" "}
+                        <strong style={{ color: "#0ea5a6" }}>
+                          {p.implementation_status || "Unspecified"}
+                        </strong>{" "}
                         — {p.title}
                       </li>
                     ))}

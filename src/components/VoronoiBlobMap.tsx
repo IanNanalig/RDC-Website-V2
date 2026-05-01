@@ -1,23 +1,28 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { MapContainer, TileLayer, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { type Project } from "../services/projectsData";
+import { type PublicProject as Project } from "../services/publicProjectsApi";
 import { ncrCityCenters } from "../services/ncrCityCenters";
 
 type VoronoiBlobMapProps = {
   projects: Project[];
   selectedCity?: string | undefined;
-  selectedStatus?: Project["status"] | "all";
+  selectedStatus?: string | "all";
   onCitySelect?: (city?: string) => void;
   height?: number | string;
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  completed: "#10B981",
-  ongoing: "#F59E0B",
-  proposed: "#3B82F6",
-  planning: "#8B5CF6",
+  Completed: "#10B981",
+  Ongoing: "#F59E0B",
+  New: "#3B82F6",
+  Updated: "#6366F1",
+  Discontinued: "#EF4444",
+  "Not Implemented": "#94A3B8",
+  Dropped: "#F97316",
+  "N/A": "#64748B",
+  Unspecified: "#94A3B8",
 };
 
 const NCR_BOUNDS: [[number, number], [number, number]] = [
@@ -25,22 +30,22 @@ const NCR_BOUNDS: [[number, number], [number, number]] = [
   [14.85, 121.15], // NE
 ];
 
-// Helper to get coordinates for a project
-function getProjectCoordinates(project: Project): [number, number] | null {
-  // Try to get from project itself first
-  if (project.latitude && project.longitude) {
-    return [project.latitude, project.longitude];
-  }
+type CityGroup = {
+  city: string;
+  coords: [number, number];
+  projects: Project[];
+  count: number;
+  dominantStatus: string;
+  color: string;
+};
 
-  // Fallback to LGU city center
+function getProjectCoordinates(project: Project): [number, number] | null {
   if (project.lgu && ncrCityCenters[project.lgu]) {
     return ncrCityCenters[project.lgu];
   }
-
   return null;
 }
 
-// Component to fit bounds when data changes
 function FitBoundsToProjects({
   projects,
   selectedCity,
@@ -57,17 +62,15 @@ function FitBoundsToProjects({
       return;
     }
 
-    // Fit to all project bounds
     if (projects.length > 0) {
       const coords = projects
         .map((p) => getProjectCoordinates(p))
-        .filter((c) => c !== null) as [number, number][];
+        .filter((c): c is [number, number] => Boolean(c));
 
       if (coords.length === 0) {
         map.setView([14.6, 121.02], 11);
         return;
       }
-
       if (coords.length === 1) {
         map.setView(coords[0], 12, { animate: true });
         return;
@@ -79,19 +82,17 @@ function FitBoundsToProjects({
       return;
     }
 
-    // Default NCR center
     map.setView([14.6, 121.02], 11);
   }, [map, projects, selectedCity]);
   return null;
 }
 
-// Component to render project blobs with halos
 function ProjectBlobs({
-  projects,
+  groups,
   selectedCity,
   onCitySelect,
 }: {
-  projects: Project[];
+  groups: CityGroup[];
   selectedCity?: string;
   onCitySelect?: (city?: string) => void;
 }) {
@@ -100,19 +101,14 @@ function ProjectBlobs({
 
   useEffect(() => {
     if (!map || !layerGroupRef.current) return;
-
-    // Clear previous layers
     layerGroupRef.current.clearLayers();
 
-    projects.forEach((project) => {
-      const coords = getProjectCoordinates(project);
-      if (!coords) return;
+    groups.forEach((group) => {
+      const coords = group.coords;
+      const statusColor = group.color;
+      const isSelected = selectedCity ? group.city === selectedCity : false;
 
-      const statusColor = STATUS_COLORS[project.status] || "#94A3B8";
-      const isSelected = selectedCity ? project.lgu === selectedCity : false;
-
-      // Outer glow circle (halo effect)
-      const haloRadius = isSelected ? 3000 : 2000; // meters
+      const haloRadius = isSelected ? 3200 : 2200;
       const haloCircle = L.circle(coords, {
         radius: haloRadius,
         color: statusColor,
@@ -122,8 +118,10 @@ function ProjectBlobs({
         interactive: false,
       });
 
-      // Main blob circle
-      const blobRadius = isSelected ? 1500 : 800; // meters
+      const baseRadius = 700 + Math.min(1600, group.count * 180);
+      const blobRadius = isSelected
+        ? Math.max(1100, baseRadius + 500)
+        : baseRadius;
       const blobCircle = L.circle(coords, {
         radius: blobRadius,
         color: statusColor,
@@ -133,39 +131,47 @@ function ProjectBlobs({
         dashArray: isSelected ? "5,5" : undefined,
       });
 
-      // Create popup with project info
+      const preview = group.projects
+        .slice(0, 5)
+        .map(
+          (p) =>
+            `<li style="margin:2px 0; font-size:12px;"><strong style="color:#0ea5a6;">${
+              (p.implementation_status || "Unspecified").toString()
+            }</strong> — ${String(p.title || "")}</li>`,
+        )
+        .join("");
+      const remainder =
+        group.count > 5
+          ? `<div style="margin-top:6px; font-size:12px;">+${
+              group.count - 5
+            } more</div>`
+          : "";
+
       const popupContent = `
-        <div style="padding: 8px; max-width: 200px;">
-          <h4 style="margin: 0 0 4px 0; font-weight: bold; font-size: 14px;">${project.title}</h4>
-          <p style="margin: 2px 0; font-size: 12px; color: #666;">${project.agency || "N/A"}</p>
-          <p style="margin: 2px 0; font-size: 12px; color: #666;">${project.lgu}</p>
-          <p style="margin: 4px 0; font-size: 12px; font-weight: bold; color: #059669;">
-            ₱ ${(project.budget || 0).toLocaleString()}
-          </p>
+        <div style="padding: 8px; max-width: 280px;">
+          <h4 style="margin: 0 0 4px 0; font-weight: bold; font-size: 14px;">${
+            group.city
+          }</h4>
+          <p style="margin: 2px 0; font-size: 12px; color: #475569;">${
+            group.count
+          } project(s)</p>
           <span style="display: inline-block; background: ${statusColor}; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; text-transform: uppercase;">
-            ${project.status}
+            ${String(group.dominantStatus || "Unspecified")}
           </span>
+          <ul style="margin-top:8px; padding-left:16px;">${preview}</ul>
+          ${remainder}
         </div>
       `;
 
       blobCircle.bindPopup(popupContent);
 
-      // Click handler
       blobCircle.on("click", () => {
-        if (onCitySelect) {
-          onCitySelect(project.lgu);
-        }
+        if (onCitySelect) onCitySelect(group.city);
       });
 
-      // Hover effects
       blobCircle.on("mouseover", () => {
-        blobCircle.setStyle({
-          fillOpacity: 0.7,
-          weight: 2,
-        });
-        haloCircle.setStyle({
-          fillOpacity: 0.35,
-        });
+        blobCircle.setStyle({ fillOpacity: 0.7, weight: 2 });
+        haloCircle.setStyle({ fillOpacity: 0.35 });
         blobCircle.openPopup();
       });
 
@@ -174,27 +180,21 @@ function ProjectBlobs({
           fillOpacity: isSelected ? 0.5 : 0.3,
           weight: isSelected ? 2 : 1,
         });
-        haloCircle.setStyle({
-          fillOpacity: isSelected ? 0.25 : 0.1,
-        });
+        haloCircle.setStyle({ fillOpacity: isSelected ? 0.25 : 0.1 });
       });
 
       layerGroupRef.current?.addLayer(haloCircle);
       layerGroupRef.current?.addLayer(blobCircle);
     });
-  }, [projects, selectedCity, map, onCitySelect]);
+  }, [groups, selectedCity, map, onCitySelect]);
 
   useEffect(() => {
     if (!map) return;
-
     if (!layerGroupRef.current) {
       layerGroupRef.current = L.featureGroup().addTo(map);
     }
-
     return () => {
-      if (layerGroupRef.current) {
-        layerGroupRef.current.clearLayers();
-      }
+      if (layerGroupRef.current) layerGroupRef.current.clearLayers();
     };
   }, [map]);
 
@@ -207,6 +207,43 @@ const VoronoiBlobMap: React.FC<VoronoiBlobMapProps> = ({
   onCitySelect,
   height = 600,
 }) => {
+  const groups = useMemo(() => {
+    const byCity: Record<string, Project[]> = {};
+    projects.forEach((p) => {
+      const city = p.lgu;
+      if (!city) return;
+      if (!ncrCityCenters[city]) return;
+      if (!byCity[city]) byCity[city] = [];
+      byCity[city].push(p);
+    });
+
+    return Object.entries(byCity).map(([city, ps]) => {
+      const counts: Record<string, number> = {};
+      ps.forEach((p) => {
+        const st =
+          (p.implementation_status || "Unspecified").trim() || "Unspecified";
+        counts[st] = (counts[st] || 0) + 1;
+      });
+      let dominant = "Unspecified";
+      let max = -1;
+      Object.entries(counts).forEach(([st, c]) => {
+        if (c > max) {
+          max = c;
+          dominant = st;
+        }
+      });
+      const color = STATUS_COLORS[dominant] || "#94A3B8";
+      return {
+        city,
+        coords: ncrCityCenters[city],
+        projects: ps,
+        count: ps.length,
+        dominantStatus: dominant,
+        color,
+      } as CityGroup;
+    });
+  }, [projects]);
+
   return (
     <div
       style={{
@@ -227,7 +264,7 @@ const VoronoiBlobMap: React.FC<VoronoiBlobMapProps> = ({
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
         <ProjectBlobs
-          projects={projects}
+          groups={groups}
           selectedCity={selectedCity}
           onCitySelect={onCitySelect}
         />
@@ -238,3 +275,4 @@ const VoronoiBlobMap: React.FC<VoronoiBlobMapProps> = ({
 };
 
 export default VoronoiBlobMap;
+

@@ -11,8 +11,14 @@ import {
   Tooltip,
   ResponsiveContainer,
   Legend,
+  CartesianGrid,
 } from "recharts";
-import { projectsData, type Project } from "../services/projectsData";
+import {
+  getPublicProjects,
+  getPublicProjectsStats,
+  type PublicProject as Project,
+  type PublicProjectsStats,
+} from "../services/publicProjectsApi";
 import {
   FaSearch,
   FaBuilding,
@@ -30,27 +36,31 @@ import VoronoiBlobMap from "../components/VoronoiBlobMap";
 import { ncrCityCenters } from "../services/ncrCityCenters";
 
 const COLORS: Record<string, string> = {
-  ongoing: "#F59E0B",
-  completed: "#10B981",
-  proposed: "#3B82F6",
-  planning: "#94A3B8",
+  Completed: "#10B981",
+  Ongoing: "#F59E0B",
+  New: "#3B82F6",
+  Updated: "#6366F1",
+  Discontinued: "#EF4444",
+  "Not Implemented": "#94A3B8",
+  Dropped: "#F97316",
+  "N/A": "#64748B",
+  Unspecified: "#94A3B8",
 };
 
 const money = (n: number) => `₱ ${n.toLocaleString()}`;
 
 const STATUS_ICONS: Record<string, React.ReactNode> = {
-  ongoing: <FaHourglassHalf className="text-yellow-500" />,
-  completed: <FaCheckCircle className="text-green-500" />,
-  proposed: <FaLightbulb className="text-blue-500" />,
-  planning: <FaRegCalendarAlt className="text-slate-400" />,
+  Ongoing: <FaHourglassHalf className="text-yellow-500" />,
+  Completed: <FaCheckCircle className="text-green-500" />,
+  New: <FaLightbulb className="text-blue-500" />,
+  Updated: <FaRegCalendarAlt className="text-indigo-500" />,
+  Unspecified: <FaRegCalendarAlt className="text-slate-400" />,
 };
 
 const Projects: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [yearFilter, setYearFilter] = useState<number | "all">("all");
-  const [statusFilter, setStatusFilter] = useState<Project["status"] | "all">(
-    "all",
-  );
+  const [statusFilter, setStatusFilter] = useState<string | "all">("all");
   const [agencyFilter, setAgencyFilter] = useState<string | "all">("all");
   const [search, setSearch] = useState("");
   const [selectedCity, setSelectedCity] = useState<string | undefined>(
@@ -66,10 +76,48 @@ const Projects: React.FC = () => {
   >("title");
   const [sortDesc, setSortDesc] = useState(false);
 
-  useEffect(() => setProjects(projectsData), []);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>("");
+  const [stats, setStats] = useState<PublicProjectsStats | null>(null);
+
+  const fetchData = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const filters = {
+        q: search || undefined,
+        agency: agencyFilter === "all" ? undefined : agencyFilter,
+        status: statusFilter === "all" ? undefined : statusFilter,
+        year: yearFilter === "all" ? undefined : yearFilter,
+        lgu: municipalityFilter === "all" ? undefined : municipalityFilter,
+      };
+      const [list, st] = await Promise.all([
+        getPublicProjects({ ...filters, limit: 500, offset: 0 }),
+        getPublicProjectsStats(filters),
+      ]);
+      setProjects(list);
+      setStats(st);
+    } catch (e: any) {
+      setError(String(e?.message || e || "Failed to load projects."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [yearFilter, statusFilter, agencyFilter, municipalityFilter, search]);
 
   const yearOptions = useMemo(
-    () => Array.from(new Set(projects.map((p) => p.year))).sort(),
+    () =>
+      Array.from(
+        new Set(
+          projects
+            .map((p) => p.year)
+            .filter((y): y is number => typeof y === "number"),
+        ),
+      ).sort(),
     [projects],
   );
 
@@ -78,10 +126,12 @@ const Projects: React.FC = () => {
     [projects],
   );
 
-  const municipalityOptions = Object.keys(ncrCityCenters).sort();
+  const municipalityOptions = useMemo(() => {
+    return [...Object.keys(ncrCityCenters).sort(), "Unspecified"];
+  }, []);
 
   useEffect(() => {
-    if (municipalityFilter === "all") {
+    if (municipalityFilter === "all" || municipalityFilter === "Unspecified") {
       setSelectedCity(undefined);
     } else {
       setSelectedCity(municipalityFilter);
@@ -90,32 +140,23 @@ const Projects: React.FC = () => {
 
   useEffect(() => {
     if (!selectedCity) {
-      setMunicipalityFilter("all");
+      if (municipalityFilter !== "Unspecified") {
+        setMunicipalityFilter("all");
+      }
     } else {
       setMunicipalityFilter(selectedCity);
     }
   }, [selectedCity]);
 
   // Filter projects by year, status, agency, and search (NOT by municipality yet)
-  const filtered = useMemo(
-    () =>
-      projects.filter((p) => {
-        const matchYear = yearFilter === "all" || p.year === yearFilter;
-        const matchStatus = statusFilter === "all" || p.status === statusFilter;
-        const matchAgency =
-          agencyFilter === "all" || (p.agency || "Other") === agencyFilter;
-        const matchSearch =
-          p.title.toLowerCase().includes(search.toLowerCase()) ||
-          p.description.toLowerCase().includes(search.toLowerCase());
-        return matchYear && matchStatus && matchAgency && matchSearch;
-      }),
-    [projects, yearFilter, statusFilter, agencyFilter, search],
-  );
+  const filtered = useMemo(() => projects, [projects]);
 
   // For displaying in the project list - apply city filter
   const displayProjects = useMemo(() => {
     if (selectedCity) {
       return filtered.filter((p) => p.lgu === selectedCity);
+    } else if (municipalityFilter === "Unspecified") {
+      return filtered.filter((p) => !p.lgu);
     } else if (municipalityFilter !== "all") {
       return filtered.filter((p) => p.lgu === municipalityFilter);
     }
@@ -123,6 +164,13 @@ const Projects: React.FC = () => {
   }, [filtered, selectedCity, municipalityFilter]);
 
   const totals = useMemo(() => {
+    if (stats) {
+      return {
+        totalProjects: stats.total_projects || 0,
+        totalBudget: stats.total_budget || 0,
+        byStatus: stats.by_status || {},
+      };
+    }
     const totalProjects = displayProjects.length;
     const totalBudget = displayProjects.reduce(
       (s, p) => s + (p.budget || 0),
@@ -130,18 +178,23 @@ const Projects: React.FC = () => {
     );
     const byStatus = displayProjects.reduce<Record<string, number>>(
       (acc, p) => {
-        acc[p.status] = (acc[p.status] || 0) + 1;
+        const st =
+          (p.implementation_status || "Unspecified").trim() || "Unspecified";
+        acc[st] = (acc[st] || 0) + 1;
         return acc;
       },
       {},
     );
     return { totalProjects, totalBudget, byStatus };
-  }, [displayProjects]);
+  }, [displayProjects, stats]);
 
   // Projects to send to the map
   const mapProjects = useMemo(() => {
     if (selectedCity) {
       return filtered.filter((p) => p.lgu === selectedCity);
+    }
+    if (municipalityFilter === "Unspecified") {
+      return filtered.filter((p) => !p.lgu);
     }
     if (municipalityFilter !== "all") {
       return filtered.filter((p) => p.lgu === municipalityFilter);
@@ -159,6 +212,11 @@ const Projects: React.FC = () => {
   );
 
   const agencyBar = useMemo(() => {
+    if (stats?.by_agency) {
+      return Object.keys(stats.by_agency)
+        .map((k) => ({ agency: k, value: stats.by_agency[k] }))
+        .sort((a, b) => b.value - a.value);
+    }
     const m = displayProjects.reduce<Record<string, number>>((acc, p) => {
       const a = p.agency || "Other";
       acc[a] = (acc[a] || 0) + 1;
@@ -171,7 +229,9 @@ const Projects: React.FC = () => {
 
   const yearBar = useMemo(() => {
     const m = displayProjects.reduce<Record<number, number>>((acc, p) => {
-      acc[p.year] = (acc[p.year] || 0) + 1;
+      if (typeof p.year === "number") {
+        acc[p.year] = (acc[p.year] || 0) + 1;
+      }
       return acc;
     }, {});
     return Object.keys(m)
@@ -182,8 +242,12 @@ const Projects: React.FC = () => {
   const sortedTableProjects = useMemo(() => {
     const sorted = [...displayProjects];
     sorted.sort((a, b) => {
-      let aVal: any = a[sortColumn];
-      let bVal: any = b[sortColumn];
+      let aVal: any = (a as any)[sortColumn];
+      let bVal: any = (b as any)[sortColumn];
+      if (sortColumn === "status") {
+        aVal = a.implementation_status || "Unspecified";
+        bVal = b.implementation_status || "Unspecified";
+      }
       if (sortColumn === "title" || sortColumn === "status") {
         aVal = String(aVal).toLowerCase();
         bVal = String(bVal).toLowerCase();
@@ -272,6 +336,26 @@ const Projects: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {(loading || error) && (
+            <div className="mt-3">
+              {loading && (
+                <div className="text-sm text-slate-600">Loading projects…</div>
+              )}
+              {error && (
+                <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 flex items-center justify-between gap-3">
+                  <span className="truncate">{error}</span>
+                  <button
+                    type="button"
+                    className="shrink-0 underline"
+                    onClick={fetchData}
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -322,10 +406,14 @@ const Projects: React.FC = () => {
                     onChange={(e) => setStatusFilter(e.target.value as any)}
                   >
                     <option value="all">All Status</option>
-                    <option value="ongoing">Ongoing</option>
-                    <option value="completed">Completed</option>
-                    <option value="proposed">Proposed</option>
-                    <option value="planning">Planning</option>
+                    <option value="Completed">Completed</option>
+                    <option value="New">New</option>
+                    <option value="Updated">Updated</option>
+                    <option value="Ongoing">Ongoing</option>
+                    <option value="Discontinued">Discontinued</option>
+                    <option value="Not Implemented">Not Implemented</option>
+                    <option value="N/A">N/A</option>
+                    <option value="Dropped">Dropped</option>
                   </select>
                 </div>
                 <div>
@@ -502,14 +590,26 @@ const Projects: React.FC = () => {
                   </h3>
                   <div className="h-64 md:h-80">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={yearBar} margin={{ left: 10, right: 10 }}>
-                        <XAxis dataKey="year" />
-                        <YAxis />
-                        <Tooltip />
+                      <BarChart
+                        data={yearBar}
+                        layout="vertical"
+                        margin={{ left: 28, right: 12, top: 8, bottom: 8 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                        <XAxis type="number" />
+                        <YAxis
+                          type="category"
+                          dataKey="year"
+                          width={56}
+                          tick={{ fontSize: 12 }}
+                        />
+                        <Tooltip
+                          formatter={(value: any) => [`${value}`, "Projects"]}
+                        />
                         <Bar
                           dataKey="value"
                           fill="#F59E0B"
-                          radius={[8, 8, 0, 0]}
+                          radius={[0, 10, 10, 0]}
                           isAnimationActive
                         />
                       </BarChart>
@@ -596,16 +696,21 @@ const Projects: React.FC = () => {
                             <td className="px-4 py-3 text-sm">
                               <span
                                 className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-semibold ${
-                                  p.status === "completed"
+                                  p.implementation_status === "Completed"
                                     ? "bg-green-100 text-green-800"
-                                    : p.status === "ongoing"
+                                    : p.implementation_status === "Ongoing"
                                       ? "bg-yellow-100 text-yellow-800"
-                                      : p.status === "proposed"
+                                      : p.implementation_status === "New"
                                         ? "bg-blue-100 text-blue-800"
                                         : "bg-gray-100 text-gray-800"
                                 }`}
                               >
-                                {STATUS_ICONS[p.status]} {p.status}
+                                {
+                                  STATUS_ICONS[
+                                    p.implementation_status || "Unspecified"
+                                  ]
+                                }{" "}
+                                {p.implementation_status || "Unspecified"}
                               </span>
                             </td>
                             <td className="px-4 py-3 text-sm text-gray-700">
