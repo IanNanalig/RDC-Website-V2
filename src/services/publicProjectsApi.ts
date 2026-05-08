@@ -10,6 +10,9 @@ export type PublicProject = {
   lgu: string | null;
   location_raw?: string;
   description: string;
+  public_summary_text?: string;
+  public_summary_bullets?: string[];
+  public_key_facts?: Record<string, any>;
   updated_at: string;
 };
 
@@ -58,4 +61,3 @@ export async function getPublicProjectsStats(filters: PublicProjectsFilters = {}
   const qs = buildQuery(filters);
   return api.get(`public/projects/stats/${qs}`) as Promise<PublicProjectsStats>;
 }
-

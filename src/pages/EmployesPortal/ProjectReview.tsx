@@ -68,6 +68,8 @@ const ProjectReview: React.FC = () => {
   const [project, setProject] = useState<ApiProject | null>(null);
   const [loading, setLoading] = useState(true);
   const [includeAppendix, setIncludeAppendix] = useState(false);
+  const [publicSummaryOverrideText, setPublicSummaryOverrideText] = useState("");
+  const [savingPublicSummary, setSavingPublicSummary] = useState(false);
   const user = (() => {
     try {
       const raw = localStorage.getItem("user");
@@ -93,6 +95,9 @@ const ProjectReview: React.FC = () => {
           : "employee";
       const data = await api.get(`${base}/projects/${id}/`);
       setProject(data);
+      setPublicSummaryOverrideText(
+        String(data?.profile_data?.public_summary_override?.text || "").trim(),
+      );
     } catch (error) {
       console.error("Failed to load project review:", error);
       setProject(null);
@@ -126,6 +131,33 @@ const ProjectReview: React.FC = () => {
 
   const simplified = project.profile_data?.simplified_form as Record<string, any> | undefined;
   const validatorReview = getValidatorReview(project);
+  const publicSummary = project.profile_data?.public_summary as Record<string, any> | undefined;
+  const publicSummaryOverrideObj = project.profile_data?.public_summary_override as Record<string, any> | undefined;
+  const effectivePublicSummaryText = String(publicSummaryOverrideObj?.text || publicSummary?.text || "").trim();
+  const publicSummaryBullets = Array.isArray(publicSummary?.bullets) ? (publicSummary?.bullets as any[]) : [];
+
+  const onSavePublicSummary = async () => {
+    if (!id || !(isAdmin || isValidator)) return;
+    setSavingPublicSummary(true);
+    try {
+      const base =
+        role === "admin"
+          ? "admin"
+          : role === "validator"
+          ? "validator"
+          : "employee";
+      await api.post(`${base}/projects/${id}/public-summary/`, {
+        text: publicSummaryOverrideText,
+      });
+      await load();
+      alert("Public summary updated.");
+    } catch (e) {
+      console.error("Failed to update public summary:", e);
+      alert("Failed to update public summary.");
+    } finally {
+      setSavingPublicSummary(false);
+    }
+  };
 
   return (
     <PortalLayout
@@ -189,6 +221,52 @@ const ProjectReview: React.FC = () => {
               {validatorReview?.reviewed_at ? new Date(validatorReview.reviewed_at).toLocaleString() : "-"}
             </p>
             {validatorReview?.review_notes ? <p>Review notes: {String(validatorReview.review_notes)}</p> : null}
+          </div>
+        )}
+        {(isAdmin || isValidator) && (
+          <div className="border border-slate-200 bg-white rounded p-4 space-y-3">
+            <div>
+              <p className="font-semibold text-slate-900">Public Summary</p>
+              <p className="text-xs text-slate-500 mt-1">
+                This is what the public dashboard will show as “More details”. You can optionally override the text for clarity
+                without changing contributor data.
+              </p>
+            </div>
+            <div className="border rounded p-3 bg-slate-50">
+              <p className="text-xs text-slate-500 mb-1">Effective public summary</p>
+              <p className="text-sm whitespace-pre-wrap text-slate-800">
+                {effectivePublicSummaryText || "No public summary generated yet."}
+              </p>
+              {publicSummaryBullets.length > 0 && (
+                <ul className="mt-3 list-disc pl-5 text-sm text-slate-700 space-y-1">
+                  {publicSummaryBullets.slice(0, 10).map((b, idx) => (
+                    <li key={`${idx}-${String(b)}`}>{String(b)}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Override text (optional)
+              </label>
+              <textarea
+                className="w-full border rounded p-2 text-sm"
+                rows={4}
+                value={publicSummaryOverrideText}
+                onChange={(e) => setPublicSummaryOverrideText(e.target.value)}
+                placeholder="Leave empty to remove override and use the auto-generated summary."
+              />
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm disabled:opacity-60"
+                  onClick={onSavePublicSummary}
+                  disabled={savingPublicSummary}
+                >
+                  {savingPublicSummary ? "Saving..." : "Save Public Summary"}
+                </button>
+              </div>
+            </div>
           </div>
         )}
         <div className="border-t pt-4">

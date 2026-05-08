@@ -105,6 +105,7 @@ const UserManagement = () => {
     validator_draft: "Validator Draft Saved",
     validator_reviewed: "Validator Reviewed",
     validator_endorsed: "Validator Endorsed",
+    public_summary_overridden: "Public Summary Updated",
   };
 
   const eventSeverity: Record<string, "info" | "warn" | "error"> = {
@@ -123,6 +124,7 @@ const UserManagement = () => {
     validator_draft: "info",
     validator_reviewed: "info",
     validator_endorsed: "info",
+    public_summary_overridden: "info",
   };
 
   const severityClass = (event: string) => {

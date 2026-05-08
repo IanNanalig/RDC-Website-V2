@@ -31,6 +31,8 @@ import {
   FaChartBar,
   FaTable,
   FaMap,
+  FaSortUp,
+  FaSortDown,
 } from "react-icons/fa";
 import VoronoiBlobMap from "../components/VoronoiBlobMap";
 import { ncrCityCenters } from "../services/ncrCityCenters";
@@ -72,13 +74,14 @@ const Projects: React.FC = () => {
   );
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sortColumn, setSortColumn] = useState<
-    "title" | "year" | "status" | "budget"
+    "title" | "year" | "status" | "budget" | "agency" | "lgu"
   >("title");
   const [sortDesc, setSortDesc] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
   const [stats, setStats] = useState<PublicProjectsStats | null>(null);
+  const [detailProject, setDetailProject] = useState<Project | null>(null);
 
   const fetchData = async () => {
     setLoading(true);
@@ -91,9 +94,16 @@ const Projects: React.FC = () => {
         year: yearFilter === "all" ? undefined : yearFilter,
         lgu: municipalityFilter === "all" ? undefined : municipalityFilter,
       };
+      // Fetch stats without agency filter to keep agency dropdown stable
+      const statsFilters = {
+        q: search || undefined,
+        status: statusFilter === "all" ? undefined : statusFilter,
+        year: yearFilter === "all" ? undefined : yearFilter,
+        lgu: municipalityFilter === "all" ? undefined : municipalityFilter,
+      };
       const [list, st] = await Promise.all([
         getPublicProjects({ ...filters, limit: 500, offset: 0 }),
-        getPublicProjectsStats(filters),
+        getPublicProjectsStats(statsFilters),
       ]);
       setProjects(list);
       setStats(st);
@@ -121,10 +131,12 @@ const Projects: React.FC = () => {
     [projects],
   );
 
-  const agencyOptions = useMemo(
-    () => Array.from(new Set(projects.map((p) => p.agency || "Other"))),
-    [projects],
-  );
+  const agencyOptions = useMemo(() => {
+    if (stats?.by_agency) {
+      return Object.keys(stats.by_agency).sort();
+    }
+    return Array.from(new Set(projects.map((p) => p.agency || "Other")));
+  }, [stats, projects]);
 
   const municipalityOptions = useMemo(() => {
     return [...Object.keys(ncrCityCenters).sort(), "Unspecified"];
@@ -244,21 +256,46 @@ const Projects: React.FC = () => {
     sorted.sort((a, b) => {
       let aVal: any = (a as any)[sortColumn];
       let bVal: any = (b as any)[sortColumn];
+
       if (sortColumn === "status") {
         aVal = a.implementation_status || "Unspecified";
         bVal = b.implementation_status || "Unspecified";
       }
-      if (sortColumn === "title" || sortColumn === "status") {
+      if (sortColumn === "agency") {
+        aVal = a.agency || "";
+        bVal = b.agency || "";
+      }
+      if (sortColumn === "lgu") {
+        aVal = a.lgu || "Unspecified";
+        bVal = b.lgu || "Unspecified";
+      }
+
+      // Normalize strings for consistent sorting
+      if (
+        sortColumn === "title" ||
+        sortColumn === "status" ||
+        sortColumn === "agency" ||
+        sortColumn === "lgu"
+      ) {
         aVal = String(aVal).toLowerCase();
         bVal = String(bVal).toLowerCase();
       }
+
       const comp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
-      return sortDesc ? -comp : comp;
+      const primary = sortDesc ? -comp : comp;
+      if (primary !== 0) return primary;
+
+      // Stable tie-breaker: Project Name (A-Z)
+      const at = String(a.title || "").toLowerCase();
+      const bt = String(b.title || "").toLowerCase();
+      return at < bt ? -1 : at > bt ? 1 : 0;
     });
     return sorted;
   }, [displayProjects, sortColumn, sortDesc]);
 
-  const handleSort = (col: "title" | "year" | "status" | "budget") => {
+  const handleSort = (
+    col: "title" | "year" | "status" | "budget" | "agency" | "lgu",
+  ) => {
     if (sortColumn === col) {
       setSortDesc(!sortDesc);
     } else {
@@ -633,7 +670,9 @@ const Projects: React.FC = () => {
                           >
                             Project Name
                             {sortColumn === "title" && (
-                              <span>{sortDesc ? "↓" : "↑"}</span>
+                              <span className="text-blue-700">
+                                {sortDesc ? <FaSortDown /> : <FaSortUp />}
+                              </span>
                             )}
                           </button>
                         </th>
@@ -644,7 +683,9 @@ const Projects: React.FC = () => {
                           >
                             Year
                             {sortColumn === "year" && (
-                              <span>{sortDesc ? "↓" : "↑"}</span>
+                              <span className="text-blue-700">
+                                {sortDesc ? <FaSortDown /> : <FaSortUp />}
+                              </span>
                             )}
                           </button>
                         </th>
@@ -655,12 +696,24 @@ const Projects: React.FC = () => {
                           >
                             Status
                             {sortColumn === "status" && (
-                              <span>{sortDesc ? "↓" : "↑"}</span>
+                              <span className="text-blue-700">
+                                {sortDesc ? <FaSortDown /> : <FaSortUp />}
+                              </span>
                             )}
                           </button>
                         </th>
-                        <th className="px-4 py-3 text-left font-semibold text-blue-900">
-                          Agency
+                        <th className="px-4 py-3 text-left">
+                          <button
+                            onClick={() => handleSort("agency")}
+                            className="font-semibold text-blue-900 hover:text-blue-600 flex items-center gap-2"
+                          >
+                            Agency
+                            {sortColumn === "agency" && (
+                              <span className="text-blue-700">
+                                {sortDesc ? <FaSortDown /> : <FaSortUp />}
+                              </span>
+                            )}
+                          </button>
                         </th>
                         <th className="px-4 py-3 text-left">
                           <button
@@ -669,12 +722,24 @@ const Projects: React.FC = () => {
                           >
                             Budget
                             {sortColumn === "budget" && (
-                              <span>{sortDesc ? "↓" : "↑"}</span>
+                              <span className="text-blue-700">
+                                {sortDesc ? <FaSortDown /> : <FaSortUp />}
+                              </span>
                             )}
                           </button>
                         </th>
-                        <th className="px-4 py-3 text-left font-semibold text-blue-900">
-                          Location
+                        <th className="px-4 py-3 text-left">
+                          <button
+                            onClick={() => handleSort("lgu")}
+                            className="font-semibold text-blue-900 hover:text-blue-600 flex items-center gap-2"
+                          >
+                            Location
+                            {sortColumn === "lgu" && (
+                              <span className="text-blue-700">
+                                {sortDesc ? <FaSortDown /> : <FaSortUp />}
+                              </span>
+                            )}
+                          </button>
                         </th>
                       </tr>
                     </thead>
@@ -688,7 +753,14 @@ const Projects: React.FC = () => {
                             }`}
                           >
                             <td className="px-4 py-3 text-sm font-medium text-gray-900">
-                              {p.title}
+                              <button
+                                type="button"
+                                className="text-left hover:underline text-blue-900"
+                                onClick={() => setDetailProject(p)}
+                                title="View project details"
+                              >
+                                {p.title}
+                              </button>
                             </td>
                             <td className="px-4 py-3 text-sm text-gray-700">
                               {p.year}
@@ -720,7 +792,7 @@ const Projects: React.FC = () => {
                               {money(p.budget)}
                             </td>
                             <td className="px-4 py-3 text-sm text-gray-700">
-                              {p.lgu}
+                              {p.lgu || "Unspecified"}
                             </td>
                           </tr>
                         ))
@@ -740,6 +812,157 @@ const Projects: React.FC = () => {
                       )}
                     </tbody>
                   </table>
+                </div>
+              </div>
+            )}
+
+            {detailProject && (
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+                role="dialog"
+                aria-modal="true"
+              >
+                <div className="w-full max-w-3xl bg-white rounded-xl shadow-xl overflow-hidden">
+                  <div className="flex items-center justify-between px-5 py-4 border-b">
+                    <div className="min-w-0">
+                      <h3 className="font-semibold text-slate-900 truncate">
+                        {detailProject.title}
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        {detailProject.agency || "N/A"}{" "}
+                        {detailProject.lgu ? `• ${detailProject.lgu}` : ""}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="px-3 py-1.5 border rounded-lg text-sm hover:bg-slate-50"
+                      onClick={() => setDetailProject(null)}
+                    >
+                      Close
+                    </button>
+                  </div>
+                  <div className="p-5 space-y-4">
+                    <div className="grid sm:grid-cols-3 gap-3">
+                      <div className="border rounded-lg p-3">
+                        <p className="text-[11px] text-slate-500">Status</p>
+                        <p className="font-semibold">
+                          {detailProject.implementation_status || "Unspecified"}
+                        </p>
+                      </div>
+                      <div className="border rounded-lg p-3">
+                        <p className="text-[11px] text-slate-500">Year</p>
+                        <p className="font-semibold">{detailProject.year ?? "-"}</p>
+                      </div>
+                      <div className="border rounded-lg p-3">
+                        <p className="text-[11px] text-slate-500">Budget</p>
+                        <p className="font-semibold text-green-700">
+                          {money(detailProject.budget || 0)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="border rounded-lg p-4 bg-slate-50">
+                      <p className="text-sm font-semibold text-slate-900 mb-2">
+                        Overview
+                      </p>
+                      <p className="text-sm text-slate-700 whitespace-pre-wrap">
+                        {detailProject.public_summary_text?.trim()
+                          ? detailProject.public_summary_text
+                          : detailProject.description || "No summary available."}
+                      </p>
+                    </div>
+
+                    {(detailProject.public_key_facts?.objective ||
+                      detailProject.description) && (
+                      <div className="grid md:grid-cols-2 gap-3">
+                        {detailProject.public_key_facts?.objective ? (
+                          <div className="border rounded-lg p-4">
+                            <p className="text-sm font-semibold text-slate-900 mb-2">
+                              Objective
+                            </p>
+                            <p className="text-sm text-slate-700 whitespace-pre-wrap">
+                              {String(detailProject.public_key_facts.objective)}
+                            </p>
+                          </div>
+                        ) : null}
+                        {detailProject.description ? (
+                          <div className="border rounded-lg p-4">
+                            <p className="text-sm font-semibold text-slate-900 mb-2">
+                              Description
+                            </p>
+                            <p className="text-sm text-slate-700 whitespace-pre-wrap">
+                              {detailProject.description}
+                            </p>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
+
+                    {detailProject.public_key_facts &&
+                      typeof detailProject.public_key_facts === "object" && (
+                        <div className="border rounded-lg p-4">
+                          <p className="text-sm font-semibold text-slate-900 mb-2">
+                            Key Facts
+                          </p>
+                          <div className="grid sm:grid-cols-2 gap-3 text-sm">
+                            {detailProject.public_key_facts.start_year ? (
+                              <div>
+                                <p className="text-[11px] text-slate-500">Start Year</p>
+                                <p className="text-slate-800">
+                                  {String(detailProject.public_key_facts.start_year)}
+                                </p>
+                              </div>
+                            ) : null}
+                            {detailProject.public_key_facts.end_year ? (
+                              <div>
+                                <p className="text-[11px] text-slate-500">End Year</p>
+                                <p className="text-slate-800">
+                                  {String(detailProject.public_key_facts.end_year)}
+                                </p>
+                              </div>
+                            ) : null}
+                            {detailProject.public_key_facts.development_sector ? (
+                              <div className="sm:col-span-2">
+                                <p className="text-[11px] text-slate-500">Development Sector</p>
+                                <p className="text-slate-800">
+                                  {String(detailProject.public_key_facts.development_sector)}
+                                </p>
+                              </div>
+                            ) : null}
+                            {detailProject.public_key_facts.rdp_main_chapter ? (
+                              <div className="sm:col-span-2">
+                                <p className="text-[11px] text-slate-500">RDP Main Chapter</p>
+                                <p className="text-slate-800">
+                                  {String(detailProject.public_key_facts.rdp_main_chapter)}
+                                </p>
+                              </div>
+                            ) : null}
+                            {typeof detailProject.public_key_facts.sdg_count === "number" ? (
+                              <div>
+                                <p className="text-[11px] text-slate-500">SDG Tags</p>
+                                <p className="text-slate-800">
+                                  {String(detailProject.public_key_facts.sdg_count)}
+                                </p>
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                      )}
+
+                    {Array.isArray(detailProject.public_summary_bullets) &&
+                      detailProject.public_summary_bullets.length > 0 && (
+                        <div className="border rounded-lg p-4">
+                          <p className="text-sm font-semibold text-slate-900 mb-2">
+                            Highlights
+                          </p>
+                          <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
+                            {detailProject.public_summary_bullets.map((b, i) => (
+                              <li key={`${i}-${b}`}>{b}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                  </div>
                 </div>
               </div>
             )}

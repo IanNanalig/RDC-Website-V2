@@ -43,6 +43,7 @@ from .serializers import (
     UserActivitySerializer,
     UserSerializer,
 )
+from .public_summary import build_public_summary
 from .utils import derive_ncr_lgu
 
 
@@ -1201,6 +1202,13 @@ def _apply_simplified_meta(incoming_profile, existing_profile, user):
             "field_edits": field_edits,
             "last_edit": meta_source.get("last_edit") if isinstance(meta_source, dict) else {},
         }
+
+    # Always keep an up-to-date deterministic public summary for reviewers/public dashboard.
+    try:
+        incoming_profile["public_summary"] = build_public_summary(simplified)
+    except Exception:
+        # Never block a save on summary generation issues.
+        pass
     changes = [changes_by_field[field] for field in changed_fields if field in changes_by_field]
     return incoming_profile, changed_fields, changes
 
@@ -1271,7 +1279,17 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("Only owner or admin can submit")
         if project.status == "planning":
             project.status = "proposed"
-            project.save(update_fields=["status", "updated_at"])
+            # Refresh deterministic public summary on submit.
+            if isinstance(project.profile_data, dict):
+                try:
+                    sf = project.profile_data.get("simplified_form")
+                    if isinstance(sf, dict):
+                        project.profile_data["public_summary"] = build_public_summary(sf)
+                except Exception:
+                    pass
+                project.save(update_fields=["status", "profile_data", "updated_at"])
+            else:
+                project.save(update_fields=["status", "updated_at"])
             _log_activity(request, "project_submit", project, {"status": project.status})
         return Response({"status": project.status})
 
@@ -1354,6 +1372,13 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             "edited_fields": edited_fields[:300],
             "working_copy": edited_profile,
         }
+        # Refresh deterministic public summary from the contributor-visible simplified form.
+        try:
+            sf = profile_data.get("simplified_form")
+            if isinstance(sf, dict):
+                profile_data["public_summary"] = build_public_summary(sf)
+        except Exception:
+            pass
         project.profile_data = profile_data
         project.save(update_fields=list(dict.fromkeys(update_fields)))
         details = {
@@ -1373,6 +1398,43 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 "edited_fields_count": len(edited_fields),
                 "reviewed_at": reviewed_at,
                 "warning": warning,
+            }
+        )
+
+    @action(detail=True, methods=["post"], url_path="public-summary")
+    def public_summary(self, request, pk=None):
+        project = self.get_object()
+        role = getattr(request.user, "role", "")
+        if role not in ("admin", "validator"):
+            raise PermissionDenied("Only admin/validator can set public summary override.")
+        text = str(request.data.get("text") or "").strip()
+        profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
+        if not isinstance(profile_data, dict):
+            profile_data = {}
+        if text:
+            profile_data["public_summary_override"] = {
+                "updated_at": timezone.now().isoformat(),
+                "updated_by": getattr(request.user, "full_name", "").strip()
+                or request.user.get_full_name()
+                or request.user.username,
+                "text": text,
+            }
+        else:
+            profile_data.pop("public_summary_override", None)
+        # Ensure base summary exists as well.
+        try:
+            sf = profile_data.get("simplified_form")
+            if isinstance(sf, dict):
+                profile_data["public_summary"] = build_public_summary(sf)
+        except Exception:
+            pass
+        project.profile_data = profile_data
+        project.save(update_fields=["profile_data", "updated_at"])
+        _log_activity(request, "public_summary_overridden", project, {"has_override": bool(text)})
+        return Response(
+            {
+                "has_override": bool(text),
+                "public_summary_override": profile_data.get("public_summary_override") if text else None,
             }
         )
 
@@ -1460,6 +1522,13 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
         if isinstance(profile_data, dict):
             # Initial save should establish the baseline, not mark every non-empty field as "edited".
             profile_data.pop("simplified_form_meta", None)
+            # Generate a deterministic public summary for reviewers/public dashboard.
+            try:
+                simplified = profile_data.get("simplified_form")
+                if isinstance(simplified, dict):
+                    profile_data["public_summary"] = build_public_summary(simplified)
+            except Exception:
+                pass
             data["profile_data"] = profile_data
             changes = []
         else:

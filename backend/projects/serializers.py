@@ -256,6 +256,9 @@ class PublicProjectSerializer(serializers.ModelSerializer):
     lgu = serializers.SerializerMethodField()
     location_raw = serializers.SerializerMethodField()
     description = serializers.SerializerMethodField()
+    public_summary_text = serializers.SerializerMethodField()
+    public_summary_bullets = serializers.SerializerMethodField()
+    public_key_facts = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
@@ -269,6 +272,9 @@ class PublicProjectSerializer(serializers.ModelSerializer):
             "lgu",
             "location_raw",
             "description",
+            "public_summary_text",
+            "public_summary_bullets",
+            "public_key_facts",
             "updated_at",
         ]
         read_only_fields = fields
@@ -327,6 +333,41 @@ class PublicProjectSerializer(serializers.ModelSerializer):
             return derive_ncr_lgu(self.get_location_raw(obj))
         except Exception:
             return None
+
+    def _public_summary_payload(self, obj) -> dict:
+        pd = getattr(obj, "profile_data", None)
+        if isinstance(pd, dict):
+            # Prefer override for text, but still expose bullets/key facts from the generated summary.
+            override = pd.get("public_summary_override")
+            base = pd.get("public_summary")
+            if isinstance(base, dict):
+                payload = dict(base)
+            else:
+                payload = {}
+            if isinstance(override, dict):
+                override_text = str(override.get("text") or "").strip()
+                if override_text:
+                    payload["text"] = override_text
+            return payload
+        return {}
+
+    def get_public_summary_text(self, obj):
+        payload = self._public_summary_payload(obj)
+        return str(payload.get("text") or "").strip()
+
+    def get_public_summary_bullets(self, obj):
+        payload = self._public_summary_payload(obj)
+        raw = payload.get("bullets")
+        if isinstance(raw, list):
+            return [str(v) for v in raw if str(v).strip()]
+        return []
+
+    def get_public_key_facts(self, obj):
+        payload = self._public_summary_payload(obj)
+        raw = payload.get("key_facts")
+        if isinstance(raw, dict):
+            return raw
+        return {}
 
 
 class AccessRequestSerializer(serializers.ModelSerializer):
