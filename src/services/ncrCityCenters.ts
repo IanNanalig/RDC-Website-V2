@@ -1,4 +1,4 @@
-export const ncrCityCenters: Record<string, [number, number]> = {
+﻿export const ncrCityCenters: Record<string, [number, number]> = {
   "Manila": [14.5995, 120.9842],
   "Quezon City": [14.676, 121.0437],
   "Pasig": [14.5764, 121.0851],
@@ -17,4 +17,5 @@ export const ncrCityCenters: Record<string, [number, number]> = {
   "Malabon": [14.6686, 120.9567],
   "Pateros": [14.5446, 121.0661],
 };
+
 

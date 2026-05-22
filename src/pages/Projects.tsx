@@ -176,13 +176,6 @@ const Projects: React.FC = () => {
   }, [filtered, selectedCity, municipalityFilter]);
 
   const totals = useMemo(() => {
-    if (stats) {
-      return {
-        totalProjects: stats.total_projects || 0,
-        totalBudget: stats.total_budget || 0,
-        byStatus: stats.by_status || {},
-      };
-    }
     const totalProjects = displayProjects.length;
     const totalBudget = displayProjects.reduce(
       (s, p) => s + (p.budget || 0),
@@ -198,7 +191,7 @@ const Projects: React.FC = () => {
       {},
     );
     return { totalProjects, totalBudget, byStatus };
-  }, [displayProjects, stats]);
+  }, [displayProjects]);
 
   // Projects to send to the map
   const mapProjects = useMemo(() => {
@@ -222,6 +215,16 @@ const Projects: React.FC = () => {
       })),
     [totals],
   );
+
+  const statusCount = (label: string) => {
+    const map: any = totals.byStatus || {};
+    return (
+      map[label] ??
+      map[String(label).toLowerCase()] ??
+      map[String(label).toUpperCase()] ??
+      0
+    );
+  };
 
   const agencyBar = useMemo(() => {
     if (stats?.by_agency) {
@@ -361,7 +364,7 @@ const Projects: React.FC = () => {
                 Ongoing
               </div>
               <div className="text-2xl font-bold text-yellow-900">
-                {totals.byStatus.ongoing || 0}
+                {statusCount("Ongoing")}
               </div>
             </div>
             <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-lg p-3 border border-purple-200">
@@ -369,7 +372,7 @@ const Projects: React.FC = () => {
                 Completed
               </div>
               <div className="text-2xl font-bold text-purple-900">
-                {totals.byStatus.completed || 0}
+                {statusCount("Completed")}
               </div>
             </div>
           </div>
@@ -822,7 +825,7 @@ const Projects: React.FC = () => {
                 role="dialog"
                 aria-modal="true"
               >
-                <div className="w-full max-w-3xl bg-white rounded-xl shadow-xl overflow-hidden">
+                <div className="w-full max-w-3xl bg-white rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[calc(100vh-2rem)]">
                   <div className="flex items-center justify-between px-5 py-4 border-b">
                     <div className="min-w-0">
                       <h3 className="font-semibold text-slate-900 truncate">
@@ -841,7 +844,7 @@ const Projects: React.FC = () => {
                       Close
                     </button>
                   </div>
-                  <div className="p-5 space-y-4">
+                  <div className="p-5 space-y-4 overflow-y-auto flex-1 min-h-0">
                     <div className="grid sm:grid-cols-3 gap-3">
                       <div className="border rounded-lg p-3">
                         <p className="text-[11px] text-slate-500">Status</p>
@@ -865,7 +868,7 @@ const Projects: React.FC = () => {
                       <p className="text-sm font-semibold text-slate-900 mb-2">
                         Overview
                       </p>
-                      <p className="text-sm text-slate-700 whitespace-pre-wrap">
+                      <p className="text-sm text-slate-700 whitespace-pre-wrap break-words">
                         {detailProject.public_summary_text?.trim()
                           ? detailProject.public_summary_text
                           : detailProject.description || "No summary available."}
@@ -880,7 +883,7 @@ const Projects: React.FC = () => {
                             <p className="text-sm font-semibold text-slate-900 mb-2">
                               Objective
                             </p>
-                            <p className="text-sm text-slate-700 whitespace-pre-wrap">
+                            <p className="text-sm text-slate-700 whitespace-pre-wrap break-words">
                               {String(detailProject.public_key_facts.objective)}
                             </p>
                           </div>
@@ -890,7 +893,7 @@ const Projects: React.FC = () => {
                             <p className="text-sm font-semibold text-slate-900 mb-2">
                               Description
                             </p>
-                            <p className="text-sm text-slate-700 whitespace-pre-wrap">
+                            <p className="text-sm text-slate-700 whitespace-pre-wrap break-words">
                               {detailProject.description}
                             </p>
                           </div>
@@ -957,7 +960,9 @@ const Projects: React.FC = () => {
                           </p>
                           <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
                             {detailProject.public_summary_bullets.map((b, i) => (
-                              <li key={`${i}-${b}`}>{b}</li>
+                              <li key={`${i}-${b}`} className="break-words">
+                                {b}
+                              </li>
                             ))}
                           </ul>
                         </div>

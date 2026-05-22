@@ -1,4 +1,4 @@
-import re
+﻿import re
 import unicodedata
 
 
@@ -59,4 +59,5 @@ def derive_ncr_lgu(location_text: str | None) -> str | None:
                 return canonical
 
     return None
+
 

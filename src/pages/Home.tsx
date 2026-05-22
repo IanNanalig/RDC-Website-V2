@@ -1,5 +1,9 @@
-import React, { useEffect, useState } from "react";
+﻿import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import {
+  getPublicProjectsStats,
+  type PublicProjectsStats,
+} from "../services/publicProjectsApi";
 import photo1 from "../assets/Photo-Corousel/Photos/photo1.jpg";
 import photo2 from "../assets/Photo-Corousel/Photos/photo2.jpg";
 import photo3 from "../assets/Photo-Corousel/Photos/photo3.jpg";
@@ -10,6 +14,14 @@ import photo7 from "../assets/Photo-Corousel/Photos/photo7.jpg";
 import photo8 from "../assets/Photo-Corousel/Photos/photo8.jpg";
 import photo9 from "../assets/Photo-Corousel/Photos/photo9.jpg";
 import rdcLogo from "../assets/Photo-Corousel/Photos/RDC-NCR LOGO.png";
+import {
+  FaLeaf,
+  FaFileAlt,
+  FaBullseye,
+  FaChartLine,
+  FaChartBar,
+  FaClipboardList,
+} from "react-icons/fa";
 
 const Home: React.FC = () => {
   const [visitorCount, setVisitorCount] = useState(0);
@@ -18,12 +30,16 @@ const Home: React.FC = () => {
   const [pageViews, setPageViews] = useState(0);
   const [averageDailyViews, setAverageDailyViews] = useState(0);
   const [todayViews, setTodayViews] = useState(0);
+  const [publicStats, setPublicStats] = useState<PublicProjectsStats | null>(
+    null,
+  );
+  const [publicStatsError, setPublicStatsError] = useState<string>("");
   const navigate = useNavigate();
 
   const carouselImages = [
     {
       src: photo1,
-      title: "Regional Development Council – NCR",
+      title: "Regional Development Council â€“ NCR",
       subtitle: "Planning a sustainable and resilient Metro Manila",
       button1: { text: "View Plans", link: "/plans" },
       button2: { text: "Latest Reports", link: "/reports" },
@@ -129,19 +145,19 @@ const Home: React.FC = () => {
     {
       title: "Metro Manila Greenprint 2030",
       category: "Sustainability Framework",
-      icon: "🌿",
+      icon: <FaLeaf className="w-8 h-8 text-green-500" />,
       link: "/publications?category=greenprint",
     },
     {
       title: "Regional Development Plan",
       category: "Comprehensive Plan",
-      icon: "📋",
+      icon: <FaFileAlt className="w-8 h-8 text-gray-700" />,
       link: "/publications?category=rdp",
     },
     {
       title: "SDG Catch-up Plan",
       category: "Development Goals",
-      icon: "🎯",
+      icon: <FaBullseye className="w-8 h-8 text-indigo-600" />,
       link: "/publications?category=sdg",
     },
   ];
@@ -150,7 +166,7 @@ const Home: React.FC = () => {
     {
       title: "Regional Development Investment Program",
       category: "Investment Portfolio",
-      icon: "💰",
+      icon: <FaChartLine className="w-8 h-8 text-green-600" />,
       link: "/publications?category=rdip",
       quickLinks: [
         { label: "RDIP DOCUMENTS", link: "/publications?category=rdip" },
@@ -163,13 +179,13 @@ const Home: React.FC = () => {
     {
       title: "Regional Development Report",
       category: "Annual Report",
-      icon: "📊",
+      icon: <FaChartBar className="w-8 h-8 text-purple-600" />,
       link: "/publications?category=rdr",
     },
     {
       title: "Regional Project Monitoring and Evaluation System",
       category: "Monitoring System",
-      icon: "📈",
+      icon: <FaClipboardList className="w-8 h-8 text-purple-500" />,
       link: "/publications?category=rpmes",
     },
   ];
@@ -209,35 +225,117 @@ const Home: React.FC = () => {
     },
   ];
 
-  const dashboardStats = [
-    { label: "Ongoing Projects", value: "142", change: "+5%", trend: "up" },
-    { label: "Completed Projects", value: "89", change: "+12%", trend: "up" },
-    { label: "Total Investment", value: "₱2.4B", change: "+8%", trend: "up" },
-    { label: "Community Impact", value: "1.2M", change: "+15%", trend: "up" },
-  ];
+  const formatMoneyCompact = (n: number) => {
+    const value = Number(n || 0);
+    if (!Number.isFinite(value)) return "PHP 0";
+    if (value >= 1000000000) return `PHP ${(value / 1000000000).toFixed(1)}B`;
+    if (value >= 1000000) return `PHP ${(value / 1000000).toFixed(1)}M`;
+    if (value >= 1000) return `PHP ${(value / 1000).toFixed(1)}K`;
+    return `PHP ${Math.round(value).toLocaleString("en-US")}`;
+  };
 
-  const projectStatusData = [
-    { status: "Planning", count: 45, color: "bg-blue-500" },
-    { status: "In Progress", count: 67, color: "bg-yellow-500" },
-    { status: "Completed", count: 89, color: "bg-green-500" },
-  ];
+  const canonicalStatus = (raw: string) => {
+    const s = String(raw || "").trim();
+    if (!s) return "Unspecified";
+    const key = s.toLowerCase();
+    const map: Record<string, string> = {
+      completed: "Completed",
+      ongoing: "Ongoing",
+      new: "New",
+      updated: "Updated",
+      discontinued: "Discontinued",
+      dropped: "Dropped",
+      "not implemented": "Not Implemented",
+      "n/a": "N/A",
+      na: "N/A",
+      unspecified: "Unspecified",
+    };
+    return map[key] || s;
+  };
 
-  const investmentData = [
-    { sector: "Infrastructure", amount: "₱1.2B", percentage: 50 },
-    { sector: "Social Services", amount: "₱480M", percentage: 20 },
-    { sector: "Economic Development", amount: "₱360M", percentage: 15 },
-    { sector: "Environment", amount: "₱240M", percentage: 10 },
-    { sector: "Governance", amount: "₱120M", percentage: 5 },
-  ];
+  const statusCount = (label: string) => {
+    const by = publicStats?.by_status || {};
+    const target = canonicalStatus(label).toLowerCase();
+    let total = 0;
+    Object.entries(by).forEach(([k, v]) => {
+      if (canonicalStatus(k).toLowerCase() === target) total += Number(v || 0);
+    });
+    return total;
+  };
 
-  const timelineData = [
-    { quarter: "Q1 2024", projects: 25 },
-    { quarter: "Q2 2024", projects: 32 },
-    { quarter: "Q3 2024", projects: 45 },
-    { quarter: "Q4 2024", projects: 40 },
-    { quarter: "Q1 2025", projects: 38 },
-    { quarter: "Q2 2025", projects: 42 },
-  ];
+  const dashboardStats = useMemo(() => {
+    const ongoing = statusCount("Ongoing");
+    const completed = statusCount("Completed");
+    const totalBudget = Number(publicStats?.total_budget || 0);
+    const agencies = Object.keys(publicStats?.by_agency || {}).length;
+    return [
+      { label: "Ongoing Projects", value: String(ongoing) },
+      { label: "Completed Projects", value: String(completed) },
+      { label: "Total Investment", value: formatMoneyCompact(totalBudget) },
+      { label: "Agencies Covered", value: String(agencies) },
+    ];
+  }, [publicStats]);
+
+  const projectStatusData = useMemo(() => {
+    const by = publicStats?.by_status || {};
+    const entries = Object.entries(by).map(([k, v]) => ({
+      status: canonicalStatus(k),
+      count: Number(v || 0),
+    }));
+    entries.sort((a, b) => b.count - a.count);
+
+    const colorOf = (s: string) => {
+      switch (canonicalStatus(s)) {
+        case "Completed":
+          return "bg-green-500";
+        case "Ongoing":
+          return "bg-yellow-500";
+        case "New":
+          return "bg-blue-500";
+        case "Updated":
+          return "bg-indigo-500";
+        default:
+          return "bg-slate-500";
+      }
+    };
+
+    return entries.slice(0, 5).map((e) => ({
+      status: e.status,
+      count: e.count,
+      color: colorOf(e.status),
+    }));
+  }, [publicStats]);
+
+  const investmentData = useMemo(() => {
+    const by = publicStats?.by_agency || {};
+    const total = Math.max(
+      1,
+      Object.values(by).reduce((s, n) => s + Number(n || 0), 0),
+    );
+    const top = Object.entries(by)
+      .map(([k, v]) => ({ sector: k, count: Number(v || 0) }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    return top.map((t) => ({
+      sector: t.sector,
+      amount: `${t.count} project(s)`,
+      percentage: Math.round((t.count / total) * 100),
+    }));
+  }, [publicStats]);
+
+  const timelineData = useMemo(() => {
+    const byYear = publicStats?.by_year || {};
+    const years = Object.keys(byYear)
+      .map((y) => Number(y))
+      .filter((y) => Number.isFinite(y))
+      .sort((a, b) => a - b);
+    const last = years.slice(-6);
+    return last.map((y) => ({
+      quarter: String(y),
+      projects: Number(byYear[String(y)] || 0),
+    }));
+  }, [publicStats]);
 
   // Google Maps URL for the address
   const googleMapsUrl =
@@ -256,6 +354,30 @@ const Home: React.FC = () => {
     setPageViews(15432);
     setAverageDailyViews(387);
     setTodayViews(123);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPublicStats = async () => {
+      try {
+        setPublicStatsError("");
+        const st = await getPublicProjectsStats();
+        if (!cancelled) setPublicStats(st);
+      } catch (err: any) {
+        if (!cancelled)
+          setPublicStatsError(
+            String(err?.message || err || "Failed to load dashboard stats."),
+          );
+      }
+    };
+
+    loadPublicStats();
+    const timer = window.setInterval(loadPublicStats, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -278,7 +400,7 @@ const Home: React.FC = () => {
 
   const prevSlide = () => {
     setCurrentSlide(
-      (prev) => (prev - 1 + carouselImages.length) % carouselImages.length
+      (prev) => (prev - 1 + carouselImages.length) % carouselImages.length,
     );
   };
 
@@ -328,39 +450,66 @@ const Home: React.FC = () => {
     <div className="bg-gray-800 rounded-xl p-5">
       <div className="text-3xl font-bold text-white mb-2">{value}</div>
       <div className="text-sm text-gray-300 mb-3">{label}</div>
-      <div
-        className={`text-sm ${
-          trend === "up" ? "text-green-400" : "text-red-400"
-        } flex items-center gap-1`}
-      >
-        <span>{change}</span>
-        <svg
-          className={`w-4 h-4 ${
-            trend === "up" ? "text-green-400" : "text-red-400"
-          }`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+      {change ? (
+        <div
+          className={`text-sm ${
+            trend === "down" ? "text-red-400" : "text-green-400"
+          } flex items-center gap-1`}
         >
-          {trend === "up" ? (
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M5 15l7-7 7 7"
-            />
-          ) : (
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M19 9l-7 7-7-7"
-            />
-          )}
-        </svg>
-      </div>
+          <span>{change}</span>
+          <svg
+            className={`w-4 h-4 ${
+              trend === "down" ? "text-red-400" : "text-green-400"
+            }`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            {trend === "down" ? (
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M19 9l-7 7-7-7"
+              />
+            ) : (
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M5 15l7-7 7 7"
+              />
+            )}
+          </svg>
+        </div>
+      ) : null}
     </div>
   );
+
+  const lastUpdatedLabel = useMemo(() => {
+    const raw = publicStats?.last_updated_at;
+    if (!raw) return "N/A";
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) return "N/A";
+    const now = new Date();
+    const sameDay =
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate();
+    const time = d.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    return sameDay ? `Today, ${time}` : d.toLocaleString("en-US");
+  }, [publicStats?.last_updated_at]);
+
+  const statusTotal = useMemo(() => {
+    const sum = (projectStatusData || []).reduce(
+      (s: number, i: any) => s + Number(i?.count || 0),
+      0,
+    );
+    return Math.max(1, sum);
+  }, [projectStatusData]);
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans">
@@ -596,19 +745,25 @@ const Home: React.FC = () => {
                 </h2>
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-gray-300">
-                    Last updated: Today
+                    Last updated: {lastUpdatedLabel}
                   </span>
                   <Link
                     to="/Projects"
                     className="bg-white/20 hover:bg-white/30 text-white px-4 py-2 rounded-lg font-medium text-sm transition-colors"
                   >
-                    View Full Dashboard →
+                    View Full Dashboard -&gt;
                   </Link>
                 </div>
               </div>
             </div>
 
             <div className="p-6">
+              {publicStatsError ? (
+                <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {publicStatsError}
+                </div>
+              ) : null}
+
               {/* Top Stats Row */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
                 {dashboardStats.map((stat, index) => (
@@ -641,7 +796,9 @@ const Home: React.FC = () => {
                           <div className="w-32 bg-gray-200 rounded-full h-2">
                             <div
                               className={`h-full ${item.color} rounded-full`}
-                              style={{ width: `${(item.count / 216) * 100}%` }}
+                              style={{
+                                width: `${(item.count / statusTotal) * 100}%`,
+                              }}
                             ></div>
                           </div>
                           <span className="text-sm font-semibold text-gray-800">
@@ -689,7 +846,7 @@ const Home: React.FC = () => {
                   <div className="flex items-end h-32 gap-2 pt-4">
                     {timelineData.map((item, index) => {
                       const maxProjects = Math.max(
-                        ...timelineData.map((d) => d.projects)
+                        ...timelineData.map((d) => d.projects),
                       );
                       const height = (item.projects / maxProjects) * 80;
                       return (
@@ -727,7 +884,7 @@ const Home: React.FC = () => {
                     to="/news"
                     className="text-xs text-blue-300 hover:text-white transition-colors"
                   >
-                    View all →
+                    View all â†’
                   </Link>
                 </div>
               </div>
@@ -809,8 +966,8 @@ const Home: React.FC = () => {
                             event.type === "meeting"
                               ? "bg-blue-100 text-blue-700"
                               : event.type === "forum"
-                              ? "bg-green-100 text-green-700"
-                              : "bg-purple-100 text-purple-700"
+                                ? "bg-green-100 text-green-700"
+                                : "bg-purple-100 text-purple-700"
                           } p-3 rounded-lg text-center min-w-[60px]`}
                         >
                           <div className="text-lg font-bold">{event.day}</div>
@@ -824,7 +981,7 @@ const Home: React.FC = () => {
                           {event.title}
                         </h4>
                         <p className="text-xs text-gray-600">
-                          <span className="font-medium">{event.time}</span> •{" "}
+                          <span className="font-medium">{event.time}</span> â€¢{" "}
                           {event.location}
                         </p>
                         <div className="flex items-center gap-2 mt-2">
@@ -833,8 +990,8 @@ const Home: React.FC = () => {
                               event.type === "meeting"
                                 ? "bg-blue-50 text-blue-600"
                                 : event.type === "forum"
-                                ? "bg-green-50 text-green-600"
-                                : "bg-purple-50 text-purple-600"
+                                  ? "bg-green-50 text-green-600"
+                                  : "bg-purple-50 text-purple-600"
                             }`}
                           >
                             {event.type}

@@ -2496,10 +2496,14 @@ class PublicProjectsStatsView(APIView):
         by_status = {}
         by_agency = {}
         by_lgu = {}
+        by_year = {}
         unspecified = 0
+        last_updated_at = None
 
         for p in projects:
             total_budget += int(getattr(p, "budget", 0) or 0)
+            if not last_updated_at or (getattr(p, "updated_at", None) and p.updated_at > last_updated_at):
+                last_updated_at = p.updated_at
             sf = {}
             if isinstance(p.profile_data, dict) and isinstance(p.profile_data.get("simplified_form"), dict):
                 sf = p.profile_data.get("simplified_form") or {}
@@ -2509,6 +2513,14 @@ class PublicProjectsStatsView(APIView):
             lgu = derive_ncr_lgu(location_raw)
             if not lgu:
                 unspecified += 1
+
+            year_value = None
+            try:
+                year_value = int(str(sf.get("startYear") or "").strip())
+            except Exception:
+                year_value = getattr(p, "year", None)
+            if isinstance(year_value, int) and 1900 <= year_value <= 2200:
+                by_year[str(year_value)] = by_year.get(str(year_value), 0) + 1
 
             by_status[impl_status] = by_status.get(impl_status, 0) + 1
             by_agency[agency_name] = by_agency.get(agency_name, 0) + 1
@@ -2521,7 +2533,9 @@ class PublicProjectsStatsView(APIView):
             "by_status": by_status,
             "by_agency": by_agency,
             "by_lgu": by_lgu,
+            "by_year": by_year,
             "unspecified_location_count": unspecified,
+            "last_updated_at": last_updated_at.isoformat() if last_updated_at else None,
         }
 
         cache.set(cache_key, payload, timeout=PUBLIC_PROJECTS_CACHE_TTL_SECONDS)

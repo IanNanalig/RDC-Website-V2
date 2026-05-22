@@ -1,4 +1,5 @@
 import React from "react";
+import ncrMapImage from "../assets/NCR MAP (2).png";
 
 type CityLink = {
   name: string;
@@ -224,9 +225,9 @@ export default function RegionProfile() {
               <div className="bg-white rounded-2xl shadow-lg p-6 border border-slate-100">
                 <div className="bg-slate-50 rounded-xl overflow-hidden border-2 border-slate-200">
                   <img
-                    src="https://upload.wikimedia.org/wikipedia/commons/thumb/2/2e/Political_map_of_Metro_Manila.svg/1200px-Political_map_of_Metro_Manila.svg.png"
+                    src={ncrMapImage}
                     alt="Metro Manila Map"
-                    className="w-full h-[500px] object-contain bg-white"
+                    className="w-full h-auto object-cover"
                   />
                 </div>
                 <div className="mt-4 text-sm text-slate-600 text-center">

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from "react";
+﻿import React, { useEffect, useMemo, useRef } from "react";
 import { MapContainer, TileLayer, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -130,21 +130,19 @@ function ProjectBlobs({
         weight: isSelected ? 2 : 1,
         dashArray: isSelected ? "5,5" : undefined,
       });
-
+      const maxItems = 10;
       const preview = group.projects
-        .slice(0, 5)
-        .map(
-          (p) =>
-            `<li style="margin:2px 0; font-size:12px;"><strong style="color:#0ea5a6;">${
-              (p.implementation_status || "Unspecified").toString()
-            }</strong> — ${String(p.title || "")}</li>`,
-        )
+        .slice(0, maxItems)
+        .map((p) => {
+          const status = String(p.implementation_status || "Unspecified");
+          const title = String(p.title || "");
+          const year = p.year ? ` (${p.year})` : "";
+          return `<li style="margin:2px 0; font-size:12px; line-height:1.35;"><strong style="color:#0ea5a6;">${status}</strong> - ${title}${year}</li>`;
+        })
         .join("");
       const remainder =
-        group.count > 5
-          ? `<div style="margin-top:6px; font-size:12px;">+${
-              group.count - 5
-            } more</div>`
+        group.count > maxItems
+          ? `<div style="margin-top:6px; font-size:12px;">+${group.count - maxItems} more</div>`
           : "";
 
       const popupContent = `
@@ -158,8 +156,9 @@ function ProjectBlobs({
           <span style="display: inline-block; background: ${statusColor}; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; text-transform: uppercase;">
             ${String(group.dominantStatus || "Unspecified")}
           </span>
-          <ul style="margin-top:8px; padding-left:16px;">${preview}</ul>
+          <ul style="margin-top:8px; padding-left:16px; max-height:140px; overflow:auto;">${preview}</ul>
           ${remainder}
+          <div style="margin-top:8px; font-size:11px; color:#64748b;">Tip: click the blob to filter the table by this city.</div>
         </div>
       `;
 
@@ -275,4 +274,5 @@ const VoronoiBlobMap: React.FC<VoronoiBlobMapProps> = ({
 };
 
 export default VoronoiBlobMap;
+
 

@@ -22,7 +22,9 @@ export type PublicProjectsStats = {
   by_status: Record<string, number>;
   by_agency: Record<string, number>;
   by_lgu: Record<string, number>;
+  by_year?: Record<string, number>;
   unspecified_location_count: number;
+  last_updated_at?: string | null;
 };
 
 export type PublicProjectsFilters = {
