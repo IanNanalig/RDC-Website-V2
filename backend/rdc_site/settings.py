@@ -3,14 +3,32 @@ import os
 from datetime import timedelta
 from pathlib import Path
 from dotenv import load_dotenv
+from django.core.exceptions import ImproperlyConfigured
 
 # load .env from backend/.env if present
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-local-dev-key')
-DEBUG = os.environ.get('DEBUG', 'True').lower() in ('true', '1', 'yes')
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+# Security and deployment-aware defaults
+# Default `DEBUG` to False unless explicitly set to a truthy value in env.
+DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
+
+# Require SECRET_KEY in non-debug (production) environments.
+SECRET_KEY = os.environ.get('SECRET_KEY')
+if not SECRET_KEY:
+    if DEBUG:
+        # Local development fallback (explicit and visible)
+        SECRET_KEY = 'django-insecure-local-dev-key'
+    else:
+        raise ImproperlyConfigured('The SECRET_KEY environment variable must be set in production')
+
+# ALLOWED_HOSTS: when provided, split by comma; default to localhost in debug,
+# otherwise default to an empty list to force explicit configuration in prod.
+_allowed = os.environ.get('ALLOWED_HOSTS')
+if _allowed:
+    ALLOWED_HOSTS = [h.strip() for h in _allowed.split(',') if h.strip()]
+else:
+    ALLOWED_HOSTS = ['localhost', '127.0.0.1'] if DEBUG else []
 
 AUTH_USER_MODEL = 'projects.User'  # Or 'users.User' if you have users app
 
@@ -154,3 +172,20 @@ PASSWORD_RESET_RATE_LIMIT_IP = int(os.environ.get("PASSWORD_RESET_RATE_LIMIT_IP"
 # Cloudflare Turnstile CAPTCHA (optional)
 TURNSTILE_SECRET_KEY = os.environ.get("TURNSTILE_SECRET_KEY", "")
 TURNSTILE_REQUIRED = os.environ.get("TURNSTILE_REQUIRED", "false").lower() in ("1", "true", "yes")
+
+# Sentry configuration (optional)
+SENTRY_DSN = os.environ.get('SENTRY_DSN', '')
+if SENTRY_DSN:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.django import DjangoIntegration
+
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            integrations=[DjangoIntegration()],
+            traces_sample_rate=float(os.environ.get('SENTRY_TRACES_SAMPLE_RATE', '0.0')),
+            send_default_pii=os.environ.get('SENTRY_SEND_PII', 'false').lower() in ('1', 'true', 'yes'),
+        )
+    except Exception:
+        # Don't crash on misconfigured Sentry in environments where it's not available
+        pass
