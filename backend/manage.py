@@ -7,11 +7,8 @@ import sys
 def main():
     """Run administrative tasks."""
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'rdc_site.settings')
-    # Convenience: when running the development server locally, default DEBUG to True
-    # if the environment variable hasn't been set. This prevents accidental
-    # ImproperlyConfigured errors for missing SECRET_KEY during local runs.
-    if 'runserver' in sys.argv and os.environ.get('DEBUG') is None:
-        os.environ.setdefault('DEBUG', 'True')
+    # No development convenience defaults here; require developers to set
+    # `DEBUG` or `SECRET_KEY` via environment or backend/.env when running.
     try:
         from django.core.management import execute_from_command_line
     except ImportError as exc:
