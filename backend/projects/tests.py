@@ -16,6 +16,10 @@ class PortalWorkflowTests(APITestCase):
         self.employee = User.objects.create_user(
             username="employee_t", password="password", role="staff", email="employee_t@example.com"
         )
+        # Ensure test users can log in immediately (clear must_change_password flag)
+        for u in (self.admin, self.validator, self.employee):
+            u.must_change_password = False
+            u.save(update_fields=["must_change_password"]) 
 
     def _as(self, user):
         self.client.force_authenticate(user=user)
