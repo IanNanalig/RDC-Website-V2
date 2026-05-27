@@ -1,5 +1,5 @@
 import React from "react";
-import { Link } from "react-router-dom";
+// Link not used here
 import rdcLogo from "../assets/Photo-Corousel/Photos/RDC-NCR LOGO.png";
 import api from "../services/api";
 
@@ -32,7 +32,7 @@ const Footer: React.FC<FooterProps> = ({ showVisitorCount = true }) => {
         setTodayViews(Number(data.today || 0));
         setVisitorCount(Number(data.total_visitors || 0));
         return;
-      } catch (err) {
+      } catch {
         // fallback: try to GET analytics without registering visit
       }
 
@@ -43,7 +43,7 @@ const Footer: React.FC<FooterProps> = ({ showVisitorCount = true }) => {
         setAverageDailyViews(Number(data.avg_daily || 0));
         setTodayViews(Number(data.today || 0));
         setVisitorCount(Number(data.total_visitors || 0));
-      } catch (e) {
+      } catch {
         // keep defaults on error
       }
     })();

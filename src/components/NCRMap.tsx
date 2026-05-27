@@ -15,7 +15,6 @@ import { ncrCityCenters } from "../services/ncrCityCenters";
 type NCRMapProps = {
   projects: Project[]; // already filtered by UI (year/status/agency/search)
   selectedCity?: string | undefined;
-  selectedStatus?: string | "all";
   onCitySelect?: (city?: string) => void;
   showCityMarker?: boolean;
   height?: number | string;
@@ -107,7 +106,6 @@ const NCRMap: React.FC<NCRMapProps> = ({
   selectedCity,
   onCitySelect,
   showCityMarker = true,
-  selectedStatus = "all",
   height = 420,
 }) => {
   // group projects by LGU (city/municipality)
@@ -132,7 +130,7 @@ const NCRMap: React.FC<NCRMapProps> = ({
         ps.forEach(
           (p) =>
             (countsByStatus[p.implementation_status] =
-              (countsByStatus[p.implementation_status] || 0) + 1)
+              (countsByStatus[p.implementation_status] || 0) + 1),
         );
         // choose color based on highest count status
         let dominantStatus = Object.keys(countsByStatus)[0];
@@ -164,7 +162,7 @@ const NCRMap: React.FC<NCRMapProps> = ({
   // markers latlngs for fitting bounds
   const markerLatLngs = useMemo(
     () => markers.map((m) => [m.coords[0], m.coords[1]] as L.LatLngExpression),
-    [markers]
+    [markers],
   );
 
   // map initial center and bounds
@@ -204,7 +202,7 @@ const NCRMap: React.FC<NCRMapProps> = ({
         {markers.map((m) => {
           const icon = createPinDivIcon(
             m.color,
-            m.count > 1 ? m.count : undefined
+            m.count > 1 ? m.count : undefined,
           );
           return (
             <Marker

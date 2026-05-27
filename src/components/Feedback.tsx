@@ -9,7 +9,14 @@ type FeedbackData = {
   userAgent?: string;
 };
 
-const FEEDBACK_CATEGORIES = [
+type FeedbackCategory = {
+  value: FeedbackData["category"];
+  label: string;
+  emoji: string;
+  color: string;
+};
+
+const FEEDBACK_CATEGORIES: FeedbackCategory[] = [
   {
     value: "bug",
     label: "Bug Report",
@@ -247,7 +254,7 @@ const Feedback: React.FC = () => {
                           onClick={() =>
                             setFeedbackForm({
                               ...feedbackForm,
-                              category: cat.value as any,
+                              category: cat.value,
                             })
                           }
                           className={`p-4 rounded-xl border-2 transition-all duration-200 ${feedbackForm.category === cat.value ? `border-amber-500 bg-gradient-to-br from-amber-50 to-orange-50 ${cat.color}` : "border-slate-200 hover:border-amber-300 hover:bg-amber-50"}`}

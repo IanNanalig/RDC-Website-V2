@@ -18,7 +18,7 @@ const Login: React.FC = () => {
     setError("");
     setLoading(true);
     try {
-      let res = await fetch(`${API_BASE_URL}/auth/login/`, {
+      const res = await fetch(`${API_BASE_URL}/auth/login/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -36,7 +36,9 @@ const Login: React.FC = () => {
       localStorage.setItem("isLoggedIn", "true");
       localStorage.setItem("username", user.username);
 
-      const from = (location.state as any)?.from?.pathname || "/";
+      const from =
+        (location.state as unknown as { from?: { pathname?: string } })?.from
+          ?.pathname || "/";
       switch (user.role) {
         case "admin":
           navigate("/admin/dashboard", { replace: true });

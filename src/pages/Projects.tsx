@@ -107,8 +107,12 @@ const Projects: React.FC = () => {
       ]);
       setProjects(list);
       setStats(st);
-    } catch (e: any) {
-      setError(String(e?.message || e || "Failed to load projects."));
+    } catch (e: unknown) {
+      const msg =
+        e && typeof e === "object" && "message" in e
+          ? String((e as any).message)
+          : String(e);
+      setError(msg || "Failed to load projects.");
     } finally {
       setLoading(false);
     }
@@ -217,7 +221,7 @@ const Projects: React.FC = () => {
   );
 
   const statusCount = (label: string) => {
-    const map: any = totals.byStatus || {};
+    const map: Record<string, number> = totals.byStatus || {};
     return (
       map[label] ??
       map[String(label).toLowerCase()] ??
@@ -257,8 +261,8 @@ const Projects: React.FC = () => {
   const sortedTableProjects = useMemo(() => {
     const sorted = [...displayProjects];
     sorted.sort((a, b) => {
-      let aVal: any = (a as any)[sortColumn];
-      let bVal: any = (b as any)[sortColumn];
+      let aVal: unknown = (a as Record<string, unknown>)[sortColumn];
+      let bVal: unknown = (b as Record<string, unknown>)[sortColumn];
 
       if (sortColumn === "status") {
         aVal = a.implementation_status || "Unspecified";
@@ -280,8 +284,8 @@ const Projects: React.FC = () => {
         sortColumn === "agency" ||
         sortColumn === "lgu"
       ) {
-        aVal = String(aVal).toLowerCase();
-        bVal = String(bVal).toLowerCase();
+        aVal = String(aVal ?? "").toLowerCase();
+        bVal = String(bVal ?? "").toLowerCase();
       }
 
       const comp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
@@ -574,7 +578,9 @@ const Projects: React.FC = () => {
                             ))}
                           </Pie>
                           <Tooltip
-                            formatter={(value: any) => `${value} projects`}
+                            formatter={(value: number | string) =>
+                              `${value} projects`
+                            }
                           />
                           <Legend verticalAlign="bottom" height={36} />
                         </PieChart>
@@ -854,7 +860,9 @@ const Projects: React.FC = () => {
                       </div>
                       <div className="border rounded-lg p-3">
                         <p className="text-[11px] text-slate-500">Year</p>
-                        <p className="font-semibold">{detailProject.year ?? "-"}</p>
+                        <p className="font-semibold">
+                          {detailProject.year ?? "-"}
+                        </p>
                       </div>
                       <div className="border rounded-lg p-3">
                         <p className="text-[11px] text-slate-500">Budget</p>
@@ -871,7 +879,8 @@ const Projects: React.FC = () => {
                       <p className="text-sm text-slate-700 whitespace-pre-wrap break-words">
                         {detailProject.public_summary_text?.trim()
                           ? detailProject.public_summary_text
-                          : detailProject.description || "No summary available."}
+                          : detailProject.description ||
+                            "No summary available."}
                       </p>
                     </div>
 
@@ -910,41 +919,65 @@ const Projects: React.FC = () => {
                           <div className="grid sm:grid-cols-2 gap-3 text-sm">
                             {detailProject.public_key_facts.start_year ? (
                               <div>
-                                <p className="text-[11px] text-slate-500">Start Year</p>
+                                <p className="text-[11px] text-slate-500">
+                                  Start Year
+                                </p>
                                 <p className="text-slate-800">
-                                  {String(detailProject.public_key_facts.start_year)}
+                                  {String(
+                                    detailProject.public_key_facts.start_year,
+                                  )}
                                 </p>
                               </div>
                             ) : null}
                             {detailProject.public_key_facts.end_year ? (
                               <div>
-                                <p className="text-[11px] text-slate-500">End Year</p>
+                                <p className="text-[11px] text-slate-500">
+                                  End Year
+                                </p>
                                 <p className="text-slate-800">
-                                  {String(detailProject.public_key_facts.end_year)}
+                                  {String(
+                                    detailProject.public_key_facts.end_year,
+                                  )}
                                 </p>
                               </div>
                             ) : null}
-                            {detailProject.public_key_facts.development_sector ? (
+                            {detailProject.public_key_facts
+                              .development_sector ? (
                               <div className="sm:col-span-2">
-                                <p className="text-[11px] text-slate-500">Development Sector</p>
+                                <p className="text-[11px] text-slate-500">
+                                  Development Sector
+                                </p>
                                 <p className="text-slate-800">
-                                  {String(detailProject.public_key_facts.development_sector)}
+                                  {String(
+                                    detailProject.public_key_facts
+                                      .development_sector,
+                                  )}
                                 </p>
                               </div>
                             ) : null}
                             {detailProject.public_key_facts.rdp_main_chapter ? (
                               <div className="sm:col-span-2">
-                                <p className="text-[11px] text-slate-500">RDP Main Chapter</p>
+                                <p className="text-[11px] text-slate-500">
+                                  RDP Main Chapter
+                                </p>
                                 <p className="text-slate-800">
-                                  {String(detailProject.public_key_facts.rdp_main_chapter)}
+                                  {String(
+                                    detailProject.public_key_facts
+                                      .rdp_main_chapter,
+                                  )}
                                 </p>
                               </div>
                             ) : null}
-                            {typeof detailProject.public_key_facts.sdg_count === "number" ? (
+                            {typeof detailProject.public_key_facts.sdg_count ===
+                            "number" ? (
                               <div>
-                                <p className="text-[11px] text-slate-500">SDG Tags</p>
+                                <p className="text-[11px] text-slate-500">
+                                  SDG Tags
+                                </p>
                                 <p className="text-slate-800">
-                                  {String(detailProject.public_key_facts.sdg_count)}
+                                  {String(
+                                    detailProject.public_key_facts.sdg_count,
+                                  )}
                                 </p>
                               </div>
                             ) : null}
@@ -959,11 +992,13 @@ const Projects: React.FC = () => {
                             Highlights
                           </p>
                           <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
-                            {detailProject.public_summary_bullets.map((b, i) => (
-                              <li key={`${i}-${b}`} className="break-words">
-                                {b}
-                              </li>
-                            ))}
+                            {detailProject.public_summary_bullets.map(
+                              (b, i) => (
+                                <li key={`${i}-${b}`} className="break-words">
+                                  {b}
+                                </li>
+                              ),
+                            )}
                           </ul>
                         </div>
                       )}

@@ -3,7 +3,10 @@ import React, { useEffect, useRef } from "react";
 declare global {
   interface Window {
     turnstile?: {
-      render: (element: HTMLElement, options: Record<string, any>) => string | number;
+      render: (
+        element: HTMLElement,
+        options: Record<string, unknown>,
+      ) => string | number;
       remove: (widgetId: string | number) => void;
     };
   }
@@ -42,7 +45,8 @@ const TurnstileWidget: React.FC<TurnstileWidgetProps> = ({ onToken }) => {
     const existingScript = document.querySelector("script[data-turnstile]");
     if (!existingScript) {
       const script = document.createElement("script");
-      script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+      script.src =
+        "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
       script.async = true;
       script.defer = true;
       script.setAttribute("data-turnstile", "true");

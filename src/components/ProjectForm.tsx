@@ -23,7 +23,7 @@ const ProjectForm: React.FC<Props> = ({ initial, onSave, onCancel }) => {
     name: initial?.name || "",
     description: initial?.description || "",
     agency: initial?.agency || "",
-    status: (initial?.status as any) || "Planning",
+    status: (initial?.status as ProjectPayload["status"]) || "Planning",
     budget: initial?.budget || "",
     completion: initial?.completion ?? 0,
   });
@@ -34,13 +34,13 @@ const ProjectForm: React.FC<Props> = ({ initial, onSave, onCancel }) => {
       name: initial?.name || "",
       description: initial?.description || "",
       agency: initial?.agency || "",
-      status: (initial?.status as any) || "Planning",
+      status: (initial?.status as ProjectPayload["status"]) || "Planning",
       budget: initial?.budget || "",
       completion: initial?.completion ?? 0,
     });
   }, [initial]);
 
-  const update = (k: keyof ProjectPayload, v: any) =>
+  const update = <K extends keyof ProjectPayload>(k: K, v: ProjectPayload[K]) =>
     setForm((p) => ({ ...p, [k]: v }));
 
   const submit = (e: React.FormEvent) => {

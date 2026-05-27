@@ -8,6 +8,13 @@ services:
       POSTGRES_PASSWORD: rdc
     volumes:
       - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rdc"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
 
   web:
     build: .
@@ -15,7 +22,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      SECRET_KEY: "dev-secret"
+      SECRET_KEY: "${SECRET_KEY:-dev-secret}"
       DEBUG: "False"
       POSTGRES_DB: rdc_db
       POSTGRES_USER: rdc
@@ -23,7 +30,9 @@ services:
       POSTGRES_HOST: db
       DJANGO_SETTINGS_MODULE: rdc_site.settings
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    restart: unless-stopped
     volumes:
       - ./backend:/app/backend:ro
 
