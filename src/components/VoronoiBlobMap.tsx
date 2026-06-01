@@ -2,7 +2,7 @@
 import { MapContainer, TileLayer, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { type PublicProject as Project } from "../services/publicProjectsApi";
+import type { PublicProject as Project } from "../types/api";
 import { ncrCityCenters } from "../services/ncrCityCenters";
 
 type VoronoiBlobMapProps = {
@@ -274,5 +274,3 @@ const VoronoiBlobMap: React.FC<VoronoiBlobMapProps> = ({
 };
 
 export default VoronoiBlobMap;
-
-

@@ -12,7 +12,8 @@ import {
   YAxis,
   Legend,
 } from "recharts";
-import { getPublicProjectsStats, type PublicProjectsStats } from "../services/publicProjectsApi";
+import { getPublicProjectsStats } from "../services/publicProjectsApi";
+import type { PublicProjectsStats } from "../types/api";
 
 const COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#94A3B8"];
 

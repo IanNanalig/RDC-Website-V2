@@ -1,4 +1,3 @@
-import React from "react";
 import ncrMapImage from "../assets/NCR MAP (2).png";
 
 type CityLink = {
@@ -183,7 +182,7 @@ export default function RegionProfile() {
 
             {/* Icons on the right - Like the About RDC layout */}
             <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
-              {QUICK_STATS.slice(0, 5).map((stat, index) => (
+              {QUICK_STATS.slice(0, 5).map((stat) => (
                 <div
                   key={stat.label}
                   className="flex flex-col items-center p-4"

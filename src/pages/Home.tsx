@@ -1,9 +1,7 @@
 ﻿import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import {
-  getPublicProjectsStats,
-  type PublicProjectsStats,
-} from "../services/publicProjectsApi";
+import { getPublicProjects, getPublicProjectsStats } from "../services/publicProjectsApi";
+import type { PublicProjectsStats } from "../types/api";
 import photo1 from "../assets/Photo-Corousel/Photos/photo1.jpg";
 import photo2 from "../assets/Photo-Corousel/Photos/photo2.jpg";
 import photo3 from "../assets/Photo-Corousel/Photos/photo3.jpg";
@@ -13,7 +11,6 @@ import photo6 from "../assets/Photo-Corousel/Photos/photo6.jpg";
 import photo7 from "../assets/Photo-Corousel/Photos/photo7.jpg";
 import photo8 from "../assets/Photo-Corousel/Photos/photo8.jpg";
 import photo9 from "../assets/Photo-Corousel/Photos/photo9.jpg";
-import rdcLogo from "../assets/Photo-Corousel/Photos/RDC-NCR LOGO.png";
 import {
   FaLeaf,
   FaFileAlt,
@@ -24,22 +21,56 @@ import {
 } from "react-icons/fa";
 
 const Home: React.FC = () => {
-  const [visitorCount, setVisitorCount] = useState(0);
   const [currentSlide, setCurrentSlide] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
-  const [pageViews, setPageViews] = useState(0);
-  const [averageDailyViews, setAverageDailyViews] = useState(0);
-  const [todayViews, setTodayViews] = useState(0);
   const [publicStats, setPublicStats] = useState<PublicProjectsStats | null>(
     null,
   );
   const [publicStatsError, setPublicStatsError] = useState<string>("");
   const navigate = useNavigate();
 
+  const buildStatsFromProjects = (projects: Awaited<ReturnType<typeof getPublicProjects>>): PublicProjectsStats => {
+    const by_status: Record<string, number> = {};
+    const by_agency: Record<string, number> = {};
+    const by_lgu: Record<string, number> = {};
+    const by_year: Record<string, number> = {};
+    let total_budget = 0;
+    let unspecified_location_count = 0;
+    let last_updated_at: string | null = null;
+
+    projects.forEach((p) => {
+      total_budget += Number(p.budget || 0);
+      const status = canonicalStatus(p.implementation_status || "Unspecified");
+      by_status[status] = (by_status[status] || 0) + 1;
+
+      const agency = String(p.agency || "Other").trim() || "Other";
+      by_agency[agency] = (by_agency[agency] || 0) + 1;
+
+      if (p.lgu) by_lgu[p.lgu] = (by_lgu[p.lgu] || 0) + 1;
+      else unspecified_location_count += 1;
+
+      if (typeof p.year === "number") by_year[String(p.year)] = (by_year[String(p.year)] || 0) + 1;
+      if (!last_updated_at || (p.updated_at && new Date(p.updated_at) > new Date(last_updated_at))) {
+        last_updated_at = p.updated_at || last_updated_at;
+      }
+    });
+
+    return {
+      total_projects: projects.length,
+      total_budget,
+      by_status,
+      by_agency,
+      by_lgu,
+      by_year,
+      unspecified_location_count,
+      last_updated_at,
+    };
+  };
+
   const carouselImages = [
     {
       src: photo1,
-      title: "Regional Development Council â€“ NCR",
+      title: "Regional Development Council “ NCR",
       subtitle: "Planning a sustainable and resilient Metro Manila",
       button1: { text: "View Plans", link: "/plans" },
       button2: { text: "Latest Reports", link: "/reports" },
@@ -277,7 +308,7 @@ const Home: React.FC = () => {
   }, [publicStats]);
 
   const projectStatusData = useMemo(() => {
-    const by = publicStats?.by_status || {};
+    const by = (publicStats?.by_status || {}) as Record<string, number>;
     const entries = Object.entries(by).map(([k, v]) => ({
       status: canonicalStatus(k),
       count: Number(v || 0),
@@ -307,7 +338,7 @@ const Home: React.FC = () => {
   }, [publicStats]);
 
   const investmentData = useMemo(() => {
-    const by = publicStats?.by_agency || {};
+    const by = (publicStats?.by_agency || {}) as Record<string, number>;
     const total = Math.max(
       1,
       Object.values(by).reduce((s, n) => s + Number(n || 0), 0),
@@ -325,7 +356,7 @@ const Home: React.FC = () => {
   }, [publicStats]);
 
   const timelineData = useMemo(() => {
-    const byYear = publicStats?.by_year || {};
+    const byYear = (publicStats?.by_year || {}) as Record<string, number>;
     const years = Object.keys(byYear)
       .map((y) => Number(y))
       .filter((y) => Number.isFinite(y))
@@ -337,38 +368,27 @@ const Home: React.FC = () => {
     }));
   }, [publicStats]);
 
-  // Google Maps URL for the address
-  const googleMapsUrl =
-    "https://www.google.com/maps/dir/?api=1&destination=MMDA+Head+Office,+Julia+Vargas+Avenue,+Pasig,+Metro+Manila";
-
-  // Email URL
-  const emailUrl = "mailto:rdc.ncr@mmda.gov.ph";
-
-  useEffect(() => {
-    const local = localStorage.getItem("visitorCount");
-    const next = local ? parseInt(local) + 1 : 1;
-    localStorage.setItem("visitorCount", next.toString());
-    setVisitorCount(next);
-
-    // Simulate analytics data
-    setPageViews(15432);
-    setAverageDailyViews(387);
-    setTodayViews(123);
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
 
     const loadPublicStats = async () => {
       try {
         setPublicStatsError("");
-        const st = await getPublicProjectsStats();
+        const st = await getPublicProjectsStats({ cacheBust: true });
         if (!cancelled) setPublicStats(st);
-      } catch (err: any) {
-        if (!cancelled)
-          setPublicStatsError(
-            String(err?.message || err || "Failed to load dashboard stats."),
-          );
+      } catch (err: unknown) {
+        try {
+          const list = await getPublicProjects({ limit: 500, offset: 0, cacheBust: true });
+          if (!cancelled) {
+            setPublicStats(buildStatsFromProjects(list));
+            setPublicStatsError("");
+          }
+        } catch (fallbackErr: unknown) {
+          if (!cancelled) {
+            const msg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr || err);
+            setPublicStatsError(msg || "Failed to load dashboard stats.");
+          }
+        }
       }
     };
 
@@ -408,7 +428,14 @@ const Home: React.FC = () => {
     navigate(link);
   };
 
-  const renderDocumentCard = (doc: any) => (
+  type DocCard = {
+    title: string;
+    link: string;
+    icon?: React.ReactNode;
+    category?: string;
+  };
+
+  const renderDocumentCard = (doc: DocCard) => (
     <div
       key={doc.title}
       className="bg-white rounded-lg border border-gray-200 hover:border-green-500 hover:shadow-lg transition-all duration-300 group cursor-pointer"
@@ -446,7 +473,14 @@ const Home: React.FC = () => {
     </div>
   );
 
-  const StatCard = ({ label, value, change, trend }: any) => (
+  type StatProps = {
+    label: string;
+    value: string;
+    change?: string;
+    trend?: "up" | "down";
+  };
+
+  const StatCard = ({ label, value, change, trend }: StatProps) => (
     <div className="bg-gray-800 rounded-xl p-5">
       <div className="text-3xl font-bold text-white mb-2">{value}</div>
       <div className="text-sm text-gray-300 mb-3">{label}</div>
@@ -505,7 +539,7 @@ const Home: React.FC = () => {
 
   const statusTotal = useMemo(() => {
     const sum = (projectStatusData || []).reduce(
-      (s: number, i: any) => s + Number(i?.count || 0),
+      (s: number, i: { count: number }) => s + Number(i.count || 0),
       0,
     );
     return Math.max(1, sum);
@@ -692,30 +726,37 @@ const Home: React.FC = () => {
                         Quick Access:
                       </h5>
                       <div className="space-y-2">
-                        {doc.quickLinks.map((quickLink: any, idx: number) => (
-                          <div
-                            key={idx}
-                            className="flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors group cursor-pointer"
-                            onClick={() => handleDocumentClick(quickLink.link)}
-                          >
-                            <span className="font-medium text-gray-800">
-                              {quickLink.label}
-                            </span>
-                            <svg
-                              className="w-4 h-4 text-gray-400 group-hover:text-green-600 transition-colors"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
+                        {doc.quickLinks.map(
+                          (
+                            quickLink: { label: string; link: string },
+                            idx: number,
+                          ) => (
+                            <div
+                              key={idx}
+                              className="flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors group cursor-pointer"
+                              onClick={() =>
+                                handleDocumentClick(quickLink.link)
+                              }
                             >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M9 5l7 7-7 7"
-                              />
-                            </svg>
-                          </div>
-                        ))}
+                              <span className="font-medium text-gray-800">
+                                {quickLink.label}
+                              </span>
+                              <svg
+                                className="w-4 h-4 text-gray-400 group-hover:text-green-600 transition-colors"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M9 5l7 7-7 7"
+                                />
+                              </svg>
+                            </div>
+                          ),
+                        )}
                       </div>
                     </div>
                   </div>

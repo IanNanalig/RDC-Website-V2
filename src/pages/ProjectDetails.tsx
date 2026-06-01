@@ -1,7 +1,8 @@
 // src/pages/ProjectDetails.tsx
 import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { getPublicProject, type PublicProject as Project } from "../services/publicProjectsApi";
+import { getPublicProject } from "../services/publicProjectsApi";
+import type { PublicProject as Project } from "../types/api";
 
 const money = (n: number) => `₱ ${n.toLocaleString()}`;
 
@@ -75,7 +76,9 @@ const ProjectDetails: React.FC = () => {
           <div className="p-4 border rounded">
             <div className="text-sm text-gray-500">Updated</div>
             <div className="text-lg">
-              {project.updated_at ? new Date(project.updated_at).toLocaleDateString() : "—"}
+              {project.updated_at
+                ? new Date(project.updated_at).toLocaleDateString()
+                : "—"}
             </div>
           </div>
         </div>
@@ -87,7 +90,10 @@ const ProjectDetails: React.FC = () => {
 
         <div className="mt-6 text-gray-700 text-sm">
           <h3 className="font-semibold mb-2">Documents</h3>
-          <p>Documents are not available on the public dashboard for this project.</p>
+          <p>
+            Documents are not available on the public dashboard for this
+            project.
+          </p>
         </div>
       </div>
     </div>

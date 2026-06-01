@@ -33,4 +33,5 @@ export type PublicProjectsFilters = {
   status?: string | "all";
   limit?: number;
   offset?: number;
+  cacheBust?: boolean;
 };

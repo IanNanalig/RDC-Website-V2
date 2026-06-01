@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import greenprintFull from "../assets/Documents/GREENPRINT-2.pdf";
 import greenprintBrochure from "../assets/Documents/Greeprint-brochure.pdf";

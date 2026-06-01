@@ -9,7 +9,7 @@ import {
 } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { type PublicProject as Project } from "../services/publicProjectsApi";
+import type { PublicProject as Project } from "../types/api";
 import { ncrCityCenters } from "../services/ncrCityCenters";
 
 type NCRMapProps = {

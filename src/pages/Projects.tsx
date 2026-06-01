@@ -16,9 +16,11 @@ import {
 import {
   getPublicProjects,
   getPublicProjectsStats,
-  type PublicProject as Project,
-  type PublicProjectsStats,
 } from "../services/publicProjectsApi";
+import type {
+  PublicProject as Project,
+  PublicProjectsStats,
+} from "../types/api";
 import {
   FaSearch,
   FaBuilding,
@@ -110,7 +112,7 @@ const Projects: React.FC = () => {
     } catch (e: unknown) {
       const msg =
         e && typeof e === "object" && "message" in e
-          ? String((e as any).message)
+          ? String((e as Error).message)
           : String(e);
       setError(msg || "Failed to load projects.");
     } finally {
@@ -260,35 +262,43 @@ const Projects: React.FC = () => {
 
   const sortedTableProjects = useMemo(() => {
     const sorted = [...displayProjects];
+    const getSortValue = (
+      p: Project,
+      col: typeof sortColumn,
+    ): string | number => {
+      switch (col) {
+        case "title":
+          return String(p.title || "").toLowerCase();
+        case "status":
+          return String(p.implementation_status || "Unspecified").toLowerCase();
+        case "agency":
+          return String(p.agency || "").toLowerCase();
+        case "lgu":
+          return String(p.lgu || "Unspecified").toLowerCase();
+        case "year":
+          return typeof p.year === "number" ? p.year : Number.NEGATIVE_INFINITY;
+        case "budget":
+          return Number(p.budget || 0);
+        default:
+          return String(
+            (p as unknown as Record<string, unknown>)[col] ?? "",
+          ).toLowerCase();
+      }
+    };
+
     sorted.sort((a, b) => {
-      let aVal: unknown = (a as Record<string, unknown>)[sortColumn];
-      let bVal: unknown = (b as Record<string, unknown>)[sortColumn];
+      const aVal = getSortValue(a, sortColumn);
+      const bVal = getSortValue(b, sortColumn);
 
-      if (sortColumn === "status") {
-        aVal = a.implementation_status || "Unspecified";
-        bVal = b.implementation_status || "Unspecified";
-      }
-      if (sortColumn === "agency") {
-        aVal = a.agency || "";
-        bVal = b.agency || "";
-      }
-      if (sortColumn === "lgu") {
-        aVal = a.lgu || "Unspecified";
-        bVal = b.lgu || "Unspecified";
+      let comp = 0;
+      if (typeof aVal === "number" && typeof bVal === "number") {
+        comp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+      } else {
+        const as = String(aVal ?? "");
+        const bs = String(bVal ?? "");
+        comp = as < bs ? -1 : as > bs ? 1 : 0;
       }
 
-      // Normalize strings for consistent sorting
-      if (
-        sortColumn === "title" ||
-        sortColumn === "status" ||
-        sortColumn === "agency" ||
-        sortColumn === "lgu"
-      ) {
-        aVal = String(aVal ?? "").toLowerCase();
-        bVal = String(bVal ?? "").toLowerCase();
-      }
-
-      const comp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
       const primary = sortDesc ? -comp : comp;
       if (primary !== 0) return primary;
 
@@ -447,7 +457,9 @@ const Projects: React.FC = () => {
                   <select
                     className="w-full border-2 border-blue-100 rounded-lg p-2 focus:ring-2 focus:ring-blue-300 transition text-sm"
                     value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value as any)}
+                    onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+                      setStatusFilter(e.target.value as string)
+                    }
                   >
                     <option value="all">All Status</option>
                     <option value="Completed">Completed</option>
@@ -467,7 +479,9 @@ const Projects: React.FC = () => {
                   <select
                     className="w-full border-2 border-blue-100 rounded-lg p-2 focus:ring-2 focus:ring-blue-300 transition text-sm"
                     value={agencyFilter}
-                    onChange={(e) => setAgencyFilter(e.target.value as any)}
+                    onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+                      setAgencyFilter(e.target.value as string)
+                    }
                   >
                     <option value="all">All Agencies</option>
                     {agencyOptions.map((a) => (
@@ -650,7 +664,10 @@ const Projects: React.FC = () => {
                           tick={{ fontSize: 12 }}
                         />
                         <Tooltip
-                          formatter={(value: any) => [`${value}`, "Projects"]}
+                          formatter={(value: number | string) => [
+                            `${value}`,
+                            "Projects",
+                          ]}
                         />
                         <Bar
                           dataKey="value"
