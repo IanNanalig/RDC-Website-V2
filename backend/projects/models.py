@@ -63,7 +63,7 @@ class Project(models.Model):
 
     # Added by existing migration 0003.
     agency = models.CharField(max_length=200, null=True, blank=True)
-    budget = models.IntegerField(default=0)
+    budget = models.BigIntegerField(default=0)
     completion = models.IntegerField(default=0)
     profile_data = models.JSONField(null=True, blank=True)
 

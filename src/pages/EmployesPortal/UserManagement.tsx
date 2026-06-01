@@ -23,6 +23,7 @@ type AccessRequestRow = {
 type ActivityItem = {
   id: number;
   username: string;
+  full_name?: string;
   role: string;
   event: string;
   project_title?: string;
@@ -661,30 +662,34 @@ const UserManagement = () => {
             ) : activity.length === 0 ? (
               <div className="portal-card-body text-slate-500">No recent user activity.</div>
             ) : (
-              <table className="portal-table">
+              <table className="portal-table portal-table-activity min-w-[940px]">
                 <thead>
                   <tr>
-                    <th>User</th>
-                    <th className="hidden md:table-cell">Role</th>
-                    <th>Event</th>
+                    <th className="whitespace-nowrap">User</th>
+                    <th className="whitespace-nowrap">Role</th>
+                    <th className="whitespace-nowrap">Event</th>
                     <th className="hidden lg:table-cell">Project</th>
                     <th className="hidden xl:table-cell">IP / Location</th>
                     <th className="hidden xl:table-cell">Details</th>
-                    <th>Time</th>
+                    <th className="whitespace-nowrap">Time</th>
                   </tr>
                 </thead>
                 <tbody>
                   {activity.map((item) => (
                     <tr key={item.id}>
-                      <td>{item.username}</td>
-                      <td className="hidden md:table-cell">{labelRole(item.role)}</td>
+                      <td className="whitespace-nowrap font-medium text-slate-800">
+                        {item.full_name || item.username}
+                      </td>
+                      <td className="whitespace-nowrap">{labelRole(item.role)}</td>
                       <td>
-                        <span className={`px-2 py-1 rounded-full text-xs font-semibold ${severityClass(item.event)}`}>
+                        <span className={`inline-flex whitespace-nowrap px-2 py-1 rounded-full text-xs font-semibold ${severityClass(item.event)}`}>
                           {eventLabels[item.event] || item.event.replaceAll("_", " ")}
                         </span>
                       </td>
-                      <td className="hidden lg:table-cell">{item.project_title || "-"}</td>
-                      <td className="hidden xl:table-cell">
+                      <td className="hidden lg:table-cell max-w-[220px] truncate" title={item.project_title || "-"}>
+                        {item.project_title || "-"}
+                      </td>
+                      <td className="hidden xl:table-cell whitespace-nowrap">
                         {[item.ip_address, item.location_hint].filter(Boolean).join(" | ") || "-"}
                       </td>
                       <td className="hidden xl:table-cell text-xs text-slate-500">
@@ -701,7 +706,7 @@ const UserManagement = () => {
                           "-"
                         )}
                       </td>
-                      <td>{new Date(item.created_at).toLocaleString()}</td>
+                      <td className="whitespace-nowrap">{new Date(item.created_at).toLocaleString()}</td>
                     </tr>
                   ))}
                 </tbody>

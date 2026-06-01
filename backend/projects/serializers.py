@@ -254,6 +254,7 @@ class PublicProjectSerializer(serializers.ModelSerializer):
     implementation_status = serializers.SerializerMethodField()
     year = serializers.SerializerMethodField()
     lgu = serializers.SerializerMethodField()
+    lgus = serializers.SerializerMethodField()
     location_raw = serializers.SerializerMethodField()
     description = serializers.SerializerMethodField()
     public_summary_text = serializers.SerializerMethodField()
@@ -270,6 +271,7 @@ class PublicProjectSerializer(serializers.ModelSerializer):
             "budget",
             "year",
             "lgu",
+            "lgus",
             "location_raw",
             "description",
             "public_summary_text",
@@ -325,14 +327,21 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         return str(sf.get("location") or "").strip()
 
     def get_lgu(self, obj):
-        # Populated in the view as a computed property; serializer fallback derives again when needed.
-        # Import locally to avoid circular import issues.
+        # Keep a primary LGU for backwards compatibility with older clients.
         try:
             from .utils import derive_ncr_lgu
 
             return derive_ncr_lgu(self.get_location_raw(obj))
         except Exception:
             return None
+
+    def get_lgus(self, obj):
+        try:
+            from .utils import derive_ncr_lgus
+
+            return derive_ncr_lgus(self.get_location_raw(obj))
+        except Exception:
+            return []
 
     def _public_summary_payload(self, obj) -> dict:
         pd = getattr(obj, "profile_data", None)

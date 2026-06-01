@@ -314,6 +314,12 @@ body {
   word-break: break-word;
 }
 
+.portal-table-activity th,
+.portal-table-activity td {
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
 .portal-table-wrap {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;

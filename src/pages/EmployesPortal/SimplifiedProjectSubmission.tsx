@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
@@ -177,6 +177,19 @@ const parseYear = (value: string): number | null => {
 
 const fmtNumber = (n: number) => (n > 0 ? n.toLocaleString("en-US", { maximumFractionDigits: 2 }) : "0");
 
+const formatMoneyInput = (raw: string) => {
+  const cleaned = String(raw || "")
+    .replace(/,/g, "")
+    .replace(/[^0-9.]/g, "");
+  if (!cleaned) return "";
+
+  const hasDecimal = cleaned.includes(".");
+  const [integerRaw, ...decimalParts] = cleaned.split(".");
+  const integer = (integerRaw || "0").replace(/^0+(?=\d)/, "");
+  const formattedInteger = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return hasDecimal ? `${formattedInteger}.${decimalParts.join("")}` : formattedInteger;
+};
+
 const stringifyDiffValue = (value: unknown) => {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
@@ -305,25 +318,26 @@ const NumberField: React.FC<{
   onChange: (v: string) => void;
   required?: boolean;
   disabled?: boolean;
+  formatMoney?: boolean;
   diffBefore?: string;
   editMeta?: EditMeta;
-}> = ({ label, value, onChange, required, disabled, diffBefore, editMeta }) => {
+}> = ({ label, value, onChange, required, disabled, formatMoney, diffBefore, editMeta }) => {
   const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
   const metaLabel = hasEditMeta
     ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
     : "";
   const showPrevious = hasEditMeta && editMeta?.before !== undefined;
+  const displayValue = formatMoney ? formatMoneyInput(value) : value;
   return (
   <label className="block">
     <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
     <input
-      type="number"
+      type={formatMoney ? "text" : "number"}
       inputMode="decimal"
-      step="any"
-      min="0"
+      {...(!formatMoney ? { step: "any", min: "0" } : {})}
       className={`mt-1 w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-400" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
+      value={displayValue}
+      onChange={(e) => onChange(formatMoney ? formatMoneyInput(e.target.value) : e.target.value)}
       required={required}
       disabled={disabled}
     />
@@ -356,11 +370,11 @@ const CheckboxGroup: React.FC<{
   return (
   <div>
     <p className="text-sm text-slate-700 mb-1">{label}</p>
-    <div className={`grid sm:grid-cols-2 lg:grid-cols-3 gap-2 border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}>
+    <div className={`columns-1 sm:columns-2 lg:columns-3 gap-x-6 border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}>
       {options.map((option) => {
         const checked = values.includes(option);
         return (
-          <label key={option} className="text-xs flex items-start gap-2 min-w-0">
+          <label key={option} className="mb-2 flex min-w-0 break-inside-avoid items-start gap-2 text-xs">
             <input
               className="mt-0.5"
               type="checkbox"
@@ -441,6 +455,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const [encodeMessage, setEncodeMessage] = useState("");
   const [projectStatus, setProjectStatus] = useState<string>("planning");
   const [formReady, setFormReady] = useState(false);
+  const [localDraftHydrated, setLocalDraftHydrated] = useState(false);
   const [restoreNotice, setRestoreNotice] = useState("");
   const [lastLocalSaveAt, setLastLocalSaveAt] = useState("");
   const [serverUpdatedAt, setServerUpdatedAt] = useState<string | null>(null);
@@ -457,6 +472,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const isEmployee = user?.role === "employee";
   const isDiffMode = isAdmin && searchParams.get("mode") === "diff";
   const normalizedReviewStatus = validatorReviewStatus === "validated" ? "endorsed" : validatorReviewStatus;
+  const formRef = useRef(form);
 
   const draftStorageKey = useMemo(() => {
     const identity =
@@ -468,6 +484,27 @@ const SimplifiedProjectSubmission: React.FC = () => {
     if (!identity) return "";
     return `simplified_submission_draft_v3_${identity}_${id || "new"}`;
   }, [user?.username, user?.email, user?.id, user?.role, id]);
+
+  const updateFormWithLocalDraft = (updater: (prev: SimplifiedForm) => SimplifiedForm) => {
+    setForm((prev) => {
+      const next = updater(prev);
+      formRef.current = next;
+      if (isEmployee && draftStorageKey) {
+        try {
+          localStorage.setItem(
+            draftStorageKey,
+            JSON.stringify({
+              form: next,
+              savedAt: new Date().toISOString(),
+            }),
+          );
+        } catch (error) {
+          console.error("Failed to persist simplified local draft:", error);
+        }
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (!user) {
@@ -578,7 +615,12 @@ const SimplifiedProjectSubmission: React.FC = () => {
   }, [id, isEditMode, navigate, isValidator, isAdmin, isDiffMode]);
 
   useEffect(() => {
+    formRef.current = form;
+  }, [form]);
+
+  useEffect(() => {
     if (!isEmployee || !formReady || !draftStorageKey) return;
+    setLocalDraftHydrated(false);
     try {
       const raw = localStorage.getItem(draftStorageKey);
       if (!raw) return;
@@ -596,6 +638,8 @@ const SimplifiedProjectSubmission: React.FC = () => {
       setRestoreNotice("Recovered your unsaved local inputs from this browser.");
     } catch (error) {
       console.error("Failed to restore simplified local draft:", error);
+    } finally {
+      setLocalDraftHydrated(true);
     }
   }, [isEmployee, formReady, draftStorageKey, serverUpdatedAt]);
 
@@ -637,12 +681,12 @@ const SimplifiedProjectSubmission: React.FC = () => {
   useEffect(() => {
     if (!isEmployee || isEditMode || !formReady) return;
     if (user?.agency && !form.agencyName.trim()) {
-      setForm((prev) => ({ ...prev, agencyName: String(user.agency || "") }));
+      updateFormWithLocalDraft((prev) => ({ ...prev, agencyName: String(user.agency || "") }));
     }
   }, [isEmployee, isEditMode, formReady, user?.agency, form.agencyName]);
 
   useEffect(() => {
-    if (!isEmployee || !formReady || !draftStorageKey) return;
+    if (!isEmployee || !formReady || !localDraftHydrated || !draftStorageKey) return;
     const timer = window.setTimeout(() => {
       try {
         const savedAt = new Date().toISOString();
@@ -659,16 +703,16 @@ const SimplifiedProjectSubmission: React.FC = () => {
       }
     }, 600);
     return () => window.clearTimeout(timer);
-  }, [isEmployee, form, draftStorageKey, formReady]);
+  }, [isEmployee, form, draftStorageKey, formReady, localDraftHydrated]);
 
   useEffect(() => {
-    if (!isEmployee || !formReady || !draftStorageKey) return;
+    if (!isEmployee || !formReady || !localDraftHydrated || !draftStorageKey) return;
     const persistNow = () => {
       try {
         localStorage.setItem(
           draftStorageKey,
           JSON.stringify({
-            form,
+            form: formRef.current,
             savedAt: new Date().toISOString(),
           }),
         );
@@ -688,7 +732,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       window.removeEventListener("pagehide", handlePageHide);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [isEmployee, form, draftStorageKey, formReady]);
+  }, [isEmployee, draftStorageKey, formReady, localDraftHydrated]);
 
   const startYearNum = useMemo(() => parseYear(form.startYear), [form.startYear]);
   const endYearNum = useMemo(() => parseYear(form.endYear), [form.endYear]);
@@ -740,7 +784,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
   useEffect(() => {
     if (!yearKeys.length) return;
-    setForm((prev) => {
+    updateFormWithLocalDraft((prev) => {
       const nextFr = pruneMap(prev.fundingRequirementByYear, yearKeys);
       const nextAa = pruneMap(prev.actualFundingByYear, yearKeys);
       if (mapsEqual(prev.fundingRequirementByYear, nextFr) && mapsEqual(prev.actualFundingByYear, nextAa)) {
@@ -783,7 +827,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const editMetaOf = (field: string) => fieldEditMeta[field];
 
   const setField = <K extends keyof SimplifiedForm>(key: K, value: SimplifiedForm[K]) => {
-    setForm((prev) => ({ ...prev, [key]: value }));
+    updateFormWithLocalDraft((prev) => ({ ...prev, [key]: value }));
   };
 
   const save = async (e: React.FormEvent, action: FormAction) => {
@@ -917,7 +961,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       if (action === "submit" && targetId) {
         await api.post(`employee/projects/${targetId}/submit/`, {});
       }
-      if (action === "submit" && draftStorageKey) {
+      if (draftStorageKey) {
         localStorage.removeItem(draftStorageKey);
       }
       localStorage.setItem("projects_last_update", Date.now().toString());
@@ -1060,13 +1104,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
                         label={key === "2022_prior" ? "2022 & Prior" : key}
                         value={form.fundingRequirementByYear[key] || ""}
                         onChange={(v) =>
-                          setForm((prev) => ({
+                          updateFormWithLocalDraft((prev) => ({
                             ...prev,
                             fundingRequirementByYear: { ...prev.fundingRequirementByYear, [key]: v },
                           }))
                         }
                         diffBefore={diffOf(`fundingRequirementByYear.${key}`)?.before}
                         editMeta={editMetaOf(`fundingRequirementByYear.${key}`)}
+                        formatMoney
                       />
                     ))}
                   </div>
@@ -1085,13 +1130,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
                         label={key === "2022_prior" ? "2022 & Prior" : key}
                         value={form.actualFundingByYear[key] || ""}
                         onChange={(v) =>
-                          setForm((prev) => ({
+                          updateFormWithLocalDraft((prev) => ({
                             ...prev,
                             actualFundingByYear: { ...prev.actualFundingByYear, [key]: v },
                           }))
                         }
                         diffBefore={diffOf(`actualFundingByYear.${key}`)?.before}
                         editMeta={editMetaOf(`actualFundingByYear.${key}`)}
+                        formatMoney
                       />
                     ))}
                   </div>
@@ -1126,7 +1172,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                 label="Part of the Convergence Program (PCB)"
                 value={form.pcbIncluded}
                 onChange={(v) =>
-                  setForm((prev) => ({
+                  updateFormWithLocalDraft((prev) => ({
                     ...prev,
                     pcbIncluded: v as YesNo,
                     ...(v === "No" ? { pcbProgram: "" } : {}),

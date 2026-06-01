@@ -61,6 +61,24 @@ const STATUS_ICONS: Record<string, React.ReactNode> = {
   Unspecified: <FaRegCalendarAlt className="text-slate-400" />,
 };
 
+const getProjectLgus = (project: Project): string[] => {
+  const lgus =
+    Array.isArray(project.lgus) && project.lgus.length > 0
+      ? project.lgus
+      : project.lgu
+        ? [project.lgu]
+        : [];
+  return Array.from(new Set(lgus));
+};
+
+const projectMatchesLgu = (project: Project, lgu: string) =>
+  getProjectLgus(project).includes(lgu);
+
+const projectLocationLabel = (project: Project) => {
+  const lgus = getProjectLgus(project);
+  return lgus.length > 0 ? lgus.join(", ") : "Unspecified";
+};
+
 const Projects: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [yearFilter, setYearFilter] = useState<number | "all">("all");
@@ -104,8 +122,8 @@ const Projects: React.FC = () => {
         lgu: municipalityFilter === "all" ? undefined : municipalityFilter,
       };
       const [list, st] = await Promise.all([
-        getPublicProjects({ ...filters, limit: 500, offset: 0 }),
-        getPublicProjectsStats(statsFilters),
+        getPublicProjects({ ...filters, limit: 500, offset: 0, cacheBust: true }),
+        getPublicProjectsStats({ ...statsFilters, cacheBust: true }),
       ]);
       setProjects(list);
       setStats(st);
@@ -122,6 +140,13 @@ const Projects: React.FC = () => {
 
   useEffect(() => {
     fetchData();
+    const refreshId = window.setInterval(fetchData, 60000);
+    const handleFocus = () => fetchData();
+    window.addEventListener("focus", handleFocus);
+    return () => {
+      window.clearInterval(refreshId);
+      window.removeEventListener("focus", handleFocus);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [yearFilter, statusFilter, agencyFilter, municipalityFilter, search]);
 
@@ -172,11 +197,11 @@ const Projects: React.FC = () => {
   // For displaying in the project list - apply city filter
   const displayProjects = useMemo(() => {
     if (selectedCity) {
-      return filtered.filter((p) => p.lgu === selectedCity);
+      return filtered.filter((p) => projectMatchesLgu(p, selectedCity));
     } else if (municipalityFilter === "Unspecified") {
-      return filtered.filter((p) => !p.lgu);
+      return filtered.filter((p) => getProjectLgus(p).length === 0);
     } else if (municipalityFilter !== "all") {
-      return filtered.filter((p) => p.lgu === municipalityFilter);
+      return filtered.filter((p) => projectMatchesLgu(p, municipalityFilter));
     }
     return filtered;
   }, [filtered, selectedCity, municipalityFilter]);
@@ -202,13 +227,13 @@ const Projects: React.FC = () => {
   // Projects to send to the map
   const mapProjects = useMemo(() => {
     if (selectedCity) {
-      return filtered.filter((p) => p.lgu === selectedCity);
+      return filtered.filter((p) => projectMatchesLgu(p, selectedCity));
     }
     if (municipalityFilter === "Unspecified") {
-      return filtered.filter((p) => !p.lgu);
+      return filtered.filter((p) => getProjectLgus(p).length === 0);
     }
     if (municipalityFilter !== "all") {
-      return filtered.filter((p) => p.lgu === municipalityFilter);
+      return filtered.filter((p) => projectMatchesLgu(p, municipalityFilter));
     }
     return filtered;
   }, [filtered, selectedCity, municipalityFilter]);
@@ -274,7 +299,7 @@ const Projects: React.FC = () => {
         case "agency":
           return String(p.agency || "").toLowerCase();
         case "lgu":
-          return String(p.lgu || "Unspecified").toLowerCase();
+          return projectLocationLabel(p).toLowerCase();
         case "year":
           return typeof p.year === "number" ? p.year : Number.NEGATIVE_INFINITY;
         case "budget":
@@ -817,8 +842,13 @@ const Projects: React.FC = () => {
                             <td className="px-4 py-3 text-sm font-semibold text-green-700">
                               {money(p.budget)}
                             </td>
-                            <td className="px-4 py-3 text-sm text-gray-700">
-                              {p.lgu || "Unspecified"}
+                            <td
+                              className="px-4 py-3 text-sm text-gray-700"
+                              title={projectLocationLabel(p)}
+                            >
+                              <span className="block max-w-[240px] truncate">
+                                {projectLocationLabel(p)}
+                              </span>
                             </td>
                           </tr>
                         ))
@@ -856,7 +886,9 @@ const Projects: React.FC = () => {
                       </h3>
                       <p className="text-xs text-slate-500 mt-0.5">
                         {detailProject.agency || "N/A"}{" "}
-                        {detailProject.lgu ? `• ${detailProject.lgu}` : ""}
+                        {getProjectLgus(detailProject).length > 0
+                          ? ` - ${projectLocationLabel(detailProject)}`
+                          : ""}
                       </p>
                     </div>
                     <button

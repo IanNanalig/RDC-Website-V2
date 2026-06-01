@@ -44,7 +44,7 @@ from .serializers import (
     UserSerializer,
 )
 from .public_summary import build_public_summary
-from .utils import derive_ncr_lgu
+from .utils import derive_ncr_lgus
 
 
 ENCODING_WINDOW_KEY = "portal_encoding_window"
@@ -56,6 +56,8 @@ PASSWORD_RESET_LIMIT_IP = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_IP", 
 PUBLIC_CHAT_MAX_SUGGESTIONS = 6
 PUBLIC_CHAT_MIN_SCORE = 1.0
 PUBLIC_PROJECTS_CACHE_TTL_SECONDS = 3600
+PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL = "public, max-age=0, must-revalidate"
+PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 2
 PUBLIC_PROJECTS_CACHE_VERSION_KEY = "public_projects:version"
 
 TAGALOG_HINTS = {
@@ -2034,7 +2036,11 @@ class DashboardView(APIView):
                 "review_endorsed": review_endorsed,
             }
         else:
-            my = Project.objects.filter(created_by=user)
+            agency = (user.agency or "").strip()
+            if agency:
+                my = Project.objects.filter(agency__iexact=agency)
+            else:
+                my = Project.objects.filter(created_by=user)
             data = {
                 "my_projects": my.count(),
                 "draft_projects": my.filter(status="planning").count(),
@@ -2326,7 +2332,7 @@ class AgencyActivityView(APIView):
             return Response([])
         project_events = {"project_create", "project_update", "project_submit", "project_comment"}
         qs = UserActivity.objects.select_related("user", "project").filter(
-            user__agency__iexact=agency,
+            project__agency__iexact=agency,
             event__in=project_events,
         )
         limit = 10
@@ -2358,6 +2364,8 @@ def _hash_query(params: dict) -> str:
     # Stable key regardless of ordering.
     items = []
     for k in sorted(params.keys()):
+        if k == "_":
+            continue
         items.append((k, str(params[k])))
     raw = urllib.parse.urlencode(items, doseq=True)
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
@@ -2382,11 +2390,11 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
     def list(self, request, *args, **kwargs):
         version = _get_public_projects_cache_version()
         params = dict(request.query_params)
-        cache_key = f"public_projects:list:{version}:{_hash_query(params)}"
+        cache_key = f"public_projects:list:v{PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION}:{version}:{_hash_query(params)}"
         cached = cache.get(cache_key)
         if cached is not None:
             resp = Response(cached)
-            resp["Cache-Control"] = f"public, max-age={PUBLIC_PROJECTS_CACHE_TTL_SECONDS}"
+            resp["Cache-Control"] = PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL
             return resp
 
         qs = self._base_queryset().order_by("-updated_at")
@@ -2431,9 +2439,9 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
         if lgu_filter and lgu_filter.lower() != "all":
             all_payload = [self._project_to_public_payload(p) for p in qs]
             if lgu_filter == "Unspecified":
-                filtered_payload = [p for p in all_payload if not p.get("lgu")]
+                filtered_payload = [p for p in all_payload if not p.get("lgus")]
             else:
-                filtered_payload = [p for p in all_payload if p.get("lgu") == lgu_filter]
+                filtered_payload = [p for p in all_payload if lgu_filter in (p.get("lgus") or [])]
             payload = filtered_payload[offset : offset + limit]
         else:
             qs = qs[offset : offset + limit]
@@ -2441,7 +2449,7 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
 
         cache.set(cache_key, payload, timeout=PUBLIC_PROJECTS_CACHE_TTL_SECONDS)
         resp = Response(payload)
-        resp["Cache-Control"] = f"public, max-age={PUBLIC_PROJECTS_CACHE_TTL_SECONDS}"
+        resp["Cache-Control"] = PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL
         return resp
 
     def retrieve(self, request, *args, **kwargs):
@@ -2450,7 +2458,7 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({"detail": "Not found."}, status=404)
         payload = self._project_to_public_payload(project)
         resp = Response(payload)
-        resp["Cache-Control"] = f"public, max-age={PUBLIC_PROJECTS_CACHE_TTL_SECONDS}"
+        resp["Cache-Control"] = PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL
         return resp
 
 
@@ -2461,11 +2469,11 @@ class PublicProjectsStatsView(APIView):
     def get(self, request):
         version = _get_public_projects_cache_version()
         params = dict(request.query_params)
-        cache_key = f"public_projects:stats:{version}:{_hash_query(params)}"
+        cache_key = f"public_projects:stats:v{PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION}:{version}:{_hash_query(params)}"
         cached = cache.get(cache_key)
         if cached is not None:
             resp = Response(cached)
-            resp["Cache-Control"] = f"public, max-age={PUBLIC_PROJECTS_CACHE_TTL_SECONDS}"
+            resp["Cache-Control"] = PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL
             return resp
 
         qs = Project.objects.filter(validated=True, archived=False, is_active=True)
@@ -2491,6 +2499,27 @@ class PublicProjectsStatsView(APIView):
             qs = qs.filter(profile_data__simplified_form__status__iexact=status_raw)
 
         projects = list(qs)
+        lgu_filter = (request.query_params.get("lgu") or "").strip()
+        if lgu_filter and lgu_filter.lower() != "all":
+            def project_location(project):
+                profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
+                simplified = profile_data.get("simplified_form")
+                simplified = simplified if isinstance(simplified, dict) else {}
+                return str(simplified.get("location") or "")
+
+            if lgu_filter.lower() == "unspecified":
+                projects = [
+                    p
+                    for p in projects
+                    if not derive_ncr_lgus(project_location(p))
+                ]
+            else:
+                projects = [
+                    p
+                    for p in projects
+                    if lgu_filter
+                    in derive_ncr_lgus(project_location(p))
+                ]
 
         total_budget = 0
         by_status = {}
@@ -2510,8 +2539,8 @@ class PublicProjectsStatsView(APIView):
             impl_status = str(sf.get("status") or getattr(p, "status", "") or "").strip() or "Unspecified"
             agency_name = str(sf.get("agencyName") or getattr(p, "agency", "") or "").strip() or "Other"
             location_raw = str(sf.get("location") or "").strip()
-            lgu = derive_ncr_lgu(location_raw)
-            if not lgu:
+            lgus = derive_ncr_lgus(location_raw)
+            if not lgus:
                 unspecified += 1
 
             year_value = None
@@ -2524,7 +2553,7 @@ class PublicProjectsStatsView(APIView):
 
             by_status[impl_status] = by_status.get(impl_status, 0) + 1
             by_agency[agency_name] = by_agency.get(agency_name, 0) + 1
-            if lgu:
+            for lgu in lgus:
                 by_lgu[lgu] = by_lgu.get(lgu, 0) + 1
 
         payload = {
@@ -2540,5 +2569,5 @@ class PublicProjectsStatsView(APIView):
 
         cache.set(cache_key, payload, timeout=PUBLIC_PROJECTS_CACHE_TTL_SECONDS)
         resp = Response(payload)
-        resp["Cache-Control"] = f"public, max-age={PUBLIC_PROJECTS_CACHE_TTL_SECONDS}"
+        resp["Cache-Control"] = PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL
         return resp

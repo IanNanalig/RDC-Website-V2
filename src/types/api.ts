@@ -6,6 +6,7 @@ export type PublicProject = {
   budget: number;
   year: number | null;
   lgu: string | null;
+  lgus?: string[];
   location_raw?: string;
   description: string;
   public_summary_text?: string;

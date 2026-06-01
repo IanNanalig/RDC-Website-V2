@@ -39,11 +39,18 @@ type CityGroup = {
   color: string;
 };
 
-function getProjectCoordinates(project: Project): [number, number] | null {
-  if (project.lgu && ncrCityCenters[project.lgu]) {
-    return ncrCityCenters[project.lgu];
-  }
-  return null;
+function getProjectLgus(project: Project): string[] {
+  const lgus =
+    Array.isArray(project.lgus) && project.lgus.length > 0
+      ? project.lgus
+      : project.lgu
+        ? [project.lgu]
+        : [];
+  return Array.from(new Set(lgus)).filter((lgu) => Boolean(ncrCityCenters[lgu]));
+}
+
+function getProjectCoordinates(project: Project): [number, number][] {
+  return getProjectLgus(project).map((lgu) => ncrCityCenters[lgu]);
 }
 
 function FitBoundsToProjects({
@@ -64,7 +71,7 @@ function FitBoundsToProjects({
 
     if (projects.length > 0) {
       const coords = projects
-        .map((p) => getProjectCoordinates(p))
+        .flatMap((p) => getProjectCoordinates(p))
         .filter((c): c is [number, number] => Boolean(c));
 
       if (coords.length === 0) {
@@ -209,11 +216,10 @@ const VoronoiBlobMap: React.FC<VoronoiBlobMapProps> = ({
   const groups = useMemo(() => {
     const byCity: Record<string, Project[]> = {};
     projects.forEach((p) => {
-      const city = p.lgu;
-      if (!city) return;
-      if (!ncrCityCenters[city]) return;
-      if (!byCity[city]) byCity[city] = [];
-      byCity[city].push(p);
+      getProjectLgus(p).forEach((city) => {
+        if (!byCity[city]) byCity[city] = [];
+        byCity[city].push(p);
+      });
     });
 
     return Object.entries(byCity).map(([city, ps]) => {
