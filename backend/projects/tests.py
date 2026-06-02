@@ -1,3 +1,6 @@
+from datetime import timedelta
+
+from django.utils import timezone
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -20,9 +23,22 @@ class PortalWorkflowTests(APITestCase):
         for u in (self.admin, self.validator, self.employee):
             u.must_change_password = False
             u.save(update_fields=["must_change_password"]) 
+        self._set_encoding_window(timezone.now() - timedelta(hours=1), timezone.now() + timedelta(hours=1))
 
     def _as(self, user):
         self.client.force_authenticate(user=user)
+
+    def _set_encoding_window(self, start_at, end_at, enabled=True):
+        SystemSetting.objects.update_or_create(
+            key="portal_encoding_window",
+            defaults={
+                "value": (
+                    '{"enabled": false, "start_at": "", "end_at": ""}'
+                    if not enabled
+                    else f'{{"enabled": true, "start_at": "{start_at.isoformat()}", "end_at": "{end_at.isoformat()}"}}'
+                )
+            },
+        )
 
     def test_employee_to_validator_to_admin_flow(self):
         self._as(self.employee)
@@ -40,6 +56,10 @@ class PortalWorkflowTests(APITestCase):
         )
         self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
         project_id = create_res.data["id"]
+        # The general workflow test uses the supported exemption path; priority scoring has its own flow.
+        project = Project.objects.get(id=project_id)
+        project.priority_analysis_eligible = False
+        project.save(update_fields=["priority_analysis_eligible"])
 
         submit_res = self.client.post(f"/api/employee/projects/{project_id}/submit/", {}, format="json")
         self.assertEqual(submit_res.status_code, status.HTTP_200_OK)
@@ -98,10 +118,7 @@ class PortalWorkflowTests(APITestCase):
         self.assertFalse(project.is_active)
 
     def test_employee_write_blocked_when_encoding_closed(self):
-        SystemSetting.objects.create(
-            key="portal_encoding_window",
-            value='{"enabled": false, "start_at": "", "end_at": ""}',
-        )
+        self._set_encoding_window(timezone.now(), timezone.now(), enabled=False)
 
         self._as(self.employee)
         create_res = self.client.post(
@@ -120,15 +137,84 @@ class PortalWorkflowTests(APITestCase):
 
     def test_admin_can_update_encoding_window(self):
         self._as(self.admin)
+        start_at = timezone.now() - timedelta(minutes=5)
+        end_at = timezone.now() + timedelta(hours=2)
         res = self.client.post(
             "/api/encoding-window/",
-            {"enabled": True, "start_at": "", "end_at": ""},
+            {"enabled": True, "start_at": start_at.isoformat(), "end_at": end_at.isoformat()},
             format="json",
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         get_res = self.client.get("/api/encoding-window/")
         self.assertEqual(get_res.status_code, status.HTTP_200_OK)
         self.assertTrue(get_res.data.get("is_open"))
+        self.assertEqual(get_res.data.get("status_code"), "scheduled_open")
+        self.assertTrue(UserActivity.objects.filter(user=self.admin, event="encoding_window_updated").exists())
+
+    def test_encoding_window_is_closed_when_not_configured(self):
+        SystemSetting.objects.filter(key="portal_encoding_window").delete()
+        self._as(self.employee)
+        state = self.client.get("/api/encoding-window/")
+        self.assertEqual(state.status_code, status.HTTP_200_OK)
+        self.assertFalse(state.data.get("is_open"))
+        self.assertFalse(state.data.get("can_encode"))
+        self.assertEqual(state.data.get("status_code"), "schedule_not_configured")
+        create_res = self.client.post(
+            "/api/employee/projects/",
+            {"title": "Blocked Until Scheduled", "agency": "MMDA", "budget": 1, "status": "draft"},
+            format="json",
+        )
+        self.assertEqual(create_res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_cannot_save_incomplete_encoding_schedule(self):
+        self._as(self.admin)
+        res = self.client.post(
+            "/api/encoding-window/",
+            {"enabled": True, "start_at": "", "end_at": ""},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_encoding_window_reports_upcoming_and_ended_states(self):
+        self._as(self.employee)
+        self._set_encoding_window(timezone.now() + timedelta(hours=1), timezone.now() + timedelta(hours=2))
+        upcoming = self.client.get("/api/encoding-window/")
+        self.assertFalse(upcoming.data.get("can_encode"))
+        self.assertEqual(upcoming.data.get("status_code"), "scheduled_not_started")
+
+        self._set_encoding_window(timezone.now() - timedelta(hours=2), timezone.now() - timedelta(hours=1))
+        ended = self.client.get("/api/encoding-window/")
+        self.assertFalse(ended.data.get("can_encode"))
+        self.assertEqual(ended.data.get("status_code"), "scheduled_ended")
+
+    def test_comments_remain_available_when_encoding_closed(self):
+        self.employee.agency = "MMDA"
+        self.employee.save(update_fields=["agency"])
+        project = Project.objects.create(
+            name="Comment While Closed",
+            implementing_agency="MMDA",
+            municipality="NCR",
+            status="planning",
+            cost=1,
+            latitude=14.5,
+            agency="MMDA",
+            budget=1,
+            created_by=self.employee,
+        )
+        self._set_encoding_window(timezone.now(), timezone.now(), enabled=False)
+        self._as(self.employee)
+        self.assertEqual(
+            self.client.get(f"/api/employee/projects/{project.id}/comments/").status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/employee/projects/{project.id}/comments/",
+                {"comment": "Collaboration remains available."},
+                format="json",
+            ).status_code,
+            status.HTTP_201_CREATED,
+        )
 
     def test_employee_cannot_edit_after_submit(self):
         self._as(self.employee)

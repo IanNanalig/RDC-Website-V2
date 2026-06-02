@@ -15,6 +15,12 @@ type ApiProject = {
     username?: string;
   };
   profile_data?: Record<string, unknown>;
+  priority_analysis?: {
+    score?: number;
+    suggested_priority?: string;
+    final_priority?: string;
+    confirmed?: boolean;
+  } | null;
 };
 
 type ReviewState = "all" | "draft" | "reviewed" | "endorsed" | "rejected" | "not_reviewed";
@@ -155,6 +161,7 @@ const AdminValidatorDiffs: React.FC = () => {
                 <th className="hidden md:table-cell">Contributor</th>
                 <th>Review State</th>
                 <th className="hidden lg:table-cell">Edited Fields</th>
+                <th className="hidden lg:table-cell">AI Priority</th>
                 <th className="hidden xl:table-cell">Validator</th>
                 <th className="hidden 2xl:table-cell">Reviewed At</th>
                 <th>Actions</th>
@@ -177,6 +184,21 @@ const AdminValidatorDiffs: React.FC = () => {
                       </span>
                     </td>
                     <td className="hidden lg:table-cell">{editedCount}</td>
+                    <td className="hidden lg:table-cell">
+                      {p.priority_analysis ? (
+                        <span className={`px-2 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${
+                          (p.priority_analysis.final_priority || p.priority_analysis.suggested_priority) === "high"
+                            ? "bg-emerald-100 text-emerald-700"
+                            : (p.priority_analysis.final_priority || p.priority_analysis.suggested_priority) === "medium"
+                            ? "bg-amber-100 text-amber-700"
+                            : (p.priority_analysis.final_priority || p.priority_analysis.suggested_priority) === "low"
+                            ? "bg-rose-100 text-rose-700"
+                            : "bg-slate-100 text-slate-700"
+                        }`}>
+                          {p.priority_analysis.confirmed ? "Confirmed" : "Suggested"}: {(p.priority_analysis.final_priority || p.priority_analysis.suggested_priority || "incomplete").replace("_", " ")} ({Number(p.priority_analysis.score || 0).toFixed(2)})
+                        </span>
+                      ) : "-"}
+                    </td>
                     <td className="hidden xl:table-cell">{String(vr?.reviewed_by_username || "-")}</td>
                     <td className="hidden 2xl:table-cell">
                       {vr?.reviewed_at ? new Date(String(vr.reviewed_at)).toLocaleString() : "-"}

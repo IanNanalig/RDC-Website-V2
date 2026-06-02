@@ -47,6 +47,17 @@ type PasswordResetRequestRow = {
 
 type AdminUsersTab = "create-account" | "encoding-window" | "operations";
 
+type EncodingWindowState = {
+  enabled: boolean;
+  start_at: string;
+  end_at: string;
+  is_open: boolean;
+  can_encode?: boolean;
+  status_code: string;
+  message: string;
+  server_now?: string;
+};
+
 const parseTab = (value: string | null): AdminUsersTab => {
   if (value === "create-account" || value === "encoding-window" || value === "operations") return value;
   return "operations";
@@ -59,6 +70,9 @@ const UserManagement = () => {
   const [requests, setRequests] = useState<AccessRequestRow[]>([]);
   const [resetRequests, setResetRequests] = useState<PasswordResetRequestRow[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [activityLoading, setActivityLoading] = useState(true);
+  const [activityTotal, setActivityTotal] = useState(0);
+  const [activityOffset, setActivityOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [toast, setToast] = useState<{ message: string; type: "info" | "success" | "warn" | "error" } | null>(null);
@@ -68,15 +82,18 @@ const UserManagement = () => {
     role: "contributor",
   });
   const [windowForm, setWindowForm] = useState({
-    enabled: true,
+    enabled: false,
     start_at: "",
     end_at: "",
   });
+  const [windowState, setWindowState] = useState<EncodingWindowState | null>(null);
   const [activityFilters, setActivityFilters] = useState({
     role: "",
     event: "",
     user: "",
     limit: "10",
+    dateFrom: "",
+    dateTo: "",
   });
 
   const userRaw = localStorage.getItem("user");
@@ -107,6 +124,11 @@ const UserManagement = () => {
     validator_reviewed: "Validator Reviewed",
     validator_endorsed: "Validator Endorsed",
     public_summary_overridden: "Public Summary Updated",
+    priority_analysis_run: "Priority Analysis Run",
+    priority_analysis_reused: "Priority Analysis Reused",
+    priority_analysis_confirmed: "Priority Analysis Confirmed",
+    priority_analysis_overridden: "Priority Analysis Overridden",
+    encoding_window_updated: "Encoding Window Updated",
   };
 
   const eventSeverity: Record<string, "info" | "warn" | "error"> = {
@@ -126,6 +148,11 @@ const UserManagement = () => {
     validator_reviewed: "info",
     validator_endorsed: "info",
     public_summary_overridden: "info",
+    priority_analysis_run: "info",
+    priority_analysis_reused: "info",
+    priority_analysis_confirmed: "info",
+    priority_analysis_overridden: "warn",
+    encoding_window_updated: "info",
   };
 
   const severityClass = (event: string) => {
@@ -151,6 +178,14 @@ const UserManagement = () => {
     ip: "IP",
     user_agent: "User Agent",
     method: "Method",
+    previous_mode: "Previous Mode",
+    previous_start_at: "Previous Start",
+    previous_end_at: "Previous End",
+    previous_status: "Previous State",
+    new_mode: "New Mode",
+    new_start_at: "New Start",
+    new_end_at: "New End",
+    new_status: "New State",
   };
 
   const formatDetailLabel = (key: string) => {
@@ -278,6 +313,7 @@ const UserManagement = () => {
         start_at: winRes?.start_at || "",
         end_at: winRes?.end_at || "",
       });
+      setWindowState(winRes || null);
     } catch (error) {
       console.error(error);
       setUsers([]);
@@ -290,29 +326,50 @@ const UserManagement = () => {
   };
 
   const loadActivity = async () => {
+    setActivityLoading(true);
     try {
       const params = new URLSearchParams();
       if (activityFilters.role) params.set("role", activityFilters.role);
       if (activityFilters.event) params.set("event", activityFilters.event);
       if (activityFilters.user) params.set("user", activityFilters.user);
       if (activityFilters.limit) params.set("limit", activityFilters.limit);
+      if (activityFilters.dateFrom) params.set("date_from", activityFilters.dateFrom);
+      if (activityFilters.dateTo) params.set("date_to", activityFilters.dateTo);
+      params.set("offset", String(activityOffset));
+      params.set("include_meta", "1");
       const qs = params.toString();
       const data = await api.get(`admin/activity/${qs ? `?${qs}` : ""}`);
-      setActivity(Array.isArray(data) ? data : []);
+      if (Array.isArray(data)) {
+        setActivity(data);
+        setActivityTotal(data.length);
+      } else {
+        setActivity(Array.isArray(data?.results) ? data.results : []);
+        setActivityTotal(Number(data?.count || 0));
+      }
     } catch (error) {
       console.error(error);
       setActivity([]);
+      setActivityTotal(0);
+    } finally {
+      setActivityLoading(false);
     }
   };
 
   useEffect(() => {
     load();
-    loadActivity();
   }, []);
 
   useEffect(() => {
     loadActivity();
-  }, [activityFilters.role, activityFilters.event, activityFilters.user, activityFilters.limit]);
+  }, [
+    activityFilters.role,
+    activityFilters.event,
+    activityFilters.user,
+    activityFilters.limit,
+    activityFilters.dateFrom,
+    activityFilters.dateTo,
+    activityOffset,
+  ]);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -402,13 +459,80 @@ const UserManagement = () => {
   const saveEncodingWindow = async (e: React.FormEvent) => {
     e.preventDefault();
     setNotice("");
+    if (windowForm.enabled && (!windowForm.start_at || !windowForm.end_at)) {
+      setNotice("Start and end date are required for a scheduled encoding window.");
+      return;
+    }
+    if (
+      windowForm.enabled &&
+      new Date(windowForm.start_at).getTime() >= new Date(windowForm.end_at).getTime()
+    ) {
+      setNotice("Start date must be earlier than end date.");
+      return;
+    }
     try {
-      await api.post("encoding-window/", windowForm);
+      const state = await api.post("encoding-window/", windowForm);
+      setWindowState(state || null);
+      setWindowForm({
+        enabled: Boolean(state?.enabled),
+        start_at: state?.start_at || "",
+        end_at: state?.end_at || "",
+      });
       setNotice("Encoding schedule updated.");
-    } catch {
-      setNotice("Failed to update encoding schedule.");
+      await loadActivity();
+    } catch (error) {
+      setNotice(getErrorDetail(error, "Failed to update encoding schedule."));
     }
   };
+
+  const scheduleIncomplete = windowForm.enabled && (!windowForm.start_at || !windowForm.end_at);
+  const scheduleRangeInvalid =
+    windowForm.enabled &&
+    Boolean(windowForm.start_at) &&
+    Boolean(windowForm.end_at) &&
+    new Date(windowForm.start_at).getTime() >= new Date(windowForm.end_at).getTime();
+  const formatWindowDate = (value?: string) =>
+    value
+      ? new Date(value).toLocaleString("en-PH", {
+          timeZone: "Asia/Manila",
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        })
+      : "Not set";
+  const windowStatusLabel: Record<string, string> = {
+    schedule_not_configured: "Schedule not configured",
+    closed_by_admin: "Closed by administrator",
+    scheduled_not_started: "Scheduled - not started",
+    scheduled_open: "Open for contributor encoding",
+    scheduled_ended: "Schedule ended",
+    schedule_invalid: "Invalid schedule",
+  };
+
+  const updateActivityFilter = (key: keyof typeof activityFilters, value: string) => {
+    setActivityOffset(0);
+    setActivityFilters((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const clearActivityFilters = () => {
+    setActivityOffset(0);
+    setActivityFilters({
+      role: "",
+      event: "",
+      user: "",
+      limit: "10",
+      dateFrom: "",
+      dateTo: "",
+    });
+  };
+
+  const activityLimit = Math.max(1, Number(activityFilters.limit) || 10);
+  const activityStart = activityTotal > 0 ? activityOffset + 1 : 0;
+  const activityEnd = Math.min(activityOffset + activity.length, activityTotal);
+  const hasPreviousActivity = activityOffset > 0;
+  const hasNextActivity = activityOffset + activity.length < activityTotal;
 
   return (
     <PortalLayout
@@ -416,7 +540,7 @@ const UserManagement = () => {
       subtitle="Account provisioning, request approvals, and encoding schedule"
       role="admin"
       userName={displayName}
-      topActions={<button onClick={load} className="portal-btn portal-btn-ghost">Refresh</button>}
+      topActions={<button onClick={() => { load(); loadActivity(); }} className="portal-btn portal-btn-ghost">Refresh</button>}
     >
       {toast && (
         <div className="fixed top-24 right-6 z-50">
@@ -500,19 +624,70 @@ const UserManagement = () => {
       {activeTab === "encoding-window" && (
         <div className="portal-card">
           <div className="portal-card-header"><h2 className="text-lg font-semibold">Contributor Encoding Window</h2></div>
-          <form onSubmit={saveEncodingWindow} className="portal-card-body grid grid-cols-1 xl:grid-cols-2 gap-3">
-            <select
-              className="border rounded-xl px-3 py-2"
-              value={windowForm.enabled ? "open" : "closed"}
-              onChange={(e) => setWindowForm((p) => ({ ...p, enabled: e.target.value === "open" }))}
-            >
-              <option value="open">Open by schedule</option>
-              <option value="closed">Closed (view-only)</option>
-            </select>
-            <div />
-            <input type="datetime-local" className="border rounded-xl px-3 py-2" value={windowForm.start_at ? windowForm.start_at.slice(0, 16) : ""} onChange={(e) => setWindowForm((p) => ({ ...p, start_at: e.target.value }))} />
-            <input type="datetime-local" className="border rounded-xl px-3 py-2" value={windowForm.end_at ? windowForm.end_at.slice(0, 16) : ""} onChange={(e) => setWindowForm((p) => ({ ...p, end_at: e.target.value }))} />
-            <button type="submit" className="portal-btn portal-btn-primary xl:col-span-2">Save Deadline Window</button>
+          <form onSubmit={saveEncodingWindow} className="portal-card-body space-y-4">
+            <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Current Contributor Access</p>
+                  <p className="mt-1 text-lg font-semibold text-slate-900">
+                    {windowStatusLabel[windowState?.status_code || "schedule_not_configured"] || "Unavailable"}
+                  </p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {windowState?.message || "Contributor encoding is closed until an administrator sets a schedule."}
+                  </p>
+                </div>
+                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                  windowState?.is_open ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+                }`}>
+                  {windowState?.is_open ? "Encoding Open" : "View-Only Mode"}
+                </span>
+              </div>
+              <div className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
+                <div><p className="text-xs text-slate-500">Timezone</p><p className="font-medium">Philippine Standard Time (UTC+8)</p></div>
+                <div><p className="text-xs text-slate-500">Opening Date</p><p className="font-medium">{formatWindowDate(windowState?.start_at)}</p></div>
+                <div><p className="text-xs text-slate-500">Closing Deadline</p><p className="font-medium">{formatWindowDate(windowState?.end_at)}</p></div>
+              </div>
+            </div>
+
+            <label className="block">
+              <span className="text-sm text-slate-700">Encoding Mode</span>
+              <select
+                className="mt-1 w-full border rounded-xl px-3 py-2"
+                value={windowForm.enabled ? "open" : "closed"}
+                onChange={(e) =>
+                  setWindowForm((previous) =>
+                    e.target.value === "open"
+                      ? { ...previous, enabled: true }
+                      : { enabled: false, start_at: "", end_at: "" },
+                  )
+                }
+              >
+                <option value="open">Open by schedule</option>
+                <option value="closed">Closed (view-only)</option>
+              </select>
+            </label>
+
+            {windowForm.enabled && (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="text-sm text-slate-700">Opening Date and Time *</span>
+                  <input type="datetime-local" required className="mt-1 w-full border rounded-xl px-3 py-2" value={windowForm.start_at ? windowForm.start_at.slice(0, 16) : ""} onChange={(e) => setWindowForm((p) => ({ ...p, start_at: e.target.value }))} />
+                </label>
+                <label className="block">
+                  <span className="text-sm text-slate-700">Closing Deadline *</span>
+                  <input type="datetime-local" required className="mt-1 w-full border rounded-xl px-3 py-2" value={windowForm.end_at ? windowForm.end_at.slice(0, 16) : ""} onChange={(e) => setWindowForm((p) => ({ ...p, end_at: e.target.value }))} />
+                </label>
+              </div>
+            )}
+
+            {(scheduleIncomplete || scheduleRangeInvalid) && (
+              <p className="text-sm text-rose-600">
+                {scheduleIncomplete ? "Set both opening and closing dates." : "Opening date must be earlier than the closing deadline."}
+              </p>
+            )}
+            <button type="submit" disabled={scheduleIncomplete || scheduleRangeInvalid} className="portal-btn portal-btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed">
+              Save Encoding Window
+            </button>
           </form>
         </div>
       )}
@@ -618,100 +793,167 @@ const UserManagement = () => {
 
           <div className="portal-card portal-table-wrap">
             <div className="portal-card-header flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <h2 className="text-lg font-semibold">User Activity Feed</h2>
-              <div className="flex flex-wrap gap-2">
-                <select
-                  className="border rounded-lg px-2 py-1 text-sm"
-                  value={activityFilters.role}
-                  onChange={(e) => setActivityFilters((p) => ({ ...p, role: e.target.value }))}
-                >
-                  <option value="">All roles</option>
-                  <option value="admin">Admin</option>
-                  <option value="validator">Validator</option>
-                  <option value="staff">Contributor</option>
-                </select>
-                <select
-                  className="border rounded-lg px-2 py-1 text-sm"
-                  value={activityFilters.event}
-                  onChange={(e) => setActivityFilters((p) => ({ ...p, event: e.target.value }))}
-                >
-                  <option value="">All events</option>
-                  {Object.keys(eventLabels).map((event) => (
-                    <option key={event} value={event}>{eventLabels[event]}</option>
-                  ))}
-                </select>
-                <input
-                  className="border rounded-lg px-2 py-1 text-sm"
-                  placeholder="Search user"
-                  value={activityFilters.user}
-                  onChange={(e) => setActivityFilters((p) => ({ ...p, user: e.target.value }))}
-                />
-                <select
-                  className="border rounded-lg px-2 py-1 text-sm"
-                  value={activityFilters.limit}
-                  onChange={(e) => setActivityFilters((p) => ({ ...p, limit: e.target.value }))}
-                >
-                  <option value="10">10</option>
-                  <option value="15">15</option>
-                  <option value="20">20</option>
-                </select>
+              <div>
+                <h2 className="text-lg font-semibold">System Audit Log</h2>
+                <p className="text-xs text-slate-500">Review historical portal activity, security actions, and project workflow events.</p>
+              </div>
+              <button type="button" onClick={loadActivity} className="portal-btn portal-btn-ghost">Refresh Log</button>
+            </div>
+            <div className="portal-card-body border-b border-slate-200 bg-slate-50/60">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
+                <label className="block">
+                  <span className="text-xs font-semibold text-slate-600">Role</span>
+                  <select
+                    className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm bg-white"
+                    value={activityFilters.role}
+                    onChange={(e) => updateActivityFilter("role", e.target.value)}
+                  >
+                    <option value="">All roles</option>
+                    <option value="admin">Admin</option>
+                    <option value="validator">Validator</option>
+                    <option value="staff">Contributor</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold text-slate-600">Event</span>
+                  <select
+                    className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm bg-white"
+                    value={activityFilters.event}
+                    onChange={(e) => updateActivityFilter("event", e.target.value)}
+                  >
+                    <option value="">All events</option>
+                    {Object.keys(eventLabels).map((event) => (
+                      <option key={event} value={event}>{eventLabels[event]}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold text-slate-600">Search User</span>
+                  <input
+                    className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm bg-white"
+                    placeholder="Name, username, or email"
+                    value={activityFilters.user}
+                    onChange={(e) => updateActivityFilter("user", e.target.value)}
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold text-slate-600">From Date</span>
+                  <input
+                    type="date"
+                    className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm bg-white"
+                    value={activityFilters.dateFrom}
+                    onChange={(e) => updateActivityFilter("dateFrom", e.target.value)}
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold text-slate-600">To Date</span>
+                  <input
+                    type="date"
+                    className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm bg-white"
+                    value={activityFilters.dateTo}
+                    onChange={(e) => updateActivityFilter("dateTo", e.target.value)}
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold text-slate-600">Rows Per Page</span>
+                  <select
+                    className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm bg-white"
+                    value={activityFilters.limit}
+                    onChange={(e) => updateActivityFilter("limit", e.target.value)}
+                  >
+                    <option value="10">10</option>
+                    <option value="20">20</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                  </select>
+                </label>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-slate-500">All matching audit records remain stored in the database.</p>
+                <button type="button" onClick={clearActivityFilters} className="portal-btn portal-btn-ghost">Clear Filters</button>
               </div>
             </div>
-            {loading ? (
-              <div className="portal-card-body text-slate-500">Loading activity feed...</div>
+            {activityLoading ? (
+              <div className="portal-card-body text-slate-500">Loading audit records...</div>
             ) : activity.length === 0 ? (
-              <div className="portal-card-body text-slate-500">No recent user activity.</div>
+              <div className="portal-card-body text-slate-500">No audit records match the selected filters.</div>
             ) : (
-              <table className="portal-table portal-table-activity min-w-[940px]">
-                <thead>
-                  <tr>
-                    <th className="whitespace-nowrap">User</th>
-                    <th className="whitespace-nowrap">Role</th>
-                    <th className="whitespace-nowrap">Event</th>
-                    <th className="hidden lg:table-cell">Project</th>
-                    <th className="hidden xl:table-cell">IP / Location</th>
-                    <th className="hidden xl:table-cell">Details</th>
-                    <th className="whitespace-nowrap">Time</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {activity.map((item) => (
-                    <tr key={item.id}>
-                      <td className="whitespace-nowrap font-medium text-slate-800">
-                        {item.full_name || item.username}
-                      </td>
-                      <td className="whitespace-nowrap">{labelRole(item.role)}</td>
-                      <td>
-                        <span className={`inline-flex whitespace-nowrap px-2 py-1 rounded-full text-xs font-semibold ${severityClass(item.event)}`}>
-                          {eventLabels[item.event] || item.event.replaceAll("_", " ")}
-                        </span>
-                      </td>
-                      <td className="hidden lg:table-cell max-w-[220px] truncate" title={item.project_title || "-"}>
-                        {item.project_title || "-"}
-                      </td>
-                      <td className="hidden xl:table-cell whitespace-nowrap">
-                        {[item.ip_address, item.location_hint].filter(Boolean).join(" | ") || "-"}
-                      </td>
-                      <td className="hidden xl:table-cell text-xs text-slate-500">
-                        {item.details && Object.keys(item.details).length > 0 ? (
-                          <div className="space-y-1">
-                            {buildDetailEntries(item).map(([label, value]) => (
-                              <div key={`${item.id}-${label}`}>
-                                <span className="text-slate-500">{label}:</span>{" "}
-                                <span className="text-slate-700">{value}</span>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          "-"
-                        )}
-                      </td>
-                      <td className="whitespace-nowrap">{new Date(item.created_at).toLocaleString()}</td>
+              <div className="overflow-x-auto">
+                <table className="portal-table portal-table-activity min-w-[940px]">
+                  <thead>
+                    <tr>
+                      <th className="whitespace-nowrap">User</th>
+                      <th className="whitespace-nowrap">Role</th>
+                      <th className="whitespace-nowrap">Event</th>
+                      <th className="hidden lg:table-cell">Project</th>
+                      <th className="hidden xl:table-cell">IP / Location</th>
+                      <th className="hidden xl:table-cell">Details</th>
+                      <th className="whitespace-nowrap">Time</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {activity.map((item) => (
+                      <tr key={item.id}>
+                        <td className="whitespace-nowrap font-medium text-slate-800">
+                          {item.full_name || item.username}
+                        </td>
+                        <td className="whitespace-nowrap">{labelRole(item.role)}</td>
+                        <td>
+                          <span className={`inline-flex whitespace-nowrap px-2 py-1 rounded-full text-xs font-semibold ${severityClass(item.event)}`}>
+                            {eventLabels[item.event] || item.event.replaceAll("_", " ")}
+                          </span>
+                        </td>
+                        <td className="hidden lg:table-cell max-w-[220px] truncate" title={item.project_title || "-"}>
+                          {item.project_title || "-"}
+                        </td>
+                        <td className="hidden xl:table-cell whitespace-nowrap">
+                          {[item.ip_address, item.location_hint].filter(Boolean).join(" | ") || "-"}
+                        </td>
+                        <td className="hidden xl:table-cell text-xs text-slate-500">
+                          {item.details && Object.keys(item.details).length > 0 ? (
+                            <div className="space-y-1">
+                              {buildDetailEntries(item).map(([label, value]) => (
+                                <div key={`${item.id}-${label}`}>
+                                  <span className="text-slate-500">{label}:</span>{" "}
+                                  <span className="text-slate-700">{value}</span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            "-"
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap">{new Date(item.created_at).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
+            <div className="portal-card-body flex flex-col gap-3 border-t border-slate-200 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-slate-600">
+                Showing <span className="font-semibold">{activityStart}</span>–<span className="font-semibold">{activityEnd}</span> of{" "}
+                <span className="font-semibold">{activityTotal}</span> audit records
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="portal-btn portal-btn-ghost"
+                  disabled={!hasPreviousActivity || activityLoading}
+                  onClick={() => setActivityOffset((prev) => Math.max(0, prev - activityLimit))}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="portal-btn portal-btn-ghost"
+                  disabled={!hasNextActivity || activityLoading}
+                  onClick={() => setActivityOffset((prev) => prev + activityLimit)}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
           </div>
         </>
       )}

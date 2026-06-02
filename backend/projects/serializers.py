@@ -1,6 +1,24 @@
 from rest_framework import serializers
 from datetime import datetime
-from .models import AccessRequest, PasswordResetRequest, Project, ProjectComment, User, UserActivity
+from .models import (
+    AccessRequest,
+    PasswordResetRequest,
+    PriorityRuleSet,
+    Project,
+    ProjectComment,
+    ProjectPriorityAnalysis,
+    ProjectPriorityConfirmation,
+    User,
+    UserActivity,
+)
+
+SYSTEM_MANAGED_DIFF_ROOTS = {
+    "public_summary",
+    "public_summary_override",
+    "simplified_form_meta",
+    "validator_review",
+    "contributor_snapshot",
+}
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -58,6 +76,7 @@ class ProjectSerializer(serializers.ModelSerializer):
     submitted_by = UserSerializer(source="created_by", read_only=True)
     submitted_by_name = serializers.SerializerMethodField()
     validated_by = serializers.SerializerMethodField()
+    priority_analysis = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
@@ -84,6 +103,8 @@ class ProjectSerializer(serializers.ModelSerializer):
             "latitude",
             "longitude",
             "year",
+            "priority_analysis_eligible",
+            "priority_analysis",
         ]
         read_only_fields = ["id", "created_at", "updated_at", "submitted_by", "submitted_by_name", "validated_by"]
         extra_kwargs = {
@@ -110,6 +131,20 @@ class ProjectSerializer(serializers.ModelSerializer):
             return obj.created_by.get_full_name()
         return obj.created_by.username
 
+    def get_priority_analysis(self, obj):
+        analysis = obj.priority_analyses.prefetch_related("confirmations").order_by("-created_at").first()
+        if not analysis:
+            return None
+        confirmation = analysis.confirmations.first()
+        return {
+            "analysis_id": analysis.id,
+            "score": float(analysis.base_score),
+            "suggested_priority": analysis.suggested_priority,
+            "final_priority": confirmation.final_priority if confirmation else "",
+            "confirmed": bool(confirmation),
+            "created_at": analysis.created_at,
+        }
+
     def validate_status(self, value):
         mapping = {
             "draft": "planning",
@@ -132,6 +167,27 @@ class ProjectSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)
+        profile_data = rep.get("profile_data")
+        if isinstance(profile_data, dict):
+            validator_review = profile_data.get("validator_review")
+            if isinstance(validator_review, dict):
+                raw_fields = validator_review.get("edited_fields")
+                if isinstance(raw_fields, list):
+                    clean_fields = []
+                    for item in raw_fields:
+                        if not isinstance(item, dict):
+                            continue
+                        root = str(item.get("field") or "").split(".")[0]
+                        if root in SYSTEM_MANAGED_DIFF_ROOTS:
+                            continue
+                        clean_fields.append(item)
+                    next_review = dict(validator_review)
+                    next_review["edited_fields"] = clean_fields
+                    next_review["edited_fields_count"] = len(clean_fields)
+                    next_review["edited"] = bool(clean_fields)
+                    next_profile = dict(profile_data)
+                    next_profile["validator_review"] = next_review
+                    rep["profile_data"] = next_profile
         request = self.context.get("request")
         role = getattr(getattr(request, "user", None), "role", "") if request else ""
         if role not in ("staff", "employee"):
@@ -245,6 +301,71 @@ class ProjectSerializer(serializers.ModelSerializer):
         validated_data.setdefault("description", validated_data.get("description", ""))
         validated_data.setdefault("status", validated_data.get("status", "planning"))
         return super().create(validated_data)
+
+
+class ProjectPriorityConfirmationSerializer(serializers.ModelSerializer):
+    validator_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProjectPriorityConfirmation
+        fields = [
+            "id",
+            "validator",
+            "validator_name",
+            "adjusted_scores",
+            "final_priority",
+            "override_rationale",
+            "confirmed_flags",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_validator_name(self, obj):
+        if not obj.validator:
+            return ""
+        return obj.validator.full_name.strip() or obj.validator.get_full_name() or obj.validator.username
+
+
+class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
+    validator_name = serializers.SerializerMethodField()
+    rule_version = serializers.CharField(source="rule_set.version", read_only=True)
+    algorithm_version = serializers.CharField(source="rule_set.algorithm_version", read_only=True)
+    confirmations = ProjectPriorityConfirmationSerializer(many=True, read_only=True)
+    latest_confirmation = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProjectPriorityAnalysis
+        fields = [
+            "id",
+            "project",
+            "validator",
+            "validator_name",
+            "rule_version",
+            "algorithm_version",
+            "source_hash",
+            "supplements",
+            "suggested_scores",
+            "regional_scorecard",
+            "flags",
+            "summary",
+            "suggested_priority",
+            "base_score",
+            "confirmations",
+            "latest_confirmation",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_validator_name(self, obj):
+        if not obj.validator:
+            return ""
+        return obj.validator.full_name.strip() or obj.validator.get_full_name() or obj.validator.username
+
+    def get_latest_confirmation(self, obj):
+        confirmation = obj.confirmations.first()
+        if not confirmation:
+            return None
+        return ProjectPriorityConfirmationSerializer(confirmation).data
 
 
 class PublicProjectSerializer(serializers.ModelSerializer):

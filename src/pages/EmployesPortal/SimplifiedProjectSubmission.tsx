@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import PriorityAnalysisPanel from "../../components/portal/PriorityAnalysisPanel";
+import { useEncodingWindow } from "../../hooks/useEncodingWindow";
 
 type FormAction = "save" | "submit" | "draft" | "reviewed" | "endorsed";
 type YesNo = "Yes" | "No";
@@ -33,6 +35,13 @@ type SimplifiedForm = {
   physicalAccomplishment: string;
   financialAccomplishment: string;
   remarks: string;
+  priorityAnalysisFacts: {
+    readinessLevel: string;
+    readinessNotes: string;
+    gadResponsiveness: string;
+    spatialCoverageScope: string;
+    beneficiaryCount: string;
+  };
 };
 
 type ProjectComment = {
@@ -84,6 +93,13 @@ const initialForm: SimplifiedForm = {
   physicalAccomplishment: "",
   financialAccomplishment: "",
   remarks: "",
+  priorityAnalysisFacts: {
+    readinessLevel: "",
+    readinessNotes: "",
+    gadResponsiveness: "",
+    spatialCoverageScope: "",
+    beneficiaryCount: "",
+  },
 };
 
 const yesNoOptions = ["Yes", "No"];
@@ -207,6 +223,11 @@ const normalizeSimplifiedDiffPath = (path: string) => {
     next = next.replace(/\.\d+(?=\.|$)/g, "");
   }
   return next;
+};
+
+const isSystemManagedDiffPath = (path: string) => {
+  const root = String(path || "").split(".")[0];
+  return ["public_summary", "public_summary_override", "simplified_form_meta", "validator_review", "contributor_snapshot"].includes(root);
 };
 
 const normalizeFundingMap = (
@@ -451,8 +472,6 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const user = userRaw ? JSON.parse(userRaw) : null;
   const [form, setForm] = useState<SimplifiedForm>(initialForm);
   const [loading, setLoading] = useState(false);
-  const [canEncode, setCanEncode] = useState(true);
-  const [encodeMessage, setEncodeMessage] = useState("");
   const [projectStatus, setProjectStatus] = useState<string>("planning");
   const [formReady, setFormReady] = useState(false);
   const [localDraftHydrated, setLocalDraftHydrated] = useState(false);
@@ -462,7 +481,6 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const [validatorNotes, setValidatorNotes] = useState("");
   const [validatorReviewStatus, setValidatorReviewStatus] = useState("");
   const [diffMap, setDiffMap] = useState<Record<string, DiffField>>({});
-  const [diffEntries, setDiffEntries] = useState<Array<{ field: string; before: string; after: string }>>([]);
   const [fieldEditMeta, setFieldEditMeta] = useState<Record<string, EditMeta>>({});
   const [comments, setComments] = useState<ProjectComment[]>([]);
   const [commentInput, setCommentInput] = useState("");
@@ -470,6 +488,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const isValidator = user?.role === "validator";
   const isAdmin = user?.role === "admin";
   const isEmployee = user?.role === "employee";
+  const encodingWindow = useEncodingWindow(isEmployee);
+  const canEncode = encodingWindow.can_encode;
+  const encodeMessage = encodingWindow.message;
   const isDiffMode = isAdmin && searchParams.get("mode") === "diff";
   const normalizedReviewStatus = validatorReviewStatus === "validated" ? "endorsed" : validatorReviewStatus;
   const formRef = useRef(form);
@@ -507,20 +528,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   };
 
   useEffect(() => {
-    if (!user) {
-      navigate("/login");
-      return;
-    }
-    const loadEncoding = async () => {
-      try {
-        const state = await api.get("encoding-window/");
-        setCanEncode(Boolean(state?.can_encode));
-        setEncodeMessage(state?.message || "");
-      } catch {
-        setCanEncode(true);
-      }
-    };
-    loadEncoding();
+    if (!user) navigate("/login");
   }, [navigate, user]);
 
   useEffect(() => {
@@ -573,6 +581,12 @@ const SimplifiedProjectSubmission: React.FC = () => {
         setForm({
           ...initialForm,
           ...simplified,
+          priorityAnalysisFacts: {
+            ...initialForm.priorityAnalysisFacts,
+            ...(simplified.priorityAnalysisFacts && typeof simplified.priorityAnalysisFacts === "object"
+              ? simplified.priorityAnalysisFacts
+              : {}),
+          },
           fundingRequirementByYear,
           actualFundingByYear,
           agencyName: String(simplified.agencyName || data?.agency || ""),
@@ -587,23 +601,29 @@ const SimplifiedProjectSubmission: React.FC = () => {
         }
         if (isAdmin && isDiffMode && Array.isArray(validatorReview?.edited_fields)) {
           const nextDiffs: Record<string, DiffField> = {};
-          const nextEntries: Array<{ field: string; before: string; after: string }> = [];
+          const contributorSimplified = (contributorSnapshot.simplified_form || contributorSnapshot) as Record<string, unknown>;
+          const workingSimplified = (workingCopy.simplified_form || workingCopy) as Record<string, unknown>;
           for (const raw of validatorReview.edited_fields as Array<Record<string, unknown>>) {
-            const key = normalizeSimplifiedDiffPath(String(raw?.field || ""));
+            const rawField = String(raw?.field || "");
+            if (isSystemManagedDiffPath(rawField)) continue;
+            const key = normalizeSimplifiedDiffPath(rawField);
             if (!key) continue;
-            const before = stringifyDiffValue(raw?.before);
-            const after = stringifyDiffValue(raw?.after);
+            const before =
+              key === "sdgSelections"
+                ? stringifyDiffValue(contributorSimplified.sdgSelections)
+                : stringifyDiffValue(raw?.before);
+            const after =
+              key === "sdgSelections"
+                ? stringifyDiffValue(workingSimplified.sdgSelections)
+                : stringifyDiffValue(raw?.after);
             nextDiffs[key] = {
               before,
               after,
             };
-            nextEntries.push({ field: key, before, after });
           }
           setDiffMap(nextDiffs);
-          setDiffEntries(nextEntries);
         } else {
           setDiffMap({});
-          setDiffEntries([]);
         }
       } catch (error) {
         console.error("Failed to load simplified project:", error);
@@ -806,28 +826,35 @@ const SimplifiedProjectSubmission: React.FC = () => {
     () => yearKeys.reduce((sum, key) => sum + toNumber(form.actualFundingByYear[key] || ""), 0),
     [yearKeys, form.actualFundingByYear],
   );
+  const prioritySnapshot = useMemo(
+    () => ({
+      submission_type: "simplified",
+      templateName: "RDIP 2023-2028 Simplified",
+      simplified_form: {
+        ...form,
+        fundingRequirementTotal: frTotal,
+        actualApprovedTotal: aaTotal,
+      },
+    }),
+    [form, frTotal, aaTotal],
+  );
 
   const isReadOnly =
     isAdmin ||
     (isEmployee && !canEncode) ||
     (isEmployee && isEditMode && projectStatus !== "planning") ||
     (isValidator && normalizedReviewStatus === "endorsed");
-  const formatDiffFieldLabel = (field: string) => {
-    if (field.startsWith("fundingRequirementByYear.")) {
-      const key = field.split(".")[1] || "";
-      return `Funding Requirement ${key === "2022_prior" ? "2022 & Prior" : key}`;
-    }
-    if (field.startsWith("actualFundingByYear.")) {
-      const key = field.split(".")[1] || "";
-      return `Actual Funding ${key === "2022_prior" ? "2022 & Prior" : key}`;
-    }
-    return field;
-  };
   const diffOf = (field: string) => diffMap[field];
   const editMetaOf = (field: string) => fieldEditMeta[field];
 
   const setField = <K extends keyof SimplifiedForm>(key: K, value: SimplifiedForm[K]) => {
     updateFormWithLocalDraft((prev) => ({ ...prev, [key]: value }));
+  };
+  const setPriorityFact = (key: keyof SimplifiedForm["priorityAnalysisFacts"], value: string) => {
+    updateFormWithLocalDraft((prev) => ({
+      ...prev,
+      priorityAnalysisFacts: { ...prev.priorityAnalysisFacts, [key]: value },
+    }));
   };
 
   const save = async (e: React.FormEvent, action: FormAction) => {
@@ -885,15 +912,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
     setLoading(true);
     try {
-      const normalizedProfileData = {
-        submission_type: "simplified",
-        templateName: "RDIP 2023-2028 Simplified",
-        simplified_form: {
-          ...form,
-          fundingRequirementTotal: frTotal,
-          actualApprovedTotal: aaTotal,
-        },
-      };
+      const normalizedProfileData = prioritySnapshot;
 
       if (isValidator && id) {
         const validatorAction =
@@ -980,6 +999,24 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const localSavedLabel = lastLocalSaveAt ? new Date(lastLocalSaveAt).toLocaleString() : "";
   const displayName = user?.full_name || user?.username || "User";
 
+  if (isEmployee && !isEditMode && !encodingWindow.loading && !canEncode) {
+    return (
+      <PortalLayout
+        title="New Simplified RDIP Submission"
+        subtitle="Contributor encoding is currently unavailable"
+        role="employee"
+        userName={displayName}
+        topActions={<button type="button" onClick={() => navigate("/employee/projects")} className="portal-btn portal-btn-ghost">Back to Projects</button>}
+      >
+        <div className="portal-card p-5 border-amber-200 bg-amber-50 text-amber-900">
+          <h2 className="text-lg font-semibold">New submissions are currently closed</h2>
+          <p className="mt-2 text-sm">{encodeMessage}</p>
+          <p className="mt-2 text-sm">You may still view existing projects and post collaboration comments.</p>
+        </div>
+      </PortalLayout>
+    );
+  }
+
   return (
     <PortalLayout
       title={
@@ -1041,34 +1078,6 @@ const SimplifiedProjectSubmission: React.FC = () => {
             : "Admin read-only mode. This shows the contributor's original submitted form values."}
         </div>
       )}
-      {isAdmin && isDiffMode && diffEntries.length > 0 && (
-        <div className="portal-card mb-3 border-amber-200">
-          <div className="px-3 py-2 border-b border-amber-200 bg-amber-50 text-amber-900 text-sm font-semibold">
-            Validator Edited Fields
-          </div>
-          <div className="max-h-64 overflow-auto">
-            <table className="w-full text-xs">
-              <thead className="bg-slate-50 sticky top-0">
-                <tr>
-                  <th className="px-2 py-1 text-left">Field</th>
-                  <th className="px-2 py-1 text-left">Original</th>
-                  <th className="px-2 py-1 text-left">Validator Copy</th>
-                </tr>
-              </thead>
-              <tbody>
-                {diffEntries.slice(0, 200).map((entry, idx) => (
-                  <tr key={`${entry.field}-${idx}`} className="border-t border-slate-100 align-top">
-                    <td className="px-2 py-1 font-mono">{formatDiffFieldLabel(entry.field)}</td>
-                    <td className="px-2 py-1 whitespace-pre-wrap break-words">{entry.before || "(empty)"}</td>
-                    <td className="px-2 py-1 whitespace-pre-wrap break-words">{entry.after || "(empty)"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
       <form onSubmit={(e) => save(e, "submit")} className="portal-card p-3 sm:p-4 lg:p-6 space-y-6">
         <fieldset disabled={isReadOnly} className="space-y-6">
           <div className="rounded-lg border border-slate-200 p-4 space-y-4">
@@ -1218,6 +1227,37 @@ const SimplifiedProjectSubmission: React.FC = () => {
             <TextAreaField label="Remarks" value={form.remarks} onChange={(v) => setField("remarks", v)} rows={4} diffBefore={diffOf("remarks")?.before} editMeta={editMetaOf("remarks")} />
           </div>
 
+          {!isValidator && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-4 space-y-4">
+              <div>
+                <h3 className="font-semibold text-slate-900">Priority Analysis Facts <span className="text-xs font-normal text-slate-500">(optional)</span></h3>
+                <p className="mt-1 text-xs text-slate-600">These factual inputs help the validator run a more accurate AI-assisted priority recommendation.</p>
+              </div>
+              <div className="grid gap-4 xl:grid-cols-2">
+                <SelectField label="Readiness Level" value={form.priorityAnalysisFacts.readinessLevel} onChange={(v) => setPriorityFact("readinessLevel", v)} options={[
+                  "Completed supporting documents",
+                  "Ongoing supporting documents",
+                  "Comprehensive project profile",
+                  "Concept paper / none",
+                ]} />
+                <SelectField label="GAD Responsiveness" value={form.priorityAnalysisFacts.gadResponsiveness} onChange={(v) => setPriorityFact("gadResponsiveness", v)} options={[
+                  "Gender-responsive",
+                  "Gender-sensitive",
+                  "Promising GAD prospects",
+                  "GAD invisible",
+                ]} />
+                <SelectField label="Spatial Coverage Scope" value={form.priorityAnalysisFacts.spatialCoverageScope} onChange={(v) => setPriorityFact("spatialCoverageScope", v)} options={[
+                  "Specific LGUs",
+                  "Region-wide",
+                  "Interregional",
+                  "None",
+                ]} />
+                <NumberField label="Estimated Beneficiary Count" value={form.priorityAnalysisFacts.beneficiaryCount} onChange={(v) => setPriorityFact("beneficiaryCount", v)} />
+              </div>
+              <TextAreaField label="Readiness Evidence Notes" value={form.priorityAnalysisFacts.readinessNotes} onChange={(v) => setPriorityFact("readinessNotes", v)} rows={2} />
+            </div>
+          )}
+
           {isValidator && (
             <div className="rounded-lg border border-slate-200 p-4 space-y-2">
               <label className="block">
@@ -1231,6 +1271,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
                 />
               </label>
             </div>
+          )}
+
+          {id && (isValidator || isAdmin) && (
+            <PriorityAnalysisPanel
+              projectId={id}
+              role={isAdmin ? "admin" : "validator"}
+              currentSnapshot={prioritySnapshot}
+            />
           )}
 
           {!isAdmin && (

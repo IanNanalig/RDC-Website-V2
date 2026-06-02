@@ -336,31 +336,6 @@ const ProjectReview: React.FC = () => {
               </>
             )}
           </div>
-          {(isAdmin || isValidator) && Array.isArray(validatorReview?.edited_fields) && validatorReview.edited_fields.length > 0 && (
-            <div className="mt-4 border rounded p-3">
-              <p className="font-semibold mb-2">Edited Fields by Validator</p>
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-xs border">
-                  <thead className="bg-slate-100">
-                    <tr>
-                      <th className="border px-2 py-1 text-left">Field</th>
-                      <th className="border px-2 py-1 text-left">Contributor Original</th>
-                      <th className="border px-2 py-1 text-left">Validator Copy</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {validatorReview.edited_fields.slice(0, 120).map((item: any, idx: number) => (
-                      <tr key={`${item?.field || "field"}-${idx}`}>
-                        <td className="border px-2 py-1 align-top">{String(item?.field || "-")}</td>
-                        <td className="border px-2 py-1 align-top whitespace-pre-wrap break-words max-w-[340px]">{String(item?.before || "")}</td>
-                        <td className="border px-2 py-1 align-top whitespace-pre-wrap break-words max-w-[340px]">{String(item?.after || "")}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
         </div>
         <div className="flex gap-3 no-print">
           <label className="text-sm flex items-center gap-2 border rounded-lg px-3 py-2">

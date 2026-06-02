@@ -66,6 +66,7 @@ class Project(models.Model):
     budget = models.BigIntegerField(default=0)
     completion = models.IntegerField(default=0)
     profile_data = models.JSONField(null=True, blank=True)
+    priority_analysis_eligible = models.BooleanField(default=True)
 
     @property
     def title(self):
@@ -163,6 +164,11 @@ class UserActivity(models.Model):
         ("validator_draft", "Validator Draft"),
         ("validator_reviewed", "Validator Reviewed"),
         ("validator_endorsed", "Validator Endorsed"),
+        ("priority_analysis_run", "Priority Analysis Run"),
+        ("priority_analysis_reused", "Priority Analysis Reused"),
+        ("priority_analysis_confirmed", "Priority Analysis Confirmed"),
+        ("priority_analysis_overridden", "Priority Analysis Overridden"),
+        ("encoding_window_updated", "Encoding Window Updated"),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="activities")
@@ -194,6 +200,79 @@ class ProjectComment(models.Model):
 
     def __str__(self):
         return f"{self.project_id} {self.user.username} {self.created_at.isoformat()}"
+
+
+class PriorityRuleSet(models.Model):
+    version = models.CharField(max_length=40, unique=True)
+    algorithm_version = models.CharField(max_length=40, default="expert-v1")
+    is_active = models.BooleanField(default=False)
+    thresholds = models.JSONField(default=dict, blank=True)
+    sector_criteria = models.JSONField(default=dict, blank=True)
+    keyword_dictionaries = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.version} ({self.algorithm_version})"
+
+
+class ProjectPriorityAnalysis(models.Model):
+    PRIORITY_CHOICES = [
+        ("high", "High Priority"),
+        ("medium", "Medium Priority"),
+        ("low", "Low Priority"),
+        ("incomplete", "Incomplete"),
+    ]
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="priority_analyses")
+    validator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="priority_analyses")
+    rule_set = models.ForeignKey(PriorityRuleSet, on_delete=models.PROTECT, related_name="analyses")
+    source_hash = models.CharField(max_length=64, db_index=True)
+    input_snapshot = models.JSONField(default=dict)
+    supplements = models.JSONField(default=dict, blank=True)
+    suggested_scores = models.JSONField(default=dict)
+    regional_scorecard = models.JSONField(default=dict, blank=True)
+    flags = models.JSONField(default=dict, blank=True)
+    summary = models.TextField(blank=True)
+    suggested_priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES)
+    base_score = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "rule_set", "source_hash"],
+                name="unique_project_priority_analysis_snapshot",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.project_id} {self.suggested_priority} {self.base_score}"
+
+
+class ProjectPriorityConfirmation(models.Model):
+    PRIORITY_CHOICES = [
+        ("high", "High Priority"),
+        ("medium", "Medium Priority"),
+        ("low", "Low Priority"),
+    ]
+
+    analysis = models.ForeignKey(ProjectPriorityAnalysis, on_delete=models.CASCADE, related_name="confirmations")
+    validator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="priority_confirmations")
+    adjusted_scores = models.JSONField(default=dict, blank=True)
+    final_priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES)
+    override_rationale = models.TextField(blank=True)
+    confirmed_flags = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.analysis_id} {self.final_priority}"
 
 
 class PasswordSetupToken(models.Model):

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useEncodingWindow } from "../../hooks/useEncodingWindow";
 
 type Role = "admin" | "validator" | "employee";
 
@@ -82,6 +83,7 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
   const location = useLocation();
   const navigate = useNavigate();
   const navItems = useMemo(() => navByRole[role], [role]);
+  const encodingWindow = useEncodingWindow(role === "employee");
 
   useEffect(() => {
     setMobileOpen(false);
@@ -129,12 +131,21 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
             <nav className="space-y-1">
               {navItems.map((item) => {
                 const active = location.pathname.startsWith(item.to);
+                const encodingDisabled =
+                  role === "employee" && item.to === "/employee/projects/new" && !encodingWindow.can_encode;
                 return (
                   <Link
                     key={item.to}
-                    to={item.to}
-                    className={`portal-nav-item ${active ? "portal-nav-item-active" : ""}`}
-                    onClick={() => setMobileOpen(false)}
+                    to={encodingDisabled ? "#" : item.to}
+                    aria-disabled={encodingDisabled}
+                    title={encodingDisabled ? encodingWindow.message : undefined}
+                    className={`portal-nav-item ${active ? "portal-nav-item-active" : ""} ${
+                      encodingDisabled ? "opacity-50 cursor-not-allowed" : ""
+                    }`}
+                    onClick={(event) => {
+                      if (encodingDisabled) event.preventDefault();
+                      else setMobileOpen(false);
+                    }}
                   >
                     <span className="portal-nav-icon">{iconFor(item.label)}</span>
                     <span>{item.label}</span>

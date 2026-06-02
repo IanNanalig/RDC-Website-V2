@@ -26,6 +26,7 @@ from .models import (
     AccessRequest,
     PasswordResetRequest,
     PasswordSetupToken,
+    ProjectPriorityAnalysis,
     Project,
     ProjectComment,
     PublicChatFAQ,
@@ -42,8 +43,10 @@ from .serializers import (
     ProjectSerializer,
     UserActivitySerializer,
     UserSerializer,
+    ProjectPriorityAnalysisSerializer,
 )
 from .public_summary import build_public_summary
+from .priority_scoring import analyze_project, confirm_analysis, has_matching_confirmation
 from .utils import derive_ncr_lgus
 
 
@@ -525,19 +528,27 @@ def _log_activity(request, event: str, project=None, details=None):
 
 
 def _get_encoding_window_config():
-    default = {"enabled": True, "start_at": "", "end_at": ""}
+    default = {
+        "configured": False,
+        "config_error": False,
+        "enabled": False,
+        "start_at": "",
+        "end_at": "",
+    }
     setting = SystemSetting.objects.filter(key=ENCODING_WINDOW_KEY).first()
     if not setting or not setting.value:
         return default
     try:
         data = json.loads(setting.value)
         return {
-            "enabled": bool(data.get("enabled", True)),
+            "configured": True,
+            "config_error": False,
+            "enabled": bool(data.get("enabled", False)),
             "start_at": str(data.get("start_at", "") or ""),
             "end_at": str(data.get("end_at", "") or ""),
         }
     except Exception:
-        return default
+        return {**default, "configured": True, "config_error": True}
 
 
 def _parse_iso_datetime(raw):
@@ -554,41 +565,59 @@ def _parse_iso_datetime(raw):
 
 def _resolve_encoding_window_state():
     config = _get_encoding_window_config()
-    if not config["enabled"]:
-        return {
-            **config,
-            "is_open": False,
-            "message": "Encoding is currently closed by admin.",
-        }
-
-    start_at = _parse_iso_datetime(config["start_at"]) if config["start_at"] else None
-    end_at = _parse_iso_datetime(config["end_at"]) if config["end_at"] else None
-
-    # If no range is configured, encoding remains open.
-    if not start_at and not end_at:
-        return {
-            **config,
-            "is_open": True,
-            "message": "Encoding is open.",
-        }
-
-    now = timezone.now()
-    is_open = True
-    if start_at and now < start_at:
-        is_open = False
-    if end_at and now > end_at:
-        is_open = False
-
-    if is_open:
-        msg = "Encoding is open."
-    else:
-        msg = "Encoding is outside the active admin schedule."
-
-    return {
-        **config,
-        "is_open": is_open,
-        "message": msg,
+    public_config = {
+        "enabled": config["enabled"],
+        "start_at": config["start_at"],
+        "end_at": config["end_at"],
     }
+    now = timezone.now()
+    server_now = now.isoformat()
+
+    def state(status_code, message, is_open=False):
+        return {
+            **public_config,
+            "is_open": is_open,
+            "status_code": status_code,
+            "message": message,
+            "server_now": server_now,
+        }
+
+    if config["config_error"]:
+        return state("schedule_invalid", "Encoding schedule is invalid. Please contact the administrator.")
+
+    if not config["configured"]:
+        return state("schedule_not_configured", "Contributor encoding is closed until an administrator sets a schedule.")
+
+    if not config["enabled"]:
+        return state("closed_by_admin", "Contributor encoding is currently closed by the administrator.")
+
+    if not config["start_at"] or not config["end_at"]:
+        return state("schedule_not_configured", "Contributor encoding is closed until a complete schedule is configured.")
+
+    try:
+        start_at = _parse_iso_datetime(config["start_at"])
+        end_at = _parse_iso_datetime(config["end_at"])
+    except (TypeError, ValueError):
+        return state("schedule_invalid", "Encoding schedule is invalid. Please contact the administrator.")
+
+    if not start_at or not end_at or start_at >= end_at:
+        return state("schedule_invalid", "Encoding schedule is invalid. Please contact the administrator.")
+
+    if now < start_at:
+        return state(
+            "scheduled_not_started",
+            f"Contributor encoding opens on {timezone.localtime(start_at).strftime('%b %d, %Y %I:%M %p')} Philippine Standard Time.",
+        )
+    if now >= end_at:
+        return state(
+            "scheduled_ended",
+            f"Contributor encoding closed on {timezone.localtime(end_at).strftime('%b %d, %Y %I:%M %p')} Philippine Standard Time.",
+        )
+    return state(
+        "scheduled_open",
+        f"Contributor encoding is open until {timezone.localtime(end_at).strftime('%b %d, %Y %I:%M %p')} Philippine Standard Time.",
+        is_open=True,
+    )
 
 
 def _send_setup_email(user: User, token: PasswordSetupToken, purpose: str = "create"):
@@ -990,13 +1019,22 @@ def _validate_password_policy(password: str):
     return ""
 
 
+SYSTEM_MANAGED_PROFILE_KEYS = {
+    "validator_review",
+    "contributor_snapshot",
+    "public_summary",
+    "public_summary_override",
+    "simplified_form_meta",
+}
+
+
 def _strip_validator_meta(profile_data):
     if not isinstance(profile_data, dict):
         return {}
     return {
         key: value
         for key, value in profile_data.items()
-        if key not in ("validator_review", "contributor_snapshot")
+        if key not in SYSTEM_MANAGED_PROFILE_KEYS
     }
 
 
@@ -1034,6 +1072,8 @@ def _json_diff(before, after, path=""):
     if isinstance(before, dict) and isinstance(after, dict):
         keys = sorted(set(before.keys()) | set(after.keys()))
         for key in keys:
+            if not path and key in SYSTEM_MANAGED_PROFILE_KEYS:
+                continue
             before_has = key in before
             after_has = key in after
             if before_has and not after_has and _is_empty_equivalent(before.get(key)):
@@ -1073,6 +1113,43 @@ def _json_diff(before, after, path=""):
             }
         )
     return changes
+
+
+def _nested_diff_value(data, path):
+    value = data
+    for key in str(path or "").split("."):
+        if not key or not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def _validator_edited_fields(before, after):
+    changes = _json_diff(before, after)
+    normalized = {}
+    order = []
+    for entry in changes:
+        field = str(entry.get("field") or "")
+        grouped_field = ""
+        if field.startswith("simplified_form.sdgSelections."):
+            grouped_field = "simplified_form.sdgSelections"
+        elif field.startswith("sdgSelections."):
+            grouped_field = "sdgSelections"
+
+        if grouped_field:
+            before_values = _nested_diff_value(before, grouped_field)
+            after_values = _nested_diff_value(after, grouped_field)
+            entry = {
+                "field": grouped_field,
+                "before": ", ".join(str(value) for value in before_values) if isinstance(before_values, list) else "",
+                "after": ", ".join(str(value) for value in after_values) if isinstance(after_values, list) else "",
+            }
+            field = grouped_field
+
+        if field not in normalized:
+            order.append(field)
+        normalized[field] = entry
+    return [normalized[field] for field in order]
 
 
 def _parse_year_value(value):
@@ -1332,7 +1409,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if funding_error:
             return Response({"detail": funding_error}, status=400)
 
-        edited_fields = _json_diff(contributor_snapshot, edited_profile)
+        edited_fields = _validator_edited_fields(contributor_snapshot, edited_profile)
         review_notes = str(request.data.get("comment") or request.data.get("notes") or "").strip()
         reviewed_at = timezone.now().isoformat()
         update_fields = ["profile_data", "updated_at"]
@@ -1347,6 +1424,16 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             project.validated = False
             event = "validator_reviewed"
         elif action_value in ("endorse", "approve", "validate"):
+            if project.priority_analysis_eligible and not has_matching_confirmation(project, edited_profile):
+                return Response(
+                    {
+                        "detail": (
+                            "Run and confirm the AI-assisted priority analysis for the current validator copy "
+                            "before endorsing this project."
+                        )
+                    },
+                    status=400,
+                )
             review_state = "endorsed"
             project.status = "completed"
             project.validated = True
@@ -1402,6 +1489,111 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 "warning": warning,
             }
         )
+
+    @action(detail=True, methods=["get"], url_path="priority-analysis")
+    def priority_analysis(self, request, pk=None):
+        project = self.get_object()
+        role = getattr(request.user, "role", "")
+        if role not in ("validator", "admin"):
+            raise PermissionDenied("Only validator/admin can view priority analysis.")
+        analyses = project.priority_analyses.select_related("validator", "rule_set").prefetch_related(
+            "confirmations__validator"
+        )
+        serializer = ProjectPriorityAnalysisSerializer(analyses, many=True)
+        return Response(
+            {
+                "eligible": bool(project.priority_analysis_eligible),
+                "analyses": serializer.data,
+            }
+        )
+
+    @action(detail=True, methods=["post"], url_path="priority-analysis/run")
+    def priority_analysis_run(self, request, pk=None):
+        project = self.get_object()
+        if getattr(request.user, "role", "") != "validator":
+            raise PermissionDenied("Only validators can run priority analysis.")
+        if not project.priority_analysis_eligible:
+            return Response({"detail": "Legacy projects are excluded from priority analysis enforcement."}, status=400)
+        if project.status not in ("proposed", "planning"):
+            return Response({"detail": "Priority analysis is available before endorsement only."}, status=400)
+
+        incoming_snapshot = request.data.get("edited_profile_data")
+        if incoming_snapshot is not None and not isinstance(incoming_snapshot, dict):
+            return Response({"detail": "edited_profile_data must be a JSON object."}, status=400)
+        profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
+        existing_review = profile_data.get("validator_review")
+        if isinstance(incoming_snapshot, dict):
+            snapshot = incoming_snapshot
+        elif isinstance(existing_review, dict) and isinstance(existing_review.get("working_copy"), dict):
+            snapshot = existing_review["working_copy"]
+        else:
+            snapshot = profile_data.get("contributor_snapshot")
+            if not isinstance(snapshot, dict):
+                snapshot = _strip_validator_meta(profile_data)
+        supplements = request.data.get("supplements")
+        if not isinstance(supplements, dict):
+            supplements = {}
+        analysis, reused = analyze_project(project, request.user, snapshot, supplements)
+        _log_activity(
+            request,
+            "priority_analysis_reused" if reused else "priority_analysis_run",
+            project,
+            {
+                "analysis_id": analysis.id,
+                "score": float(analysis.base_score),
+                "priority": analysis.suggested_priority,
+                "reused": reused,
+            },
+        )
+        return Response(
+            {
+                "eligible": True,
+                "reused": reused,
+                "analysis": ProjectPriorityAnalysisSerializer(analysis).data,
+            }
+        )
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"priority-analysis/(?P<analysis_id>\d+)/confirm",
+    )
+    def priority_analysis_confirm(self, request, pk=None, analysis_id=None):
+        project = self.get_object()
+        if getattr(request.user, "role", "") != "validator":
+            raise PermissionDenied("Only validators can confirm priority analysis.")
+        try:
+            analysis = project.priority_analyses.get(pk=analysis_id)
+        except ProjectPriorityAnalysis.DoesNotExist:
+            return Response({"detail": "Priority analysis not found."}, status=404)
+        try:
+            confirmation = confirm_analysis(
+                analysis,
+                request.user,
+                request.data.get("adjusted_scores"),
+                str(request.data.get("final_priority") or analysis.suggested_priority),
+                request.data.get("override_rationale"),
+                request.data.get("confirmed_flags"),
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        event = (
+            "priority_analysis_overridden"
+            if confirmation.final_priority != analysis.suggested_priority
+            else "priority_analysis_confirmed"
+        )
+        _log_activity(
+            request,
+            event,
+            project,
+            {
+                "analysis_id": analysis.id,
+                "suggested_priority": analysis.suggested_priority,
+                "final_priority": confirmation.final_priority,
+                "score": float(analysis.base_score),
+            },
+        )
+        return Response(ProjectPriorityAnalysisSerializer(analysis).data)
 
     @action(detail=True, methods=["post"], url_path="public-summary")
     def public_summary(self, request, pk=None):
@@ -1948,23 +2140,54 @@ class EncodingWindowView(APIView):
         if getattr(request.user, "role", "") != "admin":
             raise PermissionDenied("Only admin can update encoding schedule.")
 
-        enabled = bool(request.data.get("enabled", True))
+        enabled_raw = request.data.get("enabled", False)
+        enabled = (
+            enabled_raw.strip().lower() in ("1", "true", "yes", "on")
+            if isinstance(enabled_raw, str)
+            else bool(enabled_raw)
+        )
         start_at = str(request.data.get("start_at", "") or "")
         end_at = str(request.data.get("end_at", "") or "")
 
-        if start_at:
-            _parse_iso_datetime(start_at)
-        if end_at:
-            _parse_iso_datetime(end_at)
-        if start_at and end_at and _parse_iso_datetime(start_at) > _parse_iso_datetime(end_at):
-            return Response({"detail": "start_at cannot be after end_at"}, status=400)
+        if enabled and (not start_at or not end_at):
+            return Response({"detail": "Start and end date are required for a scheduled encoding window."}, status=400)
 
+        if not enabled:
+            start_at = ""
+            end_at = ""
+        else:
+            try:
+                parsed_start = _parse_iso_datetime(start_at)
+                parsed_end = _parse_iso_datetime(end_at)
+            except (TypeError, ValueError):
+                return Response({"detail": "Start and end date must be valid date-time values."}, status=400)
+            if not parsed_start or not parsed_end or parsed_start >= parsed_end:
+                return Response({"detail": "Start date must be earlier than end date."}, status=400)
+            start_at = parsed_start.isoformat()
+            end_at = parsed_end.isoformat()
+
+        previous = _resolve_encoding_window_state()
         payload = {"enabled": enabled, "start_at": start_at, "end_at": end_at}
         SystemSetting.objects.update_or_create(
             key=ENCODING_WINDOW_KEY,
             defaults={"value": json.dumps(payload)},
         )
-        return Response(_resolve_encoding_window_state())
+        current = _resolve_encoding_window_state()
+        _log_activity(
+            request,
+            "encoding_window_updated",
+            details={
+                "previous_mode": "Scheduled" if previous["enabled"] else "Closed",
+                "previous_start_at": previous["start_at"],
+                "previous_end_at": previous["end_at"],
+                "previous_status": previous["status_code"],
+                "new_mode": "Scheduled" if current["enabled"] else "Closed",
+                "new_start_at": current["start_at"],
+                "new_end_at": current["end_at"],
+                "new_status": current["status_code"],
+            },
+        )
+        return Response(current)
 
 
 class DashboardView(APIView):
@@ -2303,14 +2526,33 @@ class AdminActivityView(APIView):
         role_filter = (request.query_params.get("role") or "").strip()
         event_filter = (request.query_params.get("event") or "").strip()
         user_filter = (request.query_params.get("user") or "").strip()
+        date_from_raw = (request.query_params.get("date_from") or "").strip()
+        date_to_raw = (request.query_params.get("date_to") or "").strip()
         limit_raw = request.query_params.get("limit")
+        offset_raw = request.query_params.get("offset")
 
         if role_filter:
             qs = qs.filter(role=role_filter)
         if event_filter:
             qs = qs.filter(event=event_filter)
         if user_filter:
-            qs = qs.filter(user__username__icontains=user_filter)
+            qs = qs.filter(
+                Q(user__username__icontains=user_filter)
+                | Q(user__full_name__icontains=user_filter)
+                | Q(user__email__icontains=user_filter)
+            )
+        if date_from_raw:
+            try:
+                date_from = datetime.strptime(date_from_raw, "%Y-%m-%d").date()
+                qs = qs.filter(created_at__date__gte=date_from)
+            except ValueError:
+                return Response({"detail": "date_from must use YYYY-MM-DD format."}, status=400)
+        if date_to_raw:
+            try:
+                date_to = datetime.strptime(date_to_raw, "%Y-%m-%d").date()
+                qs = qs.filter(created_at__date__lte=date_to)
+            except ValueError:
+                return Response({"detail": "date_to must use YYYY-MM-DD format."}, status=400)
 
         limit = 50
         if limit_raw:
@@ -2319,7 +2561,26 @@ class AdminActivityView(APIView):
             except Exception:
                 limit = 50
 
-        serializer = UserActivitySerializer(qs[:limit], many=True)
+        offset = 0
+        if offset_raw:
+            try:
+                offset = max(0, int(offset_raw))
+            except Exception:
+                offset = 0
+
+        total = qs.count()
+        serializer = UserActivitySerializer(qs[offset : offset + limit], many=True)
+        if (request.query_params.get("include_meta") or "").lower() in {"1", "true", "yes"}:
+            return Response(
+                {
+                    "results": serializer.data,
+                    "count": total,
+                    "limit": limit,
+                    "offset": offset,
+                    "has_previous": offset > 0,
+                    "has_next": offset + limit < total,
+                }
+            )
         return Response(serializer.data)
 
 

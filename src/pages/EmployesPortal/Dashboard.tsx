@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { useEncodingWindow } from "../../hooks/useEncodingWindow";
 
 interface DashboardStats {
   my_projects?: number;
@@ -19,6 +20,8 @@ const Dashboard: React.FC = () => {
   const [activity, setActivity] = useState<any[]>([]);
   const [activityLoading, setActivityLoading] = useState(true);
   const [activityLimit, setActivityLimit] = useState("10");
+  const encodingWindow = useEncodingWindow(true);
+  const canEncode = encodingWindow.can_encode;
   const [activityModal, setActivityModal] = useState<{
     open: boolean;
     title: string;
@@ -203,11 +206,21 @@ const Dashboard: React.FC = () => {
       role="employee"
       userName={displayName}
       topActions={
-        <Link to="/employee/projects/new" className="portal-btn portal-btn-primary">
+        <Link
+          to={canEncode ? "/employee/projects/new" : "#"}
+          onClick={(event) => !canEncode && event.preventDefault()}
+          title={!canEncode ? encodingWindow.message : undefined}
+          className={`portal-btn ${canEncode ? "portal-btn-primary" : "portal-btn-ghost opacity-70 cursor-not-allowed"}`}
+        >
           + New Submission
         </Link>
       }
     >
+      {!canEncode && (
+        <div className="portal-card p-3 mb-3 border-amber-200 bg-amber-50 text-amber-800">
+          {encodingWindow.message}
+        </div>
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4 mb-4">
         <div className="portal-stat">
           <p className="portal-stat-title">Total Projects</p>
@@ -233,9 +246,16 @@ const Dashboard: React.FC = () => {
             <h2 className="text-lg font-semibold">Workflow Shortcuts</h2>
           </div>
           <div className="portal-card-body grid grid-cols-1 xl:grid-cols-3 gap-3">
-            <Link to="/employee/projects/new" className="portal-card p-4 hover:shadow-md transition-shadow">
+            <Link
+              to={canEncode ? "/employee/projects/new" : "#"}
+              onClick={(event) => !canEncode && event.preventDefault()}
+              title={!canEncode ? encodingWindow.message : undefined}
+              className={`portal-card p-4 transition-shadow ${canEncode ? "hover:shadow-md" : "opacity-60 cursor-not-allowed"}`}
+            >
               <p className="font-semibold">Create New Project</p>
-              <p className="text-sm text-slate-500 mt-1">Start filling the full template form.</p>
+              <p className="text-sm text-slate-500 mt-1">
+                {canEncode ? "Start filling the full template form." : "Available only during an active encoding schedule."}
+              </p>
             </Link>
             <Link to="/employee/projects?status=draft" className="portal-card p-4 hover:shadow-md transition-shadow">
               <p className="font-semibold">Continue Drafts</p>

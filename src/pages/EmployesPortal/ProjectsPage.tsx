@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import { useEncodingWindow } from "../../hooks/useEncodingWindow";
 
 type ApiProject = {
   id: number;
@@ -82,12 +83,13 @@ const ProjectsPage: React.FC = () => {
   const [projects, setProjects] = useState<ApiProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
-  const [canEncode, setCanEncode] = useState(true);
-  const [encodeMessage, setEncodeMessage] = useState("");
 
   const userData = localStorage.getItem("user");
   const user = userData ? JSON.parse(userData) : null;
   const role = user?.role as "admin" | "validator" | "employee" | undefined;
+  const encodingWindow = useEncodingWindow(role === "employee");
+  const canEncode = encodingWindow.can_encode;
+  const encodeMessage = encodingWindow.message;
 
   const endpoint =
     role === "admin"
@@ -109,26 +111,12 @@ const ProjectsPage: React.FC = () => {
     }
   };
 
-  const loadEncodingState = async () => {
-    if (role !== "employee") return;
-    try {
-      const state = await api.get("encoding-window/");
-      setCanEncode(Boolean(state?.can_encode));
-      setEncodeMessage(state?.message || "");
-    } catch (error) {
-      console.error("Failed to load encoding state:", error);
-      setCanEncode(true);
-      setEncodeMessage("");
-    }
-  };
-
   useEffect(() => {
     if (!user) {
       navigate("/login");
       return;
     }
     loadProjects();
-    loadEncodingState();
     const onStorage = (e: StorageEvent) => {
       if (e.key === "projects_last_update") loadProjects();
     };
@@ -195,7 +183,7 @@ const ProjectsPage: React.FC = () => {
     >
       {role === "employee" && !canEncode && (
         <div className="portal-card p-3 mb-3 border-amber-200 bg-amber-50 text-amber-800">
-          {encodeMessage || "Encoding is currently closed by admin. You may view and print submissions only."}
+          {encodeMessage || "Contributor encoding is currently closed. You may still view projects and post comments."}
         </div>
       )}
 

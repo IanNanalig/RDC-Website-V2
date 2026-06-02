@@ -44,6 +44,10 @@ AUTH_USER_MODEL = 'projects.User'  # Or 'users.User' if you have users app
 
 ROOT_URLCONF = "rdc_site.urls"
 
+# RDC-NCR schedules are administered and displayed in Philippine Standard Time.
+TIME_ZONE = "Asia/Manila"
+USE_TZ = True
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
