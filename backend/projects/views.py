@@ -14,6 +14,7 @@ from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.crypto import get_random_string
+from django.db import transaction
 from django.db.models import Q
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -29,6 +30,7 @@ from .models import (
     ProjectPriorityAnalysis,
     Project,
     ProjectComment,
+    ProjectRevision,
     PublicChatFAQ,
     PublicContent,
     SystemSetting,
@@ -41,6 +43,7 @@ from .serializers import (
     ProjectCommentSerializer,
     PublicProjectSerializer,
     ProjectSerializer,
+    ProjectRevisionSerializer,
     UserActivitySerializer,
     UserSerializer,
     ProjectPriorityAnalysisSerializer,
@@ -51,6 +54,7 @@ from .utils import derive_ncr_lgus
 
 
 ENCODING_WINDOW_KEY = "portal_encoding_window"
+PROGRESS_UPDATE_WINDOW_KEY = "portal_progress_update_window"
 PASSWORD_SETUP_TTL_HOURS = 24
 PASSWORD_RESET_WINDOW_SECONDS = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_WINDOW", 3600))
 PASSWORD_RESET_LIMIT_EMAIL = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_EMAIL", 2))
@@ -512,6 +516,32 @@ def _location_hint(request):
     return ", ".join(parts)
 
 
+def _advance_user_session(user, request=None):
+    previous_version = int(getattr(user, "session_version", 0) or 0)
+    user.session_version = previous_version + 1
+    user.last_session_at = timezone.now()
+    if request is not None:
+        user.last_session_ip = _client_ip(request)
+        user.last_session_user_agent = (request.META.get("HTTP_USER_AGENT", "") or "")[:1000]
+    user.save(
+        update_fields=[
+            "session_version",
+            "last_session_at",
+            "last_session_ip",
+            "last_session_user_agent",
+        ]
+    )
+    return previous_version, user.session_version
+
+
+def _issue_session_tokens(user):
+    refresh = RefreshToken.for_user(user)
+    refresh["session_version"] = int(user.session_version or 0)
+    access = refresh.access_token
+    access["session_version"] = int(user.session_version or 0)
+    return str(access), str(refresh)
+
+
 def _log_activity(request, event: str, project=None, details=None):
     user = getattr(request, "user", None)
     if not user or not user.is_authenticated:
@@ -527,7 +557,7 @@ def _log_activity(request, event: str, project=None, details=None):
     )
 
 
-def _get_encoding_window_config():
+def _get_window_config(key):
     default = {
         "configured": False,
         "config_error": False,
@@ -535,7 +565,7 @@ def _get_encoding_window_config():
         "start_at": "",
         "end_at": "",
     }
-    setting = SystemSetting.objects.filter(key=ENCODING_WINDOW_KEY).first()
+    setting = SystemSetting.objects.filter(key=key).first()
     if not setting or not setting.value:
         return default
     try:
@@ -551,6 +581,10 @@ def _get_encoding_window_config():
         return {**default, "configured": True, "config_error": True}
 
 
+def _get_encoding_window_config():
+    return _get_window_config(ENCODING_WINDOW_KEY)
+
+
 def _parse_iso_datetime(raw):
     if not raw:
         return None
@@ -563,8 +597,7 @@ def _parse_iso_datetime(raw):
     return dt
 
 
-def _resolve_encoding_window_state():
-    config = _get_encoding_window_config()
+def _resolve_window_state(config, label, action_label):
     public_config = {
         "enabled": config["enabled"],
         "start_at": config["start_at"],
@@ -583,40 +616,56 @@ def _resolve_encoding_window_state():
         }
 
     if config["config_error"]:
-        return state("schedule_invalid", "Encoding schedule is invalid. Please contact the administrator.")
+        return state("schedule_invalid", f"{label} schedule is invalid. Please contact the administrator.")
 
     if not config["configured"]:
-        return state("schedule_not_configured", "Contributor encoding is closed until an administrator sets a schedule.")
+        return state("schedule_not_configured", f"{label} is closed until an administrator sets a schedule.")
 
     if not config["enabled"]:
-        return state("closed_by_admin", "Contributor encoding is currently closed by the administrator.")
+        return state("closed_by_admin", f"{label} is currently closed by the administrator.")
 
     if not config["start_at"] or not config["end_at"]:
-        return state("schedule_not_configured", "Contributor encoding is closed until a complete schedule is configured.")
+        return state("schedule_not_configured", f"{label} is closed until a complete schedule is configured.")
 
     try:
         start_at = _parse_iso_datetime(config["start_at"])
         end_at = _parse_iso_datetime(config["end_at"])
     except (TypeError, ValueError):
-        return state("schedule_invalid", "Encoding schedule is invalid. Please contact the administrator.")
+        return state("schedule_invalid", f"{label} schedule is invalid. Please contact the administrator.")
 
     if not start_at or not end_at or start_at >= end_at:
-        return state("schedule_invalid", "Encoding schedule is invalid. Please contact the administrator.")
+        return state("schedule_invalid", f"{label} schedule is invalid. Please contact the administrator.")
 
     if now < start_at:
         return state(
             "scheduled_not_started",
-            f"Contributor encoding opens on {timezone.localtime(start_at).strftime('%b %d, %Y %I:%M %p')} Philippine Standard Time.",
+            f"{label} opens on {timezone.localtime(start_at).strftime('%b %d, %Y %I:%M %p')} Philippine Standard Time.",
         )
     if now >= end_at:
         return state(
             "scheduled_ended",
-            f"Contributor encoding closed on {timezone.localtime(end_at).strftime('%b %d, %Y %I:%M %p')} Philippine Standard Time.",
+            f"{label} closed on {timezone.localtime(end_at).strftime('%b %d, %Y %I:%M %p')} Philippine Standard Time.",
         )
     return state(
         "scheduled_open",
-        f"Contributor encoding is open until {timezone.localtime(end_at).strftime('%b %d, %Y %I:%M %p')} Philippine Standard Time.",
+        f"{action_label} is open until {timezone.localtime(end_at).strftime('%b %d, %Y %I:%M %p')} Philippine Standard Time.",
         is_open=True,
+    )
+
+
+def _resolve_encoding_window_state():
+    return _resolve_window_state(
+        _get_encoding_window_config(),
+        "Contributor encoding",
+        "Contributor encoding",
+    )
+
+
+def _resolve_progress_update_window_state():
+    return _resolve_window_state(
+        _get_window_config(PROGRESS_UPDATE_WINDOW_KEY),
+        "Project progress updates",
+        "Project progress updating",
     )
 
 
@@ -1292,6 +1341,162 @@ def _apply_simplified_meta(incoming_profile, existing_profile, user):
     return incoming_profile, changed_fields, changes
 
 
+def _simplified_from_profile(profile_data):
+    if isinstance(profile_data, dict) and isinstance(profile_data.get("simplified_form"), dict):
+        return profile_data.get("simplified_form") or {}
+    return {}
+
+
+def _rdip_status_from_profile(profile_data):
+    return str(_simplified_from_profile(profile_data).get("status") or "").strip()
+
+
+def _is_completed_rdip_project(project):
+    return _rdip_status_from_profile(project.profile_data).lower() == "completed"
+
+
+def _project_public_summary(profile_data):
+    if isinstance(profile_data, dict):
+        summary = profile_data.get("public_summary")
+        if isinstance(summary, dict):
+            return summary
+        simplified = profile_data.get("simplified_form")
+        if isinstance(simplified, dict):
+            return build_public_summary(simplified)
+    return {}
+
+
+def _next_revision_number(project):
+    latest = project.revisions.order_by("-revision_number").first()
+    return (latest.revision_number if latest else 0) + 1
+
+
+def _safe_revision_changes(before_profile, after_profile):
+    before = _simplified_from_profile(before_profile)
+    after = _simplified_from_profile(after_profile)
+    changes = []
+    seen = set()
+    for entry in _json_diff(before, after):
+        raw_field = str(entry.get("field") or "")
+        if not raw_field or raw_field == "(root)" or raw_field in ("fundingRequirementTotal", "actualApprovedTotal"):
+            continue
+        field = _normalize_simplified_field_path(raw_field)
+        if raw_field.startswith("sdgSelections."):
+            entry = {
+                "field": "sdgSelections",
+                "before": ", ".join(str(v) for v in before.get("sdgSelections", []) if str(v).strip()),
+                "after": ", ".join(str(v) for v in after.get("sdgSelections", []) if str(v).strip()),
+            }
+            field = "sdgSelections"
+        if field in seen:
+            continue
+        seen.add(field)
+        changes.append(
+            {
+                "field": field,
+                "before": str(entry.get("before") or ""),
+                "after": str(entry.get("after") or ""),
+            }
+        )
+    return changes[:50]
+
+
+def _ensure_public_revision(project, user=None):
+    if not project.validated:
+        return None
+    current = project.revisions.filter(state="endorsed", is_public_current=True).first()
+    if current:
+        return current
+    profile = deepcopy(project.profile_data) if isinstance(project.profile_data, dict) else {}
+    if isinstance(profile.get("simplified_form"), dict):
+        profile["public_summary"] = build_public_summary(profile["simplified_form"])
+    ProjectRevision.objects.filter(project=project, is_public_current=True).update(is_public_current=False)
+    revision = ProjectRevision.objects.create(
+        project=project,
+        revision_number=_next_revision_number(project),
+        revision_type="initial_submission",
+        state="endorsed",
+        profile_data_snapshot=profile,
+        public_summary_snapshot=_project_public_summary(profile),
+        changed_fields=[],
+        is_public_current=True,
+        created_by=project.created_by,
+        submitted_by=project.created_by,
+        reviewed_by=user,
+        endorsed_by=user,
+        submitted_at=project.updated_at or timezone.now(),
+        reviewed_at=project.updated_at or timezone.now(),
+        endorsed_at=project.updated_at or timezone.now(),
+    )
+    return revision
+
+
+def _apply_revision_to_project(revision, user):
+    project = revision.project
+    profile = deepcopy(revision.profile_data_snapshot) if isinstance(revision.profile_data_snapshot, dict) else {}
+    simplified = _simplified_from_profile(profile)
+    if simplified:
+        profile["public_summary"] = build_public_summary(simplified)
+    project.name = str(simplified.get("projectActivity") or simplified.get("program") or project.name or "Untitled Project")
+    project.description = str(simplified.get("description") or simplified.get("objective") or project.description or "")
+    project.agency = str(simplified.get("agencyName") or project.agency or "")
+    project.implementing_agency = project.agency or project.implementing_agency or "N/A"
+    try:
+        project.year = int(str(simplified.get("startYear") or project.year or "").strip())
+    except Exception:
+        pass
+    summary = _project_public_summary(profile)
+    key_facts = summary.get("key_facts") if isinstance(summary, dict) else {}
+    try:
+        project.budget = int(round(float(key_facts.get("funding_requirement_total") or project.budget or 0)))
+    except Exception:
+        pass
+    project.cost = project.budget or 0
+    project.profile_data = profile
+    project.status = "completed"
+    project.validated = True
+    project.save(
+        update_fields=[
+            "name",
+            "description",
+            "agency",
+            "implementing_agency",
+            "year",
+            "budget",
+            "cost",
+            "profile_data",
+            "status",
+            "validated",
+            "updated_at",
+        ]
+    )
+    ProjectRevision.objects.filter(project=project, state="endorsed", is_public_current=True).exclude(
+        id=revision.id
+    ).update(is_public_current=False)
+    revision.profile_data_snapshot = profile
+    revision.public_summary_snapshot = summary if isinstance(summary, dict) else {}
+    revision.state = "endorsed"
+    revision.is_public_current = True
+    revision.reviewed_by = user
+    revision.endorsed_by = user
+    revision.reviewed_at = timezone.now()
+    revision.endorsed_at = timezone.now()
+    revision.save(
+        update_fields=[
+            "profile_data_snapshot",
+            "public_summary_snapshot",
+            "state",
+            "is_public_current",
+            "reviewed_by",
+            "endorsed_by",
+            "reviewed_at",
+            "endorsed_at",
+            "updated_at",
+        ]
+    )
+    return project
+
+
 class ProjectPermission(permissions.BasePermission):
     def has_permission(self, request, view):
         return bool(request.user and request.user.is_authenticated)
@@ -1311,6 +1516,10 @@ class ProjectPermission(permissions.BasePermission):
         if obj.created_by_id == request.user.id:
             return True
         if role in ("staff", "employee") and getattr(obj, "status", "") == "planning":
+            user_agency = (getattr(request.user, "agency", "") or "").strip().lower()
+            project_agency = (getattr(obj, "agency", "") or "").strip().lower()
+            return bool(user_agency and user_agency == project_agency)
+        if role in ("staff", "employee") and getattr(view, "action", "") == "start_update":
             user_agency = (getattr(request.user, "agency", "") or "").strip().lower()
             project_agency = (getattr(obj, "agency", "") or "").strip().lower()
             return bool(user_agency and user_agency == project_agency)
@@ -1470,6 +1679,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             pass
         project.profile_data = profile_data
         project.save(update_fields=list(dict.fromkeys(update_fields)))
+        if review_state == "endorsed":
+            _ensure_public_revision(project, request.user)
         details = {
             "status": project.status,
             "review_status": review_state,
@@ -1699,6 +1910,11 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
         if not state["is_open"]:
             raise PermissionDenied(state["message"])
 
+    def _ensure_progress_update_open(self):
+        state = _resolve_progress_update_window_state()
+        if not state["is_open"]:
+            raise PermissionDenied(state["message"])
+
     def _ensure_mutable_project(self, project):
         if project.status != "planning":
             raise PermissionDenied("Submitted/validated projects are view-only for contributors.")
@@ -1824,6 +2040,233 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
         self._ensure_mutable_project(self.get_object())
         return super().submit(request, pk=pk)
 
+    @action(detail=True, methods=["post"], url_path="start-update")
+    def start_update(self, request, pk=None):
+        self._ensure_progress_update_open()
+        project = self.get_object()
+        if not project.validated:
+            return Response({"detail": "Only endorsed public projects can receive progress updates."}, status=400)
+        if _is_completed_rdip_project(project):
+            return Response({"detail": "Completed projects are read-only for progress updates."}, status=400)
+
+        active = project.revisions.filter(
+            revision_type="progress_update",
+            state__in=["draft", "submitted", "validator_draft", "reviewed"],
+        ).order_by("-updated_at").first()
+        if active:
+            return Response(ProjectRevisionSerializer(active).data)
+
+        current = _ensure_public_revision(project, request.user)
+        base_profile = deepcopy(current.profile_data_snapshot if current else project.profile_data)
+        if not isinstance(base_profile, dict):
+            base_profile = {}
+        revision = ProjectRevision.objects.create(
+            project=project,
+            revision_number=_next_revision_number(project),
+            revision_type="progress_update",
+            state="draft",
+            profile_data_snapshot=base_profile,
+            public_summary_snapshot=_project_public_summary(base_profile),
+            changed_fields=[],
+            created_by=request.user,
+        )
+        _log_activity(
+            request,
+            "project_revision_created",
+            project,
+            {"revision_id": revision.id, "revision_number": revision.revision_number, "revision_type": "progress_update"},
+        )
+        return Response(ProjectRevisionSerializer(revision).data, status=201)
+
+
+class ProjectRevisionViewSet(viewsets.ModelViewSet):
+    serializer_class = ProjectRevisionSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        role = getattr(self.request.user, "role", "")
+        qs = ProjectRevision.objects.select_related(
+            "project",
+            "created_by",
+            "submitted_by",
+            "reviewed_by",
+            "endorsed_by",
+        ).order_by("-updated_at")
+        if role == "admin":
+            return qs
+        if role == "validator":
+            scope = (self.request.query_params.get("scope") or "queue").strip().lower()
+            if scope == "history":
+                return qs.filter(state__in=["reviewed", "endorsed", "rejected", "superseded"])
+            return qs.filter(state__in=["submitted", "validator_draft", "reviewed"])
+        if role in ("staff", "employee"):
+            agency = (self.request.user.agency or "").strip()
+            if not agency:
+                return qs.none()
+            return qs.filter(project__agency__iexact=agency)
+        return qs.none()
+
+    def _same_agency_or_admin_validator(self, revision):
+        role = getattr(self.request.user, "role", "")
+        if role in ("admin", "validator"):
+            return True
+        user_agency = (self.request.user.agency or "").strip().lower()
+        project_agency = (revision.project.agency or "").strip().lower()
+        return bool(user_agency and user_agency == project_agency)
+
+    def get_object(self):
+        obj = super().get_object()
+        if not self._same_agency_or_admin_validator(obj):
+            raise PermissionDenied("You do not have access to this revision.")
+        return obj
+
+    def _ensure_progress_update_open(self):
+        state = _resolve_progress_update_window_state()
+        if not state["is_open"]:
+            raise PermissionDenied(state["message"])
+
+    def _ensure_contributor_editable(self, revision):
+        if getattr(self.request.user, "role", "") not in ("staff", "employee"):
+            raise PermissionDenied("Only contributors can edit progress update drafts.")
+        if revision.revision_type != "progress_update" or revision.state != "draft":
+            raise PermissionDenied("Only draft progress updates can be edited by contributors.")
+        if _is_completed_rdip_project(revision.project):
+            raise PermissionDenied("Completed projects are read-only for progress updates.")
+        self._ensure_progress_update_open()
+
+    def update(self, request, *args, **kwargs):
+        revision = self.get_object()
+        self._ensure_contributor_editable(revision)
+        profile_data = request.data.get("profile_data") or request.data.get("profile_data_snapshot")
+        if not isinstance(profile_data, dict):
+            return Response({"detail": "profile_data is required."}, status=400)
+        funding_error = _validate_simplified_funding(profile_data)
+        if funding_error:
+            return Response({"detail": funding_error}, status=400)
+        updated_profile, changed_fields, changes = _apply_simplified_meta(
+            profile_data,
+            revision.profile_data_snapshot or {},
+            request.user,
+        )
+        current = _ensure_public_revision(revision.project, request.user)
+        base_profile = current.profile_data_snapshot if current else revision.project.profile_data
+        revision.profile_data_snapshot = updated_profile
+        revision.public_summary_snapshot = _project_public_summary(updated_profile)
+        revision.changed_fields = _safe_revision_changes(base_profile, updated_profile)
+        revision.save(update_fields=["profile_data_snapshot", "public_summary_snapshot", "changed_fields", "updated_at"])
+        _log_activity(
+            request,
+            "project_revision_updated",
+            revision.project,
+            {
+                "revision_id": revision.id,
+                "revision_number": revision.revision_number,
+                "edited_fields_count": len(changed_fields),
+                "changed_fields": changed_fields[:30],
+                "changes": changes[:30],
+            },
+        )
+        return Response(ProjectRevisionSerializer(revision).data)
+
+    def partial_update(self, request, *args, **kwargs):
+        return self.update(request, *args, **kwargs)
+
+    def create(self, request, *args, **kwargs):
+        return Response({"detail": "Start progress updates from a project."}, status=405)
+
+    def destroy(self, request, *args, **kwargs):
+        return Response({"detail": "Revision deletion is disabled for audit safety."}, status=405)
+
+    @action(detail=True, methods=["post"])
+    def submit(self, request, pk=None):
+        revision = self.get_object()
+        self._ensure_contributor_editable(revision)
+        if not revision.changed_fields:
+            current = _ensure_public_revision(revision.project, request.user)
+            base_profile = current.profile_data_snapshot if current else revision.project.profile_data
+            revision.changed_fields = _safe_revision_changes(base_profile, revision.profile_data_snapshot)
+        revision.state = "submitted"
+        revision.submitted_by = request.user
+        revision.submitted_at = timezone.now()
+        revision.save(update_fields=["state", "submitted_by", "submitted_at", "changed_fields", "updated_at"])
+        _log_activity(
+            request,
+            "project_revision_submitted",
+            revision.project,
+            {"revision_id": revision.id, "revision_number": revision.revision_number, "changed_fields_count": len(revision.changed_fields or [])},
+        )
+        return Response(ProjectRevisionSerializer(revision).data)
+
+    @action(detail=True, methods=["post"])
+    def review(self, request, pk=None):
+        if getattr(request.user, "role", "") not in ("validator", "admin"):
+            raise PermissionDenied("Only validator/admin can review progress updates.")
+        revision = self.get_object()
+        action_value = (request.data.get("action") or "").strip().lower()
+        if revision.state == "endorsed" and action_value not in ("endorse", "validate", "approve"):
+            return Response({"detail": "Endorsed revisions are final and cannot be reverted."}, status=400)
+        if revision.state not in ("submitted", "validator_draft", "reviewed", "endorsed"):
+            return Response({"detail": "Only submitted progress updates can be reviewed."}, status=400)
+
+        edited_profile = request.data.get("edited_profile_data")
+        if edited_profile is None:
+            edited_profile = revision.profile_data_snapshot
+        if not isinstance(edited_profile, dict):
+            return Response({"detail": "edited_profile_data must be a JSON object."}, status=400)
+        funding_error = _validate_simplified_funding(edited_profile)
+        if funding_error:
+            return Response({"detail": funding_error}, status=400)
+
+        current = _ensure_public_revision(revision.project, request.user)
+        base_profile = current.profile_data_snapshot if current else revision.project.profile_data
+        revision.profile_data_snapshot = edited_profile
+        revision.public_summary_snapshot = _project_public_summary(edited_profile)
+        revision.changed_fields = _safe_revision_changes(base_profile, edited_profile)
+        revision.public_note = str(request.data.get("public_note") or request.data.get("notes") or "").strip()
+        revision.reviewed_by = request.user
+        revision.reviewed_at = timezone.now()
+
+        if action_value in ("save_draft", "draft"):
+            revision.state = "validator_draft"
+            event = "project_revision_reviewed"
+        elif action_value in ("save_reviewed", "reviewed", "review", "save"):
+            revision.state = "reviewed"
+            event = "project_revision_reviewed"
+        elif action_value in ("endorse", "validate", "approve"):
+            _apply_revision_to_project(revision, request.user)
+            event = "project_revision_endorsed"
+        elif action_value == "reject":
+            revision.state = "rejected"
+            event = "project_revision_rejected"
+        else:
+            return Response({"detail": "action must be save_draft/save_reviewed/endorse/reject"}, status=400)
+
+        if action_value not in ("endorse", "validate", "approve"):
+            revision.save(
+                update_fields=[
+                    "profile_data_snapshot",
+                    "public_summary_snapshot",
+                    "changed_fields",
+                    "public_note",
+                    "reviewed_by",
+                    "reviewed_at",
+                    "state",
+                    "updated_at",
+                ]
+            )
+        _log_activity(
+            request,
+            event,
+            revision.project,
+            {
+                "revision_id": revision.id,
+                "revision_number": revision.revision_number,
+                "revision_state": revision.state,
+                "changed_fields_count": len(revision.changed_fields or []),
+            },
+        )
+        return Response(ProjectRevisionSerializer(revision).data)
+
 
 class ValidatorProjectViewSet(BaseProjectViewSet):
     queryset = Project.objects.all()
@@ -1916,6 +2359,7 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         user.set_unusable_password()
         user.must_change_password = True
         user.save(update_fields=["password", "must_change_password"])
+        _advance_user_session(user)
         token = PasswordSetupToken.objects.create(
             user=user,
             token=get_random_string(48),
@@ -2094,6 +2538,7 @@ class PasswordResetRequestViewSet(viewsets.ModelViewSet):
             user.set_unusable_password()
             user.must_change_password = True
             user.save(update_fields=["password", "must_change_password"])
+            _advance_user_session(user)
             token = PasswordSetupToken.objects.create(
                 user=user,
                 token=get_random_string(48),
@@ -2188,6 +2633,67 @@ class EncodingWindowView(APIView):
             },
         )
         return Response(current)
+
+
+class ProgressUpdateWindowView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        state = _resolve_progress_update_window_state()
+        role = getattr(request.user, "role", "")
+        can_update = state["is_open"] or role in ("admin", "validator")
+        return Response(
+            {
+                **state,
+                "can_encode": can_update,
+                "can_update": can_update,
+            }
+        )
+
+    def post(self, request):
+        if getattr(request.user, "role", "") != "admin":
+            raise PermissionDenied("Only admin can update progress update window.")
+        enabled = bool(request.data.get("enabled", False))
+        start_at = str(request.data.get("start_at") or "").strip()
+        end_at = str(request.data.get("end_at") or "").strip()
+
+        if enabled and (not start_at or not end_at):
+            return Response({"detail": "Start and end date are required for scheduled progress updates."}, status=400)
+        if enabled:
+            try:
+                parsed_start = _parse_iso_datetime(start_at)
+                parsed_end = _parse_iso_datetime(end_at)
+            except (TypeError, ValueError):
+                return Response({"detail": "Progress update schedule dates are invalid."}, status=400)
+            if not parsed_start or not parsed_end or parsed_start >= parsed_end:
+                return Response({"detail": "Start date must be earlier than end date."}, status=400)
+
+        previous = _resolve_progress_update_window_state()
+        payload = {"enabled": enabled, "start_at": start_at, "end_at": end_at}
+        SystemSetting.objects.update_or_create(
+            key=PROGRESS_UPDATE_WINDOW_KEY,
+            defaults={"value": json.dumps(payload)},
+        )
+        current = _resolve_progress_update_window_state()
+        _log_activity(
+            request,
+            "progress_window_updated",
+            details={
+                "previous": {
+                    "enabled": previous.get("enabled"),
+                    "start_at": previous.get("start_at"),
+                    "end_at": previous.get("end_at"),
+                    "status_code": previous.get("status_code"),
+                },
+                "current": {
+                    "enabled": current.get("enabled"),
+                    "start_at": current.get("start_at"),
+                    "end_at": current.get("end_at"),
+                    "status_code": current.get("status_code"),
+                },
+            },
+        )
+        return Response({**current, "can_encode": current["is_open"], "can_update": current["is_open"]})
 
 
 class DashboardView(APIView):
@@ -2410,12 +2916,26 @@ class LoginView(APIView):
         if not user.is_active:
             return Response({"detail": "Account is deactivated. Contact admin."}, status=403)
 
-        refresh = RefreshToken.for_user(user)
-        _log_activity(request, "login", details={"username": user.username})
+        with transaction.atomic():
+            user = User.objects.select_for_update().get(pk=user.pk)
+            previous_session_version, session_version = _advance_user_session(user, request)
+            access_token, refresh_token = _issue_session_tokens(user)
+            UserActivity.objects.create(
+                user=user,
+                role=user.role,
+                event="login",
+                ip_address=_client_ip(request),
+                location_hint=_location_hint(request),
+                details={
+                    "email": user.email,
+                    "session_version": session_version,
+                    "replaced_previous_session": previous_session_version > 0,
+                },
+            )
         return Response(
             {
-                "access": str(refresh.access_token),
-                "refresh": str(refresh),
+                "access": access_token,
+                "refresh": refresh_token,
                 "user": {
                     "id": user.id,
                     "username": user.username,
@@ -2513,6 +3033,7 @@ class SetupPasswordView(APIView):
                 "last_password_change",
             ]
         )
+        _advance_user_session(user)
         token.used_at = timezone.now()
         token.save(update_fields=["used_at"])
         return Response({"status": "ok"})

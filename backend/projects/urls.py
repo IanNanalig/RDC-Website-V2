@@ -10,6 +10,7 @@ router.register(r"admin/projects", views.AdminProjectViewSet, basename="admin-pr
 router.register(r"admin/users", views.AdminUserViewSet, basename="admin-users")
 router.register(r"access-requests", views.AccessRequestViewSet, basename="access-requests")
 router.register(r"password-reset-requests", views.PasswordResetRequestViewSet, basename="password-reset-requests")
+router.register(r"project-revisions", views.ProjectRevisionViewSet, basename="project-revisions")
 
 public_projects_list = views.PublicProjectsViewSet.as_view({"get": "list"})
 public_projects_detail = views.PublicProjectsViewSet.as_view({"get": "retrieve"})
@@ -23,6 +24,7 @@ urlpatterns = [
     path("admin/activity/", views.AdminActivityView.as_view(), name="admin-activity"),
     path("agency/activity/", views.AgencyActivityView.as_view(), name="agency-activity"),
     path("encoding-window/", views.EncodingWindowView.as_view(), name="encoding-window"),
+    path("progress-update-window/", views.ProgressUpdateWindowView.as_view(), name="progress-update-window"),
     path("analytics/", views.AnalyticsView.as_view(), name="analytics"),
     path("contact/", views.PublicContactView.as_view(), name="public-contact"),
     path("public-chat/ask/", views.PublicChatAskView.as_view(), name="public-chat-ask"),

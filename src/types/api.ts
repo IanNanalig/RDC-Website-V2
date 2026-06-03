@@ -12,6 +12,18 @@ export type PublicProject = {
   public_summary_text?: string;
   public_summary_bullets?: string[];
   public_key_facts?: Record<string, unknown>;
+  last_endorsed_update_at?: string | null;
+  endorsed_update_count?: number;
+  public_update_timeline?: Array<{
+    revision_number: number;
+    revision_type: string;
+    endorsed_at?: string | null;
+    status?: string;
+    budget?: string | number;
+    location?: string;
+    changed_fields?: Array<{ field: string; before?: string; after?: string }>;
+    public_note?: string;
+  }>;
   updated_at: string;
 };
 

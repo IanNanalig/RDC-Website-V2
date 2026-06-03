@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
 import PriorityAnalysisPanel from "../../components/portal/PriorityAnalysisPanel";
-import { useEncodingWindow } from "../../hooks/useEncodingWindow";
+import { useEncodingWindow, useProgressUpdateWindow } from "../../hooks/useEncodingWindow";
 
 type FormAction = "save" | "submit" | "draft" | "reviewed" | "endorsed";
 type YesNo = "Yes" | "No";
@@ -467,12 +467,15 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const { id } = useParams();
   const [searchParams] = useSearchParams();
   const isEditMode = Boolean(id);
+  const revisionId = searchParams.get("revision") || "";
+  const isRevisionMode = Boolean(revisionId);
 
   const userRaw = localStorage.getItem("user");
   const user = userRaw ? JSON.parse(userRaw) : null;
   const [form, setForm] = useState<SimplifiedForm>(initialForm);
   const [loading, setLoading] = useState(false);
   const [projectStatus, setProjectStatus] = useState<string>("planning");
+  const [revisionState, setRevisionState] = useState<string>("");
   const [formReady, setFormReady] = useState(false);
   const [localDraftHydrated, setLocalDraftHydrated] = useState(false);
   const [restoreNotice, setRestoreNotice] = useState("");
@@ -489,8 +492,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const isAdmin = user?.role === "admin";
   const isEmployee = user?.role === "employee";
   const encodingWindow = useEncodingWindow(isEmployee);
+  const progressWindow = useProgressUpdateWindow(isEmployee && isRevisionMode);
   const canEncode = encodingWindow.can_encode;
   const encodeMessage = encodingWindow.message;
+  const canWriteCurrentForm = isRevisionMode ? progressWindow.can_encode : canEncode;
+  const currentWindowMessage = isRevisionMode ? progressWindow.message : encodeMessage;
   const isDiffMode = isAdmin && searchParams.get("mode") === "diff";
   const normalizedReviewStatus = validatorReviewStatus === "validated" ? "endorsed" : validatorReviewStatus;
   const formRef = useRef(form);
@@ -503,8 +509,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
       user?.role ||
       "";
     if (!identity) return "";
-    return `simplified_submission_draft_v3_${identity}_${id || "new"}`;
-  }, [user?.username, user?.email, user?.id, user?.role, id]);
+    const recordKey = isRevisionMode ? `revision_${revisionId}` : id || "new";
+    return `simplified_submission_draft_v3_${identity}_${recordKey}`;
+  }, [user?.username, user?.email, user?.id, user?.role, id, isRevisionMode, revisionId]);
 
   const updateFormWithLocalDraft = (updater: (prev: SimplifiedForm) => SimplifiedForm) => {
     setForm((prev) => {
@@ -538,13 +545,27 @@ const SimplifiedProjectSubmission: React.FC = () => {
         return;
       }
       try {
-        const base = isValidator ? "validator" : isAdmin ? "admin" : "employee";
-        const data = await api.get(`${base}/projects/${id}/`);
-        setProjectStatus(data?.status || "planning");
-        if (data?.updated_at) {
-          setServerUpdatedAt(String(data.updated_at));
+        let data: any;
+        let pd: Record<string, unknown>;
+        if (isRevisionMode) {
+          data = await api.get(`project-revisions/${revisionId}/`);
+          const state = String(data?.state || "").toLowerCase();
+          setRevisionState(state);
+          setProjectStatus(state === "draft" ? "planning" : state === "endorsed" ? "completed" : "proposed");
+          if (data?.updated_at) {
+            setServerUpdatedAt(String(data.updated_at));
+          }
+          pd = (data?.profile_data_snapshot || {}) as Record<string, unknown>;
+        } else {
+          const base = isValidator ? "validator" : isAdmin ? "admin" : "employee";
+          data = await api.get(`${base}/projects/${id}/`);
+          setProjectStatus(data?.status || "planning");
+          setRevisionState("");
+          if (data?.updated_at) {
+            setServerUpdatedAt(String(data.updated_at));
+          }
+          pd = (data?.profile_data || {}) as Record<string, unknown>;
         }
-        const pd = (data?.profile_data || {}) as Record<string, unknown>;
         const metaRaw = pd?.simplified_form_meta;
         const editsRaw =
           metaRaw && typeof metaRaw === "object" && (metaRaw as Record<string, unknown>).field_edits;
@@ -592,14 +613,20 @@ const SimplifiedProjectSubmission: React.FC = () => {
           agencyName: String(simplified.agencyName || data?.agency || ""),
           projectActivity: String(simplified.projectActivity || data?.title || data?.name || ""),
         });
-        if (isValidator && validatorReview) {
-          setValidatorNotes(String(validatorReview.review_notes || ""));
-          const status = String(validatorReview.review_status || "").toLowerCase();
-          setValidatorReviewStatus(status === "validated" ? "endorsed" : status);
-        } else if (isValidator) {
-          setValidatorReviewStatus("");
-        }
-        if (isAdmin && isDiffMode && Array.isArray(validatorReview?.edited_fields)) {
+        if (isRevisionMode && (isValidator || isAdmin) && Array.isArray(data?.changed_fields)) {
+          const nextDiffs: Record<string, DiffField> = {};
+          for (const raw of data.changed_fields as Array<Record<string, unknown>>) {
+            const rawField = String(raw?.field || "");
+            if (isSystemManagedDiffPath(rawField)) continue;
+            const key = normalizeSimplifiedDiffPath(rawField);
+            if (!key) continue;
+            nextDiffs[key] = {
+              before: stringifyDiffValue(raw?.before),
+              after: stringifyDiffValue(raw?.after),
+            };
+          }
+          setDiffMap(nextDiffs);
+        } else if (isAdmin && isDiffMode && Array.isArray(validatorReview?.edited_fields)) {
           const nextDiffs: Record<string, DiffField> = {};
           const contributorSimplified = (contributorSnapshot.simplified_form || contributorSnapshot) as Record<string, unknown>;
           const workingSimplified = (workingCopy.simplified_form || workingCopy) as Record<string, unknown>;
@@ -625,6 +652,17 @@ const SimplifiedProjectSubmission: React.FC = () => {
         } else {
           setDiffMap({});
         }
+        if (isRevisionMode && isValidator) {
+          const status = String(data?.state || "").toLowerCase();
+          setValidatorReviewStatus(status === "validator_draft" ? "draft" : status);
+          setValidatorNotes(String(data?.public_note || ""));
+        } else if (isValidator && validatorReview) {
+          setValidatorNotes(String(validatorReview.review_notes || ""));
+          const status = String(validatorReview.review_status || "").toLowerCase();
+          setValidatorReviewStatus(status === "validated" ? "endorsed" : status);
+        } else if (isValidator) {
+          setValidatorReviewStatus("");
+        }
       } catch (error) {
         console.error("Failed to load simplified project:", error);
       } finally {
@@ -632,7 +670,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       }
     };
     loadExisting();
-  }, [id, isEditMode, navigate, isValidator, isAdmin, isDiffMode]);
+  }, [id, isEditMode, navigate, isValidator, isAdmin, isDiffMode, isRevisionMode, revisionId]);
 
   useEffect(() => {
     formRef.current = form;
@@ -841,8 +879,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
   const isReadOnly =
     isAdmin ||
-    (isEmployee && !canEncode) ||
-    (isEmployee && isEditMode && projectStatus !== "planning") ||
+    (isEmployee && !canWriteCurrentForm) ||
+    (isEmployee && isRevisionMode && revisionState !== "draft") ||
+    (isEmployee && isEditMode && !isRevisionMode && projectStatus !== "planning") ||
     (isValidator && normalizedReviewStatus === "endorsed");
   const diffOf = (field: string) => diffMap[field];
   const editMetaOf = (field: string) => fieldEditMeta[field];
@@ -860,7 +899,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const save = async (e: React.FormEvent, action: FormAction) => {
     e.preventDefault();
     if (isReadOnly) {
-      alert(isAdmin ? "Admin form view is read-only." : encodeMessage || "Encoding is closed. This form is view-only.");
+      alert(isAdmin ? "Admin form view is read-only." : currentWindowMessage || "This form is view-only.");
       return;
     }
     if (isValidator && !id) {
@@ -936,16 +975,22 @@ const SimplifiedProjectSubmission: React.FC = () => {
             return;
           }
         }
-        const response = await api.post(`validator/projects/${id}/validate/`, {
+        const response = await api.post(
+          isRevisionMode && revisionId
+            ? `project-revisions/${revisionId}/review/`
+            : `validator/projects/${id}/validate/`,
+          {
           action: validatorAction,
           notes: validatorNotes,
+          public_note: validatorNotes,
           edited_profile_data: normalizedProfileData,
-        });
+          },
+        );
         localStorage.setItem("projects_last_update", Date.now().toString());
         if (response?.warning) {
           alert(response.warning);
         }
-        const nextStatus = String(response?.review_status || "");
+        const nextStatus = String(response?.review_status || response?.state || "");
         if (nextStatus) setValidatorReviewStatus(nextStatus);
         alert(
           action === "draft"
@@ -955,6 +1000,22 @@ const SimplifiedProjectSubmission: React.FC = () => {
             : "Project endorsed.",
         );
         navigate("/validator/projects");
+        return;
+      }
+
+      if (isRevisionMode && revisionId) {
+        await api.put(`project-revisions/${revisionId}/`, {
+          profile_data: normalizedProfileData,
+        });
+        if (action === "submit") {
+          await api.post(`project-revisions/${revisionId}/submit/`, {});
+        }
+        if (draftStorageKey) {
+          localStorage.removeItem(draftStorageKey);
+        }
+        localStorage.setItem("projects_last_update", Date.now().toString());
+        alert(action === "save" ? "Progress update draft saved." : "Progress update sent for validation.");
+        navigate("/employee/projects");
         return;
       }
 
@@ -1021,20 +1082,32 @@ const SimplifiedProjectSubmission: React.FC = () => {
     <PortalLayout
       title={
         isValidator
-          ? "Validator Simplified Review Form"
+          ? isRevisionMode
+            ? "Validator Progress Update Review"
+            : "Validator Simplified Review Form"
           : isAdmin
-          ? "Admin Simplified Form View"
+          ? isRevisionMode
+            ? "Admin Progress Update View"
+            : "Admin Simplified Form View"
           : isEditMode
-          ? "Simplified RDIP Submission Editor"
+          ? isRevisionMode
+            ? "Project Progress Update Editor"
+            : "Simplified RDIP Submission Editor"
           : "New Simplified RDIP Submission"
       }
       subtitle={
         isValidator
-          ? "Edit reviewer working copy without changing contributor original"
+          ? isRevisionMode
+            ? "Review proposed progress changes before they affect the public dashboard"
+            : "Edit reviewer working copy without changing contributor original"
           : isAdmin
           ? isDiffMode
             ? "Read-only validator diff view with original contributor values"
+            : isRevisionMode
+            ? "Read-only proposed progress update snapshot"
             : "Read-only contributor submission view"
+          : isRevisionMode
+          ? "Update this endorsed project for validator review"
           : "RDIP 2023-2028 list of projects format (data-type aligned)"
       }
       role={(user.role || "employee") as "admin" | "validator" | "employee"}
@@ -1045,12 +1118,17 @@ const SimplifiedProjectSubmission: React.FC = () => {
         </>
       }
     >
-      {!canEncode && (
+      {isEmployee && !canWriteCurrentForm && (
         <div className="portal-card p-3 mb-3 border-amber-200 bg-amber-50 text-amber-800">
-          {encodeMessage || "Encoding is currently closed by admin."}
+          {currentWindowMessage || "This workflow is currently closed by admin."}
         </div>
       )}
-      {isEditMode && isEmployee && projectStatus !== "planning" && (
+      {isRevisionMode && isEmployee && revisionState !== "draft" && (
+        <div className="portal-card p-3 mb-3 border-blue-200 bg-blue-50 text-blue-800">
+          This progress update has already been submitted and is now view-only for contributors.
+        </div>
+      )}
+      {isEditMode && !isRevisionMode && isEmployee && projectStatus !== "planning" && (
         <div className="portal-card p-3 mb-3 border-blue-200 bg-blue-50 text-blue-800">
           This submission is already sent and is now view-only for contributors.
         </div>
@@ -1313,10 +1391,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
               ) : (
                 <>
                   <button type="button" onClick={(e) => save(e as unknown as React.FormEvent, "save")} className="portal-btn portal-btn-ghost" disabled={loading || isReadOnly || rangeTooLarge}>
-                    {loading ? "Saving..." : "Save Draft"}
+                    {loading ? "Saving..." : isRevisionMode ? "Save Progress Draft" : "Save Draft"}
                   </button>
                   <button type="submit" className="portal-btn portal-btn-primary" disabled={loading || isReadOnly || rangeTooLarge}>
-                    {loading ? "Submitting..." : "Submit for Validation"}
+                    {loading ? "Submitting..." : isRevisionMode ? "Submit Progress Update" : "Submit for Validation"}
                   </button>
                 </>
               )}

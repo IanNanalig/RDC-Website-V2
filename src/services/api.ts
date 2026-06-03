@@ -2,6 +2,10 @@ import { API_BASE_URL } from "../config/api";
 
 const ACCESS_TOKEN_KEY = "accessToken";
 const REFRESH_TOKEN_KEY = "refreshToken";
+const SESSION_MESSAGE_KEY = "sessionMessage";
+const DEFAULT_SESSION_EXPIRED_MESSAGE = "Session expired. Please login again.";
+const SESSION_REPLACED_MESSAGE =
+  "Your account was signed in from another browser or device. Please login again.";
 
 function getToken() {
   return localStorage.getItem(ACCESS_TOKEN_KEY) || null;
@@ -15,12 +19,15 @@ function setAccessToken(token: string) {
   localStorage.setItem(ACCESS_TOKEN_KEY, token);
 }
 
-function clearAuthStorage() {
+function clearAuthStorage(message?: string) {
   localStorage.removeItem(ACCESS_TOKEN_KEY);
   localStorage.removeItem(REFRESH_TOKEN_KEY);
   localStorage.removeItem("user");
   localStorage.removeItem("isLoggedIn");
   localStorage.removeItem("username");
+  if (message) {
+    localStorage.setItem(SESSION_MESSAGE_KEY, message);
+  }
 }
 
 function normalizePath(path: string) {
@@ -62,6 +69,20 @@ function headersToRecord(headers?: HeadersInit): Record<string, string> {
 }
 
 let refreshInFlight: Promise<string | null> | null = null;
+let lastAuthFailureMessage = "";
+
+async function errorMessageFromResponse(res: Response) {
+  try {
+    const data = await res.clone().json();
+    const detail = String(data?.detail || "");
+    if (detail.toLowerCase().includes("another browser") || detail.toLowerCase().includes("another device")) {
+      return SESSION_REPLACED_MESSAGE;
+    }
+    return detail || DEFAULT_SESSION_EXPIRED_MESSAGE;
+  } catch {
+    return DEFAULT_SESSION_EXPIRED_MESSAGE;
+  }
+}
 
 async function refreshAccessToken() {
   if (refreshInFlight) {
@@ -82,6 +103,7 @@ async function refreshAccessToken() {
       });
 
       if (!res.ok) {
+        lastAuthFailureMessage = await errorMessageFromResponse(res);
         return null;
       }
 
@@ -133,14 +155,17 @@ async function request(path: string, options: RequestInit = {}, hasRetried = fal
   });
 
   if (res.status === 401 && !isPublicRequest(normalizedPath, method) && !hasRetried) {
+    const unauthorizedMessage = await errorMessageFromResponse(res);
     const refreshedAccess = await refreshAccessToken();
     if (refreshedAccess) {
       return request(normalizedPath, options, true);
     }
 
-    clearAuthStorage();
+    const message = lastAuthFailureMessage || unauthorizedMessage || DEFAULT_SESSION_EXPIRED_MESSAGE;
+    lastAuthFailureMessage = "";
+    clearAuthStorage(message);
     redirectToLoginIfNeeded();
-    throw new Error("Session expired. Please login again.");
+    throw new Error(message);
   }
 
   if (!res.ok) {

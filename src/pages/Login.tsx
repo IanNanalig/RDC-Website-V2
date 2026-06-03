@@ -8,7 +8,13 @@ const Login: React.FC = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(() => {
+    const message = localStorage.getItem("sessionMessage") || "";
+    if (message) {
+      localStorage.removeItem("sessionMessage");
+    }
+    return message;
+  });
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();

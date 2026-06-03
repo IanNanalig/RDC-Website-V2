@@ -1034,6 +1034,72 @@ const Projects: React.FC = () => {
                         </div>
                       )}
 
+                    <div className="border rounded-lg p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">
+                            Approved Update Timeline
+                          </p>
+                          <p className="text-xs text-slate-500 mt-1">
+                            Only validator-endorsed updates are shown publicly.
+                          </p>
+                        </div>
+                        <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700">
+                          {detailProject.endorsed_update_count || 0} approved update(s)
+                        </span>
+                      </div>
+                      {detailProject.public_update_timeline?.length ? (
+                        <div className="mt-4 space-y-3">
+                          {detailProject.public_update_timeline.map((item) => (
+                            <div
+                              key={`${item.revision_number}-${item.endorsed_at || ""}`}
+                              className="border-l-4 border-emerald-500 bg-emerald-50/40 pl-3 py-2"
+                            >
+                              <div className="flex flex-wrap items-center gap-2 text-sm">
+                                <span className="font-semibold text-slate-900">
+                                  Version {item.revision_number}
+                                </span>
+                                <span className="text-slate-500">
+                                  {item.revision_type === "progress_update"
+                                    ? "Progress Update"
+                                    : "Initial Endorsement"}
+                                </span>
+                                <span className="text-slate-500">
+                                  {item.endorsed_at
+                                    ? new Date(item.endorsed_at).toLocaleString()
+                                    : "Date unavailable"}
+                                </span>
+                              </div>
+                              <div className="mt-2 grid sm:grid-cols-3 gap-2 text-xs text-slate-700">
+                                {item.status ? <p><strong>Status:</strong> {item.status}</p> : null}
+                                {item.budget !== undefined && item.budget !== "" ? (
+                                  <p><strong>Funding:</strong> {String(item.budget)}</p>
+                                ) : null}
+                                {item.location ? (
+                                  <p className="sm:col-span-3"><strong>Location:</strong> {item.location}</p>
+                                ) : null}
+                              </div>
+                              {item.public_note ? (
+                                <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap break-words">
+                                  {item.public_note}
+                                </p>
+                              ) : null}
+                              {item.changed_fields?.length ? (
+                                <p className="mt-2 text-xs text-slate-500">
+                                  Changed fields: {item.changed_fields.slice(0, 5).map((f) => f.field).join(", ")}
+                                  {item.changed_fields.length > 5 ? ` +${item.changed_fields.length - 5} more` : ""}
+                                </p>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-3 text-sm text-slate-500">
+                          No endorsed progress updates have been recorded yet.
+                        </p>
+                      )}
+                    </div>
+
                     {Array.isArray(detailProject.public_summary_bullets) &&
                       detailProject.public_summary_bullets.length > 0 && (
                         <div className="border rounded-lg p-4">

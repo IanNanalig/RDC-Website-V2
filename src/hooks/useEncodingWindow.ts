@@ -39,7 +39,7 @@ const normalizeState = (raw: Partial<EncodingWindowState> | null | undefined): E
   server_now: String(raw?.server_now || ""),
 });
 
-export const useEncodingWindow = (shouldLoad = true) => {
+const usePortalWindow = (endpoint: string, shouldLoad = true) => {
   const [state, setState] = useState<EncodingWindowState>(shouldLoad ? CLOSED_STATE : BYPASS_STATE);
   const [loading, setLoading] = useState(shouldLoad);
 
@@ -50,15 +50,15 @@ export const useEncodingWindow = (shouldLoad = true) => {
       return;
     }
     try {
-      const data = await api.get("encoding-window/");
+      const data = await api.get(endpoint);
       setState(normalizeState(data));
     } catch (error) {
-      console.error("Failed to load encoding window:", error);
+      console.error(`Failed to load ${endpoint}:`, error);
       setState(CLOSED_STATE);
     } finally {
       setLoading(false);
     }
-  }, [shouldLoad]);
+  }, [endpoint, shouldLoad]);
 
   useEffect(() => {
     refresh();
@@ -89,5 +89,10 @@ export const useEncodingWindow = (shouldLoad = true) => {
     refresh,
   };
 };
+
+export const useEncodingWindow = (shouldLoad = true) => usePortalWindow("encoding-window/", shouldLoad);
+
+export const useProgressUpdateWindow = (shouldLoad = true) =>
+  usePortalWindow("progress-update-window/", shouldLoad);
 
 export default useEncodingWindow;

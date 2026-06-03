@@ -8,6 +8,7 @@ from .models import (
     ProjectComment,
     ProjectPriorityAnalysis,
     ProjectPriorityConfirmation,
+    ProjectRevision,
     User,
     UserActivity,
 )
@@ -368,6 +369,59 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
         return ProjectPriorityConfirmationSerializer(confirmation).data
 
 
+class ProjectRevisionSerializer(serializers.ModelSerializer):
+    project_title = serializers.CharField(source="project.title", read_only=True)
+    project_agency = serializers.CharField(source="project.agency", read_only=True)
+    created_by_name = serializers.SerializerMethodField()
+    submitted_by_name = serializers.SerializerMethodField()
+    reviewed_by_name = serializers.SerializerMethodField()
+    endorsed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProjectRevision
+        fields = [
+            "id",
+            "project",
+            "project_title",
+            "project_agency",
+            "revision_number",
+            "revision_type",
+            "state",
+            "profile_data_snapshot",
+            "public_summary_snapshot",
+            "changed_fields",
+            "public_note",
+            "is_public_current",
+            "created_by_name",
+            "submitted_by_name",
+            "reviewed_by_name",
+            "endorsed_by_name",
+            "created_at",
+            "updated_at",
+            "submitted_at",
+            "reviewed_at",
+            "endorsed_at",
+        ]
+        read_only_fields = fields
+
+    def _name(self, user):
+        if not user:
+            return ""
+        return user.full_name.strip() or user.get_full_name() or user.username
+
+    def get_created_by_name(self, obj):
+        return self._name(obj.created_by)
+
+    def get_submitted_by_name(self, obj):
+        return self._name(obj.submitted_by)
+
+    def get_reviewed_by_name(self, obj):
+        return self._name(obj.reviewed_by)
+
+    def get_endorsed_by_name(self, obj):
+        return self._name(obj.endorsed_by)
+
+
 class PublicProjectSerializer(serializers.ModelSerializer):
     # Public-safe projection for the public website dashboard.
     title = serializers.CharField(source="name", read_only=True)
@@ -381,6 +435,9 @@ class PublicProjectSerializer(serializers.ModelSerializer):
     public_summary_text = serializers.SerializerMethodField()
     public_summary_bullets = serializers.SerializerMethodField()
     public_key_facts = serializers.SerializerMethodField()
+    last_endorsed_update_at = serializers.SerializerMethodField()
+    endorsed_update_count = serializers.SerializerMethodField()
+    public_update_timeline = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
@@ -398,6 +455,9 @@ class PublicProjectSerializer(serializers.ModelSerializer):
             "public_summary_text",
             "public_summary_bullets",
             "public_key_facts",
+            "last_endorsed_update_at",
+            "endorsed_update_count",
+            "public_update_timeline",
             "updated_at",
         ]
         read_only_fields = fields
@@ -498,6 +558,46 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         if isinstance(raw, dict):
             return raw
         return {}
+
+    def _endorsed_revisions(self, obj):
+        try:
+            return list(
+                obj.revisions.filter(state="endorsed").order_by("-endorsed_at", "-revision_number")
+            )
+        except Exception:
+            return []
+
+    def get_last_endorsed_update_at(self, obj):
+        revisions = self._endorsed_revisions(obj)
+        if revisions:
+            value = revisions[0].endorsed_at or revisions[0].updated_at
+            return value.isoformat() if value else None
+        return obj.updated_at.isoformat() if getattr(obj, "validated", False) and obj.updated_at else None
+
+    def get_endorsed_update_count(self, obj):
+        revisions = self._endorsed_revisions(obj)
+        if revisions:
+            return len(revisions)
+        return 1 if getattr(obj, "validated", False) else 0
+
+    def get_public_update_timeline(self, obj):
+        timeline = []
+        for revision in self._endorsed_revisions(obj):
+            summary = revision.public_summary_snapshot if isinstance(revision.public_summary_snapshot, dict) else {}
+            key_facts = summary.get("key_facts") if isinstance(summary.get("key_facts"), dict) else {}
+            timeline.append(
+                {
+                    "revision_number": revision.revision_number,
+                    "revision_type": revision.revision_type,
+                    "endorsed_at": revision.endorsed_at.isoformat() if revision.endorsed_at else None,
+                    "status": key_facts.get("status", ""),
+                    "budget": key_facts.get("funding_requirement_total", ""),
+                    "location": key_facts.get("location", ""),
+                    "changed_fields": revision.changed_fields if isinstance(revision.changed_fields, list) else [],
+                    "public_note": revision.public_note,
+                }
+            )
+        return timeline
 
 
 class AccessRequestSerializer(serializers.ModelSerializer):

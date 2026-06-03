@@ -87,6 +87,12 @@ const UserManagement = () => {
     end_at: "",
   });
   const [windowState, setWindowState] = useState<EncodingWindowState | null>(null);
+  const [progressWindowForm, setProgressWindowForm] = useState({
+    enabled: false,
+    start_at: "",
+    end_at: "",
+  });
+  const [progressWindowState, setProgressWindowState] = useState<EncodingWindowState | null>(null);
   const [activityFilters, setActivityFilters] = useState({
     role: "",
     event: "",
@@ -129,6 +135,13 @@ const UserManagement = () => {
     priority_analysis_confirmed: "Priority Analysis Confirmed",
     priority_analysis_overridden: "Priority Analysis Overridden",
     encoding_window_updated: "Encoding Window Updated",
+    progress_window_updated: "Progress Update Window Updated",
+    project_revision_created: "Project Revision Created",
+    project_revision_updated: "Project Revision Updated",
+    project_revision_submitted: "Project Revision Submitted",
+    project_revision_reviewed: "Project Revision Reviewed",
+    project_revision_endorsed: "Project Revision Endorsed",
+    project_revision_rejected: "Project Revision Rejected",
   };
 
   const eventSeverity: Record<string, "info" | "warn" | "error"> = {
@@ -153,6 +166,13 @@ const UserManagement = () => {
     priority_analysis_confirmed: "info",
     priority_analysis_overridden: "warn",
     encoding_window_updated: "info",
+    progress_window_updated: "info",
+    project_revision_created: "info",
+    project_revision_updated: "info",
+    project_revision_submitted: "info",
+    project_revision_reviewed: "info",
+    project_revision_endorsed: "info",
+    project_revision_rejected: "warn",
   };
 
   const severityClass = (event: string) => {
@@ -186,6 +206,9 @@ const UserManagement = () => {
     new_start_at: "New Start",
     new_end_at: "New End",
     new_status: "New State",
+    revision_number: "Revision",
+    revision_state: "Revision State",
+    revision_type: "Revision Type",
   };
 
   const formatDetailLabel = (key: string) => {
@@ -299,11 +322,12 @@ const UserManagement = () => {
   const load = async () => {
     setLoading(true);
     try {
-      const [usersRes, reqRes, resetRes, winRes] = await Promise.all([
+      const [usersRes, reqRes, resetRes, winRes, progressWinRes] = await Promise.all([
         api.get("admin/users/"),
         api.get("access-requests/"),
         api.get("password-reset-requests/"),
         api.get("encoding-window/"),
+        api.get("progress-update-window/"),
       ]);
       setUsers(Array.isArray(usersRes) ? usersRes : []);
       setRequests(Array.isArray(reqRes) ? reqRes : []);
@@ -314,6 +338,12 @@ const UserManagement = () => {
         end_at: winRes?.end_at || "",
       });
       setWindowState(winRes || null);
+      setProgressWindowForm({
+        enabled: Boolean(progressWinRes?.enabled),
+        start_at: progressWinRes?.start_at || "",
+        end_at: progressWinRes?.end_at || "",
+      });
+      setProgressWindowState(progressWinRes || null);
     } catch (error) {
       console.error(error);
       setUsers([]);
@@ -485,12 +515,48 @@ const UserManagement = () => {
     }
   };
 
+  const saveProgressWindow = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setNotice("");
+    if (progressWindowForm.enabled && (!progressWindowForm.start_at || !progressWindowForm.end_at)) {
+      setNotice("Start and end date are required for a scheduled progress update window.");
+      return;
+    }
+    if (
+      progressWindowForm.enabled &&
+      new Date(progressWindowForm.start_at).getTime() >= new Date(progressWindowForm.end_at).getTime()
+    ) {
+      setNotice("Progress update start date must be earlier than end date.");
+      return;
+    }
+    try {
+      const state = await api.post("progress-update-window/", progressWindowForm);
+      setProgressWindowState(state || null);
+      setProgressWindowForm({
+        enabled: Boolean(state?.enabled),
+        start_at: state?.start_at || "",
+        end_at: state?.end_at || "",
+      });
+      setNotice("Progress update schedule updated.");
+      await loadActivity();
+    } catch (error) {
+      setNotice(getErrorDetail(error, "Failed to update progress update schedule."));
+    }
+  };
+
   const scheduleIncomplete = windowForm.enabled && (!windowForm.start_at || !windowForm.end_at);
   const scheduleRangeInvalid =
     windowForm.enabled &&
     Boolean(windowForm.start_at) &&
     Boolean(windowForm.end_at) &&
     new Date(windowForm.start_at).getTime() >= new Date(windowForm.end_at).getTime();
+  const progressScheduleIncomplete =
+    progressWindowForm.enabled && (!progressWindowForm.start_at || !progressWindowForm.end_at);
+  const progressScheduleRangeInvalid =
+    progressWindowForm.enabled &&
+    Boolean(progressWindowForm.start_at) &&
+    Boolean(progressWindowForm.end_at) &&
+    new Date(progressWindowForm.start_at).getTime() >= new Date(progressWindowForm.end_at).getTime();
   const formatWindowDate = (value?: string) =>
     value
       ? new Date(value).toLocaleString("en-PH", {
@@ -622,7 +688,8 @@ const UserManagement = () => {
       )}
 
       {activeTab === "encoding-window" && (
-        <div className="portal-card">
+        <>
+        <div className="portal-card mb-4">
           <div className="portal-card-header"><h2 className="text-lg font-semibold">Contributor Encoding Window</h2></div>
           <form onSubmit={saveEncodingWindow} className="portal-card-body space-y-4">
             <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4">
@@ -690,6 +757,75 @@ const UserManagement = () => {
             </button>
           </form>
         </div>
+        <div className="portal-card">
+          <div className="portal-card-header"><h2 className="text-lg font-semibold">Project Progress Update Window</h2></div>
+          <form onSubmit={saveProgressWindow} className="portal-card-body space-y-4">
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Current Progress Update Access</p>
+                  <p className="mt-1 text-lg font-semibold text-slate-900">
+                    {windowStatusLabel[progressWindowState?.status_code || "schedule_not_configured"] || "Unavailable"}
+                  </p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {progressWindowState?.message || "Contributor progress updates are closed until an administrator sets a schedule."}
+                  </p>
+                </div>
+                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                  progressWindowState?.is_open ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+                }`}>
+                  {progressWindowState?.is_open ? "Updates Open" : "View-Only Mode"}
+                </span>
+              </div>
+              <div className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
+                <div><p className="text-xs text-slate-500">Timezone</p><p className="font-medium">Philippine Standard Time (UTC+8)</p></div>
+                <div><p className="text-xs text-slate-500">Opening Date</p><p className="font-medium">{formatWindowDate(progressWindowState?.start_at)}</p></div>
+                <div><p className="text-xs text-slate-500">Closing Deadline</p><p className="font-medium">{formatWindowDate(progressWindowState?.end_at)}</p></div>
+              </div>
+            </div>
+
+            <label className="block">
+              <span className="text-sm text-slate-700">Progress Update Mode</span>
+              <select
+                className="mt-1 w-full border rounded-xl px-3 py-2"
+                value={progressWindowForm.enabled ? "open" : "closed"}
+                onChange={(e) =>
+                  setProgressWindowForm((previous) =>
+                    e.target.value === "open"
+                      ? { ...previous, enabled: true }
+                      : { enabled: false, start_at: "", end_at: "" },
+                  )
+                }
+              >
+                <option value="open">Open by schedule</option>
+                <option value="closed">Closed (view-only)</option>
+              </select>
+            </label>
+
+            {progressWindowForm.enabled && (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="text-sm text-slate-700">Opening Date and Time *</span>
+                  <input type="datetime-local" required className="mt-1 w-full border rounded-xl px-3 py-2" value={progressWindowForm.start_at ? progressWindowForm.start_at.slice(0, 16) : ""} onChange={(e) => setProgressWindowForm((p) => ({ ...p, start_at: e.target.value }))} />
+                </label>
+                <label className="block">
+                  <span className="text-sm text-slate-700">Closing Deadline *</span>
+                  <input type="datetime-local" required className="mt-1 w-full border rounded-xl px-3 py-2" value={progressWindowForm.end_at ? progressWindowForm.end_at.slice(0, 16) : ""} onChange={(e) => setProgressWindowForm((p) => ({ ...p, end_at: e.target.value }))} />
+                </label>
+              </div>
+            )}
+
+            {(progressScheduleIncomplete || progressScheduleRangeInvalid) && (
+              <p className="text-sm text-rose-600">
+                {progressScheduleIncomplete ? "Set both opening and closing dates." : "Opening date must be earlier than the closing deadline."}
+              </p>
+            )}
+            <button type="submit" disabled={progressScheduleIncomplete || progressScheduleRangeInvalid} className="portal-btn portal-btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed">
+              Save Progress Update Window
+            </button>
+          </form>
+        </div>
+        </>
       )}
 
       {activeTab === "operations" && (

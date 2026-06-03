@@ -29,6 +29,10 @@ class User(AbstractUser):
     created_at = models.DateTimeField(default=timezone.now)
     last_password_change = models.DateTimeField(null=True, blank=True)
     must_change_password = models.BooleanField(default=True)
+    session_version = models.PositiveIntegerField(default=0)
+    last_session_at = models.DateTimeField(null=True, blank=True)
+    last_session_ip = models.CharField(max_length=64, blank=True, default="")
+    last_session_user_agent = models.TextField(blank=True, default="")
 
     def __str__(self):
         return f"{self.username} ({self.role})"
@@ -85,6 +89,61 @@ class Project(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class ProjectRevision(models.Model):
+    REVISION_TYPE_CHOICES = [
+        ("initial_submission", "Initial Submission"),
+        ("progress_update", "Progress Update"),
+    ]
+    STATE_CHOICES = [
+        ("draft", "Draft"),
+        ("submitted", "Submitted"),
+        ("validator_draft", "Validator Draft"),
+        ("reviewed", "Reviewed"),
+        ("endorsed", "Endorsed"),
+        ("rejected", "Rejected"),
+        ("superseded", "Superseded"),
+    ]
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="revisions")
+    revision_number = models.PositiveIntegerField()
+    revision_type = models.CharField(max_length=30, choices=REVISION_TYPE_CHOICES)
+    state = models.CharField(max_length=30, choices=STATE_CHOICES, default="draft")
+    profile_data_snapshot = models.JSONField(default=dict, blank=True)
+    public_summary_snapshot = models.JSONField(default=dict, blank=True)
+    changed_fields = models.JSONField(default=list, blank=True)
+    public_note = models.TextField(blank=True)
+    is_public_current = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="created_project_revisions"
+    )
+    submitted_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="submitted_project_revisions"
+    )
+    reviewed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="reviewed_project_revisions"
+    )
+    endorsed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="endorsed_project_revisions"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    endorsed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "revision_number"],
+                name="unique_project_revision_number",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.project_id} v{self.revision_number} {self.state}"
 
 
 class EditRequest(models.Model):
@@ -168,7 +227,15 @@ class UserActivity(models.Model):
         ("priority_analysis_reused", "Priority Analysis Reused"),
         ("priority_analysis_confirmed", "Priority Analysis Confirmed"),
         ("priority_analysis_overridden", "Priority Analysis Overridden"),
+        ("public_summary_overridden", "Public Summary Overridden"),
         ("encoding_window_updated", "Encoding Window Updated"),
+        ("progress_window_updated", "Progress Update Window Updated"),
+        ("project_revision_created", "Project Revision Created"),
+        ("project_revision_updated", "Project Revision Updated"),
+        ("project_revision_submitted", "Project Revision Submitted"),
+        ("project_revision_reviewed", "Project Revision Reviewed"),
+        ("project_revision_endorsed", "Project Revision Endorsed"),
+        ("project_revision_rejected", "Project Revision Rejected"),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="activities")

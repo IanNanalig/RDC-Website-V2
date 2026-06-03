@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
-import { useEncodingWindow } from "../../hooks/useEncodingWindow";
+import { useEncodingWindow, useProgressUpdateWindow } from "../../hooks/useEncodingWindow";
 
 type ApiProject = {
   id: number;
@@ -13,6 +13,12 @@ type ApiProject = {
   completion?: number;
   status?: string;
   updated_at?: string;
+  validated?: boolean;
+  is_revision?: boolean;
+  revision_id?: number;
+  revision_number?: number;
+  revision_state?: string;
+  revision_type?: string;
   submitted_by_name?: string;
   submitted_by?: {
     username?: string;
@@ -20,6 +26,21 @@ type ApiProject = {
     role?: string;
   };
   profile_data?: Record<string, unknown>;
+};
+
+type ProjectRevisionRow = {
+  id: number;
+  project: number;
+  project_title?: string;
+  project_agency?: string;
+  revision_number?: number;
+  revision_type?: string;
+  state?: string;
+  profile_data_snapshot?: Record<string, unknown>;
+  changed_fields?: unknown[];
+  created_by_name?: string;
+  submitted_by_name?: string;
+  updated_at?: string;
 };
 
 const statusLabel = (status?: string) => {
@@ -58,6 +79,15 @@ const getValidatorReview = (p: ApiProject) => {
 };
 
 const reviewStateLabel = (p: ApiProject) => {
+  if (p.is_revision) {
+    const state = String(p.revision_state || "").toLowerCase();
+    if (state === "draft") return "Draft";
+    if (state === "submitted") return "Submitted";
+    if (state === "validator_draft") return "Validator Draft";
+    if (state === "reviewed") return "Reviewed";
+    if (state === "endorsed") return "Endorsed";
+    if (state === "rejected") return "Rejected";
+  }
   const vr = getValidatorReview(p);
   const status = String(vr?.review_status || "").toLowerCase();
   if (status === "draft") return "Draft";
@@ -68,6 +98,13 @@ const reviewStateLabel = (p: ApiProject) => {
 };
 
 const reviewStateBadge = (p: ApiProject) => {
+  if (p.is_revision) {
+    const state = String(p.revision_state || "").toLowerCase();
+    if (state === "draft" || state === "submitted" || state === "validator_draft") return "bg-slate-100 text-slate-700";
+    if (state === "reviewed") return "bg-violet-100 text-violet-700";
+    if (state === "endorsed") return "bg-emerald-100 text-emerald-700";
+    if (state === "rejected") return "bg-rose-100 text-rose-700";
+  }
   const vr = getValidatorReview(p);
   const status = String(vr?.review_status || "").toLowerCase();
   if (status === "draft") return "bg-slate-100 text-slate-700";
@@ -88,8 +125,11 @@ const ProjectsPage: React.FC = () => {
   const user = userData ? JSON.parse(userData) : null;
   const role = user?.role as "admin" | "validator" | "employee" | undefined;
   const encodingWindow = useEncodingWindow(role === "employee");
+  const progressWindow = useProgressUpdateWindow(role === "employee");
   const canEncode = encodingWindow.can_encode;
   const encodeMessage = encodingWindow.message;
+  const canProgressUpdate = progressWindow.can_encode;
+  const progressMessage = progressWindow.message;
 
   const endpoint =
     role === "admin"
@@ -102,7 +142,30 @@ const ProjectsPage: React.FC = () => {
     setLoading(true);
     try {
       const data = await api.get(endpoint);
-      setProjects(Array.isArray(data) ? data : []);
+      let rows: ApiProject[] = Array.isArray(data) ? data : [];
+      if (role === "validator" || role === "admin") {
+        const revisions = await api.get(`project-revisions/${role === "validator" ? "?scope=queue" : ""}`);
+        if (Array.isArray(revisions)) {
+          const revisionRows: ApiProject[] = revisions.map((r: ProjectRevisionRow) => ({
+            id: r.project,
+            revision_id: r.id,
+            revision_number: r.revision_number,
+            revision_state: r.state,
+            revision_type: r.revision_type,
+            is_revision: true,
+            title: `${r.project_title || "Project"} - Progress Update v${r.revision_number || ""}`,
+            name: `${r.project_title || "Project"} - Progress Update v${r.revision_number || ""}`,
+            agency: r.project_agency || "",
+            budget: Number((r.profile_data_snapshot as any)?.public_summary?.key_facts?.funding_requirement_total || 0),
+            status: r.state === "endorsed" ? "completed" : "proposed",
+            updated_at: r.updated_at,
+            submitted_by_name: r.submitted_by_name || r.created_by_name || "Unknown",
+            profile_data: r.profile_data_snapshot || {},
+          }));
+          rows = [...revisionRows, ...rows];
+        }
+      }
+      setProjects(rows);
     } catch (error) {
       console.error("Failed to load projects:", error);
       setProjects([]);
@@ -147,6 +210,35 @@ const ProjectsPage: React.FC = () => {
     await api.post(`admin/projects/${id}/archive/`);
     await loadProjects();
     localStorage.setItem("projects_last_update", Date.now().toString());
+  };
+
+  const formStatus = (p: ApiProject) => {
+    const pd = p.profile_data as Record<string, any> | undefined;
+    const sf = pd?.simplified_form as Record<string, any> | undefined;
+    return String(sf?.status || "").trim();
+  };
+
+  const canStartProgressUpdate = (p: ApiProject) =>
+    role === "employee" &&
+    !p.is_revision &&
+    Boolean(p.validated) &&
+    formStatus(p).toLowerCase() !== "completed";
+
+  const handleStartProgressUpdate = async (p: ApiProject) => {
+    if (!canProgressUpdate) {
+      alert(progressMessage || "Project progress updates are currently closed.");
+      return;
+    }
+    try {
+      const revision = await api.post(`employee/projects/${p.id}/start-update/`, {});
+      if (revision?.id) {
+        navigate(`/employee/projects/${p.id}/edit?revision=${revision.id}`);
+      }
+    } catch (error) {
+      console.error("Failed to start progress update:", error);
+      const detail = error instanceof Error ? error.message : "";
+      alert(detail || "Failed to start progress update.");
+    }
   };
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
@@ -221,7 +313,7 @@ const ProjectsPage: React.FC = () => {
             </thead>
             <tbody>
               {filtered.map((p) => (
-                <tr key={p.id}>
+                <tr key={p.is_revision ? `revision-${p.revision_id}` : `project-${p.id}`}>
                   <td className="max-w-[220px] truncate" title={p.title || p.name || "Untitled"}>{p.title || p.name || "Untitled"}</td>
                   {(role === "admin" || role === "validator" || role === "employee") && (
                     <td className="max-w-[180px] truncate" title={p.submitted_by_name || p.submitted_by?.username || "Unknown"}>
@@ -260,12 +352,27 @@ const ProjectsPage: React.FC = () => {
                         >
                           Submit
                         </button>
+                        {canStartProgressUpdate(p) && (
+                          <button
+                            disabled={!canProgressUpdate}
+                            onClick={() => handleStartProgressUpdate(p)}
+                            className={`whitespace-nowrap ${canProgressUpdate ? "text-emerald-700 hover:underline" : "text-slate-400 cursor-not-allowed"}`}
+                          >
+                            Update
+                          </button>
+                        )}
                       </>
                     )}
                     {role === "validator" && (
                       <>
                         <button
-                          onClick={() => navigate(`/validator/projects/${p.id}/review`)}
+                          onClick={() =>
+                            navigate(
+                              p.is_revision && p.revision_id
+                                ? `/validator/projects/${p.id}/review?revision=${p.revision_id}`
+                                : `/validator/projects/${p.id}/review`,
+                            )
+                          }
                           className="text-blue-600 hover:underline whitespace-nowrap"
                         >
                           Review
@@ -275,7 +382,13 @@ const ProjectsPage: React.FC = () => {
                     {role === "admin" && (
                       <>
                         <button
-                          onClick={() => navigate(`/admin/projects/${p.id}/view`)}
+                          onClick={() =>
+                            navigate(
+                              p.is_revision && p.revision_id
+                                ? `/admin/projects/${p.id}/view?revision=${p.revision_id}`
+                                : `/admin/projects/${p.id}/view`,
+                            )
+                          }
                           className="text-blue-600 hover:underline whitespace-nowrap"
                         >
                           View
