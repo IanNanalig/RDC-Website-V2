@@ -1,69 +1,56 @@
-# React + TypeScript + Vite
+# RDC-NCR Website
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Public RDC-NCR website plus RDC Portal for contributor submissions, validator review, admin controls, and public dashboard reporting.
 
-Currently, two official plugins are available:
+## Repository Structure
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      ...tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      ...tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      ...tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```text
+backend/    Django API, portal workflow, public APIs, migrations, and backend tests
+frontend/   React + TypeScript + Vite public website and portal UI
+scripts/    Maintenance helpers for asset optimization
+docs/       Deployment, database, API, and structure notes
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Local Development
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+### Backend
 
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```powershell
+cd backend
+Copy-Item .env.example .env
+python -m venv venv
+.\venv\Scripts\pip install -r requirements.txt
+.\venv\Scripts\python manage.py migrate
+.\venv\Scripts\python manage.py runserver
 ```
+
+### Frontend
+
+```powershell
+cd frontend
+Copy-Item .env.example .env
+npm ci
+npm run dev
+```
+
+The frontend expects `VITE_API_BASE_URL` to point to the Django API, usually `http://127.0.0.1:8000/api` locally.
+
+## Verification
+
+```powershell
+cd frontend
+npm run build
+npm run lint
+
+cd ..\backend
+.\venv\Scripts\python manage.py check
+.\venv\Scripts\python manage.py test projects
+```
+
+## Deployment Notes
+
+See `docs/deployment.md` for Docker, CI, environment, static files, and production checklist guidance.
+
+## Security Rules
+
+Do not commit real `.env` files, local databases, virtual environments, `node_modules`, build output, or collected static files. Use `.env.example` files for documented configuration only.

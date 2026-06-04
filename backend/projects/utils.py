@@ -2,7 +2,7 @@
 import unicodedata
 
 
-# Canonical NCR LGU keys must match frontend `src/services/ncrCityCenters.ts`.
+# Canonical NCR LGU keys must match frontend `frontend/src/services/ncrCityCenters.ts`.
 NCR_LGU_CANONICAL = {
     "Manila": {"manila", "city of manila", "maynila", "mnl"},
     "Quezon City": {"quezon city", "quezon", "qc", "q.c", "q c"},

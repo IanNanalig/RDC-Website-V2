@@ -2,10 +2,10 @@
 
 # Build frontend
 FROM node:20-alpine as node-build
-WORKDIR /app
-COPY package.json package-lock.json ./
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --silent
-COPY . .
+COPY frontend ./
 RUN npm run build
 
 # Final image
@@ -22,14 +22,12 @@ COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt gunicorn
 
 # Copy backend source
-
-# Copy backend source
 COPY backend ./backend
 COPY backend/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Copy built frontend into backend staticfiles
-COPY --from=node-build /app/dist ./backend/staticfiles
+COPY --from=node-build /app/frontend/dist ./backend/staticfiles
 
 WORKDIR /app/backend
 

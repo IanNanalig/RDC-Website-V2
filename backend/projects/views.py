@@ -64,7 +64,7 @@ PUBLIC_CHAT_MAX_SUGGESTIONS = 6
 PUBLIC_CHAT_MIN_SCORE = 1.0
 PUBLIC_PROJECTS_CACHE_TTL_SECONDS = 3600
 PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL = "public, max-age=0, must-revalidate"
-PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 2
+PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 3
 PUBLIC_PROJECTS_CACHE_VERSION_KEY = "public_projects:version"
 
 TAGALOG_HINTS = {
@@ -3109,22 +3109,55 @@ class AgencyActivityView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        include_meta = (request.query_params.get("include_meta") or "").lower() in {"1", "true", "yes"}
+        limit = 10
+        raw_limit = request.query_params.get("limit")
+        if raw_limit:
+            try:
+                limit = max(1, min(100, int(raw_limit)))
+            except Exception:
+                limit = 10
+
+        offset = 0
+        raw_offset = request.query_params.get("offset")
+        if raw_offset:
+            try:
+                offset = max(0, int(raw_offset))
+            except Exception:
+                offset = 0
+
         agency = (request.user.agency or "").strip()
         if not agency:
+            if include_meta:
+                return Response(
+                    {
+                        "results": [],
+                        "count": 0,
+                        "limit": limit,
+                        "offset": offset,
+                        "has_previous": False,
+                        "has_next": False,
+                    }
+                )
             return Response([])
         project_events = {"project_create", "project_update", "project_submit", "project_comment"}
         qs = UserActivity.objects.select_related("user", "project").filter(
             project__agency__iexact=agency,
             event__in=project_events,
-        )
-        limit = 10
-        raw_limit = request.query_params.get("limit")
-        if raw_limit:
-            try:
-                limit = max(1, min(30, int(raw_limit)))
-            except Exception:
-                limit = 10
-        serializer = UserActivitySerializer(qs[:limit], many=True)
+        ).order_by("-created_at", "-id")
+        total = qs.count()
+        serializer = UserActivitySerializer(qs[offset : offset + limit], many=True)
+        if include_meta:
+            return Response(
+                {
+                    "results": serializer.data,
+                    "count": total,
+                    "limit": limit,
+                    "offset": offset,
+                    "has_previous": offset > 0,
+                    "has_next": offset + limit < total,
+                }
+            )
         return Response(serializer.data)
 
 

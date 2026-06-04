@@ -26,17 +26,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          key: ${{ runner.os }}-node-${{ hashFiles('frontend/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-node-
 
       - name: Install and build frontend
-        working-directory: ./
+        working-directory: ./frontend
         run: |
           npm ci
           npm run build
 
       - name: Run frontend lint
+        working-directory: ./frontend
         run: npm run lint
 
       - name: Setup Python
@@ -58,20 +59,20 @@ jobs:
           python -m pip install -r backend/requirements.txt
 
       - name: Run backend checks, migrations and tests
+        working-directory: ./backend
         env:
           DJANGO_SETTINGS_MODULE: rdc_site.settings
           # CI should provide a secret via repository secrets; fall back to a test-only secret.
-          SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+          SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY || 'ci-insecure-test-key' }}
           DEBUG: "False"
+          ALLOWED_HOSTS: "localhost,127.0.0.1"
         run: |
-          python backend/manage.py migrate --noinput
-          # Run a fast smoke test first to fail early on obvious regressions
-          python backend/manage.py test projects.tests.test_smoke || (echo 'Smoke test failed' && exit 1)
-          # Run full backend test suite
-          python backend/manage.py test --verbosity=2
+          python manage.py migrate --noinput
+          python manage.py test projects --verbosity=2
 
       - name: Collect static files
-        run: python backend/manage.py collectstatic --noinput
+        working-directory: ./backend
+        run: python manage.py collectstatic --noinput
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2

@@ -3,8 +3,8 @@
 
 set -euo pipefail
 
-SRC_DIR=${1:-src/assets/Documents}
-OUT_DIR=${2:-dist/assets/optimized_pdfs}
+SRC_DIR=${1:-frontend/src/assets/Documents}
+OUT_DIR=${2:-frontend/dist/assets/optimized_pdfs}
 mkdir -p "$OUT_DIR"
 
 for f in "$SRC_DIR"/*.pdf; do

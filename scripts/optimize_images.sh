@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-SRC_DIR=${1:-src/assets}
+SRC_DIR=${1:-frontend/src/assets}
 echo "Optimizing images under $SRC_DIR"
 
 # JPG and JPEG

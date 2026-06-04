@@ -10,10 +10,17 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+.vite
 *.local
 .env
 .env.*
 !.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
 
 # Editor directories and files
 .vscode/*
@@ -31,3 +38,12 @@ backend/venv/
 backend/__pycache__/
 backend/**/__pycache__/
 backend/db.sqlite3
+backend/analytics.json
+backend/data.json
+backend/staticfiles/
+*.pyc
+*.pyo
+*.sqlite3
+*.lnk
+sampler_extract.txt
+template_extract.txt

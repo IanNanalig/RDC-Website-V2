@@ -24,17 +24,17 @@ services:
     environment:
       SECRET_KEY: "${SECRET_KEY:-dev-secret}"
       DEBUG: "False"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1,0.0.0.0}"
       POSTGRES_DB: rdc_db
       POSTGRES_USER: rdc
       POSTGRES_PASSWORD: rdc
       POSTGRES_HOST: db
       DJANGO_SETTINGS_MODULE: rdc_site.settings
+      FRONTEND_BASE_URL: "${FRONTEND_BASE_URL:-http://localhost:5173}"
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
-    volumes:
-      - ./backend:/app/backend:ro
 
 volumes:
   db_data:

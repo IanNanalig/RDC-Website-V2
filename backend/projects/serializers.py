@@ -437,6 +437,11 @@ class PublicProjectSerializer(serializers.ModelSerializer):
     public_key_facts = serializers.SerializerMethodField()
     last_endorsed_update_at = serializers.SerializerMethodField()
     endorsed_update_count = serializers.SerializerMethodField()
+    has_public_updates = serializers.SerializerMethodField()
+    public_progress_update_count = serializers.SerializerMethodField()
+    latest_update_date = serializers.SerializerMethodField()
+    latest_update_headline = serializers.SerializerMethodField()
+    latest_update_badges = serializers.SerializerMethodField()
     public_update_timeline = serializers.SerializerMethodField()
 
     class Meta:
@@ -457,6 +462,11 @@ class PublicProjectSerializer(serializers.ModelSerializer):
             "public_key_facts",
             "last_endorsed_update_at",
             "endorsed_update_count",
+            "has_public_updates",
+            "public_progress_update_count",
+            "latest_update_date",
+            "latest_update_headline",
+            "latest_update_badges",
             "public_update_timeline",
             "updated_at",
         ]
@@ -567,6 +577,127 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         except Exception:
             return []
 
+    def _progress_revisions(self, obj):
+        return [r for r in self._endorsed_revisions(obj) if r.revision_type == "progress_update"]
+
+    def _field_label(self, field):
+        raw = str(field or "").strip()
+        if raw.startswith("fundingRequirementByYear."):
+            year = raw.split(".", 1)[1]
+            return f"Funding Requirement {self._year_label(year)}"
+        if raw.startswith("actualFundingByYear."):
+            year = raw.split(".", 1)[1]
+            return f"Actual/Approved Funding {self._year_label(year)}"
+        labels = {
+            "status": "Project Status",
+            "location": "Location Coverage",
+            "sdgSelections": "SDG Tags",
+            "physicalAccomplishment": "Physical Accomplishment",
+            "financialAccomplishment": "Financial Accomplishment",
+            "description": "Project Description",
+            "objective": "Project Objective",
+            "program": "Program",
+            "projectActivity": "Project/Activity",
+            "developmentSector": "Development Sector",
+            "rdpMainChapter": "RDP Main Chapter",
+            "startYear": "Start Year",
+            "endYear": "End Year",
+            "fundingSource": "Funding Source",
+            "remarks": "Remarks",
+        }
+        return labels.get(raw, raw.replace("_", " ").replace(".", " ").strip().title() or "Project Information")
+
+    def _year_label(self, value):
+        return "2022 & Prior" if str(value) == "2022_prior" else str(value)
+
+    def _field_category(self, field):
+        raw = str(field or "")
+        if raw.startswith("fundingRequirementByYear.") or raw.startswith("actualFundingByYear."):
+            return "funding"
+        if raw == "status":
+            return "status"
+        if raw == "location":
+            return "location"
+        if raw == "sdgSelections":
+            return "sdg"
+        if raw in ("physicalAccomplishment", "financialAccomplishment"):
+            return "accomplishment"
+        return "project_info"
+
+    def _format_public_value(self, value):
+        if value is None or value == "":
+            return ""
+        if isinstance(value, list):
+            return ", ".join(str(v) for v in value if str(v).strip())
+        if isinstance(value, dict):
+            return ", ".join(f"{k}: {v}" for k, v in value.items() if str(v).strip())
+        return str(value)
+
+    def _public_changed_fields(self, revision):
+        raw_changes = revision.changed_fields if isinstance(revision.changed_fields, list) else []
+        public_changes = []
+        for change in raw_changes:
+            if not isinstance(change, dict):
+                continue
+            field = str(change.get("field") or "").strip()
+            if not field or field in {"public_summary", "public_summary_override", "validator_review", "contributor_snapshot"}:
+                continue
+            public_changes.append(
+                {
+                    "label": self._field_label(field),
+                    "category": self._field_category(field),
+                    "before": self._format_public_value(change.get("before")),
+                    "after": self._format_public_value(change.get("after")),
+                }
+            )
+        return public_changes
+
+    def _update_badges(self, revision):
+        labels = {
+            "funding": "Funding updated",
+            "status": "Status updated",
+            "location": "Location coverage updated",
+            "sdg": "SDGs updated",
+            "accomplishment": "Accomplishments updated",
+            "project_info": "Project information updated",
+        }
+        seen = []
+        for change in self._public_changed_fields(revision):
+            category = change.get("category")
+            if category in labels and labels[category] not in seen:
+                seen.append(labels[category])
+        return seen[:5]
+
+    def _update_headline(self, revision):
+        note = str(revision.public_note or "").strip()
+        if note:
+            return note if len(note) <= 180 else f"{note[:177].rstrip()}..."
+        badges = self._update_badges(revision)
+        if not badges:
+            return "Approved project progress update recorded."
+        if len(badges) == 1:
+            return f"{badges[0]} for this project."
+        if len(badges) == 2:
+            return f"{badges[0]} and {badges[1].lower()} for this project."
+        return f"{', '.join(badges[:-1])}, and {badges[-1].lower()} for this project."
+
+    def _timeline_entry(self, revision):
+        summary = revision.public_summary_snapshot if isinstance(revision.public_summary_snapshot, dict) else {}
+        key_facts = summary.get("key_facts") if isinstance(summary.get("key_facts"), dict) else {}
+        changed_fields = self._public_changed_fields(revision)
+        return {
+            "revision_number": revision.revision_number,
+            "revision_type": revision.revision_type,
+            "endorsed_at": revision.endorsed_at.isoformat() if revision.endorsed_at else None,
+            "status": key_facts.get("status", ""),
+            "budget": key_facts.get("funding_requirement_total", ""),
+            "location": key_facts.get("location", ""),
+            "changed_fields": changed_fields,
+            "change_badges": self._update_badges(revision),
+            "headline": self._update_headline(revision),
+            "public_note": revision.public_note,
+        }
+
     def get_last_endorsed_update_at(self, obj):
         revisions = self._endorsed_revisions(obj)
         if revisions:
@@ -575,29 +706,31 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         return obj.updated_at.isoformat() if getattr(obj, "validated", False) and obj.updated_at else None
 
     def get_endorsed_update_count(self, obj):
-        revisions = self._endorsed_revisions(obj)
-        if revisions:
-            return len(revisions)
-        return 1 if getattr(obj, "validated", False) else 0
+        return len(self._progress_revisions(obj))
+
+    def get_has_public_updates(self, obj):
+        return len(self._progress_revisions(obj)) > 0
+
+    def get_public_progress_update_count(self, obj):
+        return len(self._progress_revisions(obj))
+
+    def get_latest_update_date(self, obj):
+        revisions = self._progress_revisions(obj)
+        if not revisions:
+            return None
+        value = revisions[0].endorsed_at or revisions[0].updated_at
+        return value.isoformat() if value else None
+
+    def get_latest_update_headline(self, obj):
+        revisions = self._progress_revisions(obj)
+        return self._update_headline(revisions[0]) if revisions else ""
+
+    def get_latest_update_badges(self, obj):
+        revisions = self._progress_revisions(obj)
+        return self._update_badges(revisions[0]) if revisions else []
 
     def get_public_update_timeline(self, obj):
-        timeline = []
-        for revision in self._endorsed_revisions(obj):
-            summary = revision.public_summary_snapshot if isinstance(revision.public_summary_snapshot, dict) else {}
-            key_facts = summary.get("key_facts") if isinstance(summary.get("key_facts"), dict) else {}
-            timeline.append(
-                {
-                    "revision_number": revision.revision_number,
-                    "revision_type": revision.revision_type,
-                    "endorsed_at": revision.endorsed_at.isoformat() if revision.endorsed_at else None,
-                    "status": key_facts.get("status", ""),
-                    "budget": key_facts.get("funding_requirement_total", ""),
-                    "location": key_facts.get("location", ""),
-                    "changed_fields": revision.changed_fields if isinstance(revision.changed_fields, list) else [],
-                    "public_note": revision.public_note,
-                }
-            )
-        return timeline
+        return [self._timeline_entry(revision) for revision in self._endorsed_revisions(obj)]
 
 
 class AccessRequestSerializer(serializers.ModelSerializer):
