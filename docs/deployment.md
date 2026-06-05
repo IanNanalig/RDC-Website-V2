@@ -29,7 +29,7 @@ docker compose up --build
 
 ```powershell
 cd frontend
-npm ci
+npm ci --legacy-peer-deps
 npm run build
 npm run lint
 

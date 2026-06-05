@@ -29,7 +29,7 @@ python -m venv venv
 ```powershell
 cd frontend
 Copy-Item .env.example .env
-npm ci
+npm ci --legacy-peer-deps
 npm run dev
 ```
 
