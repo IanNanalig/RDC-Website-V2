@@ -92,13 +92,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare Docker image tags
+        id: docker_meta
+        run: |
+          owner_lc="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${owner_lc}/rdc-ncr-website" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/rdc-ncr-website:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/rdc-ncr-website:latest
+            ${{ steps.docker_meta.outputs.image }}:${{ github.sha }}
+            ${{ steps.docker_meta.outputs.image }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
