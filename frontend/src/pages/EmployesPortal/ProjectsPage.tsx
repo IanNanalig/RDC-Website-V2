@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
@@ -121,8 +121,10 @@ const ProjectsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
 
-  const userData = localStorage.getItem("user");
-  const user = userData ? JSON.parse(userData) : null;
+  const user = useMemo(() => {
+    const userData = localStorage.getItem("user");
+    return userData ? JSON.parse(userData) : null;
+  }, []);
   const role = user?.role as "admin" | "validator" | "employee" | undefined;
   const encodingWindow = useEncodingWindow(role === "employee");
   const progressWindow = useProgressUpdateWindow(role === "employee");
@@ -131,14 +133,17 @@ const ProjectsPage: React.FC = () => {
   const canProgressUpdate = progressWindow.can_encode;
   const progressMessage = progressWindow.message;
 
-  const endpoint =
-    role === "admin"
-      ? "admin/projects/"
-      : role === "validator"
-      ? "validator/projects/?scope=queue"
-      : "employee/projects/";
+  const endpoint = useMemo(
+    () =>
+      role === "admin"
+        ? "admin/projects/"
+        : role === "validator"
+        ? "validator/projects/?scope=queue"
+        : "employee/projects/",
+    [role],
+  );
 
-  const loadProjects = async () => {
+  const loadProjects = useCallback(async () => {
     setLoading(true);
     try {
       const data = await api.get(endpoint);
@@ -172,7 +177,7 @@ const ProjectsPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [endpoint, role]);
 
   useEffect(() => {
     if (!user) {
@@ -185,7 +190,7 @@ const ProjectsPage: React.FC = () => {
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, [role]);
+  }, [loadProjects, navigate, user]);
 
   const selectedStatus = searchParams.get("status");
   const filtered = useMemo(() => {

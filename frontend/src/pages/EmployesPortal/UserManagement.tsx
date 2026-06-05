@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
@@ -309,7 +309,7 @@ const UserManagement = () => {
     setSearchParams(next);
   };
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const [usersRes, resetRes, winRes, progressWinRes] = await Promise.all([
@@ -340,9 +340,9 @@ const UserManagement = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const loadActivity = async () => {
+  const loadActivity = useCallback(async () => {
     setActivityLoading(true);
     try {
       const params = new URLSearchParams();
@@ -370,14 +370,6 @@ const UserManagement = () => {
     } finally {
       setActivityLoading(false);
     }
-  };
-
-  useEffect(() => {
-    load();
-  }, []);
-
-  useEffect(() => {
-    loadActivity();
   }, [
     activityFilters.role,
     activityFilters.event,
@@ -387,6 +379,14 @@ const UserManagement = () => {
     activityFilters.dateTo,
     activityOffset,
   ]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    loadActivity();
+  }, [loadActivity]);
 
   useEffect(() => {
     if (!toast) return undefined;

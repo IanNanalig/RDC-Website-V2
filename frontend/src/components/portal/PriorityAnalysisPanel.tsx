@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../services/api";
 
 type Criterion = {
@@ -135,7 +135,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapsh
 
   const endpointBase = role === "admin" ? "admin/projects" : "validator/projects";
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const response = await api.get(`${endpointBase}/${projectId}/priority-analysis/`);
       const list = Array.isArray(response?.analyses) ? response.analyses as Analysis[] : [];
@@ -145,11 +145,11 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapsh
     } catch (error) {
       console.error("Failed to load priority analysis:", error);
     }
-  };
+  }, [endpointBase, projectId]);
 
   useEffect(() => {
     load();
-  }, [projectId, role]);
+  }, [load]);
 
   useEffect(() => {
     if (!analysis) return;
@@ -158,7 +158,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapsh
     setFinalPriority(analysis.latest_confirmation?.final_priority || (analysis.suggested_priority === "incomplete" ? "" : analysis.suggested_priority));
     setOverrideRationale(analysis.latest_confirmation?.override_rationale || "");
     setConfirmedFlags([]);
-  }, [analysis?.id]);
+  }, [analysis]);
 
   const run = async () => {
     setBusy(true);

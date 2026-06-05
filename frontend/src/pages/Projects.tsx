@@ -1,5 +1,5 @@
 // src/pages/Projects.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   PieChart,
   Pie,
@@ -52,7 +52,16 @@ const COLORS: Record<string, string> = {
   Unspecified: "#94A3B8",
 };
 
-const money = (n: number) => `₱ ${n.toLocaleString()}`;
+const money = (value: number | string | null | undefined) => {
+  const numeric =
+    typeof value === "number"
+      ? value
+      : Number(String(value ?? "").replace(/[^0-9.-]/g, ""));
+
+  return Number.isFinite(numeric)
+    ? `₱ ${numeric.toLocaleString("en-US")}`
+    : "₱ 0";
+};
 
 const STATUS_ICONS: Record<string, React.ReactNode> = {
   Ongoing: <FaHourglassHalf className="text-yellow-500" />,
@@ -124,7 +133,7 @@ const Projects: React.FC = () => {
   const [stats, setStats] = useState<PublicProjectsStats | null>(null);
   const [detailProject, setDetailProject] = useState<Project | null>(null);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
@@ -157,7 +166,7 @@ const Projects: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [agencyFilter, municipalityFilter, search, statusFilter, yearFilter]);
 
   useEffect(() => {
     fetchData();
@@ -168,8 +177,7 @@ const Projects: React.FC = () => {
       window.clearInterval(refreshId);
       window.removeEventListener("focus", handleFocus);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [yearFilter, statusFilter, agencyFilter, municipalityFilter, search]);
+  }, [fetchData]);
 
   const yearOptions = useMemo(
     () =>
@@ -210,7 +218,7 @@ const Projects: React.FC = () => {
     } else {
       setMunicipalityFilter(selectedCity);
     }
-  }, [selectedCity]);
+  }, [municipalityFilter, selectedCity]);
 
   // Filter projects by year, status, agency, and search (NOT by municipality yet)
   const filtered = useMemo(() => projects, [projects]);
@@ -309,7 +317,7 @@ const Projects: React.FC = () => {
     return Object.keys(m)
       .map((k) => ({ agency: k, value: m[k] }))
       .sort((a, b) => b.value - a.value);
-  }, [displayProjects]);
+  }, [displayProjects, stats?.by_agency]);
 
   const yearBar = useMemo(() => {
     const m = displayProjects.reduce<Record<number, number>>((acc, p) => {
@@ -491,12 +499,16 @@ const Projects: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    setUpdateFilter("recent");
+                    setUpdateFilter(updateFilter === "recent" ? "all" : "recent");
                     setActiveTab("table");
                   }}
-                  className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700"
+                  className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold shadow-sm ${
+                    updateFilter === "recent"
+                      ? "bg-white text-emerald-700 ring-1 ring-emerald-200 hover:bg-emerald-50"
+                      : "bg-emerald-600 text-white hover:bg-emerald-700"
+                  }`}
                 >
-                  View updated projects <FaArrowRight />
+                  {updateFilter === "recent" ? "Back to all projects" : "View updated projects"} <FaArrowRight />
                 </button>
               </div>
               <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -532,6 +544,23 @@ const Projects: React.FC = () => {
 
       {/* Main Content */}
       <div className="container mx-auto px-4 py-8 max-w-7xl">
+        {updateFilter === "recent" && (
+          <div className="mb-4 flex flex-col gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <span className="font-semibold">Viewing recently updated projects only.</span>{" "}
+              <span className="text-emerald-700">
+                Clear this filter to return to the full public dashboard.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setUpdateFilter("all")}
+              className="inline-flex w-fit items-center justify-center rounded-full bg-white px-3 py-1.5 text-xs font-bold text-emerald-700 ring-1 ring-emerald-200 transition hover:bg-emerald-100"
+            >
+              Show all projects
+            </button>
+          </div>
+        )}
         <div className="flex flex-col lg:flex-row gap-6">
           {/* Sidebar Filters */}
           <div
@@ -1258,13 +1287,36 @@ const Projects: React.FC = () => {
                                   ))}
                                 </div>
                               )}
-                              <div className="mt-2 grid sm:grid-cols-3 gap-2 text-xs text-slate-700">
-                                {item.status ? <p><strong>Status:</strong> {item.status}</p> : null}
+                              <div className="mt-3 grid gap-2 text-xs text-slate-700 sm:grid-cols-2">
+                                {item.status ? (
+                                  <div className="rounded-md bg-white/80 px-3 py-2 ring-1 ring-slate-100">
+                                    <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                      Status
+                                    </span>
+                                    <span className="font-semibold text-slate-800">
+                                      {item.status}
+                                    </span>
+                                  </div>
+                                ) : null}
                                 {item.budget !== undefined && item.budget !== "" ? (
-                                  <p><strong>Funding:</strong> {String(item.budget)}</p>
+                                  <div className="rounded-md bg-white/80 px-3 py-2 ring-1 ring-slate-100">
+                                    <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                      Funding
+                                    </span>
+                                    <span className="font-semibold text-emerald-700">
+                                      {money(item.budget)}
+                                    </span>
+                                  </div>
                                 ) : null}
                                 {item.location ? (
-                                  <p className="sm:col-span-3"><strong>Location:</strong> {item.location}</p>
+                                  <div className="rounded-md bg-white/80 px-3 py-2 ring-1 ring-slate-100 sm:col-span-2">
+                                    <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                      Location
+                                    </span>
+                                    <span className="text-slate-800">
+                                      {item.location}
+                                    </span>
+                                  </div>
                                 ) : null}
                               </div>
                               {item.public_note ? (

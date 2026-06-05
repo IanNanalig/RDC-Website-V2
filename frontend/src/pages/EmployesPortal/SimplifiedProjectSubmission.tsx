@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
@@ -513,7 +513,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
     return `simplified_submission_draft_v3_${identity}_${recordKey}`;
   }, [user?.username, user?.email, user?.id, user?.role, id, isRevisionMode, revisionId]);
 
-  const updateFormWithLocalDraft = (updater: (prev: SimplifiedForm) => SimplifiedForm) => {
+  const updateFormWithLocalDraft = useCallback((updater: (prev: SimplifiedForm) => SimplifiedForm) => {
     setForm((prev) => {
       const next = updater(prev);
       formRef.current = next;
@@ -532,7 +532,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       }
       return next;
     });
-  };
+  }, [draftStorageKey, isEmployee]);
 
   useEffect(() => {
     if (!user) navigate("/login");
@@ -701,13 +701,17 @@ const SimplifiedProjectSubmission: React.FC = () => {
     }
   }, [isEmployee, formReady, draftStorageKey, serverUpdatedAt]);
 
-  const commentEndpointBase = isAdmin
-    ? "admin/projects"
-    : isValidator
-    ? "validator/projects"
-    : "employee/projects";
+  const commentEndpointBase = useMemo(
+    () =>
+      isAdmin
+        ? "admin/projects"
+        : isValidator
+        ? "validator/projects"
+        : "employee/projects",
+    [isAdmin, isValidator],
+  );
 
-  const loadComments = async () => {
+  const loadComments = useCallback(async () => {
     if (!id) return;
     try {
       const data = await api.get(`${commentEndpointBase}/${id}/comments/`);
@@ -715,7 +719,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
     } catch {
       setComments([]);
     }
-  };
+  }, [commentEndpointBase, id]);
 
   const submitComment = async () => {
     if (!id || !commentInput.trim()) return;
@@ -734,14 +738,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
   useEffect(() => {
     if (!id) return;
     loadComments();
-  }, [id]);
+  }, [id, loadComments]);
 
   useEffect(() => {
     if (!isEmployee || isEditMode || !formReady) return;
     if (user?.agency && !form.agencyName.trim()) {
       updateFormWithLocalDraft((prev) => ({ ...prev, agencyName: String(user.agency || "") }));
     }
-  }, [isEmployee, isEditMode, formReady, user?.agency, form.agencyName]);
+  }, [form.agencyName, formReady, isEditMode, isEmployee, updateFormWithLocalDraft, user?.agency]);
 
   useEffect(() => {
     if (!isEmployee || !formReady || !localDraftHydrated || !draftStorageKey) return;
@@ -822,6 +826,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
     }
     return keys;
   }, [fundingRange, showPriorBucket]);
+  const yearKeysSignature = useMemo(() => yearKeys.join("|"), [yearKeys]);
 
   const pruneMap = (map: Record<string, string>, keys: string[]) => {
     const next: Record<string, string> = {};
@@ -854,7 +859,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
         actualFundingByYear: nextAa,
       };
     });
-  }, [yearKeys.join("|")]);
+  }, [updateFormWithLocalDraft, yearKeys, yearKeysSignature]);
 
   const frTotal = useMemo(
     () => yearKeys.reduce((sum, key) => sum + toNumber(form.fundingRequirementByYear[key] || ""), 0),

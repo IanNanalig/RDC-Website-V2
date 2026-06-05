@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
@@ -78,11 +78,13 @@ const ValidatorReviewHistory: React.FC = () => {
   const [projects, setProjects] = useState<ApiProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
-  const userData = localStorage.getItem("user");
-  const user = userData ? JSON.parse(userData) : null;
+  const user = useMemo(() => {
+    const userData = localStorage.getItem("user");
+    return userData ? JSON.parse(userData) : null;
+  }, []);
   const displayName = user?.full_name || user?.username || "Validator";
 
-  const loadProjects = async () => {
+  const loadProjects = useCallback(async () => {
     setLoading(true);
     try {
       const data = await api.get("validator/projects/?scope=history");
@@ -93,7 +95,7 @@ const ValidatorReviewHistory: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (!user) {
@@ -106,7 +108,7 @@ const ValidatorReviewHistory: React.FC = () => {
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, []);
+  }, [loadProjects, navigate, user]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

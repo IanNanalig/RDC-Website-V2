@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
@@ -83,7 +83,7 @@ const ProjectReview: React.FC = () => {
   const isValidator = role === "validator";
   const displayName = user?.full_name || user?.username || "User";
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!id) return;
     setLoading(true);
     try {
@@ -104,11 +104,11 @@ const ProjectReview: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [id, role]);
 
   useEffect(() => {
     load();
-  }, [id]);
+  }, [load]);
 
   const onArchive = async () => {
     if (!id || !isAdmin) return;

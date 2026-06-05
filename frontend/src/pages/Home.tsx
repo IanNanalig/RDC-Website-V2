@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { getPublicProjects, getPublicProjectsStats } from "../services/publicProjectsApi";
 import type { PublicProjectsStats } from "../types/api";
@@ -29,7 +29,7 @@ const Home: React.FC = () => {
   const [publicStatsError, setPublicStatsError] = useState<string>("");
   const navigate = useNavigate();
 
-  const buildStatsFromProjects = (projects: Awaited<ReturnType<typeof getPublicProjects>>): PublicProjectsStats => {
+  const buildStatsFromProjects = useCallback((projects: Awaited<ReturnType<typeof getPublicProjects>>): PublicProjectsStats => {
     const by_status: Record<string, number> = {};
     const by_agency: Record<string, number> = {};
     const by_lgu: Record<string, number> = {};
@@ -65,12 +65,12 @@ const Home: React.FC = () => {
       unspecified_location_count,
       last_updated_at,
     };
-  };
+  }, []);
 
   const carouselImages = [
     {
       src: photo1,
-      title: "Regional Development Council “ NCR",
+      title: "Regional Development Council � NCR",
       subtitle: "Planning a sustainable and resilient Metro Manila",
       button1: { text: "View Plans", link: "/plans" },
       button2: { text: "Latest Reports", link: "/reports" },
@@ -284,7 +284,7 @@ const Home: React.FC = () => {
     return map[key] || s;
   };
 
-  const statusCount = (label: string) => {
+  const statusCount = useCallback((label: string) => {
     const by = publicStats?.by_status || {};
     const target = canonicalStatus(label).toLowerCase();
     let total = 0;
@@ -292,7 +292,7 @@ const Home: React.FC = () => {
       if (canonicalStatus(k).toLowerCase() === target) total += Number(v || 0);
     });
     return total;
-  };
+  }, [publicStats?.by_status]);
 
   const dashboardStats = useMemo(() => {
     const ongoing = statusCount("Ongoing");
@@ -305,7 +305,7 @@ const Home: React.FC = () => {
       { label: "Total Investment", value: formatMoneyCompact(totalBudget) },
       { label: "Agencies Covered", value: String(agencies) },
     ];
-  }, [publicStats]);
+  }, [publicStats, statusCount]);
 
   const projectStatusData = useMemo(() => {
     const by = (publicStats?.by_status || {}) as Record<string, number>;
@@ -398,7 +398,7 @@ const Home: React.FC = () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [buildStatsFromProjects]);
 
   useEffect(() => {
     if (isPaused) return;
@@ -925,7 +925,7 @@ const Home: React.FC = () => {
                     to="/news"
                     className="text-xs text-blue-300 hover:text-white transition-colors"
                   >
-                    View all â†’
+                    View all →
                   </Link>
                 </div>
               </div>
@@ -1022,7 +1022,7 @@ const Home: React.FC = () => {
                           {event.title}
                         </h4>
                         <p className="text-xs text-gray-600">
-                          <span className="font-medium">{event.time}</span> â€¢{" "}
+                          <span className="font-medium">{event.time}</span> •{" "}
                           {event.location}
                         </p>
                         <div className="flex items-center gap-2 mt-2">
@@ -1060,3 +1060,4 @@ const Home: React.FC = () => {
 };
 
 export default Home;
+
