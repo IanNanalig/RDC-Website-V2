@@ -72,6 +72,11 @@ jobs:
 
       - name: Collect static files
         working-directory: ./backend
+        env:
+          DJANGO_SETTINGS_MODULE: rdc_site.settings
+          SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY || 'ci-insecure-test-key' }}
+          DEBUG: "False"
+          ALLOWED_HOSTS: "localhost,127.0.0.1"
         run: python manage.py collectstatic --noinput
 
       - name: Set up QEMU
