@@ -7,13 +7,36 @@ from django.core.exceptions import ImproperlyConfigured
 import sys
 import secrets
 
+try:
+    import dj_database_url
+except ImportError:
+    dj_database_url = None
+
 # load .env from backend/.env if present
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
+
+def env_bool(name, default=False):
+    return os.environ.get(name, str(default)).lower() in ('1', 'true', 'yes', 'on')
+
+
+def env_int(name, default=0):
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def env_list(name, default=None):
+    raw = os.environ.get(name)
+    if raw is None:
+        return list(default or [])
+    return [item.strip() for item in raw.split(',') if item.strip()]
+
 # Security and deployment-aware defaults
 # Default `DEBUG` to False unless explicitly set to a truthy value in env.
-DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
+DEBUG = env_bool('DEBUG', False)
 
 # Require SECRET_KEY in non-debug (production) environments.
 SECRET_KEY = os.environ.get('SECRET_KEY')
@@ -34,11 +57,7 @@ if not SECRET_KEY:
 
 # ALLOWED_HOSTS: when provided, split by comma; default to localhost in debug,
 # otherwise default to an empty list to force explicit configuration in prod.
-_allowed = os.environ.get('ALLOWED_HOSTS')
-if _allowed:
-    ALLOWED_HOSTS = [h.strip() for h in _allowed.split(',') if h.strip()]
-else:
-    ALLOWED_HOSTS = ['localhost', '127.0.0.1'] if DEBUG else []
+ALLOWED_HOSTS = env_list('ALLOWED_HOSTS', ['localhost', '127.0.0.1'] if DEBUG else [])
 
 AUTH_USER_MODEL = 'projects.User'  # Or 'users.User' if you have users app
 
@@ -83,21 +102,33 @@ SIMPLE_JWT = {
     'TOKEN_REFRESH_SERIALIZER': 'projects.authentication.SessionVersionTokenRefreshSerializer',
 }
 
-# CORS Settings
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",  # Your React frontend
-    "http://localhost:3000",
-]
-CORS_ALLOW_CREDENTIALS = True
+# CORS / CSRF settings
+CORS_ALLOWED_ORIGINS = env_list(
+    'CORS_ALLOWED_ORIGINS',
+    ['http://localhost:5173', 'http://localhost:3000'] if DEBUG else [],
+)
+CORS_ALLOW_CREDENTIALS = env_bool('CORS_ALLOW_CREDENTIALS', True)
+CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS', CORS_ALLOWED_ORIGINS)
 
 # Database configuration: prefer Postgres when env vars are present, otherwise use sqlite3 for local dev
 # Allow forcing sqlite for one-off commands by setting FORCE_SQLITE=1 in the environment
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
 if os.environ.get('FORCE_SQLITE', '').lower() in ('1', 'true', 'yes'):
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': str(BASE_DIR / 'db.sqlite3'),
         }
+    }
+elif DATABASE_URL:
+    if dj_database_url is None:
+        raise ImproperlyConfigured('DATABASE_URL requires dj-database-url to be installed')
+    DATABASES = {
+        'default': dj_database_url.parse(
+            DATABASE_URL,
+            conn_max_age=env_int('CONN_MAX_AGE', 600),
+            ssl_require=env_bool('DATABASE_SSL_REQUIRE', True),
+        )
     }
 elif os.environ.get('POSTGRES_DB'):
     DATABASES = {
@@ -123,14 +154,19 @@ CONN_MAX_AGE = int(os.environ.get('CONN_MAX_AGE', 600))
 DATABASES['default']['CONN_MAX_AGE'] = CONN_MAX_AGE
 DATABASES['default']['ATOMIC_REQUESTS'] = True
 
-# Security: require SSL in production-managed DBs when provided
+# Security: require SSL for managed Postgres providers such as Supabase.
 DB_SSLMODE = os.environ.get('POSTGRES_SSLMODE')
-if DB_SSLMODE and DATABASES['default']['ENGINE'] == 'django.db.backends.postgresql':
-    DATABASES['default']['OPTIONS'] = {'sslmode': DB_SSLMODE}
+if DATABASES['default']['ENGINE'] == 'django.db.backends.postgresql':
+    ssl_required = env_bool('DATABASE_SSL_REQUIRE', bool(DATABASE_URL))
+    sslmode = 'require' if ssl_required else (DB_SSLMODE or '')
+    if sslmode:
+        DATABASES['default'].setdefault('OPTIONS', {})
+        DATABASES['default']['OPTIONS']['sslmode'] = sslmode
 
 # Minimal middleware and templates required for admin and management commands
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -165,6 +201,27 @@ try:
 except Exception:
     STATIC_ROOT = str(BASE_DIR / 'staticfiles')
     STATICFILES_DIRS = [str(BASE_DIR / 'static')]
+
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
+
+# Production security toggles. Enable these in Render once HTTPS domains are set.
+SECURE_SSL_REDIRECT = env_bool('SECURE_SSL_REDIRECT', False)
+SESSION_COOKIE_SECURE = env_bool('SESSION_COOKIE_SECURE', not DEBUG)
+CSRF_COOKIE_SECURE = env_bool('CSRF_COOKIE_SECURE', not DEBUG)
+SECURE_HSTS_SECONDS = env_int('SECURE_HSTS_SECONDS', 0)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('SECURE_HSTS_INCLUDE_SUBDOMAINS', False)
+SECURE_HSTS_PRELOAD = env_bool('SECURE_HSTS_PRELOAD', False)
+SECURE_REFERRER_POLICY = os.environ.get('SECURE_REFERRER_POLICY', 'same-origin')
+X_FRAME_OPTIONS = os.environ.get('X_FRAME_OPTIONS', 'DENY')
+if env_bool('SECURE_PROXY_SSL_HEADER', False):
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # Email (SMTP)
 EMAIL_BACKEND = os.environ.get("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")

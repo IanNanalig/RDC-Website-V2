@@ -17,6 +17,7 @@ public_projects_detail = views.PublicProjectsViewSet.as_view({"get": "retrieve"}
 
 urlpatterns = [
     path("", include(router.urls)),
+    path("health/", views.HealthCheckView.as_view(), name="health-check"),
     path("public/projects/", public_projects_list, name="public-projects"),
     path("public/projects/<int:pk>/", public_projects_detail, name="public-project-detail"),
     path("public/projects/stats/", views.PublicProjectsStatsView.as_view(), name="public-project-stats"),

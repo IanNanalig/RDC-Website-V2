@@ -32,7 +32,10 @@ COPY --from=node-build /app/frontend/dist ./backend/staticfiles
 WORKDIR /app/backend
 
 # Collect static files (will also be run at container start via entrypoint)
-RUN python manage.py collectstatic --noinput || true
+ENV SECRET_KEY=docker-build-placeholder \
+    DEBUG=False \
+    ALLOWED_HOSTS=localhost,127.0.0.1
+RUN python manage.py collectstatic --noinput
 
 EXPOSE 8000
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

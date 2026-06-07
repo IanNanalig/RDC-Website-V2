@@ -14,7 +14,7 @@ from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.crypto import get_random_string
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Q
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -66,6 +66,29 @@ PUBLIC_PROJECTS_CACHE_TTL_SECONDS = 3600
 PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL = "public, max-age=0, must-revalidate"
 PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 3
 PUBLIC_PROJECTS_CACHE_VERSION_KEY = "public_projects:version"
+
+
+class HealthCheckView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        db_ok = True
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+        except Exception:
+            db_ok = False
+
+        return Response(
+            {
+                "status": "ok" if db_ok else "degraded",
+                "database": "ok" if db_ok else "unavailable",
+                "timezone": settings.TIME_ZONE,
+            },
+            status=status.HTTP_200_OK if db_ok else status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
 
 TAGALOG_HINTS = {
     "saan",
