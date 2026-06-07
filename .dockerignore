@@ -15,10 +15,13 @@ logs
 **/__pycache__
 .env
 .env.*
+*.env.backup*
 !backend/.env.example
 !frontend/.env.example
 backend/.env
 backend/.env.*
+backend/*.env.backup*
+frontend/*.env.backup*
 backend/db.sqlite3
 backend/*.sqlite3
 backend/analytics.json

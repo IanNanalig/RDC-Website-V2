@@ -15,12 +15,15 @@ dist-ssr
 .env
 .env.*
 !.env.example
+*.env.backup*
 frontend/.env
 frontend/.env.*
 !frontend/.env.example
+frontend/*.env.backup*
 backend/.env
 backend/.env.*
 !backend/.env.example
+backend/*.env.backup*
 
 # Editor directories and files
 .vscode/*
