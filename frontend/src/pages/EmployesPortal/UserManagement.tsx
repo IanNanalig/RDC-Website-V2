@@ -36,6 +36,30 @@ type PasswordResetRequestRow = {
   reviewed_at?: string;
 };
 
+type ChatKnowledgeGap = {
+  id: number;
+  question_sample: string;
+  language: string;
+  count: number;
+  last_asked: string;
+  status: "pending" | "approved" | "rejected";
+  suggested_title: string;
+  suggested_summary: string;
+  suggested_body: string;
+  suggested_tags: string[];
+  matched_content_title?: string;
+  reviewed_by_name?: string;
+  reviewed_at?: string;
+};
+
+type ChatGapDraft = {
+  title: string;
+  summary: string;
+  body: string;
+  tags: string;
+  url: string;
+};
+
 type AdminUsersTab = "create-account" | "encoding-window" | "operations";
 
 type EncodingWindowState = {
@@ -63,6 +87,10 @@ const UserManagement = () => {
   const [activityLoading, setActivityLoading] = useState(true);
   const [activityTotal, setActivityTotal] = useState(0);
   const [activityOffset, setActivityOffset] = useState(0);
+  const [chatGaps, setChatGaps] = useState<ChatKnowledgeGap[]>([]);
+  const [chatGapsLoading, setChatGapsLoading] = useState(false);
+  const [chatGapDrafts, setChatGapDrafts] = useState<Record<number, ChatGapDraft>>({});
+  const [chatGapStatus, setChatGapStatus] = useState("pending");
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [toast, setToast] = useState<{ message: string; type: "info" | "success" | "warn" | "error" } | null>(null);
@@ -132,6 +160,9 @@ const UserManagement = () => {
     project_revision_reviewed: "Project Revision Reviewed",
     project_revision_endorsed: "Project Revision Endorsed",
     project_revision_rejected: "Project Revision Rejected",
+    chat_knowledge_approved: "Chat Knowledge Approved",
+    chat_knowledge_rejected: "Chat Knowledge Rejected",
+    chat_content_updated: "Chat Content Updated",
   };
 
   const eventSeverity: Record<string, "info" | "warn" | "error"> = {
@@ -163,6 +194,9 @@ const UserManagement = () => {
     project_revision_reviewed: "info",
     project_revision_endorsed: "info",
     project_revision_rejected: "warn",
+    chat_knowledge_approved: "info",
+    chat_knowledge_rejected: "warn",
+    chat_content_updated: "info",
   };
 
   const severityClass = (event: string) => {
@@ -380,6 +414,37 @@ const UserManagement = () => {
     activityOffset,
   ]);
 
+  const loadChatGaps = useCallback(async () => {
+    setChatGapsLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("status", chatGapStatus);
+      params.set("limit", "25");
+      const data = await api.get(`admin/chat/knowledge-gaps/?${params.toString()}`);
+      const rows: ChatKnowledgeGap[] = Array.isArray(data?.results) ? data.results : [];
+      setChatGaps(rows);
+      setChatGapDrafts((previous) => {
+        const next = { ...previous };
+        rows.forEach((gap) => {
+          if (next[gap.id]) return;
+          next[gap.id] = {
+            title: gap.suggested_title || `Public question: ${gap.question_sample}`,
+            summary: gap.suggested_summary || gap.question_sample,
+            body: gap.suggested_body || gap.question_sample,
+            tags: Array.isArray(gap.suggested_tags) ? gap.suggested_tags.join(", ") : "chatbot-approved",
+            url: "",
+          };
+        });
+        return next;
+      });
+    } catch (error) {
+      console.error(error);
+      setChatGaps([]);
+    } finally {
+      setChatGapsLoading(false);
+    }
+  }, [chatGapStatus]);
+
   useEffect(() => {
     load();
   }, [load]);
@@ -387,6 +452,11 @@ const UserManagement = () => {
   useEffect(() => {
     loadActivity();
   }, [loadActivity]);
+
+  useEffect(() => {
+    if (activeTab !== "operations") return;
+    loadChatGaps();
+  }, [activeTab, loadChatGaps]);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -457,6 +527,52 @@ const UserManagement = () => {
       }
     } finally {
       setResetActionLoading((prev) => ({ ...prev, [id]: false }));
+    }
+  };
+
+  const updateChatGapDraft = (id: number, key: keyof ChatGapDraft, value: string) => {
+    setChatGapDrafts((prev) => ({
+      ...prev,
+      [id]: {
+        ...(prev[id] || { title: "", summary: "", body: "", tags: "", url: "" }),
+        [key]: value,
+      },
+    }));
+  };
+
+  const approveChatGap = async (gap: ChatKnowledgeGap) => {
+    const draft = chatGapDrafts[gap.id];
+    if (!draft?.title.trim() || !draft?.body.trim()) {
+      setNotice("Title and approved answer are required before approving chatbot knowledge.");
+      return;
+    }
+    try {
+      await api.post(`admin/chat/knowledge-gaps/${gap.id}/approve/`, {
+        title: draft.title.trim(),
+        summary: draft.summary.trim(),
+        body: draft.body.trim(),
+        tags: draft.tags,
+        url: draft.url.trim(),
+        language: gap.language,
+      });
+      setNotice("Chatbot knowledge approved and added to public content.");
+      await loadChatGaps();
+      await loadActivity();
+    } catch (error) {
+      setNotice(getErrorDetail(error, "Failed to approve chatbot knowledge gap."));
+    }
+  };
+
+  const rejectChatGap = async (gap: ChatKnowledgeGap) => {
+    try {
+      await api.post(`admin/chat/knowledge-gaps/${gap.id}/reject/`, {
+        notes: "Rejected from admin chatbot learning review.",
+      });
+      setNotice("Chatbot knowledge gap rejected.");
+      await loadChatGaps();
+      await loadActivity();
+    } catch (error) {
+      setNotice(getErrorDetail(error, "Failed to reject chatbot knowledge gap."));
     }
   };
 
@@ -899,6 +1015,135 @@ const UserManagement = () => {
                 </tbody>
               </table>
             )}
+          </div>
+
+          <div className="portal-card mb-4">
+            <div className="portal-card-header flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">Chatbot Learning</h2>
+                <p className="text-xs text-slate-500">
+                  Review repeated low-confidence public questions and convert them into approved website knowledge.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <select
+                  className="border rounded-lg px-2 py-1.5 text-sm bg-white"
+                  value={chatGapStatus}
+                  onChange={(e) => setChatGapStatus(e.target.value)}
+                >
+                  <option value="pending">Pending gaps</option>
+                  <option value="approved">Approved</option>
+                  <option value="rejected">Rejected</option>
+                  <option value="all">All statuses</option>
+                </select>
+                <button type="button" onClick={loadChatGaps} className="portal-btn portal-btn-ghost">
+                  Refresh
+                </button>
+              </div>
+            </div>
+            <div className="portal-card-body space-y-4">
+              {chatGapsLoading ? (
+                <p className="text-sm text-slate-500">Loading chatbot learning signals...</p>
+              ) : chatGaps.length === 0 ? (
+                <p className="text-sm text-slate-500">No chatbot knowledge gaps found for this filter.</p>
+              ) : (
+                chatGaps.map((gap) => {
+                  const draft = chatGapDrafts[gap.id] || { title: "", summary: "", body: "", tags: "", url: "" };
+                  return (
+                    <div key={gap.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                      <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-700">
+                              Asked {gap.count}x
+                            </span>
+                            <span className="rounded-full bg-slate-200 px-2 py-1 text-xs font-semibold text-slate-700">
+                              {gap.language === "tl" ? "Tagalog/Taglish" : "English"}
+                            </span>
+                            <span className="text-xs text-slate-500">
+                              Last asked {new Date(gap.last_asked).toLocaleString()}
+                            </span>
+                          </div>
+                          <p className="mt-2 font-semibold text-slate-900">{gap.question_sample}</p>
+                          {gap.matched_content_title && (
+                            <p className="mt-1 text-xs text-slate-500">Possibly related to: {gap.matched_content_title}</p>
+                          )}
+                        </div>
+                        <span className={`w-fit rounded-full px-2 py-1 text-xs font-semibold ${
+                          gap.status === "approved"
+                            ? "bg-emerald-100 text-emerald-700"
+                            : gap.status === "rejected"
+                            ? "bg-rose-100 text-rose-700"
+                            : "bg-blue-100 text-blue-700"
+                        }`}>
+                          {gap.status}
+                        </span>
+                      </div>
+
+                      {gap.status === "pending" ? (
+                        <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
+                          <label className="block">
+                            <span className="text-xs font-semibold text-slate-600">Approved Public Title</span>
+                            <input
+                              className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
+                              value={draft.title}
+                              onChange={(e) => updateChatGapDraft(gap.id, "title", e.target.value)}
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-xs font-semibold text-slate-600">Source URL</span>
+                            <input
+                              className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
+                              placeholder="/about-rdc or /contact"
+                              value={draft.url}
+                              onChange={(e) => updateChatGapDraft(gap.id, "url", e.target.value)}
+                            />
+                          </label>
+                          <label className="block xl:col-span-2">
+                            <span className="text-xs font-semibold text-slate-600">Short Summary</span>
+                            <input
+                              className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
+                              value={draft.summary}
+                              onChange={(e) => updateChatGapDraft(gap.id, "summary", e.target.value)}
+                            />
+                          </label>
+                          <label className="block xl:col-span-2">
+                            <span className="text-xs font-semibold text-slate-600">Approved Answer / Knowledge Body</span>
+                            <textarea
+                              className="mt-1 min-h-[96px] w-full rounded-lg border px-3 py-2 text-sm"
+                              value={draft.body}
+                              onChange={(e) => updateChatGapDraft(gap.id, "body", e.target.value)}
+                            />
+                          </label>
+                          <label className="block xl:col-span-2">
+                            <span className="text-xs font-semibold text-slate-600">Tags</span>
+                            <input
+                              className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
+                              placeholder="dashboard, publications, contact"
+                              value={draft.tags}
+                              onChange={(e) => updateChatGapDraft(gap.id, "tags", e.target.value)}
+                            />
+                          </label>
+                          <div className="flex flex-wrap gap-2 xl:col-span-2">
+                            <button type="button" onClick={() => approveChatGap(gap)} className="portal-btn portal-btn-primary">
+                              Approve as Knowledge
+                            </button>
+                            <button type="button" onClick={() => rejectChatGap(gap)} className="portal-btn portal-btn-ghost text-rose-600">
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mt-3 text-sm text-slate-500">
+                          Reviewed {gap.reviewed_at ? new Date(gap.reviewed_at).toLocaleString() : ""}{" "}
+                          {gap.reviewed_by_name ? `by ${gap.reviewed_by_name}` : ""}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
 
           <div className="portal-card portal-table-wrap">

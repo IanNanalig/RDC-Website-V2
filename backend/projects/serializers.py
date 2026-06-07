@@ -3,7 +3,9 @@ from datetime import datetime
 from .models import (
     AccessRequest,
     PasswordResetRequest,
+    PublicChatKnowledgeGap,
     PriorityRuleSet,
+    PublicContent,
     Project,
     ProjectComment,
     ProjectPriorityAnalysis,
@@ -68,6 +70,42 @@ class UserSerializer(serializers.ModelSerializer):
             instance.set_password(password)
         instance.save()
         return instance
+
+
+class PublicChatKnowledgeGapSerializer(serializers.ModelSerializer):
+    matched_content_title = serializers.CharField(source="matched_content.title", read_only=True, default="")
+    approved_content_title = serializers.CharField(source="approved_content.title", read_only=True, default="")
+    reviewed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PublicChatKnowledgeGap
+        fields = [
+            "id",
+            "question_normalized",
+            "question_sample",
+            "language",
+            "count",
+            "last_asked",
+            "status",
+            "suggested_title",
+            "suggested_summary",
+            "suggested_body",
+            "suggested_tags",
+            "matched_content",
+            "matched_content_title",
+            "approved_content",
+            "approved_content_title",
+            "reviewed_by_name",
+            "reviewed_at",
+            "review_notes",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_reviewed_by_name(self, obj):
+        if not obj.reviewed_by:
+            return ""
+        return obj.reviewed_by.full_name or obj.reviewed_by.get_full_name() or obj.reviewed_by.username
 
 
 class ProjectSerializer(serializers.ModelSerializer):

@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { getPublicProjects, getPublicProjectsStats } from "../services/publicProjectsApi";
+import {
+  getPublicProjects,
+  getPublicProjectsStats,
+} from "../services/publicProjectsApi";
 import type { PublicProjectsStats } from "../types/api";
 import photo1 from "../assets/Photo-Corousel/Photos/photo1.jpg";
 import photo2 from "../assets/Photo-Corousel/Photos/photo2.jpg";
@@ -29,48 +32,59 @@ const Home: React.FC = () => {
   const [publicStatsError, setPublicStatsError] = useState<string>("");
   const navigate = useNavigate();
 
-  const buildStatsFromProjects = useCallback((projects: Awaited<ReturnType<typeof getPublicProjects>>): PublicProjectsStats => {
-    const by_status: Record<string, number> = {};
-    const by_agency: Record<string, number> = {};
-    const by_lgu: Record<string, number> = {};
-    const by_year: Record<string, number> = {};
-    let total_budget = 0;
-    let unspecified_location_count = 0;
-    let last_updated_at: string | null = null;
+  const buildStatsFromProjects = useCallback(
+    (
+      projects: Awaited<ReturnType<typeof getPublicProjects>>,
+    ): PublicProjectsStats => {
+      const by_status: Record<string, number> = {};
+      const by_agency: Record<string, number> = {};
+      const by_lgu: Record<string, number> = {};
+      const by_year: Record<string, number> = {};
+      let total_budget = 0;
+      let unspecified_location_count = 0;
+      let last_updated_at: string | null = null;
 
-    projects.forEach((p) => {
-      total_budget += Number(p.budget || 0);
-      const status = canonicalStatus(p.implementation_status || "Unspecified");
-      by_status[status] = (by_status[status] || 0) + 1;
+      projects.forEach((p) => {
+        total_budget += Number(p.budget || 0);
+        const status = canonicalStatus(
+          p.implementation_status || "Unspecified",
+        );
+        by_status[status] = (by_status[status] || 0) + 1;
 
-      const agency = String(p.agency || "Other").trim() || "Other";
-      by_agency[agency] = (by_agency[agency] || 0) + 1;
+        const agency = String(p.agency || "Other").trim() || "Other";
+        by_agency[agency] = (by_agency[agency] || 0) + 1;
 
-      if (p.lgu) by_lgu[p.lgu] = (by_lgu[p.lgu] || 0) + 1;
-      else unspecified_location_count += 1;
+        if (p.lgu) by_lgu[p.lgu] = (by_lgu[p.lgu] || 0) + 1;
+        else unspecified_location_count += 1;
 
-      if (typeof p.year === "number") by_year[String(p.year)] = (by_year[String(p.year)] || 0) + 1;
-      if (!last_updated_at || (p.updated_at && new Date(p.updated_at) > new Date(last_updated_at))) {
-        last_updated_at = p.updated_at || last_updated_at;
-      }
-    });
+        if (typeof p.year === "number")
+          by_year[String(p.year)] = (by_year[String(p.year)] || 0) + 1;
+        if (
+          !last_updated_at ||
+          (p.updated_at && new Date(p.updated_at) > new Date(last_updated_at))
+        ) {
+          last_updated_at = p.updated_at || last_updated_at;
+        }
+      });
 
-    return {
-      total_projects: projects.length,
-      total_budget,
-      by_status,
-      by_agency,
-      by_lgu,
-      by_year,
-      unspecified_location_count,
-      last_updated_at,
-    };
-  }, []);
+      return {
+        total_projects: projects.length,
+        total_budget,
+        by_status,
+        by_agency,
+        by_lgu,
+        by_year,
+        unspecified_location_count,
+        last_updated_at,
+      };
+    },
+    [],
+  );
 
   const carouselImages = [
     {
       src: photo1,
-      title: "Regional Development Council “ NCR",
+      title: "Regional Development Council NCR",
       subtitle: "Planning a sustainable and resilient Metro Manila",
       button1: { text: "View Plans", link: "/plans" },
       button2: { text: "Latest Reports", link: "/reports" },
@@ -284,15 +298,19 @@ const Home: React.FC = () => {
     return map[key] || s;
   };
 
-  const statusCount = useCallback((label: string) => {
-    const by = publicStats?.by_status || {};
-    const target = canonicalStatus(label).toLowerCase();
-    let total = 0;
-    Object.entries(by).forEach(([k, v]) => {
-      if (canonicalStatus(k).toLowerCase() === target) total += Number(v || 0);
-    });
-    return total;
-  }, [publicStats?.by_status]);
+  const statusCount = useCallback(
+    (label: string) => {
+      const by = publicStats?.by_status || {};
+      const target = canonicalStatus(label).toLowerCase();
+      let total = 0;
+      Object.entries(by).forEach(([k, v]) => {
+        if (canonicalStatus(k).toLowerCase() === target)
+          total += Number(v || 0);
+      });
+      return total;
+    },
+    [publicStats?.by_status],
+  );
 
   const dashboardStats = useMemo(() => {
     const ongoing = statusCount("Ongoing");
@@ -378,14 +396,21 @@ const Home: React.FC = () => {
         if (!cancelled) setPublicStats(st);
       } catch (err: unknown) {
         try {
-          const list = await getPublicProjects({ limit: 500, offset: 0, cacheBust: true });
+          const list = await getPublicProjects({
+            limit: 500,
+            offset: 0,
+            cacheBust: true,
+          });
           if (!cancelled) {
             setPublicStats(buildStatsFromProjects(list));
             setPublicStatsError("");
           }
         } catch (fallbackErr: unknown) {
           if (!cancelled) {
-            const msg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr || err);
+            const msg =
+              fallbackErr instanceof Error
+                ? fallbackErr.message
+                : String(fallbackErr || err);
             setPublicStatsError(msg || "Failed to load dashboard stats.");
           }
         }
@@ -1060,4 +1085,3 @@ const Home: React.FC = () => {
 };
 
 export default Home;
-

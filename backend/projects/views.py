@@ -14,6 +14,7 @@ from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.crypto import get_random_string
+from django.utils.text import slugify
 from django.db import connection, transaction
 from django.db.models import Q
 from rest_framework import permissions, status, viewsets
@@ -32,6 +33,8 @@ from .models import (
     ProjectComment,
     ProjectRevision,
     PublicChatFAQ,
+    PublicChatInteraction,
+    PublicChatKnowledgeGap,
     PublicContent,
     SystemSetting,
     User,
@@ -41,6 +44,7 @@ from .serializers import (
     AccessRequestSerializer,
     PasswordResetRequestSerializer,
     ProjectCommentSerializer,
+    PublicChatKnowledgeGapSerializer,
     PublicProjectSerializer,
     ProjectSerializer,
     ProjectRevisionSerializer,
@@ -62,6 +66,8 @@ PASSWORD_RESET_LIMIT_IP = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_IP", 
 
 PUBLIC_CHAT_MAX_SUGGESTIONS = 6
 PUBLIC_CHAT_MIN_SCORE = 1.0
+PUBLIC_CHAT_DIRECT_CONFIDENCE = 0.62
+PUBLIC_CHAT_RELATED_CONFIDENCE = 0.35
 PUBLIC_PROJECTS_CACHE_TTL_SECONDS = 3600
 PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL = "public, max-age=0, must-revalidate"
 PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 3
@@ -904,6 +910,208 @@ def _get_top_questions(limit: int):
     return [q for q in qs if q]
 
 
+def _public_chat_sources(content: PublicContent | None, extra=None):
+    sources = []
+    if content and content.url:
+        sources.append({"title": content.title, "url": content.url})
+    for item in extra or []:
+        if item and item not in sources:
+            sources.append(item)
+    return sources
+
+
+def _public_chat_related_links(ranked, exclude_slug="", limit=3):
+    links = []
+    seen = set()
+    for score, content in ranked:
+        if score <= 0 or not content.url or content.slug == exclude_slug or content.url in seen:
+            continue
+        links.append({"title": content.title, "url": content.url})
+        seen.add(content.url)
+        if len(links) >= limit:
+            break
+    return links
+
+
+def _public_chat_confidence(score: float, token_count: int, intent_locked=False, forced_contact=False):
+    if forced_contact:
+        return 0.92
+    if intent_locked:
+        return 0.78
+    return min(1.0, max(0.0, score / max(3.0, token_count * 1.5)))
+
+
+def _public_chat_answer_type(confidence: float, has_match: bool):
+    if not has_match:
+        return "fallback"
+    if confidence >= PUBLIC_CHAT_DIRECT_CONFIDENCE:
+        return "direct"
+    if confidence >= PUBLIC_CHAT_RELATED_CONFIDENCE:
+        return "related"
+    return "fallback"
+
+
+def _public_chat_update_faq(normalized: str, question: str, matched_content):
+    if not normalized:
+        return
+    faq, created = PublicChatFAQ.objects.get_or_create(
+        question_normalized=normalized,
+        defaults={
+            "question_sample": _sanitize_question_sample(question),
+            "count": 1,
+            "last_asked": timezone.now(),
+            "last_matched_content": matched_content,
+        },
+    )
+    if not created:
+        faq.count += 1
+        faq.last_asked = timezone.now()
+        faq.last_matched_content = matched_content
+        if not faq.question_sample:
+            faq.question_sample = _sanitize_question_sample(question)
+        faq.save(update_fields=["count", "last_asked", "last_matched_content", "question_sample"])
+
+
+def _public_chat_record_interaction(request, question: str, normalized: str, language: str, matched_content, confidence: float, answer_type: str):
+    return PublicChatInteraction.objects.create(
+        question_normalized=normalized[:255],
+        question_sample=_sanitize_question_sample(question),
+        language=language,
+        matched_content=matched_content,
+        confidence=round(confidence, 2),
+        answer_type=answer_type,
+        ip_address=_client_ip(request),
+        user_agent=(request.META.get("HTTP_USER_AGENT", "") or "")[:255],
+    )
+
+
+def _public_chat_track_gap(question: str, normalized: str, language: str, matched_content):
+    if not normalized:
+        return
+    sample = _sanitize_question_sample(question)
+    fallback_title = f"Chatbot gap: {sample[:80]}"
+    gap, created = PublicChatKnowledgeGap.objects.get_or_create(
+        question_normalized=normalized[:255],
+        defaults={
+            "question_sample": sample,
+            "language": language,
+            "count": 1,
+            "last_asked": timezone.now(),
+            "suggested_title": fallback_title[:200],
+            "suggested_summary": sample,
+            "suggested_body": sample,
+            "suggested_tags": ["chatbot-gap", language],
+            "matched_content": matched_content,
+        },
+    )
+    if not created and gap.status == "pending":
+        gap.count += 1
+        gap.last_asked = timezone.now()
+        gap.question_sample = gap.question_sample or sample
+        gap.matched_content = matched_content
+        gap.save(update_fields=["count", "last_asked", "question_sample", "matched_content"])
+
+
+def _money(value) -> str:
+    try:
+        return f"PHP {int(round(float(value or 0))):,}"
+    except Exception:
+        return "PHP 0"
+
+
+def _public_dashboard_chat_answer(question: str, language: str):
+    normalized = _normalize_text(question)
+    metric_terms = {
+        "total",
+        "count",
+        "how many",
+        "ilan",
+        "budget",
+        "investment",
+        "agency",
+        "agencies",
+        "ongoing",
+        "completed",
+        "status",
+        "dashboard",
+        "project",
+        "projects",
+        "updated",
+        "filter",
+        "map",
+        "table",
+    }
+    if not any(term in normalized for term in metric_terms):
+        return None
+    if not any(term in normalized for term in {"project", "projects", "dashboard", "budget", "investment", "ongoing", "completed", "agency", "agencies"}):
+        return None
+
+    qs = Project.objects.filter(validated=True, archived=False, is_active=True)
+    total_projects = qs.count()
+    total_budget = 0
+    agencies = set()
+    ongoing = 0
+    completed = 0
+    updated = 0
+    for project in qs:
+        profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+        simplified = profile.get("simplified_form") if isinstance(profile.get("simplified_form"), dict) else {}
+        status_value = str(simplified.get("status") or project.status or "").strip().lower()
+        agency_value = str(simplified.get("agencyName") or project.agency or "").strip()
+        if agency_value:
+            agencies.add(agency_value)
+        try:
+            total_budget += int(project.budget or 0)
+        except Exception:
+            pass
+        if status_value == "ongoing":
+            ongoing += 1
+        if status_value == "completed":
+            completed += 1
+        if status_value == "updated":
+            updated += 1
+
+    if language == "tl":
+        answer = (
+            f"Sa public Projects Dashboard, may {total_projects} validated project(s), "
+            f"kabuuang investment na {_money(total_budget)}, {ongoing} ongoing, "
+            f"{completed} completed, at {len(agencies)} agency/agencies na sakop. "
+            "Puwede mong gamitin ang filters, table, visual charts, at map para masuri ang mga proyekto."
+        )
+    else:
+        answer = (
+            f"The public Projects Dashboard currently has {total_projects} validated project(s), "
+            f"a total investment of {_money(total_budget)}, {ongoing} ongoing project(s), "
+            f"{completed} completed project(s), and {len(agencies)} covered agency/agencies. "
+            "Use the filters, table, visual charts, and map to explore the data."
+        )
+    if "updated" in normalized:
+        answer += (
+            f" It also tracks {updated} project(s) with RDIP status marked Updated."
+            if language == "en"
+            else f" May {updated} project(s) din na may RDIP status na Updated."
+        )
+    return {
+        "answer": answer,
+        "sources": [{"title": "Projects Dashboard", "url": "/dashboard"}],
+        "related_links": [{"title": "Open Projects Dashboard", "url": "/dashboard"}],
+    }
+
+
+def _compose_public_content_answer(question: str, content: PublicContent, language: str) -> str:
+    tokens = _expand_tokens(_tokenize(question, language))
+    text = content.body or content.summary or content.title
+    snippet = _select_relevant_snippet(text, tokens, language)
+    summary = content.summary.strip() if content.summary else ""
+    if language == "tl":
+        if snippet and snippet != summary:
+            return f"Base sa {content.title}, {snippet}"
+        return f"Nasa {content.title} page ang impormasyong ito: {summary or snippet or content.title}."
+    if snippet and snippet != summary:
+        return f"Based on the {content.title} page: {snippet}"
+    return f"The {content.title} page covers this: {summary or snippet or content.title}."
+
+
 class PublicChatAskView(APIView):
     permission_classes = [AllowAny]
 
@@ -914,6 +1122,7 @@ class PublicChatAskView(APIView):
 
         language = _detect_language(question)
         suggested = _get_top_questions(PUBLIC_CHAT_MAX_SUGGESTIONS) or _default_suggestions(language)
+        normalized = _normalize_text(question)
 
         if _contains_blocked_topic(question):
             answer = (
@@ -925,12 +1134,37 @@ class PublicChatAskView(APIView):
                     "Makakasagot lang ako tungkol sa pampublikong website ng RDC-NCR. "
                     "Magtanong tungkol sa mga public page, dokumento, o dashboard."
                 )
+            interaction = _public_chat_record_interaction(
+                request, question, normalized, language, None, 0.0, "blocked"
+            )
             return Response(
                 {
                     "answer": answer,
                     "confidence": 0.0,
+                    "answer_type": "blocked",
                     "sources": [],
+                    "related_links": [],
                     "language": language,
+                    "interaction_id": interaction.id,
+                    "suggested_questions": suggested,
+                }
+            )
+
+        dashboard_answer = _public_dashboard_chat_answer(question, language)
+        if dashboard_answer:
+            _public_chat_update_faq(normalized, question, None)
+            interaction = _public_chat_record_interaction(
+                request, question, normalized, language, None, 0.86, "direct"
+            )
+            return Response(
+                {
+                    "answer": dashboard_answer["answer"],
+                    "confidence": 0.86,
+                    "answer_type": "direct",
+                    "sources": dashboard_answer["sources"],
+                    "related_links": dashboard_answer["related_links"],
+                    "language": language,
+                    "interaction_id": interaction.id,
                     "suggested_questions": suggested,
                 }
             )
@@ -970,23 +1204,7 @@ class PublicChatAskView(APIView):
                     best = content
             ranked.sort(key=lambda item: item[0], reverse=True)
 
-        normalized = _normalize_text(question)
-        faq, created = PublicChatFAQ.objects.get_or_create(
-            question_normalized=normalized,
-            defaults={
-                "question_sample": _sanitize_question_sample(question),
-                "count": 1,
-                "last_asked": timezone.now(),
-                "last_matched_content": best,
-            },
-        )
-        if not created:
-            faq.count += 1
-            faq.last_asked = timezone.now()
-            faq.last_matched_content = best
-            if not faq.question_sample:
-                faq.question_sample = _sanitize_question_sample(question)
-            faq.save(update_fields=["count", "last_asked", "last_matched_content", "question_sample"])
+        _public_chat_update_faq(normalized, question, best)
 
         if not best or best_score < PUBLIC_CHAT_MIN_SCORE:
             contact_content = content_qs.filter(slug="contact").first()
@@ -1017,21 +1235,35 @@ class PublicChatAskView(APIView):
                     else "Baka makatulong din ang mga pahinang ito sa tanong mo."
                 )
                 sources = alternatives + sources
+                _public_chat_track_gap(question, normalized, language, best)
+                interaction = _public_chat_record_interaction(
+                    request, question, normalized, language, best, 0.2, "fallback"
+                )
                 return Response(
                     {
                         "answer": f"{fallback} {alt_note}",
                         "confidence": 0.2,
+                        "answer_type": "fallback",
                         "sources": sources,
+                        "related_links": alternatives,
                         "language": language,
+                        "interaction_id": interaction.id,
                         "suggested_questions": suggested,
                     }
                 )
+            _public_chat_track_gap(question, normalized, language, None)
+            interaction = _public_chat_record_interaction(
+                request, question, normalized, language, None, 0.2, "fallback"
+            )
             return Response(
                 {
                     "answer": fallback,
                     "confidence": 0.2,
+                    "answer_type": "fallback",
                     "sources": sources,
+                    "related_links": [],
                     "language": language,
+                    "interaction_id": interaction.id,
                     "suggested_questions": suggested,
                 }
             )
@@ -1039,10 +1271,11 @@ class PublicChatAskView(APIView):
         if best.slug == "contact" or contact_intent:
             answer, include_map, include_email = _build_contact_answer(question, language)
         else:
-            answer = _build_generic_answer(question, best, language)
+            answer = _compose_public_content_answer(question, best, language)
 
-        confidence = min(1.0, best_score / max(1.0, len(question_tokens) + 1))
-        sources = [{"title": best.title, "url": best.url}] if best.url else []
+        confidence = _public_chat_confidence(best_score, len(question_tokens), intent_locked, forced_contact)
+        answer_type = _public_chat_answer_type(confidence, True)
+        sources = _public_chat_sources(best)
         if best.slug == "contact" or contact_intent:
             if include_map:
                 sources.append(
@@ -1050,15 +1283,40 @@ class PublicChatAskView(APIView):
                 )
             if include_email:
                 sources.append({"title": "Email RDC-NCR", "url": f"mailto:{PUBLIC_CONTACT_EMAIL}"})
+        related_links = _public_chat_related_links(ranked, exclude_slug=best.slug)
+        if answer_type == "fallback":
+            _public_chat_track_gap(question, normalized, language, best)
+        interaction = _public_chat_record_interaction(
+            request, question, normalized, language, best, confidence, answer_type
+        )
         return Response(
             {
                 "answer": answer,
                 "confidence": round(confidence, 2),
+                "answer_type": answer_type,
                 "sources": sources,
+                "related_links": related_links,
                 "language": language,
+                "interaction_id": interaction.id,
                 "suggested_questions": suggested,
             }
         )
+
+
+class PublicChatFeedbackView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        interaction_id = request.data.get("interaction_id")
+        feedback = str(request.data.get("feedback") or "").strip().lower()
+        if feedback not in ("up", "down"):
+            return Response({"detail": "Invalid feedback."}, status=400)
+        interaction = PublicChatInteraction.objects.filter(pk=interaction_id).first()
+        if not interaction:
+            return Response({"detail": "Interaction not found."}, status=404)
+        interaction.feedback = feedback
+        interaction.save(update_fields=["feedback"])
+        return Response({"status": "recorded"})
 
 
 class PublicChatFAQView(APIView):
@@ -1075,6 +1333,107 @@ class PublicChatFAQView(APIView):
 
         questions = _get_top_questions(limit)
         return Response({"questions": questions})
+
+
+class AdminChatKnowledgeGapView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if getattr(request.user, "role", "") != "admin":
+            raise PermissionDenied("Only admin can manage chatbot learning.")
+        status_filter = (request.query_params.get("status") or "pending").strip().lower()
+        qs = PublicChatKnowledgeGap.objects.all()
+        if status_filter and status_filter != "all":
+            qs = qs.filter(status=status_filter)
+        try:
+            limit = max(1, min(100, int(request.query_params.get("limit") or 25)))
+        except Exception:
+            limit = 25
+        serializer = PublicChatKnowledgeGapSerializer(qs[:limit], many=True)
+        return Response({"results": serializer.data, "count": qs.count()})
+
+
+def _coerce_tags(value):
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    return []
+
+
+class AdminChatKnowledgeGapApproveView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if getattr(request.user, "role", "") != "admin":
+            raise PermissionDenied("Only admin can approve chatbot learning.")
+        gap = PublicChatKnowledgeGap.objects.filter(pk=pk).first()
+        if not gap:
+            return Response({"detail": "Knowledge gap not found."}, status=404)
+        if gap.status != "pending":
+            return Response({"detail": "Knowledge gap was already reviewed."}, status=400)
+
+        title = str(request.data.get("title") or gap.suggested_title or gap.question_sample or "RDC-NCR Public Information").strip()
+        summary = str(request.data.get("summary") or gap.suggested_summary or gap.question_sample or "").strip()
+        body = str(request.data.get("body") or gap.suggested_body or summary).strip()
+        url = str(request.data.get("url") or "").strip()
+        tags = _coerce_tags(request.data.get("tags")) or gap.suggested_tags or ["chatbot-approved"]
+        language = str(request.data.get("language") or gap.language or "en").strip()[:10]
+        slug = str(request.data.get("slug") or "").strip()
+        if not slug:
+            slug = slugify(title)[:120] or f"chat-gap-{gap.id}"
+        content, _ = PublicContent.objects.update_or_create(
+            slug=slug,
+            language=language,
+            defaults={
+                "title": title[:200],
+                "summary": summary,
+                "body": body,
+                "url": url,
+                "tags": tags,
+            },
+        )
+        gap.status = "approved"
+        gap.approved_content = content
+        gap.reviewed_by = request.user
+        gap.reviewed_at = timezone.now()
+        gap.review_notes = str(request.data.get("notes") or "").strip()
+        gap.save(update_fields=["status", "approved_content", "reviewed_by", "reviewed_at", "review_notes"])
+        _log_activity(
+            request,
+            "chat_knowledge_approved",
+            details={"gap_id": gap.id, "content_slug": content.slug, "language": language},
+        )
+        _log_activity(
+            request,
+            "chat_content_updated",
+            details={"content_slug": content.slug, "title": content.title, "language": language},
+        )
+        return Response(PublicChatKnowledgeGapSerializer(gap).data)
+
+
+class AdminChatKnowledgeGapRejectView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if getattr(request.user, "role", "") != "admin":
+            raise PermissionDenied("Only admin can reject chatbot learning.")
+        gap = PublicChatKnowledgeGap.objects.filter(pk=pk).first()
+        if not gap:
+            return Response({"detail": "Knowledge gap not found."}, status=404)
+        if gap.status != "pending":
+            return Response({"detail": "Knowledge gap was already reviewed."}, status=400)
+        gap.status = "rejected"
+        gap.reviewed_by = request.user
+        gap.reviewed_at = timezone.now()
+        gap.review_notes = str(request.data.get("notes") or "").strip()
+        gap.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_notes"])
+        _log_activity(
+            request,
+            "chat_knowledge_rejected",
+            details={"gap_id": gap.id, "question": gap.question_sample},
+        )
+        return Response(PublicChatKnowledgeGapSerializer(gap).data)
 
 
 def _validate_password_policy(password: str):
