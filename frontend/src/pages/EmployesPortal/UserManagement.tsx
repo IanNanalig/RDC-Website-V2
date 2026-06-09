@@ -91,6 +91,7 @@ const UserManagement = () => {
   const [chatGapsLoading, setChatGapsLoading] = useState(false);
   const [chatGapDrafts, setChatGapDrafts] = useState<Record<number, ChatGapDraft>>({});
   const [chatGapStatus, setChatGapStatus] = useState("pending");
+  const [expandedChatGapIds, setExpandedChatGapIds] = useState<Record<number, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [toast, setToast] = useState<{ message: string; type: "info" | "success" | "warn" | "error" } | null>(null);
@@ -538,6 +539,10 @@ const UserManagement = () => {
         [key]: value,
       },
     }));
+  };
+
+  const toggleChatGap = (id: number) => {
+    setExpandedChatGapIds((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
   const approveChatGap = async (gap: ChatKnowledgeGap) => {
@@ -1024,6 +1029,9 @@ const UserManagement = () => {
                 <p className="text-xs text-slate-500">
                   Review repeated low-confidence public questions and convert them into approved website knowledge.
                 </p>
+                <p className="mt-2 w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                  {chatGapsLoading ? "Loading questions..." : `${chatGaps.length} question${chatGaps.length === 1 ? "" : "s"} shown`}
+                </p>
               </div>
               <div className="flex items-center gap-2">
                 <select
@@ -1049,10 +1057,11 @@ const UserManagement = () => {
               ) : (
                 chatGaps.map((gap) => {
                   const draft = chatGapDrafts[gap.id] || { title: "", summary: "", body: "", tags: "", url: "" };
+                  const isExpanded = Boolean(expandedChatGapIds[gap.id]);
                   return (
-                    <div key={gap.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                      <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
-                        <div>
+                    <div key={gap.id} className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+                      <div className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-700">
                               Asked {gap.count}x
@@ -1060,28 +1069,38 @@ const UserManagement = () => {
                             <span className="rounded-full bg-slate-200 px-2 py-1 text-xs font-semibold text-slate-700">
                               {gap.language === "tl" ? "Tagalog/Taglish" : "English"}
                             </span>
+                            <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                              gap.status === "approved"
+                                ? "bg-emerald-100 text-emerald-700"
+                                : gap.status === "rejected"
+                                ? "bg-rose-100 text-rose-700"
+                                : "bg-blue-100 text-blue-700"
+                            }`}>
+                              {gap.status}
+                            </span>
                             <span className="text-xs text-slate-500">
                               Last asked {new Date(gap.last_asked).toLocaleString()}
                             </span>
                           </div>
-                          <p className="mt-2 font-semibold text-slate-900">{gap.question_sample}</p>
+                          <p className="mt-2 truncate font-semibold text-slate-900" title={gap.question_sample}>
+                            {gap.question_sample}
+                          </p>
                           {gap.matched_content_title && (
                             <p className="mt-1 text-xs text-slate-500">Possibly related to: {gap.matched_content_title}</p>
                           )}
                         </div>
-                        <span className={`w-fit rounded-full px-2 py-1 text-xs font-semibold ${
-                          gap.status === "approved"
-                            ? "bg-emerald-100 text-emerald-700"
-                            : gap.status === "rejected"
-                            ? "bg-rose-100 text-rose-700"
-                            : "bg-blue-100 text-blue-700"
-                        }`}>
-                          {gap.status}
-                        </span>
+                        <button
+                          type="button"
+                          onClick={() => toggleChatGap(gap.id)}
+                          className="portal-btn portal-btn-ghost w-fit"
+                          aria-expanded={isExpanded}
+                        >
+                          {isExpanded ? "Hide details" : gap.status === "pending" ? "Review" : "View details"}
+                        </button>
                       </div>
 
-                      {gap.status === "pending" ? (
-                        <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
+                      {isExpanded && gap.status === "pending" ? (
+                        <div className="grid grid-cols-1 gap-3 border-t border-slate-200 bg-slate-50/70 px-4 pb-4 pt-4 xl:grid-cols-2">
                           <label className="block">
                             <span className="text-xs font-semibold text-slate-600">Approved Public Title</span>
                             <input
@@ -1133,12 +1152,12 @@ const UserManagement = () => {
                             </button>
                           </div>
                         </div>
-                      ) : (
-                        <p className="mt-3 text-sm text-slate-500">
+                      ) : isExpanded ? (
+                        <p className="border-t border-slate-200 px-4 pb-4 pt-3 text-sm text-slate-500">
                           Reviewed {gap.reviewed_at ? new Date(gap.reviewed_at).toLocaleString() : ""}{" "}
                           {gap.reviewed_by_name ? `by ${gap.reviewed_by_name}` : ""}
                         </p>
-                      )}
+                      ) : null}
                     </div>
                   );
                 })

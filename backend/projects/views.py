@@ -67,7 +67,7 @@ PASSWORD_RESET_LIMIT_IP = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_IP", 
 PUBLIC_CHAT_MAX_SUGGESTIONS = 6
 PUBLIC_CHAT_MIN_SCORE = 1.0
 PUBLIC_CHAT_DIRECT_CONFIDENCE = 0.62
-PUBLIC_CHAT_RELATED_CONFIDENCE = 0.35
+PUBLIC_CHAT_RELATED_CONFIDENCE = 0.60
 PUBLIC_PROJECTS_CACHE_TTL_SECONDS = 3600
 PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL = "public, max-age=0, must-revalidate"
 PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 3
@@ -1275,6 +1275,39 @@ class PublicChatAskView(APIView):
 
         confidence = _public_chat_confidence(best_score, len(question_tokens), intent_locked, forced_contact)
         answer_type = _public_chat_answer_type(confidence, True)
+        if answer_type == "fallback":
+            contact_content = content_qs.filter(slug="contact").first()
+            contact_url = contact_content.url if contact_content and contact_content.url else "/contact"
+            if language == "tl":
+                fallback = (
+                    "Wala akong tiyak na sagot para diyan sa pampublikong website. "
+                    "Para sa espesyal na tanong o paglilinaw, puwede kang magpadala ng mensahe sa Contact page."
+                )
+            else:
+                fallback = (
+                    "That question isn't covered in the RDC-NCR public website content. "
+                    "For a specific inquiry, please message us via the Contact page."
+                )
+            sources = [{"title": "Contact", "url": contact_url}]
+            if PUBLIC_CONTACT_EMAIL:
+                sources.append({"title": "Email RDC-NCR", "url": f"mailto:{PUBLIC_CONTACT_EMAIL}"})
+            related_links = _public_chat_related_links(ranked, exclude_slug=getattr(best, "slug", ""))
+            _public_chat_track_gap(question, normalized, language, best)
+            interaction = _public_chat_record_interaction(
+                request, question, normalized, language, best, 0.2, "fallback"
+            )
+            return Response(
+                {
+                    "answer": fallback,
+                    "confidence": 0.2,
+                    "answer_type": "fallback",
+                    "sources": sources,
+                    "related_links": related_links,
+                    "language": language,
+                    "interaction_id": interaction.id,
+                    "suggested_questions": suggested,
+                }
+            )
         sources = _public_chat_sources(best)
         if best.slug == "contact" or contact_intent:
             if include_map:
@@ -1284,8 +1317,6 @@ class PublicChatAskView(APIView):
             if include_email:
                 sources.append({"title": "Email RDC-NCR", "url": f"mailto:{PUBLIC_CONTACT_EMAIL}"})
         related_links = _public_chat_related_links(ranked, exclude_slug=best.slug)
-        if answer_type == "fallback":
-            _public_chat_track_gap(question, normalized, language, best)
         interaction = _public_chat_record_interaction(
             request, question, normalized, language, best, confidence, answer_type
         )
