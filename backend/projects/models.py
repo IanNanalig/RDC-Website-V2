@@ -8,6 +8,7 @@ class User(AbstractUser):
         ("admin", "Admin"),
         ("validator", "Validator"),
         ("staff", "Staff"),
+        ("content_editor", "Content Editor"),
     ]
     email = models.EmailField(unique=True, null=True, blank=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
@@ -236,6 +237,12 @@ class UserActivity(models.Model):
         ("project_revision_reviewed", "Project Revision Reviewed"),
         ("project_revision_endorsed", "Project Revision Endorsed"),
         ("project_revision_rejected", "Project Revision Rejected"),
+        ("cms_event_created", "CMS Event Created"),
+        ("cms_event_updated", "CMS Event Updated"),
+        ("cms_event_submitted", "CMS Event Submitted"),
+        ("cms_event_published", "CMS Event Published"),
+        ("cms_event_rejected", "CMS Event Rejected"),
+        ("cms_event_archived", "CMS Event Archived"),
         ("chat_knowledge_approved", "Chat Knowledge Approved"),
         ("chat_knowledge_rejected", "Chat Knowledge Rejected"),
         ("chat_content_updated", "Chat Content Updated"),
@@ -385,6 +392,54 @@ class PasswordResetRequest(models.Model):
 
     def __str__(self):
         return f"{self.email} - {self.status}"
+
+
+class PublicEvent(models.Model):
+    EVENT_TYPE_CHOICES = [
+        ("meeting", "Meeting"),
+        ("forum", "Forum"),
+        ("consultation", "Consultation"),
+        ("deadline", "Deadline"),
+        ("summit", "Summit"),
+        ("other", "Other"),
+    ]
+    STATUS_CHOICES = [
+        ("draft", "Draft"),
+        ("submitted", "Submitted for Review"),
+        ("published", "Published"),
+        ("rejected", "Rejected"),
+        ("archived", "Archived"),
+    ]
+
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    event_type = models.CharField(max_length=30, choices=EVENT_TYPE_CHOICES, default="meeting")
+    start_at = models.DateTimeField()
+    end_at = models.DateTimeField(null=True, blank=True)
+    location = models.CharField(max_length=200, blank=True)
+    is_virtual = models.BooleanField(default=False)
+    meeting_link = models.URLField(blank=True)
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="draft")
+    review_notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="created_public_events"
+    )
+    submitted_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="submitted_public_events"
+    )
+    reviewed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="reviewed_public_events"
+    )
+    published_at = models.DateTimeField(null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["start_at", "title"]
+
+    def __str__(self):
+        return f"{self.title} ({self.status})"
 
 
 class PublicContent(models.Model):

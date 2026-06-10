@@ -4,6 +4,7 @@ from .models import (
     AccessRequest,
     PasswordResetRequest,
     PublicChatKnowledgeGap,
+    PublicEvent,
     PriorityRuleSet,
     PublicContent,
     Project,
@@ -51,6 +52,8 @@ class UserSerializer(serializers.ModelSerializer):
         role = validated_data.get("role")
         if role == "contributor":
             validated_data["role"] = "staff"
+        elif role == "content-editor":
+            validated_data["role"] = "content_editor"
         user = User(**validated_data)
         user.is_staff = user.role == "admin"
         user.set_password(password)
@@ -62,6 +65,8 @@ class UserSerializer(serializers.ModelSerializer):
         role = validated_data.get("role")
         if role == "contributor":
             validated_data["role"] = "staff"
+        elif role == "content-editor":
+            validated_data["role"] = "content_editor"
         for key, value in validated_data.items():
             setattr(instance, key, value)
         if "role" in validated_data:
@@ -106,6 +111,92 @@ class PublicChatKnowledgeGapSerializer(serializers.ModelSerializer):
         if not obj.reviewed_by:
             return ""
         return obj.reviewed_by.full_name or obj.reviewed_by.get_full_name() or obj.reviewed_by.username
+
+
+class PublicEventSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField()
+    submitted_by_name = serializers.SerializerMethodField()
+    reviewed_by_name = serializers.SerializerMethodField()
+    day = serializers.SerializerMethodField()
+    month = serializers.SerializerMethodField()
+    time = serializers.SerializerMethodField()
+    end_time = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PublicEvent
+        fields = [
+            "id",
+            "title",
+            "description",
+            "event_type",
+            "start_at",
+            "end_at",
+            "day",
+            "month",
+            "time",
+            "end_time",
+            "location",
+            "is_virtual",
+            "meeting_link",
+            "status",
+            "review_notes",
+            "created_by_name",
+            "submitted_by_name",
+            "reviewed_by_name",
+            "published_at",
+            "archived_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "status",
+            "created_by_name",
+            "submitted_by_name",
+            "reviewed_by_name",
+            "published_at",
+            "archived_at",
+            "created_at",
+            "updated_at",
+        ]
+
+    def _name(self, user):
+        if not user:
+            return ""
+        return user.full_name or user.get_full_name() or user.username
+
+    def get_created_by_name(self, obj):
+        return self._name(obj.created_by)
+
+    def get_submitted_by_name(self, obj):
+        return self._name(obj.submitted_by)
+
+    def get_reviewed_by_name(self, obj):
+        return self._name(obj.reviewed_by)
+
+    def get_day(self, obj):
+        return obj.start_at.day if obj.start_at else None
+
+    def get_month(self, obj):
+        return obj.start_at.strftime("%b").upper() if obj.start_at else ""
+
+    def get_time(self, obj):
+        return obj.start_at.strftime("%I:%M %p").lstrip("0") if obj.start_at else ""
+
+    def get_end_time(self, obj):
+        return obj.end_at.strftime("%I:%M %p").lstrip("0") if obj.end_at else ""
+
+    def validate(self, attrs):
+        start_at = attrs.get("start_at", getattr(self.instance, "start_at", None))
+        end_at = attrs.get("end_at", getattr(self.instance, "end_at", None))
+        meeting_link = str(attrs.get("meeting_link", getattr(self.instance, "meeting_link", "")) or "").strip()
+        is_virtual = bool(attrs.get("is_virtual", getattr(self.instance, "is_virtual", False)))
+        location = str(attrs.get("location", getattr(self.instance, "location", "")) or "").strip()
+        if end_at and start_at and end_at <= start_at:
+            raise serializers.ValidationError("End date/time must be after the start date/time.")
+        if is_virtual and not meeting_link and not location:
+            raise serializers.ValidationError("Virtual events need a meeting link or public location note.")
+        return attrs
 
 
 class ProjectSerializer(serializers.ModelSerializer):

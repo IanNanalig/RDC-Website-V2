@@ -55,6 +55,9 @@ const Login: React.FC = () => {
         case "employee":
           navigate("/employee/dashboard", { replace: true });
           break;
+        case "content_editor":
+          navigate("/content/dashboard", { replace: true });
+          break;
         default:
           navigate(from, { replace: true });
       }

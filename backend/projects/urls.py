@@ -11,9 +11,12 @@ router.register(r"admin/users", views.AdminUserViewSet, basename="admin-users")
 router.register(r"access-requests", views.AccessRequestViewSet, basename="access-requests")
 router.register(r"password-reset-requests", views.PasswordResetRequestViewSet, basename="password-reset-requests")
 router.register(r"project-revisions", views.ProjectRevisionViewSet, basename="project-revisions")
+router.register(r"admin/events", views.AdminEventViewSet, basename="admin-events")
 
 public_projects_list = views.PublicProjectsViewSet.as_view({"get": "list"})
 public_projects_detail = views.PublicProjectsViewSet.as_view({"get": "retrieve"})
+public_events_list = views.PublicEventViewSet.as_view({"get": "list"})
+public_events_detail = views.PublicEventViewSet.as_view({"get": "retrieve"})
 
 urlpatterns = [
     path("", include(router.urls)),
@@ -21,6 +24,8 @@ urlpatterns = [
     path("public/projects/", public_projects_list, name="public-projects"),
     path("public/projects/<int:pk>/", public_projects_detail, name="public-project-detail"),
     path("public/projects/stats/", views.PublicProjectsStatsView.as_view(), name="public-project-stats"),
+    path("public/events/", public_events_list, name="public-events"),
+    path("public/events/<int:pk>/", public_events_detail, name="public-event-detail"),
     path("dashboard/", views.DashboardView.as_view(), name="dashboard"),
     path("admin/activity/", views.AdminActivityView.as_view(), name="admin-activity"),
     path("agency/activity/", views.AgencyActivityView.as_view(), name="agency-activity"),

@@ -60,6 +60,38 @@ type ChatGapDraft = {
   url: string;
 };
 
+type PublicEventRow = {
+  id: number;
+  title: string;
+  description: string;
+  event_type: string;
+  start_at: string;
+  end_at?: string;
+  day?: number;
+  month?: string;
+  time?: string;
+  end_time?: string;
+  location: string;
+  is_virtual: boolean;
+  meeting_link: string;
+  status: "draft" | "submitted" | "published" | "rejected" | "archived";
+  review_notes?: string;
+  published_at?: string;
+  updated_at: string;
+};
+
+type PublicEventForm = {
+  id?: number;
+  title: string;
+  description: string;
+  event_type: string;
+  start_at: string;
+  end_at: string;
+  location: string;
+  is_virtual: boolean;
+  meeting_link: string;
+};
+
 type AdminUsersTab = "create-account" | "encoding-window" | "operations";
 
 type EncodingWindowState = {
@@ -78,7 +110,19 @@ const parseTab = (value: string | null): AdminUsersTab => {
   return "operations";
 };
 
+const emptyEventForm: PublicEventForm = {
+  title: "",
+  description: "",
+  event_type: "meeting",
+  start_at: "",
+  end_at: "",
+  location: "",
+  is_virtual: false,
+  meeting_link: "",
+};
+
 const UserManagement = () => {
+  const showLegacyEventsPanel = import.meta.env.VITE_SHOW_LEGACY_EVENTS_PANEL === "true";
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = parseTab(searchParams.get("tab"));
   const [users, setUsers] = useState<UserRow[]>([]);
@@ -92,6 +136,9 @@ const UserManagement = () => {
   const [chatGapDrafts, setChatGapDrafts] = useState<Record<number, ChatGapDraft>>({});
   const [chatGapStatus, setChatGapStatus] = useState("pending");
   const [expandedChatGapIds, setExpandedChatGapIds] = useState<Record<number, boolean>>({});
+  const [events, setEvents] = useState<PublicEventRow[]>([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [eventForm, setEventForm] = useState<PublicEventForm>(emptyEventForm);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [toast, setToast] = useState<{ message: string; type: "info" | "success" | "warn" | "error" } | null>(null);
@@ -129,6 +176,7 @@ const UserManagement = () => {
     if (role === "staff" || role === "employee" || role === "contributor") return "Contributor";
     if (role === "validator") return "Validator";
     if (role === "admin") return "Admin";
+    if (role === "content_editor") return "Content Editor";
     return role;
   };
 
@@ -155,6 +203,12 @@ const UserManagement = () => {
     priority_analysis_overridden: "Priority Analysis Overridden",
     encoding_window_updated: "Encoding Window Updated",
     progress_window_updated: "Progress Update Window Updated",
+    cms_event_created: "CMS Event Created",
+    cms_event_updated: "CMS Event Updated",
+    cms_event_submitted: "CMS Event Submitted",
+    cms_event_published: "CMS Event Published",
+    cms_event_rejected: "CMS Event Rejected",
+    cms_event_archived: "CMS Event Archived",
     project_revision_created: "Project Revision Created",
     project_revision_updated: "Project Revision Updated",
     project_revision_submitted: "Project Revision Submitted",
@@ -189,6 +243,12 @@ const UserManagement = () => {
     priority_analysis_overridden: "warn",
     encoding_window_updated: "info",
     progress_window_updated: "info",
+    cms_event_created: "info",
+    cms_event_updated: "info",
+    cms_event_submitted: "info",
+    cms_event_published: "info",
+    cms_event_rejected: "warn",
+    cms_event_archived: "warn",
     project_revision_created: "info",
     project_revision_updated: "info",
     project_revision_submitted: "info",
@@ -446,6 +506,19 @@ const UserManagement = () => {
     }
   }, [chatGapStatus]);
 
+  const loadEvents = useCallback(async () => {
+    setEventsLoading(true);
+    try {
+      const data = await api.get("admin/events/");
+      setEvents(Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : []);
+    } catch (error) {
+      console.error(error);
+      setEvents([]);
+    } finally {
+      setEventsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     load();
   }, [load]);
@@ -457,7 +530,8 @@ const UserManagement = () => {
   useEffect(() => {
     if (activeTab !== "operations") return;
     loadChatGaps();
-  }, [activeTab, loadChatGaps]);
+    loadEvents();
+  }, [activeTab, loadChatGaps, loadEvents]);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -578,6 +652,79 @@ const UserManagement = () => {
       await loadActivity();
     } catch (error) {
       setNotice(getErrorDetail(error, "Failed to reject chatbot knowledge gap."));
+    }
+  };
+
+  const toDateTimeLocal = (value?: string) => {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  };
+
+  const editEvent = (event: PublicEventRow) => {
+    setEventForm({
+      id: event.id,
+      title: event.title || "",
+      description: event.description || "",
+      event_type: event.event_type || "meeting",
+      start_at: toDateTimeLocal(event.start_at),
+      end_at: toDateTimeLocal(event.end_at),
+      location: event.location || "",
+      is_virtual: Boolean(event.is_virtual),
+      meeting_link: event.meeting_link || "",
+    });
+  };
+
+  const saveEvent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setNotice("");
+    if (!eventForm.title.trim() || !eventForm.start_at) {
+      setNotice("Event title and start date/time are required.");
+      return;
+    }
+    try {
+      const payload = {
+        title: eventForm.title.trim(),
+        description: eventForm.description.trim(),
+        event_type: eventForm.event_type,
+        start_at: eventForm.start_at,
+        end_at: eventForm.end_at || null,
+        location: eventForm.location.trim(),
+        is_virtual: eventForm.is_virtual,
+        meeting_link: eventForm.meeting_link.trim(),
+      };
+      if (eventForm.id) {
+        await api.put(`admin/events/${eventForm.id}/`, payload);
+        setNotice("Event draft updated.");
+      } else {
+        await api.post("admin/events/", payload);
+        setNotice("Event draft created.");
+      }
+      setEventForm(emptyEventForm);
+      await loadEvents();
+      await loadActivity();
+    } catch (error) {
+      setNotice(getErrorDetail(error, "Failed to save event."));
+    }
+  };
+
+  const runEventAction = async (event: PublicEventRow, action: "submit" | "publish" | "reject" | "archive") => {
+    setNotice("");
+    try {
+      await api.post(`admin/events/${event.id}/${action}/`, {});
+      const labels: Record<typeof action, string> = {
+        submit: "Event submitted for review.",
+        publish: "Event published to the public website.",
+        reject: "Event rejected.",
+        archive: "Event archived.",
+      };
+      setNotice(labels[action]);
+      await loadEvents();
+      await loadActivity();
+    } catch (error) {
+      setNotice(getErrorDetail(error, `Failed to ${action} event.`));
     }
   };
 
@@ -774,6 +921,7 @@ const UserManagement = () => {
               >
                 <option value="contributor">Contributor</option>
                 <option value="validator">Validator</option>
+                <option value="content_editor">Content Editor</option>
                 <option value="admin">Admin</option>
               </select>
             </label>
@@ -1022,6 +1170,173 @@ const UserManagement = () => {
             )}
           </div>
 
+          {showLegacyEventsPanel && (
+          <div className="portal-card mb-4">
+            <div className="portal-card-header flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">Public Events Calendar</h2>
+                <p className="text-xs text-slate-500">
+                  Manage Home page events. Only published events appear on the public website.
+                </p>
+              </div>
+              <button type="button" onClick={loadEvents} className="portal-btn portal-btn-ghost">Refresh Events</button>
+            </div>
+            <form onSubmit={saveEvent} className="portal-card-body border-b border-slate-200">
+              <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                <label className="block">
+                  <span className="text-sm text-slate-700">Event Title *</span>
+                  <input
+                    className="mt-1 w-full rounded-lg border px-3 py-2"
+                    value={eventForm.title}
+                    onChange={(e) => setEventForm((prev) => ({ ...prev, title: e.target.value }))}
+                    placeholder="RDC Full Council Meeting"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm text-slate-700">Event Type</span>
+                  <select
+                    className="mt-1 w-full rounded-lg border px-3 py-2 bg-white"
+                    value={eventForm.event_type}
+                    onChange={(e) => setEventForm((prev) => ({ ...prev, event_type: e.target.value }))}
+                  >
+                    <option value="meeting">Meeting</option>
+                    <option value="forum">Forum</option>
+                    <option value="consultation">Consultation</option>
+                    <option value="deadline">Deadline</option>
+                    <option value="summit">Summit</option>
+                    <option value="other">Other</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-sm text-slate-700">Start Date and Time *</span>
+                  <input
+                    type="datetime-local"
+                    className="mt-1 w-full rounded-lg border px-3 py-2"
+                    value={eventForm.start_at}
+                    onChange={(e) => setEventForm((prev) => ({ ...prev, start_at: e.target.value }))}
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm text-slate-700">End Date and Time</span>
+                  <input
+                    type="datetime-local"
+                    className="mt-1 w-full rounded-lg border px-3 py-2"
+                    value={eventForm.end_at}
+                    onChange={(e) => setEventForm((prev) => ({ ...prev, end_at: e.target.value }))}
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm text-slate-700">Location / Venue</span>
+                  <input
+                    className="mt-1 w-full rounded-lg border px-3 py-2"
+                    value={eventForm.location}
+                    onChange={(e) => setEventForm((prev) => ({ ...prev, location: e.target.value }))}
+                    placeholder="MMDA Building or Virtual"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm text-slate-700">Meeting Link</span>
+                  <input
+                    className="mt-1 w-full rounded-lg border px-3 py-2"
+                    value={eventForm.meeting_link}
+                    onChange={(e) => setEventForm((prev) => ({ ...prev, meeting_link: e.target.value }))}
+                    placeholder="https://..."
+                  />
+                </label>
+                <label className="flex items-center gap-2 xl:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={eventForm.is_virtual}
+                    onChange={(e) => setEventForm((prev) => ({ ...prev, is_virtual: e.target.checked }))}
+                  />
+                  <span className="text-sm text-slate-700">This is a virtual or online event.</span>
+                </label>
+                <label className="block xl:col-span-2">
+                  <span className="text-sm text-slate-700">Public Description</span>
+                  <textarea
+                    className="mt-1 min-h-[90px] w-full rounded-lg border px-3 py-2"
+                    value={eventForm.description}
+                    onChange={(e) => setEventForm((prev) => ({ ...prev, description: e.target.value }))}
+                    placeholder="Brief public-facing details, agenda note, or participation instructions."
+                  />
+                </label>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button type="submit" className="portal-btn portal-btn-primary">
+                  {eventForm.id ? "Save Event Draft" : "Create Event Draft"}
+                </button>
+                {eventForm.id && (
+                  <button type="button" onClick={() => setEventForm(emptyEventForm)} className="portal-btn portal-btn-ghost">
+                    Cancel Edit
+                  </button>
+                )}
+              </div>
+            </form>
+            <div className="portal-card-body">
+              {eventsLoading ? (
+                <p className="text-sm text-slate-500">Loading public events...</p>
+              ) : events.length === 0 ? (
+                <p className="text-sm text-slate-500">No events created yet.</p>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                  {events.map((event) => (
+                    <div key={event.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                              event.status === "published"
+                                ? "bg-emerald-100 text-emerald-700"
+                                : event.status === "submitted"
+                                ? "bg-blue-100 text-blue-700"
+                                : event.status === "rejected"
+                                ? "bg-rose-100 text-rose-700"
+                                : event.status === "archived"
+                                ? "bg-slate-200 text-slate-700"
+                                : "bg-amber-100 text-amber-700"
+                            }`}>
+                              {event.status}
+                            </span>
+                            <span className="rounded-full bg-purple-100 px-2 py-1 text-xs font-semibold text-purple-700">
+                              {event.event_type}
+                            </span>
+                          </div>
+                          <h3 className="mt-2 font-semibold text-slate-900">{event.title}</h3>
+                          <p className="mt-1 text-sm text-slate-600">
+                            {event.start_at ? new Date(event.start_at).toLocaleString("en-PH", { timeZone: "Asia/Manila" }) : "No date"}
+                          </p>
+                          <p className="mt-1 text-sm text-slate-500">{event.location || (event.is_virtual ? "Virtual" : "Location not set")}</p>
+                        </div>
+                        <button type="button" onClick={() => editEvent(event)} className="portal-btn portal-btn-ghost w-fit">
+                          Edit
+                        </button>
+                      </div>
+                      {event.description && <p className="mt-3 line-clamp-2 text-sm text-slate-600">{event.description}</p>}
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {event.status !== "published" && event.status !== "archived" && (
+                          <button type="button" onClick={() => runEventAction(event, "publish")} className="text-sm font-semibold text-emerald-600 hover:underline">
+                            Publish
+                          </button>
+                        )}
+                        {(event.status === "submitted" || event.status === "draft") && (
+                          <button type="button" onClick={() => runEventAction(event, "reject")} className="text-sm font-semibold text-rose-600 hover:underline">
+                            Reject
+                          </button>
+                        )}
+                        {event.status !== "archived" && (
+                          <button type="button" onClick={() => runEventAction(event, "archive")} className="text-sm font-semibold text-slate-500 hover:underline">
+                            Archive
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          )}
+
           <div className="portal-card mb-4">
             <div className="portal-card-header flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
@@ -1186,6 +1501,7 @@ const UserManagement = () => {
                     <option value="admin">Admin</option>
                     <option value="validator">Validator</option>
                     <option value="staff">Contributor</option>
+                    <option value="content_editor">Content Editor</option>
                   </select>
                 </label>
                 <label className="block">

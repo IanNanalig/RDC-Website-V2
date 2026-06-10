@@ -37,13 +37,14 @@ import ProjectReview from "./pages/EmployesPortal/ProjectReview";
 import AdminProjects from "./pages/EmployesPortal/AdminProjects";
 import AdminValidatorDiffs from "./pages/EmployesPortal/AdminValidatorDiffs";
 import UserManagement from "./pages/EmployesPortal/UserManagement";
+import ContentManagement from "./pages/EmployesPortal/ContentManagement";
 
 // Interface for user data
 interface User {
   id: number;
   username: string;
   email: string;
-  role: "admin" | "validator" | "employee";
+  role: "admin" | "validator" | "employee" | "content_editor";
   department?: string;
   position?: string;
 }
@@ -54,7 +55,7 @@ const ProtectedRoute = ({
   roles,
 }: {
   children: React.ReactNode;
-  roles?: ("admin" | "validator" | "employee")[];
+  roles?: ("admin" | "validator" | "employee" | "content_editor")[];
 }) => {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
@@ -134,6 +135,9 @@ const ProtectedRoute = ({
         break;
       case "employee":
         redirectPath = "/employee/dashboard";
+        break;
+      case "content_editor":
+        redirectPath = "/content/dashboard";
         break;
     }
     return <Navigate to={redirectPath} replace />;
@@ -270,6 +274,12 @@ const AdminValidatorDiffsPage = () => (
 const UserManagementPage = () => (
   <PortalPageWrapper pageTitle="User Management">
     <UserManagement />
+  </PortalPageWrapper>
+);
+
+const ContentManagementPage = () => (
+  <PortalPageWrapper pageTitle="Content Management">
+    <ContentManagement />
   </PortalPageWrapper>
 );
 
@@ -455,10 +465,28 @@ export default function App() {
           }
         />
         <Route
+          path="/admin/content"
+          element={
+            <ProtectedRoute roles={["admin"]}>
+              <ContentManagementPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/admin/archived"
           element={
             <ProtectedRoute roles={["admin"]}>
               <AdminProjectsPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* ===== CONTENT EDITOR PORTAL ROUTES ===== */}
+        <Route
+          path="/content/dashboard"
+          element={
+            <ProtectedRoute roles={["content_editor"]}>
+              <ContentManagementPage />
             </ProtectedRoute>
           }
         />
@@ -539,6 +567,9 @@ function RoleRedirect() {
             break;
           case "employee":
             redirectPath = "/employee/dashboard";
+            break;
+          case "content_editor":
+            redirectPath = "/content/dashboard";
             break;
         }
 

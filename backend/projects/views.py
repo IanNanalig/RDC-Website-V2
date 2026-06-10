@@ -36,6 +36,7 @@ from .models import (
     PublicChatInteraction,
     PublicChatKnowledgeGap,
     PublicContent,
+    PublicEvent,
     SystemSetting,
     User,
     UserActivity,
@@ -44,6 +45,7 @@ from .serializers import (
     AccessRequestSerializer,
     PasswordResetRequestSerializer,
     ProjectCommentSerializer,
+    PublicEventSerializer,
     PublicChatKnowledgeGapSerializer,
     PublicProjectSerializer,
     ProjectSerializer,
@@ -513,6 +515,14 @@ def _build_generic_answer(question: str, content: PublicContent, language: str) 
 
 def _frontend_role(role: str):
     return "employee" if role == "staff" else role
+
+
+def _is_content_manager(user):
+    return getattr(user, "role", "") in {"admin", "content_editor"}
+
+
+def _is_admin_user(user):
+    return getattr(user, "role", "") == "admin"
 
 
 def _build_unique_username(email: str, full_name: str = ""):
@@ -1465,6 +1475,188 @@ class AdminChatKnowledgeGapRejectView(APIView):
             details={"gap_id": gap.id, "question": gap.question_sample},
         )
         return Response(PublicChatKnowledgeGapSerializer(gap).data)
+
+
+def _parse_bool_query(value, default=False):
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _sync_public_event_content(event: PublicEvent):
+    slug = f"event-{event.id}"
+    if event.status != "published":
+        PublicContent.objects.filter(slug=slug).delete()
+        return
+
+    start_local = timezone.localtime(event.start_at)
+    event_date = start_local.strftime("%B %d, %Y")
+    event_time = start_local.strftime("%I:%M %p").lstrip("0")
+    location = event.location or ("Virtual event" if event.is_virtual else "Location to be announced")
+    summary = f"{event.title} is scheduled on {event_date} at {event_time}."
+    body_parts = [
+        summary,
+        f"Event type: {event.get_event_type_display()}.",
+        f"Location: {location}.",
+    ]
+    if event.description:
+        body_parts.append(event.description)
+    if event.meeting_link:
+        body_parts.append(f"Event link: {event.meeting_link}")
+
+    PublicContent.objects.update_or_create(
+        slug=slug,
+        language="en",
+        defaults={
+            "title": event.title[:200],
+            "summary": summary,
+            "body": "\n".join(body_parts),
+            "tags": ["events", "calendar", event.event_type, "rdc"],
+            "url": "/",
+        },
+    )
+
+
+class PublicEventViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    serializer_class = PublicEventSerializer
+
+    def get_queryset(self):
+        qs = PublicEvent.objects.filter(status="published").order_by("start_at", "title")
+        event_type = (self.request.query_params.get("type") or "").strip().lower()
+        month = (self.request.query_params.get("month") or "").strip()
+        q = (self.request.query_params.get("q") or "").strip()
+        include_past = _parse_bool_query(self.request.query_params.get("include_past"), False)
+        if event_type and event_type != "all":
+            qs = qs.filter(event_type=event_type)
+        if month:
+            try:
+                month_dt = datetime.strptime(month, "%Y-%m")
+                qs = qs.filter(start_at__year=month_dt.year, start_at__month=month_dt.month)
+            except ValueError:
+                qs = qs.none()
+        if q:
+            qs = qs.filter(Q(title__icontains=q) | Q(description__icontains=q) | Q(location__icontains=q))
+        if getattr(self, "action", "") == "list" and not include_past:
+            qs = qs.filter(start_at__gte=timezone.now())
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        try:
+            limit = max(1, min(50, int(request.query_params.get("limit") or 20)))
+        except Exception:
+            limit = 20
+        qs = self.get_queryset()
+        data = PublicEventSerializer(qs[:limit], many=True).data
+        resp = Response({"results": data, "count": qs.count()})
+        resp["Cache-Control"] = "public, max-age=300"
+        return resp
+
+
+class AdminEventViewSet(viewsets.ModelViewSet):
+    serializer_class = PublicEventSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = PublicEvent.objects.all().order_by("-updated_at", "-start_at")
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        if not _is_content_manager(request.user):
+            raise PermissionDenied("Only admin or content editors can manage public events.")
+
+    def get_queryset(self):
+        qs = PublicEvent.objects.all().order_by("-updated_at", "-start_at")
+        if _is_admin_user(self.request.user):
+            return qs
+        return qs.filter(created_by=self.request.user)
+
+    def _ensure_editor_can_change(self, event):
+        if _is_admin_user(self.request.user):
+            return
+        if event.created_by_id != self.request.user.id:
+            raise PermissionDenied("Content editors can only manage their own event drafts.")
+        if event.status not in {"draft", "rejected"}:
+            raise PermissionDenied("Submitted, published, or archived events are locked for content editors.")
+
+    def _ensure_admin_action(self):
+        if not _is_admin_user(self.request.user):
+            raise PermissionDenied("Only admin can approve, reject, or archive public events.")
+
+    def perform_create(self, serializer):
+        event = serializer.save(created_by=self.request.user, status="draft")
+        _log_activity(
+            self.request,
+            "cms_event_created",
+            details={"event_id": event.id, "title": event.title, "status": event.status},
+        )
+
+    def perform_update(self, serializer):
+        self._ensure_editor_can_change(serializer.instance)
+        event = serializer.save()
+        _sync_public_event_content(event)
+        _log_activity(
+            self.request,
+            "cms_event_updated",
+            details={"event_id": event.id, "title": event.title, "status": event.status},
+        )
+
+    @action(detail=True, methods=["post"])
+    def submit(self, request, pk=None):
+        event = self.get_object()
+        self._ensure_editor_can_change(event)
+        if event.status not in {"draft", "rejected"}:
+            return Response({"detail": "Only draft or rejected events can be submitted."}, status=400)
+        event.status = "submitted"
+        event.submitted_by = request.user
+        event.review_notes = ""
+        event.save(update_fields=["status", "submitted_by", "review_notes", "updated_at"])
+        _log_activity(request, "cms_event_submitted", details={"event_id": event.id, "title": event.title})
+        return Response(PublicEventSerializer(event).data)
+
+    @action(detail=True, methods=["post"])
+    def publish(self, request, pk=None):
+        self._ensure_admin_action()
+        event = self.get_object()
+        if event.status == "archived":
+            return Response({"detail": "Archived events cannot be published."}, status=400)
+        event.status = "published"
+        event.reviewed_by = request.user
+        event.published_at = timezone.now()
+        event.review_notes = str(request.data.get("review_notes") or "").strip()
+        event.save(update_fields=["status", "reviewed_by", "published_at", "review_notes", "updated_at"])
+        _sync_public_event_content(event)
+        _log_activity(request, "cms_event_published", details={"event_id": event.id, "title": event.title})
+        return Response(PublicEventSerializer(event).data)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        self._ensure_admin_action()
+        event = self.get_object()
+        if event.status not in {"submitted", "draft"}:
+            return Response({"detail": "Only submitted or draft events can be rejected."}, status=400)
+        event.status = "rejected"
+        event.reviewed_by = request.user
+        event.review_notes = str(request.data.get("review_notes") or "Rejected by admin review.").strip()
+        event.save(update_fields=["status", "reviewed_by", "review_notes", "updated_at"])
+        _sync_public_event_content(event)
+        _log_activity(
+            request,
+            "cms_event_rejected",
+            details={"event_id": event.id, "title": event.title, "notes": event.review_notes},
+        )
+        return Response(PublicEventSerializer(event).data)
+
+    @action(detail=True, methods=["post"])
+    def archive(self, request, pk=None):
+        self._ensure_admin_action()
+        event = self.get_object()
+        event.status = "archived"
+        event.reviewed_by = request.user
+        event.archived_at = timezone.now()
+        event.save(update_fields=["status", "reviewed_by", "archived_at", "updated_at"])
+        _sync_public_event_content(event)
+        _log_activity(request, "cms_event_archived", details={"event_id": event.id, "title": event.title})
+        return Response(PublicEventSerializer(event).data)
 
 
 def _validate_password_policy(password: str):
@@ -2791,7 +2983,9 @@ class AdminUserViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Email already exists."}, status=400)
         if role == "contributor":
             role = "staff"
-        if role not in ("admin", "validator", "staff"):
+        elif role == "content-editor":
+            role = "content_editor"
+        if role not in ("admin", "validator", "staff", "content_editor"):
             return Response({"detail": "Invalid role."}, status=400)
 
         username = _build_unique_username(email)

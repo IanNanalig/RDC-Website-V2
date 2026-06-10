@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useEncodingWindow } from "../../hooks/useEncodingWindow";
 
-type Role = "admin" | "validator" | "employee";
+type Role = "admin" | "validator" | "employee" | "content_editor";
 
 type Props = {
   title: string;
@@ -19,12 +19,14 @@ const roleLabel: Record<Role, string> = {
   admin: "Administrator",
   validator: "Validator",
   employee: "Contributor",
+  content_editor: "Content Editor",
 };
 
 const roleAccent: Record<Role, string> = {
   admin: "portal-chip-admin",
   validator: "portal-chip-validator",
   employee: "portal-chip-employee",
+  content_editor: "portal-chip-validator",
 };
 
 const navByRole: Record<Role, NavItem[]> = {
@@ -32,6 +34,7 @@ const navByRole: Record<Role, NavItem[]> = {
     { label: "Dashboard", to: "/admin/dashboard" },
     { label: "Projects", to: "/admin/projects" },
     { label: "Validator Tracker", to: "/admin/validator-diffs" },
+    { label: "Content Management", to: "/admin/content" },
     { label: "Users & Access", to: "/admin/users" },
   ],
   validator: [
@@ -43,6 +46,9 @@ const navByRole: Record<Role, NavItem[]> = {
     { label: "Dashboard", to: "/employee/dashboard" },
     { label: "My Projects", to: "/employee/projects" },
     { label: "New Submission", to: "/employee/projects/new" },
+  ],
+  content_editor: [
+    { label: "Content Management", to: "/content/dashboard" },
   ],
 };
 
