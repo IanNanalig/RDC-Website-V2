@@ -45,6 +45,8 @@ function isPublicRequest(path: string, method: string) {
     path.startsWith("public-chat/") ||
     path.startsWith("public/projects/") ||
     path.startsWith("public/events/") ||
+    path.startsWith("public/page-content/") ||
+    path.startsWith("public/cms/") ||
     path === "token/refresh/" ||
     (path === "access-requests/" && m === "POST") ||
     (path === "password-reset-requests/" && m === "POST") ||
@@ -140,10 +142,14 @@ function redirectToLoginIfNeeded() {
 async function request(path: string, options: RequestInit = {}, hasRetried = false) {
   const method = options.method || "GET";
   const normalizedPath = normalizePath(path);
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...headersToRecord(options.headers),
-  };
+  const isFormData =
+    typeof FormData !== "undefined" && options.body instanceof FormData;
+  const headers: Record<string, string> = isFormData
+    ? headersToRecord(options.headers)
+    : {
+        "Content-Type": "application/json",
+        ...headersToRecord(options.headers),
+      };
 
   const token = getToken();
   if (token && !isPublicRequest(normalizedPath, method)) {
@@ -185,8 +191,12 @@ export const api = {
   get: (path: string) => request(path, { method: "GET" }),
   post: (path: string, body?: unknown) =>
     request(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
+  postForm: (path: string, body: FormData) =>
+    request(path, { method: "POST", body }),
   put: (path: string, body?: unknown) =>
     request(path, { method: "PUT", body: body ? JSON.stringify(body) : undefined }),
+  putForm: (path: string, body: FormData) =>
+    request(path, { method: "PUT", body }),
   del: (path: string) => request(path, { method: "DELETE" }),
 };
 

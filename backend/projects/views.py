@@ -37,6 +37,7 @@ from .models import (
     PublicChatKnowledgeGap,
     PublicContent,
     PublicEvent,
+    PublicPageContent,
     SystemSetting,
     User,
     UserActivity,
@@ -46,6 +47,8 @@ from .serializers import (
     PasswordResetRequestSerializer,
     ProjectCommentSerializer,
     PublicEventSerializer,
+    PublicPageContentPublicSerializer,
+    PublicPageContentSerializer,
     PublicChatKnowledgeGapSerializer,
     PublicProjectSerializer,
     ProjectSerializer,
@@ -1657,6 +1660,224 @@ class AdminEventViewSet(viewsets.ModelViewSet):
         _sync_public_event_content(event)
         _log_activity(request, "cms_event_archived", details={"event_id": event.id, "title": event.title})
         return Response(PublicEventSerializer(event).data)
+
+
+PAGE_PUBLIC_URLS = {
+    "home": "/",
+    "about_rdc": "/about-rdc",
+    "region_profile": "/region-profile",
+    "publications": "/publications",
+    "news": "/news",
+    "projects_dashboard": "/Projects",
+    "contact": "/contact",
+}
+
+
+def _sync_public_page_content(content: PublicPageContent):
+    slug = f"cms-{content.page}-{content.section_key}"
+    if content.status != "published":
+        if not PublicPageContent.objects.filter(
+            page=content.page,
+            section_key=content.section_key,
+            status="published",
+        ).exclude(pk=content.pk).exists():
+            PublicContent.objects.filter(slug=slug).delete()
+        return
+
+    summary = (content.subtitle or content.body or content.title).strip()
+    if len(summary) > 300:
+        summary = f"{summary[:297].rstrip()}..."
+    tags = [
+        "cms",
+        "public-page",
+        content.page,
+        content.section_key,
+    ]
+    for item in (content.metadata or {}).get("tags", []):
+        if isinstance(item, str) and item.strip():
+            tags.append(item.strip())
+
+    PublicContent.objects.update_or_create(
+        slug=slug,
+        language="en",
+        defaults={
+            "title": content.title[:200],
+            "summary": summary,
+            "body": content.body or content.subtitle or content.title,
+            "tags": list(dict.fromkeys(tags)),
+            "url": PAGE_PUBLIC_URLS.get(content.page, "/"),
+        },
+    )
+
+
+class PublicPageContentViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    serializer_class = PublicPageContentPublicSerializer
+
+    def get_queryset(self):
+        qs = PublicPageContent.objects.filter(status="published").order_by("page", "section_key")
+        page = (self.request.query_params.get("page") or "").strip()
+        section = (self.request.query_params.get("section_key") or "").strip()
+        if page:
+            qs = qs.filter(page=page)
+        if section:
+            qs = qs.filter(section_key=section)
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset()
+        data = self.get_serializer(qs, many=True).data
+        resp = Response({"results": data, "count": qs.count()})
+        resp["Cache-Control"] = "public, max-age=300"
+        return resp
+
+
+class AdminPageContentViewSet(viewsets.ModelViewSet):
+    serializer_class = PublicPageContentSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = PublicPageContent.objects.all().order_by("page", "section_key", "-updated_at")
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        if not _is_content_manager(request.user):
+            raise PermissionDenied("Only admin or content editors can manage public page content.")
+
+    def get_queryset(self):
+        qs = PublicPageContent.objects.all().order_by("page", "section_key", "-updated_at")
+        page = (self.request.query_params.get("page") or "").strip()
+        status_filter = (self.request.query_params.get("status") or "").strip()
+        if page:
+            qs = qs.filter(page=page)
+        if status_filter and status_filter != "all":
+            qs = qs.filter(status=status_filter)
+        if _is_admin_user(self.request.user):
+            return qs
+        return qs.filter(created_by=self.request.user)
+
+    def _ensure_editor_can_change(self, content):
+        if _is_admin_user(self.request.user):
+            return
+        if content.created_by_id != self.request.user.id:
+            raise PermissionDenied("Content editors can only manage their own content drafts.")
+        if content.status not in {"draft", "rejected"}:
+            raise PermissionDenied("Submitted, published, or archived content is locked for content editors.")
+
+    def _ensure_admin_action(self):
+        if not _is_admin_user(self.request.user):
+            raise PermissionDenied("Only admin can approve, reject, or archive public page content.")
+
+    def perform_create(self, serializer):
+        content = serializer.save(created_by=self.request.user, status="draft")
+        _log_activity(
+            self.request,
+            "cms_content_created",
+            details={
+                "content_id": content.id,
+                "page": content.page,
+                "section_key": content.section_key,
+                "title": content.title,
+                "status": content.status,
+            },
+        )
+
+    def perform_update(self, serializer):
+        self._ensure_editor_can_change(serializer.instance)
+        content = serializer.save()
+        _sync_public_page_content(content)
+        _log_activity(
+            self.request,
+            "cms_content_updated",
+            details={
+                "content_id": content.id,
+                "page": content.page,
+                "section_key": content.section_key,
+                "title": content.title,
+                "status": content.status,
+            },
+        )
+
+    @action(detail=True, methods=["post"])
+    def submit(self, request, pk=None):
+        content = self.get_object()
+        self._ensure_editor_can_change(content)
+        if content.status not in {"draft", "rejected"}:
+            return Response({"detail": "Only draft or rejected content can be submitted."}, status=400)
+        content.status = "submitted"
+        content.submitted_by = request.user
+        content.review_notes = ""
+        content.save(update_fields=["status", "submitted_by", "review_notes", "updated_at"])
+        _log_activity(
+            request,
+            "cms_content_submitted",
+            details={"content_id": content.id, "page": content.page, "section_key": content.section_key, "title": content.title},
+        )
+        return Response(PublicPageContentSerializer(content).data)
+
+    @action(detail=True, methods=["post"])
+    @transaction.atomic
+    def publish(self, request, pk=None):
+        self._ensure_admin_action()
+        content = self.get_object()
+        if content.status == "archived":
+            return Response({"detail": "Archived content cannot be published."}, status=400)
+        PublicPageContent.objects.filter(
+            page=content.page,
+            section_key=content.section_key,
+            status="published",
+        ).exclude(pk=content.pk).update(status="archived", archived_at=timezone.now(), reviewed_by=request.user)
+        content.status = "published"
+        content.reviewed_by = request.user
+        content.published_at = timezone.now()
+        content.review_notes = str(request.data.get("review_notes") or "").strip()
+        content.save(update_fields=["status", "reviewed_by", "published_at", "review_notes", "updated_at"])
+        _sync_public_page_content(content)
+        _log_activity(
+            request,
+            "cms_content_published",
+            details={"content_id": content.id, "page": content.page, "section_key": content.section_key, "title": content.title},
+        )
+        return Response(PublicPageContentSerializer(content).data)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        self._ensure_admin_action()
+        content = self.get_object()
+        if content.status not in {"submitted", "draft"}:
+            return Response({"detail": "Only submitted or draft content can be rejected."}, status=400)
+        content.status = "rejected"
+        content.reviewed_by = request.user
+        content.review_notes = str(request.data.get("review_notes") or "Rejected by admin review.").strip()
+        content.save(update_fields=["status", "reviewed_by", "review_notes", "updated_at"])
+        _sync_public_page_content(content)
+        _log_activity(
+            request,
+            "cms_content_rejected",
+            details={
+                "content_id": content.id,
+                "page": content.page,
+                "section_key": content.section_key,
+                "title": content.title,
+                "notes": content.review_notes,
+            },
+        )
+        return Response(PublicPageContentSerializer(content).data)
+
+    @action(detail=True, methods=["post"])
+    def archive(self, request, pk=None):
+        self._ensure_admin_action()
+        content = self.get_object()
+        content.status = "archived"
+        content.reviewed_by = request.user
+        content.archived_at = timezone.now()
+        content.save(update_fields=["status", "reviewed_by", "archived_at", "updated_at"])
+        _sync_public_page_content(content)
+        _log_activity(
+            request,
+            "cms_content_archived",
+            details={"content_id": content.id, "page": content.page, "section_key": content.section_key, "title": content.title},
+        )
+        return Response(PublicPageContentSerializer(content).data)
 
 
 def _validate_password_policy(password: str):

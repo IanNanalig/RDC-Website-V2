@@ -1,20 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-
-type NewsCategory =
-  | "Press Release"
-  | "Event"
-  | "Resolution"
-  | "Committee Announcement";
+import { useParams } from "react-router-dom";
+import cmsApi, { type CMSArticleSnapshot } from "../services/cmsApi";
 
 type NewsItem = {
   id: string;
   title: string;
-  category: NewsCategory;
+  category: string;
   date: string;
   summary: string;
   thumbnail: string;
   slug: string;
+  body?: string;
+  source: "cms" | "sample";
 };
 
 const SAMPLE_NEWS: NewsItem[] = [
@@ -28,6 +26,7 @@ const SAMPLE_NEWS: NewsItem[] = [
     thumbnail:
       "https://images.unsplash.com/photo-1540910419892-4a36d2c3266c?q=80&w=800&auto=format&fit=crop",
     slug: "new-chairperson-2025",
+    source: "sample",
   },
   {
     id: "news-002",
@@ -39,6 +38,7 @@ const SAMPLE_NEWS: NewsItem[] = [
     thumbnail:
       "https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=800&auto=format&fit=crop",
     slug: "digital-transformation",
+    source: "sample",
   },
   {
     id: "news-003",
@@ -50,6 +50,7 @@ const SAMPLE_NEWS: NewsItem[] = [
     thumbnail:
       "https://images.unsplash.com/photo-1460925895917-adf4e7d5e7a1?q=80&w=800&auto=format&fit=crop",
     slug: "q3-economic-report",
+    source: "sample",
   },
   {
     id: "news-004",
@@ -61,6 +62,7 @@ const SAMPLE_NEWS: NewsItem[] = [
     thumbnail:
       "https://images.unsplash.com/photo-1511578314322-379afb476865?q=80&w=800&auto=format&fit=crop",
     slug: "council-meeting-dec",
+    source: "sample",
   },
   {
     id: "news-005",
@@ -72,6 +74,7 @@ const SAMPLE_NEWS: NewsItem[] = [
     thumbnail:
       "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?q=80&w=800&auto=format&fit=crop",
     slug: "resolution-2024-15",
+    source: "sample",
   },
   {
     id: "news-006",
@@ -83,6 +86,7 @@ const SAMPLE_NEWS: NewsItem[] = [
     thumbnail:
       "https://images.unsplash.com/photo-1497436072909-60f360e1d4b1?q=80&w=800&auto=format&fit=crop",
     slug: "greenprint-consultation",
+    source: "sample",
   },
   {
     id: "news-007",
@@ -94,6 +98,7 @@ const SAMPLE_NEWS: NewsItem[] = [
     thumbnail:
       "https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=800&auto=format&fit=crop",
     slug: "innovation-summit",
+    source: "sample",
   },
   {
     id: "news-008",
@@ -105,6 +110,7 @@ const SAMPLE_NEWS: NewsItem[] = [
     thumbnail:
       "https://images.unsplash.com/photo-1560518883-ce09059eeffa?q=80&w=800&auto=format&fit=crop",
     slug: "housing-program",
+    source: "sample",
   },
   {
     id: "news-009",
@@ -116,6 +122,7 @@ const SAMPLE_NEWS: NewsItem[] = [
     thumbnail:
       "https://images.unsplash.com/photo-1569163139394-de4798aa62b6?q=80&w=800&auto=format&fit=crop",
     slug: "resolution-2024-14",
+    source: "sample",
   },
   {
     id: "news-010",
@@ -127,6 +134,7 @@ const SAMPLE_NEWS: NewsItem[] = [
     thumbnail:
       "https://images.unsplash.com/photo-1475721027785-f74eccf877e2?q=80&w=800&auto=format&fit=crop",
     slug: "development-forum",
+    source: "sample",
   },
   {
     id: "news-011",
@@ -138,6 +146,7 @@ const SAMPLE_NEWS: NewsItem[] = [
     thumbnail:
       "https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?q=80&w=800&auto=format&fit=crop",
     slug: "subway-update",
+    source: "sample",
   },
   {
     id: "news-012",
@@ -149,10 +158,11 @@ const SAMPLE_NEWS: NewsItem[] = [
     thumbnail:
       "https://images.unsplash.com/photo-1551288049-bebda4e38f71?q=80&w=800&auto=format&fit=crop",
     slug: "open-data-portal",
+    source: "sample",
   },
 ];
 
-const categoryColors: Record<NewsCategory, { bg: string; text: string }> = {
+const categoryColors: Record<string, { bg: string; text: string }> = {
   "Press Release": { bg: "bg-blue-100", text: "text-blue-700" },
   Event: { bg: "bg-green-100", text: "text-green-700" },
   Resolution: { bg: "bg-purple-100", text: "text-purple-700" },
@@ -161,36 +171,86 @@ const categoryColors: Record<NewsCategory, { bg: string; text: string }> = {
 
 const ITEMS_PER_PAGE = 9;
 
+const fallbackThumbnail =
+  "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?q=80&w=800&auto=format&fit=crop";
+
+const mapCmsArticle = (article: CMSArticleSnapshot): NewsItem => ({
+  id: article.slug,
+  title: article.title,
+  category: article.category || "Updates",
+  date: article.publishedAt,
+  summary: article.summary || "Read the latest RDC-NCR public update.",
+  thumbnail: article.thumbnailUrl || fallbackThumbnail,
+  slug: article.slug,
+  body: article.body,
+  source: "cms",
+});
+
 export default function NewsPage() {
+  const { slug } = useParams();
+  const [cmsNews, setCmsNews] = useState<NewsItem[]>([]);
+  const [newsLoading, setNewsLoading] = useState(true);
+  const [newsError, setNewsError] = useState("");
   const [selectedYear, setSelectedYear] = useState<string>("All");
-  const [selectedCategory, setSelectedCategory] = useState<
-    NewsCategory | "All"
-  >("All");
+  const [selectedCategory, setSelectedCategory] = useState<string>("All");
   const [currentPage, setCurrentPage] = useState(1);
   const [showMobileFilters, setShowMobileFilters] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadNews = async () => {
+      try {
+        setNewsLoading(true);
+        setNewsError("");
+        const rows = await cmsApi.listPublicNews(100);
+        if (!cancelled) {
+          setCmsNews(rows.map(mapCmsArticle));
+        }
+      } catch (error) {
+        console.error(error);
+        if (!cancelled) {
+          setCmsNews([]);
+          setNewsError("Published CMS news is temporarily unavailable. Showing fallback articles.");
+        }
+      } finally {
+        if (!cancelled) setNewsLoading(false);
+      }
+    };
+    loadNews();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const newsItems = cmsNews.length > 0 ? cmsNews : SAMPLE_NEWS;
+  const selectedArticle = slug ? newsItems.find((item) => item.slug === slug || item.id === slug) : null;
 
   // Extract unique years
   const years = useMemo(() => {
     const yearSet = new Set<string>();
-    SAMPLE_NEWS.forEach((news) => {
+    newsItems.forEach((news) => {
       yearSet.add(new Date(news.date).getFullYear().toString());
     });
     return [
       "All",
       ...Array.from(yearSet).sort((a, b) => Number(b) - Number(a)),
     ];
-  }, []);
+  }, [newsItems]);
+
+  const categories = useMemo(() => {
+    return ["All", ...Array.from(new Set(newsItems.map((news) => news.category))).sort()];
+  }, [newsItems]);
 
   // Filter news
   const filteredNews = useMemo(() => {
-    return SAMPLE_NEWS.filter((news) => {
+    return newsItems.filter((news) => {
       const newsYear = new Date(news.date).getFullYear().toString();
       const yearMatch = selectedYear === "All" || newsYear === selectedYear;
       const categoryMatch =
         selectedCategory === "All" || news.category === selectedCategory;
       return yearMatch && categoryMatch;
     });
-  }, [selectedYear, selectedCategory]);
+  }, [newsItems, selectedYear, selectedCategory]);
 
   // Pagination
   const totalPages = Math.ceil(filteredNews.length / ITEMS_PER_PAGE);
@@ -212,6 +272,40 @@ export default function NewsPage() {
       year: "numeric",
     });
   };
+
+  if (selectedArticle) {
+    const colors = categoryColors[selectedArticle.category] || { bg: "bg-slate-100", text: "text-slate-700" };
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
+        <header className="bg-gradient-to-r from-[#012a5a] via-[#0b6fb7] to-[#0d8fb3] text-white">
+          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+            <Link to="/news" className="mb-6 inline-flex text-sm font-semibold text-white/80 hover:text-white">
+              Back to News
+            </Link>
+            <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${colors.bg} ${colors.text}`}>
+              {selectedArticle.category}
+            </span>
+            <h1 className="mt-4 text-4xl md:text-5xl font-extrabold">{selectedArticle.title}</h1>
+            <p className="mt-4 text-white/85">{formatDate(selectedArticle.date)}</p>
+          </div>
+        </header>
+        <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+          <img src={selectedArticle.thumbnail} alt={selectedArticle.title} className="mb-8 h-80 w-full rounded-2xl object-cover shadow-lg" />
+          <p className="mb-8 text-xl leading-relaxed text-slate-700">{selectedArticle.summary}</p>
+          {selectedArticle.source === "cms" && selectedArticle.body ? (
+            <article
+              className="prose max-w-none rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+              dangerouslySetInnerHTML={{ __html: selectedArticle.body }}
+            />
+          ) : (
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 text-slate-700 shadow-sm">
+              Full article content will be available once this item is published through the CMS.
+            </div>
+          )}
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
@@ -258,6 +352,11 @@ export default function NewsPage() {
                 }`}
               >
                 {/* Year Filter */}
+                {newsError && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                    {newsError}
+                  </div>
+                )}
                 <div className="bg-white rounded-xl shadow-md p-6 border border-slate-100">
                   <h3 className="text-lg font-bold text-slate-900 mb-4">
                     Filter by Year
@@ -295,8 +394,9 @@ export default function NewsPage() {
                     >
                       All Categories
                     </button>
-                    {(Object.keys(categoryColors) as NewsCategory[]).map(
-                      (category) => (
+                    {categories
+                      .filter((category) => category !== "All")
+                      .map((category) => (
                         <button
                           key={category}
                           onClick={() => setSelectedCategory(category)}
@@ -308,8 +408,7 @@ export default function NewsPage() {
                         >
                           {category}
                         </button>
-                      ),
-                    )}
+                      ))}
                   </div>
                 </div>
 
@@ -354,7 +453,20 @@ export default function NewsPage() {
             </div>
 
             {/* News Cards Grid */}
-            {paginatedNews.length > 0 ? (
+            {newsLoading ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 mb-8">
+                {[1, 2, 3, 4, 5, 6].map((item) => (
+                  <div key={item} className="h-80 animate-pulse rounded-xl border border-slate-100 bg-white shadow-md">
+                    <div className="h-48 rounded-t-xl bg-slate-200" />
+                    <div className="space-y-3 p-5">
+                      <div className="h-4 w-2/3 rounded bg-slate-200" />
+                      <div className="h-3 w-full rounded bg-slate-100" />
+                      <div className="h-3 w-4/5 rounded bg-slate-100" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : paginatedNews.length > 0 ? (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 mb-8">
                 {paginatedNews.map((news) => (
                   <article
@@ -372,8 +484,8 @@ export default function NewsPage() {
                       <div className="absolute top-3 right-3">
                         <span
                           className={`text-xs font-semibold px-3 py-1 rounded-full ${
-                            categoryColors[news.category].bg
-                          } ${categoryColors[news.category].text}`}
+                            (categoryColors[news.category] || { bg: "bg-slate-100", text: "text-slate-700" }).bg
+                          } ${(categoryColors[news.category] || { bg: "bg-slate-100", text: "text-slate-700" }).text}`}
                         >
                           {news.category}
                         </span>

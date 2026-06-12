@@ -7,6 +7,7 @@ from .models import (
     ProjectPriorityAnalysis,
     ProjectPriorityConfirmation,
     PublicEvent,
+    PublicPageContent,
     SystemSetting,
     User,
     UserActivity,
@@ -22,3 +23,4 @@ admin.site.register(PriorityRuleSet)
 admin.site.register(ProjectPriorityAnalysis)
 admin.site.register(ProjectPriorityConfirmation)
 admin.site.register(PublicEvent)
+admin.site.register(PublicPageContent)

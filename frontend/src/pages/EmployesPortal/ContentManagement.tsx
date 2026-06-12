@@ -1,4 +1,6 @@
+import { useState } from "react";
 import PortalLayout from "../../components/portal/PortalLayout";
+import CmsManager from "../../components/portal/CmsManager";
 import PublicEventsManager from "../../components/portal/PublicEventsManager";
 
 type PortalUser = {
@@ -8,6 +10,7 @@ type PortalUser = {
 };
 
 const ContentManagement = () => {
+  const [activeTab, setActiveTab] = useState<"cms" | "events">("cms");
   const userRaw = localStorage.getItem("user");
   const user: PortalUser = userRaw ? JSON.parse(userRaw) : {};
   const role = user.role === "content_editor" ? "content_editor" : "admin";
@@ -20,7 +23,30 @@ const ContentManagement = () => {
       role={role}
       userName={displayName}
     >
-      <PublicEventsManager mode={role === "admin" ? "admin" : "editor"} />
+      <div className="portal-card mb-4">
+        <div className="portal-card-body flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveTab("cms")}
+            className={`portal-btn ${activeTab === "cms" ? "portal-btn-primary" : "portal-btn-ghost"}`}
+          >
+            Website CMS
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("events")}
+            className={`portal-btn ${activeTab === "events" ? "portal-btn-primary" : "portal-btn-ghost"}`}
+          >
+            Events Calendar
+          </button>
+        </div>
+      </div>
+
+      {activeTab === "cms" ? (
+        <CmsManager mode={role === "admin" ? "admin" : "editor"} />
+      ) : (
+        <PublicEventsManager mode={role === "admin" ? "admin" : "editor"} />
+      )}
     </PortalLayout>
   );
 };

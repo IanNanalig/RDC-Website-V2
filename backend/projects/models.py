@@ -243,6 +243,12 @@ class UserActivity(models.Model):
         ("cms_event_published", "CMS Event Published"),
         ("cms_event_rejected", "CMS Event Rejected"),
         ("cms_event_archived", "CMS Event Archived"),
+        ("cms_content_created", "CMS Content Created"),
+        ("cms_content_updated", "CMS Content Updated"),
+        ("cms_content_submitted", "CMS Content Submitted"),
+        ("cms_content_published", "CMS Content Published"),
+        ("cms_content_rejected", "CMS Content Rejected"),
+        ("cms_content_archived", "CMS Content Archived"),
         ("chat_knowledge_approved", "Chat Knowledge Approved"),
         ("chat_knowledge_rejected", "Chat Knowledge Rejected"),
         ("chat_content_updated", "Chat Content Updated"),
@@ -440,6 +446,59 @@ class PublicEvent(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.status})"
+
+
+class PublicPageContent(models.Model):
+    PAGE_CHOICES = [
+        ("home", "Home"),
+        ("about_rdc", "About RDC"),
+        ("region_profile", "Region Profile"),
+        ("publications", "Publications"),
+        ("news", "News"),
+        ("projects_dashboard", "Projects Dashboard"),
+        ("contact", "Contact Us"),
+    ]
+    STATUS_CHOICES = [
+        ("draft", "Draft"),
+        ("submitted", "Submitted for Review"),
+        ("published", "Published"),
+        ("rejected", "Rejected"),
+        ("archived", "Archived"),
+    ]
+
+    page = models.CharField(max_length=50, choices=PAGE_CHOICES)
+    section_key = models.CharField(max_length=80)
+    title = models.CharField(max_length=200)
+    subtitle = models.CharField(max_length=250, blank=True)
+    body = models.TextField(blank=True)
+    image_url = models.CharField(max_length=500, blank=True)
+    cta_label = models.CharField(max_length=120, blank=True)
+    cta_url = models.CharField(max_length=250, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="draft")
+    review_notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="created_public_page_content"
+    )
+    submitted_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="submitted_public_page_content"
+    )
+    reviewed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="reviewed_public_page_content"
+    )
+    published_at = models.DateTimeField(null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["page", "section_key", "-updated_at"]
+        indexes = [
+            models.Index(fields=["page", "section_key", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.get_page_display()} / {self.section_key} ({self.status})"
 
 
 class PublicContent(models.Model):

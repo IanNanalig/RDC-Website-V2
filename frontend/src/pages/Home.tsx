@@ -5,6 +5,10 @@ import {
   getPublicProjectsStats,
 } from "../services/publicProjectsApi";
 import { getPublicEvents, type PublicEvent } from "../services/publicEventsApi";
+import cmsApi, {
+  type CMSArticleSnapshot,
+  type CMSPageSnapshot,
+} from "../services/cmsApi";
 import type { PublicProjectsStats } from "../types/api";
 import photo1 from "../assets/Photo-Corousel/Photos/photo1.jpg";
 import photo2 from "../assets/Photo-Corousel/Photos/photo2.jpg";
@@ -24,6 +28,121 @@ import {
   FaClipboardList,
 } from "react-icons/fa";
 
+type HomeNewsArticle = {
+  id: string;
+  title: string;
+  excerpt: string;
+  date: string;
+  image: string;
+  category: string;
+  slug: string;
+};
+
+type HomeButton = {
+  text: string;
+  link: string;
+};
+
+type HomeSlide = {
+  src: string;
+  title: string;
+  subtitle: string;
+  button1: HomeButton;
+  button2: HomeButton;
+};
+
+type DocCard = {
+  title: string;
+  link: string;
+  icon?: React.ReactNode;
+  category?: string;
+  quickLinks?: Array<{ label: string; link: string }>;
+};
+
+const imageByKey: Record<string, string> = {
+  photo1,
+  photo2,
+  photo3,
+  photo4,
+  photo5,
+  photo6,
+  photo7,
+  photo8,
+  photo9,
+};
+
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const asString = (value: unknown, fallback = "") =>
+  typeof value === "string" && value.trim() ? value.trim() : fallback;
+
+const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+const getHomeSection = (page: CMSPageSnapshot | null, sectionKey: string) =>
+  page?.sections.find((section) => section.sectionKey === sectionKey)?.content ?? null;
+
+const iconForCms = (icon: unknown, fallback = "file") => {
+  const key = asString(icon, fallback).toLowerCase();
+  if (key === "leaf") return <FaLeaf className="w-8 h-8 text-green-500" />;
+  if (key === "target" || key === "bullseye") return <FaBullseye className="w-8 h-8 text-indigo-600" />;
+  if (key === "chart-line") return <FaChartLine className="w-8 h-8 text-green-600" />;
+  if (key === "chart-bar") return <FaChartBar className="w-8 h-8 text-purple-600" />;
+  if (key === "clipboard") return <FaClipboardList className="w-8 h-8 text-purple-500" />;
+  return <FaFileAlt className="w-8 h-8 text-gray-700" />;
+};
+
+const mapCmsDocItems = (content: Record<string, unknown> | null, fallback: DocCard[]) => {
+  const items = asArray(content?.items)
+    .map((item) => {
+      const row = asRecord(item);
+      const title = asString(row.title);
+      const link = asString(row.link);
+      if (!title || !link) return null;
+      const quickLinks = asArray(row.quickLinks)
+        .map((quickLink) => {
+          const quick = asRecord(quickLink);
+          const label = asString(quick.label);
+          const quickLinkUrl = asString(quick.link);
+          return label && quickLinkUrl ? { label, link: quickLinkUrl } : null;
+        })
+        .filter(Boolean) as Array<{ label: string; link: string }>;
+
+      return {
+        title,
+        link,
+        category: asString(row.category, "Featured"),
+        icon: iconForCms(row.icon),
+        quickLinks,
+      };
+    })
+    .filter(Boolean) as DocCard[];
+
+  return items.length > 0 ? items : fallback;
+};
+
+const formatArticleDate = (value: string) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value || "Recently published";
+  return date.toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+};
+
+const mapHomeArticle = (article: CMSArticleSnapshot): HomeNewsArticle => ({
+  id: article.slug,
+  title: article.title,
+  excerpt: article.summary || "Read the latest public update from RDC-NCR.",
+  date: formatArticleDate(article.publishedAt),
+  image: article.thumbnailUrl || photo2,
+  category: article.category || "Updates",
+  slug: article.slug,
+});
+
 const Home: React.FC = () => {
   const [currentSlide, setCurrentSlide] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
@@ -37,6 +156,8 @@ const Home: React.FC = () => {
     null,
   );
   const [publicStatsError, setPublicStatsError] = useState<string>("");
+  const [homeCmsPage, setHomeCmsPage] = useState<CMSPageSnapshot | null>(null);
+  const [cmsNewsArticles, setCmsNewsArticles] = useState<HomeNewsArticle[]>([]);
   const navigate = useNavigate();
 
   const buildStatsFromProjects = useCallback(
@@ -88,7 +209,7 @@ const Home: React.FC = () => {
     [],
   );
 
-  const carouselImages = [
+  const fallbackCarouselImages = useMemo<HomeSlide[]>(() => [
     {
       src: photo1,
       title: "Regional Development Council NCR",
@@ -152,48 +273,83 @@ const Home: React.FC = () => {
       button1: { text: "View Plans", link: "/plans" },
       button2: { text: "Latest Reports", link: "/reports" },
     },
-  ];
+  ], []);
 
-  const newsArticles = [
+  const heroSection = getHomeSection(homeCmsPage, "hero-carousel");
+  const carouselImages = useMemo(() => {
+    const slides = asArray(heroSection?.slides)
+      .map((slide, index) => {
+        const row = asRecord(slide);
+        const imageKey = asString(row.imageKey);
+        const imageUrl = asString(row.imageUrl);
+        const button1 = asRecord(row.button1);
+        const button2 = asRecord(row.button2);
+        const fallback = fallbackCarouselImages[index % fallbackCarouselImages.length];
+        return {
+          src: imageUrl || imageByKey[imageKey] || fallback.src,
+          title: asString(row.title, fallback.title),
+          subtitle: asString(row.subtitle, fallback.subtitle),
+          button1: {
+            text: asString(button1.text, fallback.button1.text),
+            link: asString(button1.link, fallback.button1.link),
+          },
+          button2: {
+            text: asString(button2.text, fallback.button2.text),
+            link: asString(button2.link, fallback.button2.link),
+          },
+        };
+      })
+      .filter((slide) => slide.title && slide.src);
+
+    return slides.length > 0 ? slides : fallbackCarouselImages;
+  }, [heroSection, fallbackCarouselImages]);
+
+  const fallbackNewsArticles: HomeNewsArticle[] = [
     {
-      id: 1,
+      id: "home-news-1",
       title: "RDC-NCR ELECTS NEW CHAIRPERSON FOR 2025-2026",
       excerpt:
         "The Regional Development Council elected a new chairperson during its fourth quarter meeting...",
       date: "November 17, 2025",
       image: photo2,
       category: "Announcement",
+      slug: "new-chairperson-2025",
     },
     {
-      id: 2,
+      id: "home-news-2",
       title: "NCR BACKS CALL FOR DIGITAL TRANSFORMATION",
       excerpt:
         "The Infrastructure Development Committee endorsed support for digital initiatives across the region...",
       date: "November 12, 2025",
       image: photo3,
       category: "Technology",
+      slug: "digital-transformation",
     },
     {
-      id: 3,
+      id: "home-news-3",
       title: "QUARTERLY ECONOMIC REPORT RELEASED",
       excerpt:
         "The latest economic indicators show positive growth trends in the National Capital Region...",
       date: "November 8, 2025",
       image: photo4,
       category: "Report",
+      slug: "q3-economic-report",
     },
     {
-      id: 4,
+      id: "home-news-4",
       title: "METRO MANILA TRANSPORTATION PLAN UPDATE",
       excerpt:
         "New initiatives to improve public transportation and reduce congestion in Metro Manila...",
       date: "November 5, 2025",
       image: photo5,
       category: "Infrastructure",
+      slug: "transportation-plan-update",
     },
   ];
 
-  const developmentPlans = [
+  const newsArticles = cmsNewsArticles.length > 0 ? cmsNewsArticles : fallbackNewsArticles;
+
+  const fallbackDevelopmentPlans: DocCard[] = [
     {
       title: "Metro Manila Greenprint 2030",
       category: "Sustainability Framework",
@@ -214,7 +370,7 @@ const Home: React.FC = () => {
     },
   ];
 
-  const investmentProgramming = [
+  const fallbackInvestmentProgramming: DocCard[] = [
     {
       title: "Regional Development Investment Program",
       category: "Investment Portfolio",
@@ -227,7 +383,7 @@ const Home: React.FC = () => {
     },
   ];
 
-  const monitoringEvaluation = [
+  const fallbackMonitoringEvaluation: DocCard[] = [
     {
       title: "Regional Development Report",
       category: "Annual Report",
@@ -241,6 +397,47 @@ const Home: React.FC = () => {
       link: "/publications?category=rpmes",
     },
   ];
+
+  const developmentPlansSection = getHomeSection(homeCmsPage, "development-plans");
+  const investmentProgrammingSection = getHomeSection(homeCmsPage, "investment-programming");
+  const monitoringEvaluationSection = getHomeSection(homeCmsPage, "monitoring-evaluation");
+  const dashboardSection = getHomeSection(homeCmsPage, "dashboard-teaser");
+  const latestMediaSection = getHomeSection(homeCmsPage, "latest-media");
+  const upcomingEventsSection = getHomeSection(homeCmsPage, "upcoming-events");
+
+  const developmentPlansTitle = asString(
+    developmentPlansSection?.title,
+    "Development Plans and Frameworks",
+  );
+  const investmentProgrammingTitle = asString(
+    investmentProgrammingSection?.title,
+    "Investment Programming",
+  );
+  const monitoringEvaluationTitle = asString(
+    monitoringEvaluationSection?.title,
+    "Monitoring and Evaluation",
+  );
+  const dashboardTitle = asString(
+    dashboardSection?.title,
+    "Regional Development Dashboard",
+  );
+  const dashboardButtonLabel = asString(dashboardSection?.buttonLabel, "View Full Dashboard ->");
+  const dashboardButtonLink = asString(dashboardSection?.buttonLink, "/Projects");
+  const latestMediaTitle = asString(latestMediaSection?.title, "Latest Media Releases");
+  const latestMediaViewAllLabel = asString(latestMediaSection?.viewAllLabel, "View all ->");
+  const latestMediaViewAllLink = asString(latestMediaSection?.viewAllLink, "/news");
+  const upcomingEventsTitle = asString(upcomingEventsSection?.title, "Upcoming Events");
+  const upcomingEventsSubtitle = asString(upcomingEventsSection?.subtitle, "Calendar & Meetings");
+  const upcomingEventsButtonLabel = asString(upcomingEventsSection?.buttonLabel, "View Full Calendar");
+  const calendarTitle = asString(upcomingEventsSection?.calendarTitle, "Public Events and Meetings");
+  const calendarSubtitle = asString(
+    upcomingEventsSection?.calendarSubtitle,
+    "Published schedules from the RDC-NCR public website.",
+  );
+
+  const developmentPlans = mapCmsDocItems(developmentPlansSection, fallbackDevelopmentPlans);
+  const investmentProgramming = mapCmsDocItems(investmentProgrammingSection, fallbackInvestmentProgramming);
+  const monitoringEvaluation = mapCmsDocItems(monitoringEvaluationSection, fallbackMonitoringEvaluation);
 
   const formatMoneyCompact = (n: number) => {
     const value = Number(n || 0);
@@ -361,6 +558,25 @@ const Home: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
 
+    const loadHomeCmsPage = async () => {
+      try {
+        const page = await cmsApi.getPublicPage("home");
+        if (!cancelled) setHomeCmsPage(page);
+      } catch (error) {
+        console.error(error);
+        if (!cancelled) setHomeCmsPage(null);
+      }
+    };
+
+    loadHomeCmsPage();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
     const loadPublicStats = async () => {
       try {
         setPublicStatsError("");
@@ -396,6 +612,27 @@ const Home: React.FC = () => {
       window.clearInterval(timer);
     };
   }, [buildStatsFromProjects]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadCmsNews = async () => {
+      try {
+        const rows = await cmsApi.listPublicNews(4);
+        if (!cancelled) {
+          setCmsNewsArticles(rows.map(mapHomeArticle));
+        }
+      } catch (error) {
+        console.error(error);
+        if (!cancelled) {
+          setCmsNewsArticles([]);
+        }
+      }
+    };
+    loadCmsNews();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (isPaused) return;
@@ -444,14 +681,16 @@ const Home: React.FC = () => {
 
   const eventTone = (type: string) => {
     if (type === "meeting") return "bg-blue-100 text-blue-700";
-    if (type === "forum" || type === "consultation") return "bg-green-100 text-green-700";
+    if (type === "forum" || type === "consultation")
+      return "bg-green-100 text-green-700";
     if (type === "deadline") return "bg-amber-100 text-amber-700";
     return "bg-purple-100 text-purple-700";
   };
 
   const eventPillTone = (type: string) => {
     if (type === "meeting") return "bg-blue-50 text-blue-600";
-    if (type === "forum" || type === "consultation") return "bg-green-50 text-green-600";
+    if (type === "forum" || type === "consultation")
+      return "bg-green-50 text-green-600";
     if (type === "deadline") return "bg-amber-50 text-amber-700";
     return "bg-purple-50 text-purple-600";
   };
@@ -723,7 +962,7 @@ const Home: React.FC = () => {
             <div className="bg-white rounded-xl shadow-md overflow-hidden">
               <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white px-6 py-4">
                 <h2 className="text-xl font-bold">
-                  Development Plans and Frameworks
+                  {developmentPlansTitle}
                 </h2>
               </div>
               <div className="p-5 space-y-5">
@@ -734,7 +973,7 @@ const Home: React.FC = () => {
             {/* Investment Programming */}
             <div className="bg-white rounded-xl shadow-md overflow-hidden">
               <div className="bg-gradient-to-r from-green-600 to-green-700 text-white px-6 py-4">
-                <h2 className="text-xl font-bold">Investment Programming</h2>
+                <h2 className="text-xl font-bold">{investmentProgrammingTitle}</h2>
               </div>
               <div className="p-5 space-y-5">
                 {investmentProgramming.map((doc, index) => (
@@ -774,23 +1013,17 @@ const Home: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Quick Links inside Investment Programming */}
-                    <div className="border-t pt-5">
-                      <h5 className="font-semibold text-gray-700 mb-3">
-                        Quick Access:
-                      </h5>
-                      <div className="space-y-2">
-                        {doc.quickLinks.map(
-                          (
-                            quickLink: { label: string; link: string },
-                            idx: number,
-                          ) => (
+                    {(doc.quickLinks?.length ?? 0) > 0 ? (
+                      <div className="border-t pt-5">
+                        <h5 className="font-semibold text-gray-700 mb-3">
+                          Quick Access:
+                        </h5>
+                        <div className="space-y-2">
+                          {(doc.quickLinks || []).map((quickLink, idx) => (
                             <div
                               key={idx}
                               className="flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors group cursor-pointer"
-                              onClick={() =>
-                                handleDocumentClick(quickLink.link)
-                              }
+                              onClick={() => handleDocumentClick(quickLink.link)}
                             >
                               <span className="font-medium text-gray-800">
                                 {quickLink.label}
@@ -809,10 +1042,10 @@ const Home: React.FC = () => {
                                 />
                               </svg>
                             </div>
-                          ),
-                        )}
+                          ))}
+                        </div>
                       </div>
-                    </div>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -821,7 +1054,7 @@ const Home: React.FC = () => {
             {/* Monitoring and Evaluation */}
             <div className="bg-white rounded-xl shadow-md overflow-hidden">
               <div className="bg-gradient-to-r from-purple-600 to-purple-700 text-white px-6 py-4">
-                <h2 className="text-xl font-bold">Monitoring and Evaluation</h2>
+                <h2 className="text-xl font-bold">{monitoringEvaluationTitle}</h2>
               </div>
               <div className="p-5 space-y-5">
                 {monitoringEvaluation.map(renderDocumentCard)}
@@ -836,17 +1069,17 @@ const Home: React.FC = () => {
             <div className="bg-gradient-to-r from-gray-900 to-black text-white px-6 py-4">
               <div className="flex justify-between items-center">
                 <h2 className="text-2xl font-bold">
-                  Regional Development Dashboard
+                  {dashboardTitle}
                 </h2>
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-gray-300">
                     Last updated: {lastUpdatedLabel}
                   </span>
                   <Link
-                    to="/Projects"
+                    to={dashboardButtonLink}
                     className="bg-white/20 hover:bg-white/30 text-white px-4 py-2 rounded-lg font-medium text-sm transition-colors"
                   >
-                    View Full Dashboard -&gt;
+                    {dashboardButtonLabel}
                   </Link>
                 </div>
               </div>
@@ -974,12 +1207,12 @@ const Home: React.FC = () => {
             <section className="bg-white rounded-xl shadow-md overflow-hidden h-full">
               <div className="bg-gray-800 text-white px-5 py-3">
                 <div className="flex justify-between items-center">
-                  <h2 className="text-xl font-bold">Latest Media Releases</h2>
+                  <h2 className="text-xl font-bold">{latestMediaTitle}</h2>
                   <Link
-                    to="/news"
+                    to={latestMediaViewAllLink}
                     className="text-xs text-blue-300 hover:text-white transition-colors"
                   >
-                    View all →
+                    {latestMediaViewAllLabel}
                   </Link>
                 </div>
               </div>
@@ -1014,7 +1247,7 @@ const Home: React.FC = () => {
                             {article.excerpt}
                           </p>
                           <Link
-                            to={`/news/${article.id}`}
+                            to={`/news/${article.slug}`}
                             className="text-green-700 font-semibold text-sm hover:text-green-800 transition-colors inline-flex items-center gap-1"
                           >
                             Read more
@@ -1045,14 +1278,17 @@ const Home: React.FC = () => {
           <aside>
             <div className="bg-white rounded-xl shadow-md overflow-hidden h-full">
               <div className="bg-gradient-to-r from-purple-600 to-purple-700 text-white px-5 py-4">
-                <h3 className="text-lg font-bold">Upcoming Events</h3>
-                <p className="text-sm opacity-90 mt-0.5">Calendar & Meetings</p>
+                <h3 className="text-lg font-bold">{upcomingEventsTitle}</h3>
+                <p className="text-sm opacity-90 mt-0.5">{upcomingEventsSubtitle}</p>
               </div>
               <div className="p-5">
                 {eventsLoading ? (
                   <div className="space-y-4">
                     {[1, 2, 3].map((item) => (
-                      <div key={item} className="h-24 animate-pulse rounded-lg bg-slate-100" />
+                      <div
+                        key={item}
+                        className="h-24 animate-pulse rounded-lg bg-slate-100"
+                      />
                     ))}
                   </div>
                 ) : eventsError ? (
@@ -1066,22 +1302,36 @@ const Home: React.FC = () => {
                 ) : (
                   <div className="space-y-4">
                     {upcomingEvents.map((event) => (
-                      <div key={event.id} className="flex items-start gap-3 p-4 border border-gray-100 rounded-lg hover:bg-gray-50 transition-colors">
+                      <div
+                        key={event.id}
+                        className="flex items-start gap-3 p-4 border border-gray-100 rounded-lg hover:bg-gray-50 transition-colors"
+                      >
                         <div className="flex-shrink-0">
-                          <div className={`${eventTone(event.event_type)} p-3 rounded-lg text-center min-w-[60px]`}>
+                          <div
+                            className={`${eventTone(event.event_type)} p-3 rounded-lg text-center min-w-[60px]`}
+                          >
                             <div className="text-lg font-bold">{event.day}</div>
-                            <div className="text-xs font-semibold">{event.month}</div>
+                            <div className="text-xs font-semibold">
+                              {event.month}
+                            </div>
                           </div>
                         </div>
                         <div className="min-w-0 flex-1">
-                          <h4 className="font-bold text-gray-800 text-sm mb-1 line-clamp-2">{event.title}</h4>
+                          <h4 className="font-bold text-gray-800 text-sm mb-1 line-clamp-2">
+                            {event.title}
+                          </h4>
                           <p className="text-xs text-gray-600">
                             <span className="font-medium">{event.time}</span>
                             <span className="px-1.5">-</span>
-                            {event.location || (event.is_virtual ? "Virtual" : "Location to be announced")}
+                            {event.location ||
+                              (event.is_virtual
+                                ? "Virtual"
+                                : "Location to be announced")}
                           </p>
                           <div className="flex items-center gap-2 mt-2">
-                            <span className={`text-xs px-2 py-1 rounded-full ${eventPillTone(event.event_type)}`}>
+                            <span
+                              className={`text-xs px-2 py-1 rounded-full ${eventPillTone(event.event_type)}`}
+                            >
                               {event.event_type}
                             </span>
                           </div>
@@ -1096,7 +1346,7 @@ const Home: React.FC = () => {
                     onClick={() => setShowCalendar(true)}
                     className="w-full text-center block bg-purple-600 hover:bg-purple-700 text-white font-medium text-sm py-3 rounded-lg transition-colors"
                   >
-                    View Full Calendar
+                    {upcomingEventsButtonLabel}
                   </button>
                 </div>
               </div>
@@ -1116,9 +1366,15 @@ const Home: React.FC = () => {
             <div className="border-b border-slate-200 bg-gradient-to-r from-purple-700 to-fuchsia-600 px-5 py-5 text-white">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.25em] text-purple-100">RDC-NCR Calendar</p>
-                  <h2 className="mt-1 text-2xl font-black">Public Events and Meetings</h2>
-                  <p className="mt-1 text-sm text-purple-50">Published schedules from the RDC-NCR public website.</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.25em] text-purple-100">
+                    RDC-NCR Calendar
+                  </p>
+                  <h2 className="mt-1 text-2xl font-black">
+                    {calendarTitle}
+                  </h2>
+                  <p className="mt-1 text-sm text-purple-50">
+                    {calendarSubtitle}
+                  </p>
                 </div>
                 <button
                   type="button"
@@ -1130,7 +1386,9 @@ const Home: React.FC = () => {
               </div>
             </div>
             <div className="border-b border-slate-200 bg-white px-5 py-4">
-              <label className="block text-sm font-semibold text-slate-700">Filter by event type</label>
+              <label className="block text-sm font-semibold text-slate-700">
+                Filter by event type
+              </label>
               <select
                 value={calendarFilter}
                 onChange={(event) => setCalendarFilter(event.target.value)}
@@ -1153,26 +1411,45 @@ const Home: React.FC = () => {
               ) : (
                 <div className="grid gap-4">
                   {filteredCalendarEvents.map((event) => (
-                    <article key={event.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                    <article
+                      key={event.id}
+                      className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+                    >
                       <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-                        <div className={`${eventTone(event.event_type)} rounded-2xl px-4 py-3 text-center sm:w-24`}>
+                        <div
+                          className={`${eventTone(event.event_type)} rounded-2xl px-4 py-3 text-center sm:w-24`}
+                        >
                           <div className="text-2xl font-black">{event.day}</div>
-                          <div className="text-xs font-bold uppercase tracking-wide">{event.month}</div>
+                          <div className="text-xs font-bold uppercase tracking-wide">
+                            {event.month}
+                          </div>
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${eventPillTone(event.event_type)}`}>
+                            <span
+                              className={`rounded-full px-2.5 py-1 text-xs font-semibold ${eventPillTone(event.event_type)}`}
+                            >
                               {event.event_type}
                             </span>
                             <span className="text-xs text-slate-500">
-                              {event.time}{event.end_time ? ` - ${event.end_time}` : ""}
+                              {event.time}
+                              {event.end_time ? ` - ${event.end_time}` : ""}
                             </span>
                           </div>
-                          <h3 className="mt-2 text-lg font-black text-slate-900">{event.title}</h3>
+                          <h3 className="mt-2 text-lg font-black text-slate-900">
+                            {event.title}
+                          </h3>
                           <p className="mt-1 text-sm font-medium text-slate-600">
-                            {event.location || (event.is_virtual ? "Virtual event" : "Location to be announced")}
+                            {event.location ||
+                              (event.is_virtual
+                                ? "Virtual event"
+                                : "Location to be announced")}
                           </p>
-                          {event.description && <p className="mt-3 text-sm leading-6 text-slate-600">{event.description}</p>}
+                          {event.description && (
+                            <p className="mt-3 text-sm leading-6 text-slate-600">
+                              {event.description}
+                            </p>
+                          )}
                           {event.meeting_link && (
                             <a
                               href={event.meeting_link}

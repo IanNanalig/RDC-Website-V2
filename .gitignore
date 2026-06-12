@@ -44,6 +44,7 @@ backend/db.sqlite3
 backend/analytics.json
 backend/data.json
 backend/staticfiles/
+backend/media/
 *.pyc
 *.pyo
 *.sqlite3
