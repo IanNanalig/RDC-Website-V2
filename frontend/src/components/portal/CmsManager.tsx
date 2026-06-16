@@ -366,6 +366,29 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
     setSectionContent({ ...sectionContent, items });
   };
 
+  const updateArrayItem = (key: string, index: number, value: unknown) => {
+    const current = Array.isArray(sectionContent[key]) ? [...sectionContent[key]] : [];
+    current[index] = value;
+    setSectionContent({ ...sectionContent, [key]: current });
+  };
+
+  const removeArrayItem = (key: string, index: number) => {
+    const current = Array.isArray(sectionContent[key]) ? [...sectionContent[key]] : [];
+    setSectionContent({ ...sectionContent, [key]: current.filter((_, itemIndex) => itemIndex !== index) });
+  };
+
+  const addOverviewStat = () => {
+    const stats = Array.isArray(sectionContent.stats) ? [...sectionContent.stats] : [];
+    stats.push({
+      label: "New Stat",
+      value: "0",
+      subtext: "Short context",
+      icon: "people",
+      color: "from-blue-500 to-cyan-400",
+    });
+    setSectionContent({ ...sectionContent, stats });
+  };
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     setNotice("");
@@ -683,8 +706,128 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
       );
     }
 
+    if (sectionForm.section_type === "text") {
+      return (
+        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+          <Field label="Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
+          <Field label="Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
+          <Area label="Body Content" value={textValue(sectionContent.body)} onChange={(value) => updateSectionContent("body", value)} rows={5} />
+        </div>
+      );
+    }
+
+    if (sectionForm.section_type === "cards" && sectionForm.section_key === "regional-overview") {
+      const paragraphs = Array.isArray(sectionContent.paragraphs) ? sectionContent.paragraphs : [];
+      const stats = Array.isArray(sectionContent.stats) ? sectionContent.stats : [];
+      return (
+        <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <Field label="Overview Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
+
+          <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+            <div className="flex items-center justify-between gap-3">
+              <h4 className="font-bold text-slate-900">Overview Paragraphs</h4>
+              <button
+                type="button"
+                className="portal-btn portal-btn-ghost"
+                onClick={() => setSectionContent({ ...sectionContent, paragraphs: [...paragraphs, "New paragraph"] })}
+              >
+                Add Paragraph
+              </button>
+            </div>
+            {paragraphs.map((paragraph, index) => (
+              <div key={index} className="rounded-lg border border-slate-200 p-3">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <strong className="text-sm text-slate-700">Paragraph {index + 1}</strong>
+                  <button type="button" className="text-sm text-red-600" onClick={() => removeArrayItem("paragraphs", index)}>
+                    Remove
+                  </button>
+                </div>
+                <Area
+                  label="Text"
+                  value={textValue(paragraph)}
+                  onChange={(value) => updateArrayItem("paragraphs", index, value)}
+                  rows={3}
+                />
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+            <div className="flex items-center justify-between gap-3">
+              <h4 className="font-bold text-slate-900">Quick Stats</h4>
+              <button type="button" className="portal-btn portal-btn-ghost" onClick={addOverviewStat}>
+                Add Stat
+              </button>
+            </div>
+            {stats.map((stat, index) => {
+              const row = parseRecord(stat);
+              return (
+                <div key={index} className="rounded-lg border border-slate-200 p-3">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <strong className="text-sm text-slate-700">Stat {index + 1}</strong>
+                    <button type="button" className="text-sm text-red-600" onClick={() => removeArrayItem("stats", index)}>
+                      Remove
+                    </button>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Field label="Label" value={textValue(row.label)} onChange={(value) => updateArrayItem("stats", index, { ...row, label: value })} />
+                    <Field label="Value" value={textValue(row.value)} onChange={(value) => updateArrayItem("stats", index, { ...row, value })} />
+                    <Field label="Subtext" value={textValue(row.subtext)} onChange={(value) => updateArrayItem("stats", index, { ...row, subtext: value })} />
+                    <Field label="Icon Key" value={textValue(row.icon)} onChange={(value) => updateArrayItem("stats", index, { ...row, icon: value })} helper="Examples: people, gdp, map, building, office" />
+                    <Field label="Color Classes" value={textValue(row.color)} onChange={(value) => updateArrayItem("stats", index, { ...row, color: value })} helper="Tailwind gradient classes, e.g. from-blue-500 to-cyan-400" />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
     if (sectionForm.section_type === "document_group") {
       const items = Array.isArray(sectionContent.items) ? sectionContent.items : [];
+      if (sectionForm.section_key === "lgu-directory") {
+        return (
+          <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+              <Field label="Directory Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
+              <button
+                type="button"
+                className="portal-btn portal-btn-ghost"
+                onClick={() => setSectionContent({ ...sectionContent, items: [...items, { name: "New LGU", website: "https://", type: "website" }] })}
+              >
+                Add LGU
+              </button>
+            </div>
+            {items.map((item, index) => {
+              const row = parseRecord(item);
+              return (
+                <div key={index} className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <strong className="text-sm text-slate-800">LGU {index + 1}</strong>
+                    <button type="button" className="text-sm text-red-600" onClick={() => removeArrayItem("items", index)}>
+                      Remove
+                    </button>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <Field label="LGU Name" value={textValue(row.name || row.title)} onChange={(value) => updateArrayItem("items", index, { ...row, name: value })} />
+                    <Field label="Official Link" value={textValue(row.website || row.link)} onChange={(value) => updateArrayItem("items", index, { ...row, website: value })} />
+                    <Select
+                      label="Link Type"
+                      value={textValue(row.type, "website")}
+                      onChange={(value) => updateArrayItem("items", index, { ...row, type: value })}
+                      options={[
+                        { label: "Website", value: "website" },
+                        { label: "Facebook", value: "facebook" },
+                      ]}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      }
       return (
         <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
           <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
@@ -801,6 +944,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
         <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
           <Field label="Map Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
           <Field label="Map Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
+          <Field label="Map Caption" value={textValue(sectionContent.caption)} onChange={(value) => updateSectionContent("caption", value)} />
           <Field label="Badge Label" value={textValue(sectionContent.badgeLabel)} onChange={(value) => updateSectionContent("badgeLabel", value)} />
         </div>
       );
