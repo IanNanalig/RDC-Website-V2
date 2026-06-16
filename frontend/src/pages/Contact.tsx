@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
+import cmsApi, { type CMSPageSnapshot } from "../services/cmsApi";
 import { api } from "../services/api";
 
 type InquiryForm = {
@@ -17,7 +18,27 @@ const DEFAULT_LOCATION = {
   lng: 121.0851,
 };
 
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const asString = (value: unknown, fallback = "") =>
+  typeof value === "string" && value.trim() ? value.trim() : fallback;
+
+const getContactSection = (page: CMSPageSnapshot | null, sectionKey: string) =>
+  page?.sections.find((section) => section.sectionKey === sectionKey)?.content ?? null;
+
+const splitLines = (value: string) =>
+  value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
 const Contact: React.FC = () => {
+  const [contactCmsPage, setContactCmsPage] = useState<CMSPageSnapshot | null>(
+    null,
+  );
   const [inquiryForm, setInquiryForm] = useState<InquiryForm>({
     name: "",
     email: "",
@@ -29,6 +50,34 @@ const Contact: React.FC = () => {
   const [inquiryLoading, setInquiryLoading] = useState(false);
 
   // feedback UI/logic was moved to `frontend/src/components/Feedback.tsx`
+
+  useEffect(() => {
+    let active = true;
+    cmsApi
+      .getPublicPage("contact")
+      .then((page) => {
+        if (active) setContactCmsPage(page);
+      })
+      .catch(() => {
+        if (active) setContactCmsPage(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const heroContent = asRecord(getContactSection(contactCmsPage, "contact-hero"));
+  const officeContent = asRecord(getContactSection(contactCmsPage, "main-office"));
+  const mapContent = asRecord(getContactSection(contactCmsPage, "location-map"));
+  const formContent = asRecord(getContactSection(contactCmsPage, "message-form"));
+
+  const contactAddress = asString(officeContent.address, DEFAULT_LOCATION.address);
+  const contactEmail = asString(officeContent.email, "rdc.ncr@mmda.gov.ph");
+  const contactPhone = asString(officeContent.phone, "+63 (2) 1234-5678");
+  const officeHours = asString(
+    officeContent.officeHours,
+    "Monday - Friday: 7:00 AM - 4:00 PM\nSaturday, Sunday & Holidays: Closed",
+  );
 
   const handleInquirySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -80,7 +129,8 @@ const Contact: React.FC = () => {
 
   const getMapEmbedUrl = () => {
     const { lat, lng } = DEFAULT_LOCATION;
-    return `https://www.google.com/maps/embed/v1/place?key=AIzaSyBFw0Qbyq9zTFTd-tUY6dZWTgaQzuU17R8&q=${DEFAULT_LOCATION.address}&center=${lat},${lng}&zoom=16`;
+    const query = encodeURIComponent(contactAddress);
+    return `https://www.google.com/maps/embed/v1/place?key=AIzaSyBFw0Qbyq9zTFTd-tUY6dZWTgaQzuU17R8&q=${query}&center=${lat},${lng}&zoom=16`;
   };
 
   // no local feedback modal state here
@@ -93,12 +143,13 @@ const Contact: React.FC = () => {
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
             <div className="text-center">
               <h1 className="text-4xl md:text-5xl font-extrabold mb-4">
-                Contact RDC-NCR
+                {asString(heroContent.title, "Contact RDC-NCR")}
               </h1>
               <p className="text-lg text-white/90 max-w-2xl mx-auto">
-                Get in touch with the Regional Development Council - National
-                Capital Region. We're here to help with inquiries, partnership
-                opportunities, and collaborative projects.
+                {asString(
+                  heroContent.subtitle,
+                  "Get in touch with the Regional Development Council - National Capital Region. We're here to help with inquiries, partnership opportunities, and collaborative projects.",
+                )}
               </p>
             </div>
           </div>
@@ -112,7 +163,7 @@ const Contact: React.FC = () => {
               <div className="lg:col-span-1">
                 <div className="bg-white rounded-3xl shadow-lg p-8 h-full">
                   <h2 className="text-2xl font-bold text-slate-900 mb-6">
-                    Main Office Information
+                    {asString(officeContent.title, "Main Office Information")}
                   </h2>
 
                   <div className="space-y-6">
@@ -132,10 +183,10 @@ const Contact: React.FC = () => {
                       </div>
                       <div>
                         <h4 className="font-semibold text-slate-900">
-                          Address
+                          {asString(officeContent.addressLabel, "Address")}
                         </h4>
                         <p className="text-slate-600 text-sm mt-1">
-                          {DEFAULT_LOCATION.address}
+                          {contactAddress}
                         </p>
                       </div>
                     </div>
@@ -154,12 +205,14 @@ const Contact: React.FC = () => {
                         </svg>
                       </div>
                       <div>
-                        <h4 className="font-semibold text-slate-900">Email</h4>
+                        <h4 className="font-semibold text-slate-900">
+                          {asString(officeContent.emailLabel, "Email")}
+                        </h4>
                         <a
-                          href="mailto:rdc.ncr@mmda.gov.ph"
+                          href={`mailto:${contactEmail}`}
                           className="text-blue-600 hover:underline text-sm"
                         >
-                          rdc.ncr@mmda.gov.ph
+                          {contactEmail}
                         </a>
                       </div>
                     </div>
@@ -178,12 +231,14 @@ const Contact: React.FC = () => {
                         </svg>
                       </div>
                       <div>
-                        <h4 className="font-semibold text-slate-900">Phone</h4>
+                        <h4 className="font-semibold text-slate-900">
+                          {asString(officeContent.phoneLabel, "Phone")}
+                        </h4>
                         <a
-                          href="tel:+632123456789"
+                          href={`tel:${contactPhone.replace(/[^\d+]/g, "")}`}
                           className="text-blue-600 hover:underline text-sm"
                         >
-                          +63 (2) 1234-5678
+                          {contactPhone}
                         </a>
                       </div>
                     </div>
@@ -203,12 +258,15 @@ const Contact: React.FC = () => {
                       </div>
                       <div>
                         <h4 className="font-semibold text-slate-900">
-                          Office Hours
+                          {asString(officeContent.hoursLabel, "Office Hours")}
                         </h4>
                         <p className="text-slate-600 text-sm mt-1">
-                          Monday - Friday: 7:00 AM - 4:00 PM
-                          <br />
-                          Saturday, Sunday & Holidays: Closed
+                          {splitLines(officeHours).map((line, index) => (
+                            <React.Fragment key={line}>
+                              {index > 0 && <br />}
+                              {line}
+                            </React.Fragment>
+                          ))}
                         </p>
                       </div>
                     </div>
@@ -223,15 +281,15 @@ const Contact: React.FC = () => {
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                       <div>
                         <h3 className="text-xl font-bold text-slate-900">
-                          RDC-NCR Location
+                          {asString(mapContent.title, "RDC-NCR Location")}
                         </h3>
                         <p className="text-slate-600 text-sm mt-1">
-                          MMDA Head Office, Pasig City
+                          {asString(mapContent.subtitle, "MMDA Head Office, Pasig City")}
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="inline-flex items-center px-3 py-1 rounded-full bg-blue-100 text-blue-800 text-sm">
-                          📍 Live Location
+                          {asString(mapContent.badgeLabel, "Live Location")}
                         </span>
                       </div>
                     </div>
@@ -261,11 +319,13 @@ const Contact: React.FC = () => {
             <div className="bg-white rounded-3xl shadow-lg p-8">
               <div className="text-center mb-8">
                 <h2 className="text-2xl font-bold text-slate-900 mb-2">
-                  Send Us a Message
+                  {asString(formContent.title, "Send Us a Message")}
                 </h2>
                 <p className="text-slate-600 max-w-2xl mx-auto">
-                  Have a question or inquiry? Fill out the form below and we'll
-                  get back to you as soon as possible.
+                  {asString(
+                    formContent.subtitle,
+                    "Have a question or inquiry? Fill out the form below and we'll get back to you as soon as possible.",
+                  )}
                 </p>
               </div>
 
@@ -283,11 +343,13 @@ const Contact: React.FC = () => {
                     </svg>
                   </div>
                   <h3 className="text-lg font-bold text-slate-900">
-                    Thank You!
+                    {asString(formContent.successTitle, "Thank You!")}
                   </h3>
                   <p className="text-slate-600 mt-2">
-                    Your inquiry has been received. We'll respond within 24-48
-                    business hours.
+                    {asString(
+                      formContent.successMessage,
+                      "Your inquiry has been received. We'll respond within 24-48 business hours.",
+                    )}
                   </p>
                 </div>
               ) : (
@@ -307,7 +369,7 @@ const Contact: React.FC = () => {
                             name: e.target.value,
                           })
                         }
-                        placeholder="Your full name"
+                        placeholder={asString(formContent.namePlaceholder, "Your full name")}
                         className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-400 focus:bg-white transition"
                         required
                       />
@@ -327,7 +389,7 @@ const Contact: React.FC = () => {
                             email: e.target.value,
                           })
                         }
-                        placeholder="your.email@example.com"
+                        placeholder={asString(formContent.emailPlaceholder, "your.email@example.com")}
                         className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-400 focus:bg-white transition"
                         required
                       />
@@ -348,7 +410,7 @@ const Contact: React.FC = () => {
                           subject: e.target.value,
                         })
                       }
-                      placeholder="What is your inquiry about?"
+                      placeholder={asString(formContent.subjectPlaceholder, "What is your inquiry about?")}
                       className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-400 focus:bg-white transition"
                     />
                   </div>
@@ -366,7 +428,7 @@ const Contact: React.FC = () => {
                           message: e.target.value,
                         })
                       }
-                      placeholder="Please describe your inquiry in detail..."
+                      placeholder={asString(formContent.messagePlaceholder, "Please describe your inquiry in detail...")}
                       className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-400 focus:bg-white transition resize-none"
                       rows={6}
                       required
@@ -390,7 +452,7 @@ const Contact: React.FC = () => {
                         >
                           <path d="M12 2v4m0 12v4M4 12h4m12 0h4M5.64 5.64l2.83 2.83M15.53 15.53l2.83 2.83M5.64 18.36l2.83-2.83M15.53 8.47l2.83-2.83" />
                         </svg>
-                        Sending...
+                        {asString(formContent.loadingLabel, "Sending...")}
                       </>
                     ) : (
                       <>
@@ -403,7 +465,7 @@ const Contact: React.FC = () => {
                         >
                           <path d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                         </svg>
-                        Send Message
+                        {asString(formContent.submitLabel, "Send Message")}
                       </>
                     )}
                   </button>

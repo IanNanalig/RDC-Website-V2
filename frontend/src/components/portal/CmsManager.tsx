@@ -45,11 +45,12 @@ const emptyPageForm: PageForm = { title: "", slug: "" };
 const emptySectionForm: SectionForm = {
   page: "",
   section_key: "",
-  section_type: "hero",
+  section_type: "hero_carousel",
   order: "1",
   schema_version: "1",
   is_visible: true,
-  content_json: '{\n  "title": "",\n  "subtitle": "",\n  "buttonText": "",\n  "buttonLink": ""\n}',
+  content_json:
+    '{\n  "slides": [\n    {\n      "title": "Regional Development Council NCR",\n      "subtitle": "Planning a sustainable and resilient Metro Manila",\n      "imageKey": "photo1",\n      "button1": { "text": "View Plans", "link": "/publications" },\n      "button2": { "text": "Latest Reports", "link": "/publications" }\n    }\n  ]\n}',
 };
 const emptyArticleForm: ArticleForm = {
   title: "",
@@ -62,7 +63,177 @@ const emptyArticleForm: ArticleForm = {
   featured: false,
 };
 
-const sectionTypes = ["hero", "text", "image_text", "cards", "news_preview", "project_highlight", "faq"];
+const sectionTypeOptions = [
+  { value: "hero_carousel", label: "Hero Carousel" },
+  { value: "document_group", label: "Document/Card Group" },
+  { value: "dashboard_teaser", label: "Dashboard Teaser" },
+  { value: "news_preview", label: "Latest News Preview" },
+  { value: "events_preview", label: "Events Preview" },
+  { value: "contact_info", label: "Contact Information" },
+  { value: "location_map", label: "Location Map Text" },
+  { value: "form_intro", label: "Form Intro / Messages" },
+  { value: "text", label: "Text Section" },
+  { value: "image_text", label: "Image + Text" },
+  { value: "cards", label: "Cards" },
+  { value: "faq", label: "FAQ" },
+];
+
+const iconOptions = [
+  "leaf",
+  "file",
+  "document",
+  "book",
+  "scale",
+  "target",
+  "chart-line",
+  "chart-bar",
+  "clipboard",
+  "building",
+  "crown",
+  "handshake",
+  "lightbulb",
+  "search",
+];
+
+const sectionTemplate = (type: string): Record<string, unknown> => {
+  if (type === "hero_carousel") {
+    return {
+      slides: [
+        {
+          title: "Regional Development Council NCR",
+          subtitle: "Planning a sustainable and resilient Metro Manila",
+          imageKey: "photo1",
+          button1: { text: "View Plans", link: "/publications" },
+          button2: { text: "Latest Reports", link: "/publications" },
+        },
+      ],
+    };
+  }
+  if (type === "document_group") {
+    return {
+      title: "Section title",
+      items: [
+        {
+          id: "",
+          title: "Featured document",
+          description: "Short public description",
+          category: "Category",
+          icon: "file",
+          link: "/publications",
+          fileType: "",
+          fileSize: "",
+          pages: "",
+          quickLinks: [],
+        },
+      ],
+    };
+  }
+  if (type === "dashboard_teaser") {
+    return {
+      title: "Regional Development Dashboard",
+      buttonLabel: "View Full Dashboard ->",
+      buttonLink: "/Projects",
+    };
+  }
+  if (type === "news_preview") {
+    return {
+      title: "Latest Media Releases",
+      viewAllLabel: "View all ->",
+      viewAllLink: "/news",
+    };
+  }
+  if (type === "events_preview") {
+    return {
+      title: "Upcoming Events",
+      subtitle: "Calendar & Meetings",
+      buttonLabel: "View Full Calendar",
+      calendarTitle: "Public Events and Meetings",
+      calendarSubtitle: "Published schedules from the RDC-NCR public website.",
+    };
+  }
+  if (type === "contact_info") {
+    return {
+      title: "Main Office Information",
+      addressLabel: "Address",
+      address:
+        "16th Floor, MMDA Head Office, Dofia Julia Vargas Avenue corner Molawe St., Barangay Ugong, Pasig City",
+      emailLabel: "Email",
+      email: "rdc.ncr@mmda.gov.ph",
+      phoneLabel: "Phone",
+      phone: "+63 (2) 1234-5678",
+      hoursLabel: "Office Hours",
+      officeHours: "Monday - Friday: 7:00 AM - 4:00 PM\nSaturday, Sunday & Holidays: Closed",
+    };
+  }
+  if (type === "location_map") {
+    return {
+      title: "RDC-NCR Location",
+      subtitle: "MMDA Head Office, Pasig City",
+      badgeLabel: "Live Location",
+    };
+  }
+  if (type === "form_intro") {
+    return {
+      title: "Send Us a Message",
+      subtitle: "Have a question or inquiry? Fill out the form below and we'll get back to you as soon as possible.",
+      successTitle: "Thank You!",
+      successMessage: "Your inquiry has been received. We'll respond within 24-48 business hours.",
+      namePlaceholder: "Your full name",
+      emailPlaceholder: "your.email@example.com",
+      subjectPlaceholder: "What is your inquiry about?",
+      messagePlaceholder: "Please describe your inquiry in detail...",
+      submitLabel: "Send Message",
+      loadingLabel: "Sending...",
+    };
+  }
+  return {
+    title: "",
+    subtitle: "",
+    body: "",
+    buttonText: "",
+    buttonLink: "",
+  };
+};
+
+const formatJson = (value: Record<string, unknown>) => JSON.stringify(value, null, 2);
+
+const parseJsonObject = (value: string): Record<string, unknown> => {
+  try {
+    const parsed = JSON.parse(value || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+};
+
+const parseRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+
+const textValue = (value: unknown) => (typeof value === "string" ? value : "");
+
+const quickLinksToText = (value: unknown) =>
+  Array.isArray(value)
+    ? value
+        .map((item) => {
+          const row = parseRecord(item);
+          const label = textValue(row.label);
+          const link = textValue(row.link);
+          return label || link ? `${label}|${link}` : "";
+        })
+        .filter(Boolean)
+        .join("\n")
+    : "";
+
+const quickLinksFromText = (value: string) =>
+  value
+    .split(/\r?\n/)
+    .map((line) => {
+      const [label = "", link = ""] = line.split("|");
+      return { label: label.trim(), link: link.trim() };
+    })
+    .filter((item) => item.label && item.link);
 
 const statusClass = (status: string) =>
   status === "published" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700";
@@ -93,6 +264,23 @@ const slugify = (value: string) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 
+const pagePublicPath = (slug: string) => {
+  const routeMap: Record<string, string> = {
+    home: "/",
+    "about-rdc": "/about",
+    contact: "/contact",
+    news: "/news",
+  };
+  return routeMap[slug] || `/${slug}`;
+};
+
+const articlePublicPath = (slug: string) => `/news/${slug}`;
+
+const absolutePublicUrl = (path: string) => {
+  if (typeof window === "undefined") return path;
+  return `${window.location.origin}${path}`;
+};
+
 const CmsManager: React.FC<Props> = ({ mode }) => {
   const [activeTab, setActiveTab] = useState<ResourceTab>("pages");
   const [pages, setPages] = useState<CMSPage[]>([]);
@@ -114,6 +302,69 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
     [pages, selectedPageId],
   );
   const selectedPageSections = selectedPage?.sections || [];
+  const sectionContent = useMemo(
+    () => parseJsonObject(sectionForm.content_json),
+    [sectionForm.content_json],
+  );
+
+  const setSectionContent = (content: Record<string, unknown>) => {
+    setSectionForm((prev) => ({ ...prev, content_json: formatJson(content) }));
+  };
+
+  const updateSectionContent = (key: string, value: unknown) => {
+    setSectionContent({ ...sectionContent, [key]: value });
+  };
+
+  const copyPublicUrl = async (path: string) => {
+    const url = absolutePublicUrl(path);
+    try {
+      await navigator.clipboard.writeText(url);
+      setNotice(`Copied public URL: ${url}`);
+    } catch {
+      setNotice(`Public URL: ${url}`);
+    }
+  };
+
+  const updateHeroSlide = (index: number, updater: (slide: Record<string, unknown>) => Record<string, unknown>) => {
+    const slides = Array.isArray(sectionContent.slides) ? [...sectionContent.slides] : [];
+    slides[index] = updater(parseRecord(slides[index]));
+    setSectionContent({ ...sectionContent, slides });
+  };
+
+  const updateDocumentItem = (index: number, updater: (item: Record<string, unknown>) => Record<string, unknown>) => {
+    const items = Array.isArray(sectionContent.items) ? [...sectionContent.items] : [];
+    items[index] = updater(parseRecord(items[index]));
+    setSectionContent({ ...sectionContent, items });
+  };
+
+  const addHeroSlide = () => {
+    const slides = Array.isArray(sectionContent.slides) ? [...sectionContent.slides] : [];
+    slides.push({
+      title: "New carousel slide",
+      subtitle: "Short supporting message",
+      imageKey: "photo1",
+      button1: { text: "Learn More", link: "/" },
+      button2: { text: "View Details", link: "/" },
+    });
+    setSectionContent({ ...sectionContent, slides });
+  };
+
+  const addDocumentItem = () => {
+    const items = Array.isArray(sectionContent.items) ? [...sectionContent.items] : [];
+    items.push({
+      id: "",
+      title: "New item",
+      description: "Short public description",
+      category: "Category",
+      icon: "file",
+      link: "/publications",
+      fileType: "",
+      fileSize: "",
+      pages: "",
+      quickLinks: [],
+    });
+    setSectionContent({ ...sectionContent, items });
+  };
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -178,12 +429,16 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
 
   const publishPage = async (page: CMSPage) => {
     if (!isAdmin) return;
-    if (!window.confirm(`Publish "${page.title}" to the public website?`)) return;
+    const publicPath = pagePublicPath(page.slug);
+    const confirmed = window.confirm(
+      `Publish "${page.title}" to the public website?\n\nPublic URL: ${publicPath}\n\nThis will replace the published snapshot visitors see.`,
+    );
+    if (!confirmed) return;
     setLoading(true);
     setNotice("");
     try {
       await cmsApi.publishPage(page.id);
-      setNotice("Page published. Public site now uses the new snapshot.");
+      setNotice(`Page published. Public site now uses the new snapshot at ${publicPath}.`);
       await loadAll();
     } catch (error) {
       console.error(error);
@@ -328,12 +583,16 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
 
   const publishArticle = async (article: CMSArticle) => {
     if (!isAdmin) return;
-    if (!window.confirm(`Publish "${article.title}" to the News page?`)) return;
+    const publicPath = articlePublicPath(article.slug);
+    const confirmed = window.confirm(
+      `Publish "${article.title}" to the public News page?\n\nPublic URL: ${publicPath}\n\nThis will update the article visitors see.`,
+    );
+    if (!confirmed) return;
     setLoading(true);
     setNotice("");
     try {
       await cmsApi.publishArticle(article.id);
-      setNotice("News article published.");
+      setNotice(`News article published at ${publicPath}.`);
       await loadAll();
     } catch (error) {
       console.error(error);
@@ -368,6 +627,207 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const renderSectionVisualEditor = () => {
+    if (sectionForm.section_type === "hero_carousel") {
+      const slides = Array.isArray(sectionContent.slides) ? sectionContent.slides : [];
+      return (
+        <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h4 className="font-bold text-slate-900">Hero Carousel Slides</h4>
+              <p className="text-xs text-slate-500">Use image keys like photo1, photo2, or paste a media URL.</p>
+            </div>
+            <button type="button" className="portal-btn portal-btn-ghost" onClick={addHeroSlide}>
+              Add Slide
+            </button>
+          </div>
+          {slides.length === 0 ? (
+            <p className="text-sm text-slate-500">No slides yet.</p>
+          ) : (
+            slides.map((slide, index) => {
+              const row = parseRecord(slide);
+              const button1 = parseRecord(row.button1);
+              const button2 = parseRecord(row.button2);
+              return (
+                <div key={index} className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <strong className="text-sm text-slate-800">Slide {index + 1}</strong>
+                    <button
+                      type="button"
+                      className="text-sm text-red-600"
+                      onClick={() => {
+                        const next = slides.filter((_, slideIndex) => slideIndex !== index);
+                        setSectionContent({ ...sectionContent, slides: next });
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Field label="Title" value={textValue(row.title)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, title: value }))} />
+                    <Field label="Subtitle" value={textValue(row.subtitle)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, subtitle: value }))} />
+                    <Field label="Image Key" value={textValue(row.imageKey)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, imageKey: value }))} helper="Built-in carousel image key, e.g. photo1" />
+                    <Field label="Image URL" value={textValue(row.imageUrl)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, imageUrl: value }))} helper="Optional uploaded media URL" />
+                    <Field label="Primary Button Text" value={textValue(button1.text)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, button1: { ...parseRecord(current.button1), text: value } }))} />
+                    <Field label="Primary Button Link" value={textValue(button1.link)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, button1: { ...parseRecord(current.button1), link: value } }))} />
+                    <Field label="Secondary Button Text" value={textValue(button2.text)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, button2: { ...parseRecord(current.button2), text: value } }))} />
+                    <Field label="Secondary Button Link" value={textValue(button2.link)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, button2: { ...parseRecord(current.button2), link: value } }))} />
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      );
+    }
+
+    if (sectionForm.section_type === "document_group") {
+      const items = Array.isArray(sectionContent.items) ? sectionContent.items : [];
+      return (
+        <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+            <Field label="Group Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
+            <button type="button" className="portal-btn portal-btn-ghost" onClick={addDocumentItem}>
+              Add Item
+            </button>
+          </div>
+          {items.map((item, index) => {
+            const row = parseRecord(item);
+            return (
+              <div key={index} className="rounded-xl border border-slate-200 bg-white p-3">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <strong className="text-sm text-slate-800">Card {index + 1}</strong>
+                  <button
+                    type="button"
+                    className="text-sm text-red-600"
+                    onClick={() => {
+                      const next = items.filter((_, itemIndex) => itemIndex !== index);
+                      setSectionContent({ ...sectionContent, items: next });
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field label="Stable ID (optional)" value={textValue(row.id)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, id: value }))} helper="Used by built-in pages to match existing cards, e.g. eo113 or executive." />
+                  <Field label="Title" value={textValue(row.title)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, title: value }))} />
+                  <Field label="Category Label" value={textValue(row.category)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, category: value }))} />
+                  <Field label="Description" value={textValue(row.description)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, description: value }))} />
+                  <Select
+                    label="Icon"
+                    value={textValue(row.icon)}
+                    onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, icon: value }))}
+                    options={iconOptions.map((icon) => ({ label: icon, value: icon }))}
+                  />
+                  <Field label="Destination Link" value={textValue(row.link)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, link: value }))} />
+                  <Field label="File Type (optional)" value={textValue(row.fileType)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, fileType: value }))} />
+                  <Field label="File Size (optional)" value={textValue(row.fileSize)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, fileSize: value }))} />
+                  <Field label="Pages (optional)" value={row.pages == null ? "" : String(row.pages)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, pages: value }))} />
+                </div>
+                <label className="mt-3 block">
+                  <span className="text-sm font-medium text-slate-700">Quick Links</span>
+                  <textarea
+                    className="mt-1 h-20 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                    value={quickLinksToText(row.quickLinks)}
+                    onChange={(event) =>
+                      updateDocumentItem(index, (current) => ({
+                        ...current,
+                        quickLinks: quickLinksFromText(event.target.value),
+                      }))
+                    }
+                    placeholder={"RDIP DOCUMENTS|/publications?category=rdip\nRDIP DASHBOARD|/Projects"}
+                  />
+                  <span className="mt-1 block text-xs text-slate-500">One per line: Label|/link</span>
+                </label>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    if (sectionForm.section_type === "dashboard_teaser") {
+      return (
+        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+          <Field label="Dashboard Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
+          <Field label="Button Label" value={textValue(sectionContent.buttonLabel)} onChange={(value) => updateSectionContent("buttonLabel", value)} />
+          <Field label="Button Link" value={textValue(sectionContent.buttonLink)} onChange={(value) => updateSectionContent("buttonLink", value)} />
+        </div>
+      );
+    }
+
+    if (sectionForm.section_type === "news_preview") {
+      return (
+        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+          <Field label="Section Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
+          <Field label="View All Label" value={textValue(sectionContent.viewAllLabel)} onChange={(value) => updateSectionContent("viewAllLabel", value)} />
+          <Field label="View All Link" value={textValue(sectionContent.viewAllLink)} onChange={(value) => updateSectionContent("viewAllLink", value)} />
+        </div>
+      );
+    }
+
+    if (sectionForm.section_type === "events_preview") {
+      return (
+        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+          <Field label="Section Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
+          <Field label="Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
+          <Field label="Button Label" value={textValue(sectionContent.buttonLabel)} onChange={(value) => updateSectionContent("buttonLabel", value)} />
+          <Field label="Calendar Drawer Title" value={textValue(sectionContent.calendarTitle)} onChange={(value) => updateSectionContent("calendarTitle", value)} />
+          <Field label="Calendar Drawer Subtitle" value={textValue(sectionContent.calendarSubtitle)} onChange={(value) => updateSectionContent("calendarSubtitle", value)} />
+        </div>
+      );
+    }
+
+    if (sectionForm.section_type === "contact_info") {
+      return (
+        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+          <Field label="Card Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
+          <Field label="Address Label" value={textValue(sectionContent.addressLabel)} onChange={(value) => updateSectionContent("addressLabel", value)} />
+          <Area label="Address" value={textValue(sectionContent.address)} onChange={(value) => updateSectionContent("address", value)} rows={3} />
+          <Field label="Email Label" value={textValue(sectionContent.emailLabel)} onChange={(value) => updateSectionContent("emailLabel", value)} />
+          <Field label="Email Address" value={textValue(sectionContent.email)} onChange={(value) => updateSectionContent("email", value)} />
+          <Field label="Phone Label" value={textValue(sectionContent.phoneLabel)} onChange={(value) => updateSectionContent("phoneLabel", value)} />
+          <Field label="Phone Number" value={textValue(sectionContent.phone)} onChange={(value) => updateSectionContent("phone", value)} />
+          <Field label="Office Hours Label" value={textValue(sectionContent.hoursLabel)} onChange={(value) => updateSectionContent("hoursLabel", value)} />
+          <Area label="Office Hours" value={textValue(sectionContent.officeHours)} onChange={(value) => updateSectionContent("officeHours", value)} rows={3} />
+        </div>
+      );
+    }
+
+    if (sectionForm.section_type === "location_map") {
+      return (
+        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+          <Field label="Map Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
+          <Field label="Map Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
+          <Field label="Badge Label" value={textValue(sectionContent.badgeLabel)} onChange={(value) => updateSectionContent("badgeLabel", value)} />
+        </div>
+      );
+    }
+
+    if (sectionForm.section_type === "form_intro") {
+      return (
+        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+          <Field label="Form Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
+          <Field label="Form Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
+          <Field label="Success Title" value={textValue(sectionContent.successTitle)} onChange={(value) => updateSectionContent("successTitle", value)} />
+          <Field label="Success Message" value={textValue(sectionContent.successMessage)} onChange={(value) => updateSectionContent("successMessage", value)} />
+          <Field label="Name Placeholder" value={textValue(sectionContent.namePlaceholder)} onChange={(value) => updateSectionContent("namePlaceholder", value)} />
+          <Field label="Email Placeholder" value={textValue(sectionContent.emailPlaceholder)} onChange={(value) => updateSectionContent("emailPlaceholder", value)} />
+          <Field label="Subject Placeholder" value={textValue(sectionContent.subjectPlaceholder)} onChange={(value) => updateSectionContent("subjectPlaceholder", value)} />
+          <Field label="Message Placeholder" value={textValue(sectionContent.messagePlaceholder)} onChange={(value) => updateSectionContent("messagePlaceholder", value)} />
+          <Field label="Submit Button Label" value={textValue(sectionContent.submitLabel)} onChange={(value) => updateSectionContent("submitLabel", value)} />
+          <Field label="Loading Label" value={textValue(sectionContent.loadingLabel)} onChange={(value) => updateSectionContent("loadingLabel", value)} />
+        </div>
+      );
+    }
+
+    return (
+      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+        <p className="text-sm text-slate-600">This section type uses the advanced JSON editor for now.</p>
+      </div>
+    );
   };
 
   return (
@@ -455,7 +915,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                       className={`rounded-xl border p-3 ${selectedPageId === page.id ? "border-blue-400 bg-blue-50" : "border-slate-200"}`}
                     >
                       <div className="flex items-start justify-between gap-3">
-                        <div>
+                        <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
                             <strong>{page.title}</strong>
                             <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(page.status)}`}>
@@ -467,12 +927,23 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                               </span>
                             )}
                           </div>
-                          <p className="text-xs text-slate-500">/{page.slug}</p>
+                          <p className="text-xs text-slate-500">CMS slug: /{page.slug}</p>
+                          <p className="text-xs text-slate-500">Public URL: {pagePublicPath(page.slug)}</p>
                           <p className="text-xs text-slate-500">Published: {formatDate(page.published_at)}</p>
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <button type="button" className="text-sm text-blue-600" onClick={() => editPage(page)}>
                             Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="text-sm text-slate-600"
+                            onClick={() => window.open(pagePublicPath(page.slug), "_blank", "noopener,noreferrer")}
+                          >
+                            View Published
+                          </button>
+                          <button type="button" className="text-sm text-slate-600" onClick={() => copyPublicUrl(pagePublicPath(page.slug))}>
+                            Copy URL
                           </button>
                           {isAdmin && (
                             <button type="button" className="text-sm text-emerald-700" onClick={() => publishPage(page)}>
@@ -508,8 +979,14 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                   <Select
                     label="Section Type"
                     value={sectionForm.section_type}
-                    onChange={(value) => setSectionForm((prev) => ({ ...prev, section_type: value }))}
-                    options={sectionTypes.map((type) => ({ label: type.replace(/_/g, " "), value: type }))}
+                    onChange={(value) =>
+                      setSectionForm((prev) => ({
+                        ...prev,
+                        section_type: value,
+                        content_json: prev.id ? prev.content_json : formatJson(sectionTemplate(value)),
+                      }))
+                    }
+                    options={sectionTypeOptions}
                   />
                   <Field
                     label="Section Key"
@@ -531,14 +1008,36 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                   />
                   Visible when page is published
                 </label>
-                <label className="block">
-                  <span className="text-sm font-medium text-slate-700">Content JSON</span>
-                  <textarea
-                    className="mt-1 h-52 w-full rounded-xl border border-slate-300 px-3 py-2 font-mono text-sm"
-                    value={sectionForm.content_json}
-                    onChange={(event) => setSectionForm((prev) => ({ ...prev, content_json: event.target.value }))}
-                  />
-                </label>
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2">
+                  <p className="text-sm text-blue-800">
+                    Use the form below for normal editing. The public site still updates only after publish.
+                  </p>
+                  <button
+                    type="button"
+                    className="text-sm font-semibold text-blue-700"
+                    onClick={() =>
+                      setSectionForm((prev) => ({
+                        ...prev,
+                        content_json: formatJson(sectionTemplate(prev.section_type)),
+                      }))
+                    }
+                  >
+                    Load template
+                  </button>
+                </div>
+                {renderSectionVisualEditor()}
+                <details className="rounded-xl border border-slate-200 bg-white">
+                  <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-700">
+                    Advanced JSON editor
+                  </summary>
+                  <div className="border-t border-slate-200 p-4">
+                    <textarea
+                      className="h-52 w-full rounded-xl border border-slate-300 px-3 py-2 font-mono text-sm"
+                      value={sectionForm.content_json}
+                      onChange={(event) => setSectionForm((prev) => ({ ...prev, content_json: event.target.value }))}
+                    />
+                  </div>
+                </details>
                 <div className="flex gap-2">
                   <button type="submit" className="portal-btn portal-btn-primary" disabled={loading}>
                     {sectionForm.id ? "Save Section" : "Add Section"}
@@ -703,12 +1202,22 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                             </span>
                           )}
                         </div>
-                        <p className="text-xs text-slate-500">/news/{article.slug}</p>
+                        <p className="text-xs text-slate-500">Public URL: {articlePublicPath(article.slug)}</p>
                         <p className="mt-1 text-sm text-slate-600">{article.summary || "No summary yet."}</p>
                       </div>
                       <div className="flex flex-wrap gap-2 text-sm">
                         <button type="button" className="text-blue-600" onClick={() => editArticle(article)}>
                           Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="text-slate-600"
+                          onClick={() => window.open(articlePublicPath(article.slug), "_blank", "noopener,noreferrer")}
+                        >
+                          View Published
+                        </button>
+                        <button type="button" className="text-slate-600" onClick={() => copyPublicUrl(articlePublicPath(article.slug))}>
+                          Copy URL
                         </button>
                         {isAdmin && (
                           <button type="button" className="text-emerald-700" onClick={() => publishArticle(article)}>
@@ -807,6 +1316,31 @@ const Field = ({
     <input
       className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2"
       value={value}
+      onChange={(event) => onChange(event.target.value)}
+    />
+    {helper && <span className="mt-1 block text-xs text-slate-500">{helper}</span>}
+  </label>
+);
+
+const Area = ({
+  label,
+  value,
+  onChange,
+  rows = 4,
+  helper,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  rows?: number;
+  helper?: string;
+}) => (
+  <label className="block">
+    <span className="text-sm font-medium text-slate-700">{label}</span>
+    <textarea
+      className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2"
+      value={value}
+      rows={rows}
       onChange={(event) => onChange(event.target.value)}
     />
     {helper && <span className="mt-1 block text-xs text-slate-500">{helper}</span>}

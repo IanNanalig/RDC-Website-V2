@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import cmsApi, { type CMSPageSnapshot } from "../services/cmsApi";
 import annexA from "../assets/Documents/Annex_A__20020717-EO-0113-GMA.pdf";
 import annexB from "../assets/Documents/Annex_B_MMDA-Reso-02-47.pdf";
 
@@ -12,6 +13,40 @@ type LegalDocument = {
   fileType: string;
   fileSize?: string;
   pages?: number;
+};
+
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+const asString = (value: unknown, fallback = "") =>
+  typeof value === "string" && value.trim() ? value.trim() : fallback;
+
+const asNumber = (value: unknown, fallback?: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const getAboutSection = (page: CMSPageSnapshot | null, sectionKey: string) =>
+  page?.sections.find((section) => section.sectionKey === sectionKey)?.content ?? null;
+
+const aboutIcon = (value: unknown, fallback: string) => {
+  const key = asString(value).toLowerCase();
+  const icons: Record<string, string> = {
+    book: "📖",
+    building: "🏛️",
+    crown: "👑",
+    document: "📜",
+    file: "📄",
+    handshake: "🤝",
+    lightbulb: "💡",
+    scale: "⚖️",
+    search: "🔍",
+  };
+  return icons[key] || asString(value, fallback);
 };
 
 const LEGAL_DOCUMENTS: LegalDocument[] = [
@@ -743,6 +778,7 @@ const CommitteeModal: React.FC<{
 };
 
 export default function AboutRDC() {
+  const [aboutCmsPage, setAboutCmsPage] = useState<CMSPageSnapshot | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(
     "chairperson",
   );
@@ -756,6 +792,69 @@ export default function AboutRDC() {
     "Final Year 2025",
     "Final Year 2024",
   ]);
+
+  useEffect(() => {
+    let active = true;
+    cmsApi
+      .getPublicPage("about-rdc")
+      .then((page) => {
+        if (active) setAboutCmsPage(page);
+      })
+      .catch(() => {
+        if (active) setAboutCmsPage(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const heroContent = getAboutSection(aboutCmsPage, "about-hero");
+  const legalContent = getAboutSection(aboutCmsPage, "legal-basis");
+  const committeesContent = getAboutSection(aboutCmsPage, "committees");
+  const organizationContent = getAboutSection(aboutCmsPage, "organization-structure");
+  const resolutionsContent = getAboutSection(aboutCmsPage, "resolutions-archive");
+
+  const legalDocuments = useMemo(() => {
+    const cmsRows = asArray(asRecord(legalContent).documents || asRecord(legalContent).items);
+    const rowById = new Map(
+      cmsRows
+        .map((row) => asRecord(row))
+        .filter((row) => asString(row.id))
+        .map((row) => [asString(row.id), row]),
+    );
+    return LEGAL_DOCUMENTS.map((doc) => {
+      const row = rowById.get(doc.id) || {};
+      return {
+        ...doc,
+        title: asString(row.title, doc.title),
+        description: asString(row.description, doc.description),
+        icon: aboutIcon(row.icon, doc.icon),
+        fileType: asString(row.fileType, doc.fileType),
+        fileSize: asString(row.fileSize, doc.fileSize),
+        pages: asNumber(row.pages, doc.pages),
+        url: asString(row.url, doc.url),
+      };
+    });
+  }, [legalContent]);
+
+  const committees = useMemo(() => {
+    const cmsRows = asArray(asRecord(committeesContent).items);
+    const rowById = new Map(
+      cmsRows
+        .map((row) => asRecord(row))
+        .filter((row) => asString(row.id))
+        .map((row) => [asString(row.id), row]),
+    );
+    return COMMITTEES.map((committee) => {
+      const row = rowById.get(committee.id) || {};
+      return {
+        ...committee,
+        title: asString(row.title, committee.title),
+        description: asString(row.description, committee.description),
+        icon: aboutIcon(row.icon, committee.icon),
+      };
+    });
+  }, [committeesContent]);
 
   const handleView = (doc: LegalDocument, event: React.MouseEvent) => {
     event.preventDefault();
@@ -830,11 +929,16 @@ export default function AboutRDC() {
               </div>
             </div>
             <h1 className="text-4xl md:text-5xl font-extrabold mb-4">
-              About Regional Development Council – NCR
+              {asString(
+                asRecord(heroContent).title,
+                "About Regional Development Council - NCR",
+              )}
             </h1>
             <p className="text-lg text-white/90 max-w-2xl mx-auto">
-              Mandates, functions, and organizational structure guiding
-              sustainable development in Metro Manila
+              {asString(
+                asRecord(heroContent).subtitle,
+                "Mandates, functions, and organizational structure guiding sustainable development in Metro Manila",
+              )}
             </p>
           </div>
         </div>
@@ -845,17 +949,19 @@ export default function AboutRDC() {
         <section>
           <div className="text-center mb-12">
             <h2 className="text-3xl font-bold text-slate-900 mb-4">
-              Legal Basis & Framework
+              {asString(asRecord(legalContent).title, "Legal Basis & Framework")}
             </h2>
             <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-              The foundation documents that define our mandate, structure, and
-              operational guidelines
+              {asString(
+                asRecord(legalContent).subtitle,
+                "The foundation documents that define our mandate, structure, and operational guidelines",
+              )}
             </p>
           </div>
 
           {/* Changed grid to 3 columns and centered */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 max-w-5xl mx-auto">
-            {LEGAL_DOCUMENTS.map((doc) => (
+            {legalDocuments.map((doc) => (
               <div
                 key={doc.id}
                 className="bg-white rounded-2xl shadow-md hover:shadow-xl transition-all overflow-hidden border border-slate-100 group flex flex-col"
@@ -954,16 +1060,18 @@ export default function AboutRDC() {
         <section>
           <div className="text-center mb-12">
             <h2 className="text-3xl font-bold text-slate-900 mb-4">
-              Committees
+              {asString(asRecord(committeesContent).title, "Committees")}
             </h2>
             <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-              Click on any committee to view detailed information, functions,
-              and members
+              {asString(
+                asRecord(committeesContent).subtitle,
+                "Click on any committee to view detailed information, functions, and members",
+              )}
             </p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
-            {COMMITTEES.map((committee) => (
+            {committees.map((committee) => (
               <button
                 key={committee.id}
                 onClick={() => handleCommitteeClick(committee)}
@@ -1034,11 +1142,16 @@ export default function AboutRDC() {
         <section>
           <div className="text-center mb-12">
             <h2 className="text-3xl font-bold text-slate-900 mb-4">
-              RDC-NCR Organizational Structure
+              {asString(
+                asRecord(organizationContent).title,
+                "RDC-NCR Organizational Structure",
+              )}
             </h2>
             <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-              Clear governance framework showing decision-making flow and
-              reporting lines
+              {asString(
+                asRecord(organizationContent).subtitle,
+                "Clear governance framework showing decision-making flow and reporting lines",
+              )}
             </p>
           </div>
 
@@ -1231,11 +1344,16 @@ export default function AboutRDC() {
         <section className="mt-16 pt-8 border-t-2 border-slate-200">
           <div className="text-center mb-12">
             <h2 className="text-3xl font-bold text-slate-900 mb-4">
-              RDC-NCR Resolutions Archive
+              {asString(
+                asRecord(resolutionsContent).title,
+                "RDC-NCR Resolutions Archive",
+              )}
             </h2>
             <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-              Complete historical record of all RDC-NCR resolutions from 2010 to
-              present
+              {asString(
+                asRecord(resolutionsContent).subtitle,
+                "Complete historical record of all RDC-NCR resolutions from 2010 to present",
+              )}
             </p>
           </div>
 
@@ -1243,7 +1361,7 @@ export default function AboutRDC() {
             {/* Legend/Explanation */}
             <div className="mt-8 pt-6 border-t border-slate-200">
               <h4 className="font-semibold text-slate-900 mb-4">
-                Document Type Legend
+                {asString(asRecord(resolutionsContent).legendTitle, "Document Type Legend")}
               </h4>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="flex items-center gap-2">
@@ -1513,7 +1631,10 @@ export default function AboutRDC() {
             {/* Summary Stats */}
             <div className="mt-8 p-6 bg-slate-50 rounded-2xl">
               <h4 className="font-semibold text-slate-900 mb-3">
-                Resolution Categories Summary
+                {asString(
+                  asRecord(resolutionsContent).categoryTitle,
+                  "Resolution Categories Summary",
+                )}
               </h4>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="text-center p-3 bg-white rounded-lg">

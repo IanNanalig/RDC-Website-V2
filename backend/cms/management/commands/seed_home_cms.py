@@ -32,7 +32,7 @@ HOME_SECTIONS = [
                     "subtitle": "Empowering communities through effective planning",
                     "imageKey": "photo3",
                     "button1": {"text": "View Dashboard", "link": "/Projects"},
-                    "button2": {"text": "About RDC", "link": "/about-rdc"},
+                    "button2": {"text": "About RDC", "link": "/about"},
                 },
             ]
         },
