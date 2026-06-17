@@ -5,39 +5,39 @@ import {
   Navigate,
   useLocation,
 } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import Navbar from "./components/Navbar";
 import Footer from "./components/Footer";
 import PublicChatbot from "./components/PublicChatbot";
 import SafeBoundary from "./components/SafeBoundary";
-import Home from "./pages/Home";
-import NewsPage from "./pages/News";
-import Publication from "./pages/Publication";
-import AboutRDC from "./pages/About_RDC";
-import Contact from "./pages/Contact";
-import Projects from "./pages/Projects";
-import ProjectDetails from "./pages/ProjectDetails";
-import Login from "./pages/Login";
-import Reports from "./pages/Reports";
-import Directory from "./pages/Directory";
-import Updates from "./pages/Updates";
-import RegionalProfile from "./pages/RegionalProfile";
-import RequestAccess from "./pages/RequestAccess";
-import RequestPasswordReset from "./pages/RequestPasswordReset";
-import SetupPassword from "./pages/SetupPassword";
 
-// FIXED: Correct the import paths - it's "EmployesPortal" not "EmployeesPortal"
-import Dashboard from "./pages/EmployesPortal/Dashboard";
-import AdminDashboard from "./pages/EmployesPortal/AdminDashboard";
-import ValidatorDashboard from "./pages/EmployesPortal/ValidatorDashboard";
-import ValidatorReviewHistory from "./pages/EmployesPortal/ValidatorReviewHistory";
-import ProjectsPage from "./pages/EmployesPortal/ProjectsPage";
-import SimplifiedProjectSubmission from "./pages/EmployesPortal/SimplifiedProjectSubmission";
-import ProjectReview from "./pages/EmployesPortal/ProjectReview";
-import AdminProjects from "./pages/EmployesPortal/AdminProjects";
-import AdminValidatorDiffs from "./pages/EmployesPortal/AdminValidatorDiffs";
-import UserManagement from "./pages/EmployesPortal/UserManagement";
-import ContentManagement from "./pages/EmployesPortal/ContentManagement";
+const Home = lazy(() => import("./pages/Home"));
+const NewsPage = lazy(() => import("./pages/News"));
+const Publication = lazy(() => import("./pages/Publication"));
+const AboutRDC = lazy(() => import("./pages/About_RDC"));
+const Contact = lazy(() => import("./pages/Contact"));
+const Projects = lazy(() => import("./pages/Projects"));
+const ProjectDetails = lazy(() => import("./pages/ProjectDetails"));
+const Login = lazy(() => import("./pages/Login"));
+const Reports = lazy(() => import("./pages/Reports"));
+const Directory = lazy(() => import("./pages/Directory"));
+const Updates = lazy(() => import("./pages/Updates"));
+const RegionalProfile = lazy(() => import("./pages/RegionalProfile"));
+const RequestAccess = lazy(() => import("./pages/RequestAccess"));
+const RequestPasswordReset = lazy(() => import("./pages/RequestPasswordReset"));
+const SetupPassword = lazy(() => import("./pages/SetupPassword"));
+
+const Dashboard = lazy(() => import("./pages/EmployesPortal/Dashboard"));
+const AdminDashboard = lazy(() => import("./pages/EmployesPortal/AdminDashboard"));
+const ValidatorDashboard = lazy(() => import("./pages/EmployesPortal/ValidatorDashboard"));
+const ValidatorReviewHistory = lazy(() => import("./pages/EmployesPortal/ValidatorReviewHistory"));
+const ProjectsPage = lazy(() => import("./pages/EmployesPortal/ProjectsPage"));
+const SimplifiedProjectSubmission = lazy(() => import("./pages/EmployesPortal/SimplifiedProjectSubmission"));
+const ProjectReview = lazy(() => import("./pages/EmployesPortal/ProjectReview"));
+const AdminProjects = lazy(() => import("./pages/EmployesPortal/AdminProjects"));
+const AdminValidatorDiffs = lazy(() => import("./pages/EmployesPortal/AdminValidatorDiffs"));
+const UserManagement = lazy(() => import("./pages/EmployesPortal/UserManagement"));
+const ContentManagement = lazy(() => import("./pages/EmployesPortal/ContentManagement"));
 
 // Interface for user data
 interface User {
@@ -48,6 +48,15 @@ interface User {
   department?: string;
   position?: string;
 }
+
+const RouteLoading = () => (
+  <div className="flex min-h-screen items-center justify-center bg-slate-50">
+    <div className="text-center">
+      <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-b-2 border-t-2 border-blue-500" />
+      <p className="text-sm font-medium text-slate-600">Loading page...</p>
+    </div>
+  </div>
+);
 
 // Protected Route Component with Role Checking
 const ProtectedRoute = ({
@@ -148,7 +157,7 @@ const ProtectedRoute = ({
 };
 
 // Higher-order component to conditionally wrap with Navbar AND Footer (for PUBLIC pages)
-const withLayout = (Component: React.ComponentType) => {
+const withLayout = (Component: React.ElementType) => {
   return () => (
     <>
       <Navbar />
@@ -162,7 +171,7 @@ const withLayout = (Component: React.ComponentType) => {
 };
 
 // Higher-order component for pages with ONLY Navbar (no Footer) - PUBLIC pages
-const withNavbarOnly = (Component: React.ComponentType) => {
+const withNavbarOnly = (Component: React.ElementType) => {
   return () => (
     <>
       <Navbar />
@@ -286,6 +295,7 @@ const ContentManagementPage = () => (
 export default function App() {
   return (
     <BrowserRouter>
+      <Suspense fallback={<RouteLoading />}>
       <Routes>
         {/* ===== PUBLIC ROUTES (with main Navbar) ===== */}
         <Route path="/" element={<HomeWithLayout />} />
@@ -542,6 +552,7 @@ export default function App() {
         {/* ===== CATCH-ALL ROUTE ===== */}
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
+      </Suspense>
     </BrowserRouter>
   );
 }

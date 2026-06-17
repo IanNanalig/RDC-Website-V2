@@ -65,6 +65,7 @@ const emptyArticleForm: ArticleForm = {
 
 const sectionTypeOptions = [
   { value: "hero_carousel", label: "Hero Carousel" },
+  { value: "publication_catalog", label: "Publication Catalog" },
   { value: "document_group", label: "Document/Card Group" },
   { value: "dashboard_teaser", label: "Dashboard Teaser" },
   { value: "news_preview", label: "Latest News Preview" },
@@ -124,6 +125,34 @@ const sectionTemplate = (type: string): Record<string, unknown> => {
           fileSize: "",
           pages: "",
           quickLinks: [],
+        },
+      ],
+    };
+  }
+  if (type === "publication_catalog") {
+    return {
+      title: "Publications & Official Documents",
+      subtitle: "Plans, reports, and development programs for the National Capital Region",
+      browseTitle: "Browse by Category",
+      browseSubtitle: "Select a category to view available documents",
+      categories: [
+        {
+          id: "category-id",
+          title: "Publication Category",
+          description: "Short public category description",
+          icon: "file",
+          color: "from-blue-600 to-cyan-500",
+          isVisible: true,
+          documents: [
+            {
+              id: "document-id",
+              title: "Document title",
+              year: "2026",
+              fileType: "PDF",
+              fileSize: "",
+              isVisible: true,
+            },
+          ],
         },
       ],
     };
@@ -212,6 +241,25 @@ const parseRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 
 const textValue = (value: unknown) => (typeof value === "string" ? value : "");
+const stringValue = (value: unknown) => (value === null || value === undefined ? "" : String(value));
+
+const mediaDisplayName = (item: CMSMediaAsset) =>
+  item.caption || item.alt_text || item.file?.split(/[\\/]/).pop() || `Media #${item.id}`;
+
+const formatMediaSize = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+};
+
+const mediaFileTypeLabel = (item: CMSMediaAsset) => {
+  if (item.mime_type === "application/pdf") return "PDF";
+  if (item.file_type === "image") return "Image";
+  if (item.file_type === "document") return "Document";
+  return "File";
+};
 
 const quickLinksToText = (value: unknown) =>
   Array.isArray(value)
@@ -305,6 +353,27 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
   const sectionContent = useMemo(
     () => parseJsonObject(sectionForm.content_json),
     [sectionForm.content_json],
+  );
+  const mediaById = useMemo(() => new Map(media.map((item) => [String(item.id), item])), [media]);
+  const imageMediaOptions = useMemo(
+    () =>
+      media
+        .filter((item) => item.file_type === "image")
+        .map((item) => ({
+          label: `${mediaDisplayName(item)}${formatMediaSize(item.size) ? ` (${formatMediaSize(item.size)})` : ""}`,
+          value: String(item.id),
+        })),
+    [media],
+  );
+  const documentMediaOptions = useMemo(
+    () =>
+      media
+        .filter((item) => item.file_type === "document" || item.mime_type === "application/pdf")
+        .map((item) => ({
+          label: `${mediaDisplayName(item)}${formatMediaSize(item.size) ? ` (${formatMediaSize(item.size)})` : ""}`,
+          value: String(item.id),
+        })),
+    [media],
   );
 
   const setSectionContent = (content: Record<string, unknown>) => {
@@ -780,6 +849,251 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
               );
             })}
           </div>
+        </div>
+      );
+    }
+
+    if (sectionForm.section_type === "publication_catalog") {
+      const categories = Array.isArray(sectionContent.categories) ? sectionContent.categories : [];
+      const updateCategory = (categoryIndex: number, nextCategory: Record<string, unknown>) => {
+        const next = [...categories];
+        next[categoryIndex] = nextCategory;
+        setSectionContent({ ...sectionContent, categories: next });
+      };
+      const updatePublicationDocument = (
+        categoryIndex: number,
+        documentIndex: number,
+        nextDocument: Record<string, unknown>,
+      ) => {
+        const nextCategories = [...categories];
+        const category = parseRecord(nextCategories[categoryIndex]);
+        const documents = Array.isArray(category.documents) ? [...category.documents] : [];
+        documents[documentIndex] = nextDocument;
+        nextCategories[categoryIndex] = { ...category, documents };
+        setSectionContent({ ...sectionContent, categories: nextCategories });
+      };
+      const setPublicationDocumentMedia = (
+        categoryIndex: number,
+        documentIndex: number,
+        document: Record<string, unknown>,
+        mediaId: string,
+      ) => {
+        const selected = mediaById.get(mediaId);
+        if (!selected) {
+          updatePublicationDocument(categoryIndex, documentIndex, { ...document, mediaAssetId: "", url: "" });
+          return;
+        }
+        updatePublicationDocument(categoryIndex, documentIndex, {
+          ...document,
+          mediaAssetId: selected.id,
+          url: selected.url,
+          fileType: mediaFileTypeLabel(selected),
+          fileSize: formatMediaSize(selected.size) || textValue(document.fileSize),
+        });
+      };
+      const setPublicationCoverMedia = (
+        categoryIndex: number,
+        documentIndex: number,
+        document: Record<string, unknown>,
+        mediaId: string,
+      ) => {
+        const selected = mediaById.get(mediaId);
+        if (!selected) {
+          updatePublicationDocument(categoryIndex, documentIndex, { ...document, coverAssetId: "", coverImage: "" });
+          return;
+        }
+        updatePublicationDocument(categoryIndex, documentIndex, {
+          ...document,
+          coverAssetId: selected.id,
+          coverImage: selected.url,
+          coverAlt: textValue(document.coverAlt) || selected.alt_text || selected.caption || textValue(document.title),
+        });
+      };
+
+      return (
+        <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label="Page Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
+            <Field label="Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
+            <Field label="Browse Heading" value={textValue(sectionContent.browseTitle)} onChange={(value) => updateSectionContent("browseTitle", value)} />
+            <Field label="Browse Helper Text" value={textValue(sectionContent.browseSubtitle)} onChange={(value) => updateSectionContent("browseSubtitle", value)} />
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h4 className="font-bold text-slate-900">Publication Categories</h4>
+              <p className="text-xs text-slate-500">Document IDs use built-in PDFs/covers by default. Select CMS Media to override with uploaded PDFs or cover images.</p>
+            </div>
+            <button
+              type="button"
+              className="portal-btn portal-btn-ghost"
+              onClick={() =>
+                setSectionContent({
+                  ...sectionContent,
+                  categories: [
+                    ...categories,
+                    {
+                      id: "new-category",
+                      title: "New Publication Category",
+                      description: "Short public category description",
+                      icon: "file",
+                      color: "from-blue-600 to-cyan-500",
+                      isVisible: true,
+                      documents: [],
+                    },
+                  ],
+                })
+              }
+            >
+              Add Category
+            </button>
+          </div>
+
+          {categories.map((categoryEntry, categoryIndex) => {
+            const category = parseRecord(categoryEntry);
+            const documents = Array.isArray(category.documents) ? category.documents : [];
+            return (
+              <div key={categoryIndex} className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <strong className="text-sm text-slate-800">Category {categoryIndex + 1}</strong>
+                  <button
+                    type="button"
+                    className="text-sm text-red-600"
+                    onClick={() => {
+                      const next = categories.filter((_, itemIndex) => itemIndex !== categoryIndex);
+                      setSectionContent({ ...sectionContent, categories: next });
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field label="Category ID" value={textValue(category.id)} onChange={(value) => updateCategory(categoryIndex, { ...category, id: value })} helper="Use existing IDs like greenprint, rdp, rdip, rdr, res, sdg, rpmes, or rrp to keep built-in files connected." />
+                  <Field label="Title" value={textValue(category.title)} onChange={(value) => updateCategory(categoryIndex, { ...category, title: value })} />
+                  <Area label="Description" value={textValue(category.description)} onChange={(value) => updateCategory(categoryIndex, { ...category, description: value })} rows={2} />
+                  <Field label="Icon" value={textValue(category.icon)} onChange={(value) => updateCategory(categoryIndex, { ...category, icon: value })} />
+                  <Field label="Color Classes" value={textValue(category.color)} onChange={(value) => updateCategory(categoryIndex, { ...category, color: value })} helper="Example: from-blue-600 to-cyan-500" />
+                  <Select
+                    label="Visibility"
+                    value={category.isVisible === false ? "false" : "true"}
+                    onChange={(value) => updateCategory(categoryIndex, { ...category, isVisible: value === "true" })}
+                    options={[
+                      { label: "Visible", value: "true" },
+                      { label: "Hidden", value: "false" },
+                    ]}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-3">
+                  <span className="text-sm font-semibold text-slate-700">Documents</span>
+                  <button
+                    type="button"
+                    className="text-sm font-semibold text-blue-600"
+                    onClick={() => {
+                      const nextDocuments = [
+                        ...documents,
+                        {
+                          id: "",
+                          title: "New document",
+                          year: "",
+                          fileType: "PDF",
+                          fileSize: "",
+                          isVisible: true,
+                        },
+                      ];
+                      updateCategory(categoryIndex, { ...category, documents: nextDocuments });
+                    }}
+                  >
+                    Add Document
+                  </button>
+                </div>
+
+                {documents.map((documentEntry, documentIndex) => {
+                  const document = parseRecord(documentEntry);
+                  return (
+                    <div key={documentIndex} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <strong className="text-xs uppercase tracking-wide text-slate-500">Document {documentIndex + 1}</strong>
+                        <button
+                          type="button"
+                          className="text-sm text-red-600"
+                          onClick={() => {
+                            const nextDocuments = documents.filter((_, itemIndex) => itemIndex !== documentIndex);
+                            updateCategory(categoryIndex, { ...category, documents: nextDocuments });
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-3">
+                        <Field label="Document ID" value={textValue(document.id)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, id: value })} helper="Use existing IDs like gp1, rdp1, rdip1 to keep local files connected." />
+                        <Field label="Title" value={textValue(document.title)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, title: value })} />
+                        <Field label="Year" value={textValue(document.year)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, year: value })} />
+                        <Field label="File Type" value={textValue(document.fileType)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, fileType: value })} />
+                        <Field label="File Size" value={textValue(document.fileSize)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, fileSize: value })} />
+                        <Select
+                          label="Visibility"
+                          value={document.isVisible === false ? "false" : "true"}
+                          onChange={(value) =>
+                            updatePublicationDocument(categoryIndex, documentIndex, {
+                              ...document,
+                              isVisible: value === "true",
+                            })
+                          }
+                          options={[
+                            { label: "Visible", value: "true" },
+                            { label: "Hidden", value: "false" },
+                          ]}
+                        />
+                        <Select
+                          label="PDF / Document from Media Library"
+                          value={stringValue(document.mediaAssetId)}
+                          onChange={(value) => setPublicationDocumentMedia(categoryIndex, documentIndex, document, value)}
+                          options={documentMediaOptions}
+                          emptyLabel={
+                            documentMediaOptions.length
+                              ? "Use built-in file / custom URL"
+                              : "No uploaded documents yet"
+                          }
+                        />
+                        <Select
+                          label="Cover Image from Media Library"
+                          value={stringValue(document.coverAssetId)}
+                          onChange={(value) => setPublicationCoverMedia(categoryIndex, documentIndex, document, value)}
+                          options={imageMediaOptions}
+                          emptyLabel={imageMediaOptions.length ? "Use built-in cover / custom URL" : "No uploaded images yet"}
+                        />
+                        <Field
+                          label="Custom URL (optional)"
+                          value={textValue(document.url)}
+                          onChange={(value) =>
+                            updatePublicationDocument(categoryIndex, documentIndex, {
+                              ...document,
+                              mediaAssetId: "",
+                              url: value,
+                            })
+                          }
+                          helper="Use this for external or manual file links. Leave blank to use the built-in file for this document ID."
+                        />
+                        <Field
+                          label="Custom Cover URL (optional)"
+                          value={textValue(document.coverImage)}
+                          onChange={(value) =>
+                            updatePublicationDocument(categoryIndex, documentIndex, {
+                              ...document,
+                              coverAssetId: "",
+                              coverImage: value,
+                            })
+                          }
+                        />
+                        <Field label="Cover Alt Text" value={textValue(document.coverAlt)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, coverAlt: value })} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
         </div>
       );
     }
@@ -1423,7 +1737,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                         )}
                       </div>
                       <p className="mt-2 truncate text-sm font-semibold text-slate-900">{item.caption || item.alt_text || `Media #${item.id}`}</p>
-                      <p className="text-xs text-slate-500">{item.mime_type} · {Math.round(item.size / 1024)} KB</p>
+                      <p className="text-xs text-slate-500">{item.mime_type} · {formatMediaSize(item.size) || "Unknown size"}</p>
                       <div className="mt-2 flex flex-wrap gap-2 text-sm">
                         <a href={item.url} target="_blank" rel="noreferrer" className="text-blue-600">
                           Open

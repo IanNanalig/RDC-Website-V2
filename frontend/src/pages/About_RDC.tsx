@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import cmsApi, { type CMSPageSnapshot } from "../services/cmsApi";
-import annexA from "../assets/Documents/Annex_A__20020717-EO-0113-GMA.pdf";
-import annexB from "../assets/Documents/Annex_B_MMDA-Reso-02-47.pdf";
+
+const publicDocument = (fileName: string) => `/assets/Documents/${encodeURIComponent(fileName)}`;
+const annexA = publicDocument("Annex_A__20020717-EO-0113-GMA.pdf");
+const annexB = publicDocument("Annex_B_MMDA-Reso-02-47.pdf");
 
 type LegalDocument = {
   id: string;

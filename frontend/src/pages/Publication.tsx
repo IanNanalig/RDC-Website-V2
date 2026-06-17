@@ -1,30 +1,35 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import greenprintFull from "../assets/Documents/GREENPRINT-2.pdf";
-import greenprintBrochure from "../assets/Documents/Greeprint-brochure.pdf";
-import rdp2023Full from "../assets/Documents/Full_Version_RDP-NCR_2023-2028.pdf";
-import rdp2023Abridged from "../assets/Documents/Abridged_Version_RDP-NCR_2023-2028.pdf";
-import rdp2023Brochure from "../assets/Documents/Brochure_RDP-NCR_2023-2028.pdf";
-import rdp2017Full from "../assets/Documents/NCR-Regional-Development-Plan-2017-2022-resize (2).pdf";
-import rdp2017Abridged from "../assets/Documents/Abridged-Final-resize.pdf";
-import rdp2017Brochure from "../assets/Documents/RDP-Brochure-Final.pdf";
-import rdip2023 from "../assets/Documents/Regional Development Investment Program 2023-2028_1.pdf";
-import rdip2020 from "../assets/Documents/For_Concurrence_RDIP-NCR_Pre-final_2022.pdf";
-import rdipUpdated2023 from "../assets/Documents/[FY 2023] List of Updated Investment Program.pdf";
-import rdr2023 from "../assets/Documents/RDRNCR2023.pdf";
-import res2021 from "../assets/Documents/res layout_jan 3.pdf";
-import res2022 from "../assets/Documents/RES_2022_v8.pdf";
-import res2023 from "../assets/Documents/Res_2023_Final_Last_version.pdf";
-import rpmesGuidelines from "../assets/Documents/20231016_RPMES-Operational-Guidelines.pdf";
-import rrpFull from "../assets/Documents/RRP-NCR_with_Investment_Program_for_posting.pdf";
-import rrpAbridged from "../assets/Documents/RRP-NCR_Abridged_version_for_posting.pdf";
-import coverGreenprint2030 from "../assets/PublicationCovers/Greenprint 2030.png";
-import coverGreenprintBrochure from "../assets/PublicationCovers/GP2030 Brochure Cover_page-0001.jpg";
-import coverRdp2023 from "../assets/PublicationCovers/Regional Development Plans 2023-2028.png";
-import coverRdpLegacy from "../assets/PublicationCovers/Regional Development Plans.png";
-import coverRdip from "../assets/PublicationCovers/Regional Development Investment Program .png";
-import coverRdr from "../assets/PublicationCovers/Regional Development Report .png";
-import coverRes from "../assets/PublicationCovers/Regional Economic Situationer .png";
+import cmsApi, { type CMSPageSnapshot } from "../services/cmsApi";
+
+const publicDocument = (fileName: string) => `/assets/Documents/${encodeURIComponent(fileName)}`;
+const publicationCover = (fileName: string) => `/assets/PublicationCovers/${encodeURIComponent(fileName)}`;
+
+const greenprintFull = publicDocument("GREENPRINT-2.pdf");
+const greenprintBrochure = publicDocument("Greeprint-brochure.pdf");
+const rdp2023Full = publicDocument("Full_Version_RDP-NCR_2023-2028.pdf");
+const rdp2023Abridged = publicDocument("Abridged_Version_RDP-NCR_2023-2028.pdf");
+const rdp2023Brochure = publicDocument("Brochure_RDP-NCR_2023-2028.pdf");
+const rdp2017Full = publicDocument("NCR-Regional-Development-Plan-2017-2022-resize (2).pdf");
+const rdp2017Abridged = publicDocument("Abridged-Final-resize.pdf");
+const rdp2017Brochure = publicDocument("RDP-Brochure-Final.pdf");
+const rdip2023 = publicDocument("Regional Development Investment Program 2023-2028_1.pdf");
+const rdip2020 = publicDocument("For_Concurrence_RDIP-NCR_Pre-final_2022.pdf");
+const rdipUpdated2023 = publicDocument("[FY 2023] List of Updated Investment Program.pdf");
+const rdr2023 = publicDocument("RDRNCR2023.pdf");
+const res2021 = publicDocument("res layout_jan 3.pdf");
+const res2022 = publicDocument("RES_2022_v8.pdf");
+const res2023 = publicDocument("Res_2023_Final_Last_version.pdf");
+const rpmesGuidelines = publicDocument("20231016_RPMES-Operational-Guidelines.pdf");
+const rrpFull = publicDocument("RRP-NCR_with_Investment_Program_for_posting.pdf");
+const rrpAbridged = publicDocument("RRP-NCR_Abridged_version_for_posting.pdf");
+const coverGreenprint2030 = publicationCover("Greenprint 2030.png");
+const coverGreenprintBrochure = publicationCover("GP2030 Brochure Cover_page-0001.jpg");
+const coverRdp2023 = publicationCover("Regional Development Plans 2023-2028.png");
+const coverRdpLegacy = publicationCover("Regional Development Plans.png");
+const coverRdip = publicationCover("Regional Development Investment Program .png");
+const coverRdr = publicationCover("Regional Development Report .png");
+const coverRes = publicationCover("Regional Economic Situationer .png");
 
 type DocumentItem = {
   id: string;
@@ -331,22 +336,123 @@ const CATEGORIES: Category[] = [
   },
 ];
 
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+const asString = (value: unknown, fallback = "") =>
+  typeof value === "string" && value.trim() ? value.trim() : fallback;
+
+const isVisible = (value: unknown) => {
+  const row = asRecord(value);
+  return row.isVisible !== false && row.visible !== false;
+};
+
+const getPublicationCatalog = (page: CMSPageSnapshot | null) =>
+  page?.sections.find((section) => section.sectionKey === "publication-catalog")?.content ?? null;
+
+const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
+  const catalog = getPublicationCatalog(page);
+  const cmsCategories = asArray(catalog?.categories);
+  if (!cmsCategories.length) return CATEGORIES;
+
+  const mapped = cmsCategories
+    .filter(isVisible)
+    .map((entry, categoryIndex) => {
+      const row = asRecord(entry);
+      const id = asString(row.id, `category-${categoryIndex + 1}`);
+      const baseCategory = CATEGORIES.find((category) => category.id === id);
+      const cmsDocuments = asArray(row.documents);
+      const sourceDocuments = cmsDocuments.length ? cmsDocuments.filter(isVisible) : baseCategory?.documents ?? [];
+
+      const documents = sourceDocuments
+        .map((documentEntry, documentIndex) => {
+          const documentRow = asRecord(documentEntry);
+          const documentId = asString(documentRow.id, `${id}-${documentIndex + 1}`);
+          const baseDocument = baseCategory?.documents.find((document) => document.id === documentId);
+          const url = asString(documentRow.url, baseDocument?.url ?? "");
+          if (!url) return null;
+
+          const coverImage = asString(documentRow.coverImage, baseDocument?.coverImage ?? "");
+          return {
+            id: documentId,
+            title: asString(documentRow.title, baseDocument?.title ?? "Untitled publication"),
+            year: asString(documentRow.year, baseDocument?.year ?? ""),
+            fileType: asString(documentRow.fileType, baseDocument?.fileType ?? "PDF"),
+            fileSize: asString(documentRow.fileSize, baseDocument?.fileSize ?? ""),
+            url,
+            coverImage: coverImage || undefined,
+            coverAlt: asString(documentRow.coverAlt, baseDocument?.coverAlt ?? ""),
+          };
+        })
+        .filter(Boolean) as DocumentItem[];
+
+      return {
+        id,
+        title: asString(row.title, baseCategory?.title ?? "Publication Category"),
+        description: asString(row.description, baseCategory?.description ?? ""),
+        icon: asString(row.icon, baseCategory?.icon ?? "📄"),
+        color: asString(row.color, baseCategory?.color ?? "from-slate-600 to-slate-500"),
+        documents,
+      };
+    })
+    .filter((category) => category.documents.length > 0);
+
+  return mapped.length ? mapped : CATEGORIES;
+};
+
 export default function Publications() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const categoryParam = searchParams.get("category");
+  const [cmsPage, setCmsPage] = useState<CMSPageSnapshot | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(
     categoryParam || null,
   );
 
-  const activeCategory = CATEGORIES.find((c) => c.id === selectedCategory);
+  const categories = useMemo(() => buildCategoriesFromCms(cmsPage), [cmsPage]);
+  const catalogContent = getPublicationCatalog(cmsPage);
+  const activeCategory = categories.find((c) => c.id === selectedCategory);
+  const headerTitle = asString(catalogContent?.title, "Publications & Official Documents");
+  const headerSubtitle = asString(
+    catalogContent?.subtitle,
+    "Plans, reports, and development programs for the National Capital Region",
+  );
+  const browseTitle = asString(catalogContent?.browseTitle, "Browse by Category");
+  const browseSubtitle = asString(catalogContent?.browseSubtitle, "Select a category to view available documents");
 
   // Update selected category when URL parameter changes
   useEffect(() => {
-    if (categoryParam) {
-      setSelectedCategory(categoryParam);
-    }
+    setSelectedCategory(categoryParam || null);
   }, [categoryParam]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadCmsPage = async () => {
+      try {
+        const page = await cmsApi.getPublicPage("publications");
+        if (!cancelled) setCmsPage(page);
+      } catch (error) {
+        console.error(error);
+        if (!cancelled) setCmsPage(null);
+      }
+    };
+
+    loadCmsPage();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (selectedCategory && !categories.some((category) => category.id === selectedCategory)) {
+      setSelectedCategory(null);
+    }
+  }, [selectedCategory, categories]);
 
   const handleCategorySelect = (categoryId: string) => {
     setSelectedCategory(categoryId);
@@ -367,31 +473,30 @@ export default function Publications() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
           <div className="text-center max-w-3xl mx-auto">
             <h1 className="text-4xl md:text-5xl font-extrabold mb-4">
-              Publications & Official Documents
+              {headerTitle}
             </h1>
             <p className="text-lg text-white/90">
-              Plans, reports, and development programs for the National Capital
-              Region
+              {headerSubtitle}
             </p>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        {!selectedCategory ? (
+        {!selectedCategory || !activeCategory ? (
           // Category Selection View
           <div>
             <div className="mb-8">
               <h2 className="text-2xl font-bold text-slate-900 mb-2">
-                Browse by Category
+                {browseTitle}
               </h2>
               <p className="text-slate-600">
-                Select a category to view available documents
+                {browseSubtitle}
               </p>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-              {CATEGORIES.map((category) => (
+              {categories.map((category) => (
                 <button
                   key={category.id}
                   onClick={() => handleCategorySelect(category.id)}
