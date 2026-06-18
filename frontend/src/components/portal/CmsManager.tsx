@@ -919,6 +919,16 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
             <Field label="Browse Helper Text" value={textValue(sectionContent.browseSubtitle)} onChange={(value) => updateSectionContent("browseSubtitle", value)} />
           </div>
 
+          <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900">
+            <p className="font-semibold">Publication media workflow</p>
+            <ol className="mt-2 list-decimal space-y-1 pl-5">
+              <li>Upload publication PDFs and cover images in the Media Library tab first.</li>
+              <li>Return here, then choose the uploaded PDF and cover image in each document row.</li>
+              <li>Save the section draft, then publish the page when the changes are ready for the public website.</li>
+              <li>If no CMS media is selected, the public page keeps using the built-in fallback file for that document ID.</li>
+            </ol>
+          </div>
+
           <div className="flex items-center justify-between gap-3">
             <div>
               <h4 className="font-bold text-slate-900">Publication Categories</h4>
@@ -1010,6 +1020,16 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
 
                 {documents.map((documentEntry, documentIndex) => {
                   const document = parseRecord(documentEntry);
+                  const documentSource = textValue(document.url)
+                    ? stringValue(document.mediaAssetId)
+                      ? "CMS media document selected"
+                      : "Custom/manual document URL"
+                    : "Built-in fallback file";
+                  const coverSource = textValue(document.coverImage)
+                    ? stringValue(document.coverAssetId)
+                      ? "CMS cover image selected"
+                      : "Custom/manual cover URL"
+                    : "Built-in fallback cover";
                   return (
                     <div key={documentIndex} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                       <div className="mb-3 flex items-center justify-between gap-3">
@@ -1024,6 +1044,14 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                         >
                           Remove
                         </button>
+                      </div>
+                      <div className="mb-3 grid gap-2 md:grid-cols-2">
+                        <div className="rounded-lg border border-blue-100 bg-white px-3 py-2 text-xs text-blue-800">
+                          <span className="font-semibold">Document source:</span> {documentSource}
+                        </div>
+                        <div className="rounded-lg border border-emerald-100 bg-white px-3 py-2 text-xs text-emerald-800">
+                          <span className="font-semibold">Cover source:</span> {coverSource}
+                        </div>
                       </div>
                       <div className="grid gap-3 md:grid-cols-3">
                         <Field label="Document ID" value={textValue(document.id)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, id: value })} helper="Use existing IDs like gp1, rdp1, rdip1 to keep local files connected." />
@@ -1055,6 +1083,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                               ? "Use built-in file / custom URL"
                               : "No uploaded documents yet"
                           }
+                          helper="Upload PDFs in Media Library first. Selecting one replaces the built-in fallback after Save Section Draft and Publish Page."
                         />
                         <Select
                           label="Cover Image from Media Library"
@@ -1062,6 +1091,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                           onChange={(value) => setPublicationCoverMedia(categoryIndex, documentIndex, document, value)}
                           options={imageMediaOptions}
                           emptyLabel={imageMediaOptions.length ? "Use built-in cover / custom URL" : "No uploaded images yet"}
+                          helper="Upload PNG, JPG, WebP, or GIF covers in Media Library first. The selected cover is used on publication cards after publishing."
                         />
                         <Field
                           label="Custom URL (optional)"
@@ -1699,6 +1729,13 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
               <h3 className="font-bold text-slate-900">Upload Media</h3>
             </div>
             <div className="portal-card-body space-y-3">
+              <div className="rounded-xl border border-sky-100 bg-sky-50 p-3 text-sm text-sky-900">
+                <p className="font-semibold">Use this for CMS-managed files</p>
+                <p className="mt-1">
+                  Upload publication PDFs and cover images here, then select them inside Pages - Publications - Publication Catalog.
+                  Public pages update only after the page is published.
+                </p>
+              </div>
               <label className="block">
                 <span className="text-sm font-medium text-slate-700">Image or PDF</span>
                 <input
@@ -1707,6 +1744,9 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                   className="mt-1 block w-full text-sm"
                   onChange={(event) => setMediaFile(event.target.files?.[0] || null)}
                 />
+                <span className="mt-1 block text-xs text-slate-500">
+                  Allowed: PNG, JPG, WebP, GIF, and PDF. Use clear captions such as "RDP 2023 Full PDF" or "Greenprint Cover".
+                </span>
               </label>
               <Field label="Alt Text" value={mediaAlt} onChange={setMediaAlt} />
               <Field label="Caption" value={mediaCaption} onChange={setMediaCaption} />
@@ -1811,12 +1851,14 @@ const Select = ({
   onChange,
   options,
   emptyLabel = "Choose",
+  helper,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   options: Array<{ label: string; value: string }>;
   emptyLabel?: string;
+  helper?: string;
 }) => (
   <label className="block">
     <span className="text-sm font-medium text-slate-700">{label}</span>
@@ -1832,6 +1874,7 @@ const Select = ({
         </option>
       ))}
     </select>
+    {helper && <span className="mt-1 block text-xs text-slate-500">{helper}</span>}
   </label>
 );
 
