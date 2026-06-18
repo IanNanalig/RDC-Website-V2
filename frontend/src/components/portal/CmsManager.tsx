@@ -1205,7 +1205,10 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
       return (
         <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
           <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
-            <Field label="Group Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
+            <div className="grid gap-3">
+              <Field label="Group Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
+              <Field label="Group Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
+            </div>
             <button type="button" className="portal-btn portal-btn-ghost" onClick={addDocumentItem}>
               Add Item
             </button>
@@ -1238,7 +1241,12 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                     onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, icon: value }))}
                     options={iconOptions.map((icon) => ({ label: icon, value: icon }))}
                   />
-                  <Field label="Destination Link" value={textValue(row.link)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, link: value }))} />
+                  <Field
+                    label="Destination URL / Link"
+                    value={textValue(row.url || row.link)}
+                    onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, url: value, link: value }))}
+                    helper="Use for downloadable legal documents, external files, or page links. Leave blank to use the page fallback when available."
+                  />
                   <Field label="File Type (optional)" value={textValue(row.fileType)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, fileType: value }))} />
                   <Field label="File Size (optional)" value={textValue(row.fileSize)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, fileSize: value }))} />
                   <Field label="Pages (optional)" value={row.pages == null ? "" : String(row.pages)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, pages: value }))} />
@@ -1613,7 +1621,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                           <div>
                             <strong>{section.order}. {section.section_key}</strong>
                             <p className="text-xs text-slate-500">
-                              {section.section_type} Â· {section.is_visible ? "visible" : "hidden"}
+                              {section.section_type} - {section.is_visible ? "visible" : "hidden"}
                             </p>
                           </div>
                           <div className="flex flex-wrap gap-2 text-sm">

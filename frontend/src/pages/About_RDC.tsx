@@ -36,19 +36,20 @@ const getAboutSection = (page: CMSPageSnapshot | null, sectionKey: string) =>
   page?.sections.find((section) => section.sectionKey === sectionKey)?.content ?? null;
 
 const aboutIcon = (value: unknown, fallback: string) => {
-  const key = asString(value).toLowerCase();
   const icons: Record<string, string> = {
-    book: "📖",
-    building: "🏛️",
-    crown: "👑",
-    document: "📜",
-    file: "📄",
-    handshake: "🤝",
-    lightbulb: "💡",
-    scale: "⚖️",
-    search: "🔍",
+    book: "\u{1F4D6}",
+    building: "\u{1F3DB}\uFE0F",
+    crown: "\u{1F451}",
+    document: "\u{1F4DC}",
+    file: "\u{1F4C4}",
+    handshake: "\u{1F91D}",
+    lightbulb: "\u{1F4A1}",
+    scale: "\u2696\uFE0F",
+    search: "\u{1F50D}",
   };
-  return icons[key] || asString(value, fallback);
+  const key = asString(value).toLowerCase();
+  const fallbackKey = asString(fallback).toLowerCase();
+  return icons[key] || asString(value) || icons[fallbackKey] || fallback;
 };
 
 const LEGAL_DOCUMENTS: LegalDocument[] = [
@@ -57,7 +58,7 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
     title: "Executive Order No. 113",
     description:
       "Redefining the functions and composition of the Regional Development Council, establishing the framework for regional planning and development coordination.",
-    icon: "📜",
+    icon: "document",
     color: "from-blue-600 to-cyan-500",
     url: annexA,
     fileType: "PDF",
@@ -69,7 +70,7 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
     title: "MMDA Resolution No. 02-47",
     description:
       "Metropolitan Manila Development Authority resolution establishing coordination mechanisms and procedures for regional development activities.",
-    icon: "⚖️",
+    icon: "scale",
     color: "from-green-600 to-emerald-500",
     url: annexB,
     fileType: "PDF",
@@ -81,7 +82,7 @@ const LEGAL_DOCUMENTS: LegalDocument[] = [
     title: "RDC-NCR Manual",
     description:
       "Comprehensive operational manual detailing the policies, procedures, and guidelines for the functioning of the Regional Development Council.",
-    icon: "📖",
+    icon: "book",
     color: "from-orange-600 to-red-500",
     url: "https://online.fliphtml5.com/igerd/gdgp/#p=32",
     fileType: "PDF",
@@ -109,7 +110,7 @@ const COMMITTEES: Committee[] = [
     id: "executive",
     title: "Executive Committee",
     description: "Acts on matters requiring immediate RDC attention",
-    icon: "👑",
+    icon: "crown",
     color: "from-purple-500 to-purple-600",
     content: {
       overview:
@@ -128,7 +129,7 @@ const COMMITTEES: Committee[] = [
     id: "sectoral",
     title: "Sectoral Committees",
     description: "Four specialized development committees",
-    icon: "🏛️",
+    icon: "building",
     color: "from-amber-500 to-amber-600",
     content: {
       overview:
@@ -146,7 +147,7 @@ const COMMITTEES: Committee[] = [
     id: "special",
     title: "Special Committees",
     description: "Technical and specialized advisory committees",
-    icon: "🔍",
+    icon: "search",
     color: "from-rose-500 to-rose-600",
     content: {
       overview:
@@ -165,7 +166,7 @@ const COMMITTEES: Committee[] = [
     id: "affiliate",
     title: "Affiliate Committees",
     description: "Support committees under RDC umbrella",
-    icon: "🤝",
+    icon: "handshake",
     color: "from-indigo-500 to-indigo-600",
     content: {
       overview:
@@ -183,7 +184,7 @@ const COMMITTEES: Committee[] = [
     id: "advisory",
     title: "Advisory Committees",
     description: "Expert consultation bodies",
-    icon: "💡",
+    icon: "lightbulb",
     color: "from-slate-500 to-slate-600",
     content: {
       overview:
@@ -1541,12 +1542,12 @@ export default function AboutRDC() {
                                       </span>
                                       {resolution.includes("Endorsing") && (
                                         <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded">
-                                          ✓ Endorsement
+                                          Endorsement
                                         </span>
                                       )}
                                       {resolution.includes("Approving") && (
                                         <span className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded">
-                                          ✓ Approval
+                                          Approval
                                         </span>
                                       )}
                                     </div>
@@ -1684,4 +1685,3 @@ export default function AboutRDC() {
     </div>
   );
 }
-
