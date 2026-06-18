@@ -14,6 +14,7 @@ from cms.serializers import (
     CMSRevisionSerializer,
 )
 from cms.services.media_validation import validate_media_upload
+from cms.services.media_usage import get_media_usages
 from cms.services.publishing import (
     create_article_update_revision,
     create_page_update_revision,
@@ -306,6 +307,15 @@ class AdminCMSMediaAssetViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def archive(self, request, pk=None):
         media = self.get_object()
+        usages = get_media_usages(media)
+        if usages:
+            return Response(
+                {
+                    "detail": "This media file is still used by CMS content. Remove or replace it before archiving.",
+                    "used_by": usages,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         with transaction.atomic():
             media.is_archived = True
             media.save(update_fields=["is_archived"])

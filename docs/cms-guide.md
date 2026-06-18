@@ -87,8 +87,10 @@ Good practices:
 - Use descriptive captions.
 - Add alt text for images when the image has public meaning.
 - Avoid uploading duplicate files.
-- Do not archive media that is still used by a published page or article.
+- Do not archive media that is still used by a page, section, or article.
 - For large PDFs, compress them before uploading when possible.
+
+The Media Library shows where a file is used. If a file is still connected to CMS content, the Archive action is disabled. Replace or remove that file from the related content first, save the draft, and publish if the public page needs to change.
 
 Future storage note: the system is designed so media can later move to durable cloud storage such as Cloudflare R2 without changing the staff workflow.
 

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+﻿import React, { useCallback, useEffect, useMemo, useState } from "react";
 import cmsApi, {
   type CMSArticle,
   type CMSMediaAsset,
@@ -261,6 +261,12 @@ const mediaFileTypeLabel = (item: CMSMediaAsset) => {
   return "File";
 };
 
+const mediaTypeClass = (item: CMSMediaAsset) => {
+  if (item.mime_type === "application/pdf" || item.file_type === "document") return "bg-red-50 text-red-700";
+  if (item.file_type === "image") return "bg-blue-50 text-blue-700";
+  return "bg-slate-100 text-slate-700";
+};
+
 const quickLinksToText = (value: unknown) =>
   Array.isArray(value)
     ? value
@@ -343,6 +349,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
   const [mediaCaption, setMediaCaption] = useState("");
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
+  const [showGuide, setShowGuide] = useState(false);
 
   const isAdmin = mode === "admin";
   const selectedPage = useMemo(
@@ -716,6 +723,29 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to upload media."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const archiveMedia = async (item: CMSMediaAsset) => {
+    if (!item.can_archive) {
+      setNotice("This media file is still used by CMS content. Remove or replace it before archiving.");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Archive "${mediaDisplayName(item)}"?\n\nArchived files stay stored, but will no longer appear in the active media picker.`,
+    );
+    if (!confirmed) return;
+    setLoading(true);
+    setNotice("");
+    try {
+      await cmsApi.archiveMedia(item.id);
+      setNotice("Media archived.");
+      await loadAll();
+    } catch (error) {
+      console.error(error);
+      setNotice(getErrorDetail(error, "Failed to archive media."));
     } finally {
       setLoading(false);
     }
@@ -1342,6 +1372,9 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
             <button type="button" onClick={loadAll} className="portal-btn portal-btn-ghost" disabled={loading}>
               Refresh
             </button>
+            <button type="button" onClick={() => setShowGuide((value) => !value)} className="portal-btn portal-btn-ghost">
+              CMS Guide
+            </button>
           </div>
         </div>
         {notice && (
@@ -1350,6 +1383,25 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
           </div>
         )}
       </div>
+
+      {showGuide && (
+        <div className="portal-card border-blue-200 bg-blue-50">
+          <div className="portal-card-body grid gap-4 text-sm text-blue-950 lg:grid-cols-3">
+            <div>
+              <h3 className="font-bold">Safe publishing rule</h3>
+              <p className="mt-1">Saving drafts does not change the public website. Public visitors only see content after an Admin clicks Publish.</p>
+            </div>
+            <div>
+              <h3 className="font-bold">Publication media workflow</h3>
+              <p className="mt-1">Upload PDFs/covers in Media Library, select them in the Publication Catalog section, save the section, then publish the page.</p>
+            </div>
+            <div>
+              <h3 className="font-bold">Media safety</h3>
+              <p className="mt-1">Media used by pages or news cannot be archived until staff remove or replace it from the related content.</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {activeTab === "pages" && (
         <div className="grid gap-4 xl:grid-cols-[420px_1fr]">
@@ -1561,7 +1613,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                           <div>
                             <strong>{section.order}. {section.section_key}</strong>
                             <p className="text-xs text-slate-500">
-                              {section.section_type} · {section.is_visible ? "visible" : "hidden"}
+                              {section.section_type} Â· {section.is_visible ? "visible" : "hidden"}
                             </p>
                           </div>
                           <div className="flex flex-wrap gap-2 text-sm">
@@ -1765,29 +1817,65 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                 <p className="text-sm text-slate-500">No uploaded media yet.</p>
               ) : (
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  {media.map((item) => (
-                    <div key={item.id} className="rounded-xl border border-slate-200 p-3">
-                      <div className="aspect-video overflow-hidden rounded-lg bg-slate-100">
-                        {item.file_type === "image" ? (
-                          <img src={item.url} alt={item.alt_text || item.caption || "CMS media"} className="h-full w-full object-cover" />
-                        ) : (
-                          <div className="flex h-full items-center justify-center text-sm font-semibold text-slate-500">
-                            {item.file_type.toUpperCase()}
-                          </div>
-                        )}
+                  {media.map((item) => {
+                    const usageCount = item.usage_count || 0;
+                    const usedBy = item.used_by || [];
+                    const canArchive = item.can_archive !== false;
+                    return (
+                      <div key={item.id} className="rounded-xl border border-slate-200 p-3">
+                        <div className="aspect-video overflow-hidden rounded-lg bg-slate-100">
+                          {item.file_type === "image" ? (
+                            <img src={item.url} alt={item.alt_text || item.caption || "CMS media"} className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="flex h-full items-center justify-center text-sm font-semibold text-slate-500">
+                              {mediaFileTypeLabel(item)}
+                            </div>
+                          )}
+                        </div>
+                        <div className="mt-2 flex items-start justify-between gap-2">
+                          <p className="min-w-0 truncate text-sm font-semibold text-slate-900">{mediaDisplayName(item)}</p>
+                          <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${mediaTypeClass(item)}`}>
+                            {mediaFileTypeLabel(item)}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500">
+                          {item.mime_type || "Unknown type"} - {formatMediaSize(item.size) || "Unknown size"}
+                        </p>
+
+                        <div className={`mt-3 rounded-lg border px-3 py-2 text-xs ${usageCount ? "border-amber-100 bg-amber-50 text-amber-800" : "border-emerald-100 bg-emerald-50 text-emerald-800"}`}>
+                          <p className="font-semibold">{usageCount ? `Used in ${usageCount} CMS location(s)` : "Not used by CMS content"}</p>
+                          {usedBy.length > 0 && (
+                            <ul className="mt-1 space-y-1">
+                              {usedBy.slice(0, 3).map((usage, index) => (
+                                <li key={`${usage.type}-${usage.slug}-${usage.location}-${index}`}>
+                                  {usage.title} - {usage.location}{usage.is_public ? " (public)" : " (draft)"}
+                                </li>
+                              ))}
+                              {usedBy.length > 3 && <li>+{usedBy.length - 3} more location(s)</li>}
+                            </ul>
+                          )}
+                        </div>
+
+                        <div className="mt-2 flex flex-wrap gap-2 text-sm">
+                          <a href={item.url} target="_blank" rel="noreferrer" className="text-blue-600">
+                            Open
+                          </a>
+                          <button type="button" className="text-slate-600" onClick={() => navigator.clipboard?.writeText(item.url)}>
+                            Copy URL
+                          </button>
+                          <button
+                            type="button"
+                            className={canArchive ? "text-red-600" : "cursor-not-allowed text-slate-400"}
+                            disabled={!canArchive || loading}
+                            title={canArchive ? "Archive this unused media file" : "Remove this file from CMS content before archiving"}
+                            onClick={() => archiveMedia(item)}
+                          >
+                            Archive
+                          </button>
+                        </div>
                       </div>
-                      <p className="mt-2 truncate text-sm font-semibold text-slate-900">{item.caption || item.alt_text || `Media #${item.id}`}</p>
-                      <p className="text-xs text-slate-500">{item.mime_type} · {formatMediaSize(item.size) || "Unknown size"}</p>
-                      <div className="mt-2 flex flex-wrap gap-2 text-sm">
-                        <a href={item.url} target="_blank" rel="noreferrer" className="text-blue-600">
-                          Open
-                        </a>
-                        <button type="button" className="text-slate-600" onClick={() => navigator.clipboard?.writeText(item.url)}>
-                          Copy URL
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>

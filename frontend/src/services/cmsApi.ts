@@ -55,6 +55,15 @@ export type CMSMediaAsset = {
   alt_text: string;
   caption: string;
   is_archived: boolean;
+  used_by?: Array<{
+    type: string;
+    title: string;
+    slug: string;
+    location: string;
+    is_public: boolean;
+  }>;
+  usage_count?: number;
+  can_archive?: boolean;
   created_at: string;
 };
 

@@ -2,11 +2,15 @@ from rest_framework import serializers
 
 from cms.models import CMSArticle, CMSMediaAsset, CMSPage, CMSPageSection, CMSRevision
 from cms.services.media_validation import validate_media_upload
+from cms.services.media_usage import get_media_usages
 
 
 class CMSMediaAssetSerializer(serializers.ModelSerializer):
     url = serializers.SerializerMethodField()
     uploaded_by_name = serializers.SerializerMethodField()
+    used_by = serializers.SerializerMethodField()
+    usage_count = serializers.SerializerMethodField()
+    can_archive = serializers.SerializerMethodField()
 
     class Meta:
         model = CMSMediaAsset
@@ -22,9 +26,22 @@ class CMSMediaAssetSerializer(serializers.ModelSerializer):
             "uploaded_by",
             "uploaded_by_name",
             "is_archived",
+            "used_by",
+            "usage_count",
+            "can_archive",
             "created_at",
         ]
-        read_only_fields = ["file_type", "mime_type", "size", "uploaded_by", "uploaded_by_name", "created_at"]
+        read_only_fields = [
+            "file_type",
+            "mime_type",
+            "size",
+            "uploaded_by",
+            "uploaded_by_name",
+            "used_by",
+            "usage_count",
+            "can_archive",
+            "created_at",
+        ]
 
     def get_url(self, obj):
         return obj.public_url
@@ -34,6 +51,20 @@ class CMSMediaAssetSerializer(serializers.ModelSerializer):
         if not user:
             return ""
         return getattr(user, "full_name", "") or user.get_username()
+
+    def get_used_by(self, obj):
+        return self._media_usages(obj)
+
+    def get_usage_count(self, obj):
+        return len(self._media_usages(obj))
+
+    def get_can_archive(self, obj):
+        return not self._media_usages(obj)
+
+    def _media_usages(self, obj):
+        if not hasattr(obj, "_cms_usage_cache"):
+            obj._cms_usage_cache = get_media_usages(obj)
+        return obj._cms_usage_cache
 
     def validate_file(self, value):
         validate_media_upload(value)
