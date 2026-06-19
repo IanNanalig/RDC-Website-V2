@@ -247,6 +247,26 @@ const parseRecord = (value: unknown): Record<string, unknown> =>
 const textValue = (value: unknown) => (typeof value === "string" ? value : "");
 const stringValue = (value: unknown) => (value === null || value === undefined ? "" : String(value));
 
+const MAX_CMS_UPLOAD_BYTES = 10 * 1024 * 1024;
+const CMS_MEDIA_ACCEPT = "image/png,image/jpeg,image/webp,image/gif,application/pdf";
+const CMS_MEDIA_TYPE_LABELS: Record<string, string> = {
+  "image/png": "PNG image",
+  "image/jpeg": "JPG image",
+  "image/webp": "WebP image",
+  "image/gif": "GIF image",
+  "application/pdf": "PDF document",
+};
+
+const validateSelectedMediaFile = (file: File) => {
+  if (!CMS_MEDIA_TYPE_LABELS[file.type]) {
+    return "Unsupported file type. Upload PNG, JPG, WebP, GIF, or PDF only.";
+  }
+  if (file.size > MAX_CMS_UPLOAD_BYTES) {
+    return `File is too large. Maximum allowed size is ${formatMediaSize(MAX_CMS_UPLOAD_BYTES)}.`;
+  }
+  return "";
+};
+
 const mediaDisplayName = (item: CMSMediaAsset) =>
   item.caption || item.alt_text || item.file?.split(/[\\/]/).pop() || `Media #${item.id}`;
 
@@ -711,6 +731,11 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
       setNotice("Choose an image or PDF to upload.");
       return;
     }
+    const fileError = validateSelectedMediaFile(mediaFile);
+    if (fileError) {
+      setNotice(fileError);
+      return;
+    }
     const form = new FormData();
     form.append("file", mediaFile);
     form.append("alt_text", mediaAlt);
@@ -795,7 +820,30 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                     <Field label="Title" value={textValue(row.title)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, title: value }))} />
                     <Field label="Subtitle" value={textValue(row.subtitle)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, subtitle: value }))} />
                     <Field label="Image Key" value={textValue(row.imageKey)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, imageKey: value }))} helper="Built-in carousel image key, e.g. photo1" />
-                    <Field label="Image URL" value={textValue(row.imageUrl)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, imageUrl: value }))} helper="Optional uploaded media URL" />
+                    <Select
+                      label="Uploaded Image"
+                      value={stringValue(row.mediaAssetId || row.imageAssetId)}
+                      onChange={(value) => {
+                        const selected = mediaById.get(value);
+                        updateHeroSlide(index, (current) => {
+                          if (!selected) {
+                            return { ...current, mediaAssetId: "", imageAssetId: "" };
+                          }
+                          return {
+                            ...current,
+                            mediaAssetId: selected.id,
+                            imageAssetId: selected.id,
+                            imageUrl: selected.url,
+                            imageAlt: textValue(current.imageAlt) || selected.alt_text || selected.caption || textValue(current.title),
+                          };
+                        });
+                      }}
+                      options={imageMediaOptions}
+                      emptyLabel={imageMediaOptions.length ? "Use built-in image or manual URL" : "No uploaded images yet"}
+                      helper="Choose a CMS image to fill the image URL automatically."
+                    />
+                    <Field label="Image URL" value={textValue(row.imageUrl)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, imageUrl: value }))} helper="Optional manual image URL. CMS-selected images fill this for you." />
+                    <Field label="Image Alt Text" value={textValue(row.imageAlt)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, imageAlt: value }))} helper="Short description for accessibility." />
                     <Field label="Primary Button Text" value={textValue(button1.text)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, button1: { ...parseRecord(current.button1), text: value } }))} />
                     <Field label="Primary Button Link" value={textValue(button1.link)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, button1: { ...parseRecord(current.button1), link: value } }))} />
                     <Field label="Secondary Button Text" value={textValue(button2.text)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, button2: { ...parseRecord(current.button2), text: value } }))} />
@@ -1245,6 +1293,30 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                     onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, icon: value }))}
                     options={iconOptions.map((icon) => ({ label: icon, value: icon }))}
                   />
+                  <Select
+                    label="CMS Document / PDF"
+                    value={stringValue(row.mediaAssetId || row.documentAssetId)}
+                    onChange={(value) => {
+                      const selected = mediaById.get(value);
+                      updateDocumentItem(index, (current) => {
+                        if (!selected) {
+                          return { ...current, mediaAssetId: "", documentAssetId: "" };
+                        }
+                        return {
+                          ...current,
+                          mediaAssetId: selected.id,
+                          documentAssetId: selected.id,
+                          url: selected.url,
+                          link: selected.url,
+                          fileType: mediaFileTypeLabel(selected),
+                          fileSize: formatMediaSize(selected.size) || textValue(current.fileSize),
+                        };
+                      });
+                    }}
+                    options={documentMediaOptions}
+                    emptyLabel={documentMediaOptions.length ? "Use manual link or page fallback" : "No uploaded PDFs yet"}
+                    helper="Choose an uploaded PDF/document to fill the card link and file metadata."
+                  />
                   <Field
                     label="Destination URL / Link"
                     value={textValue(row.url || row.link)}
@@ -1685,10 +1757,9 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                   label="Thumbnail"
                   value={String(articleForm.thumbnail)}
                   onChange={(value) => setArticleForm((prev) => ({ ...prev, thumbnail: value ? Number(value) : "" }))}
-                  options={media
-                    .filter((item) => item.file_type === "image")
-                    .map((item) => ({ label: item.caption || item.alt_text || `Image #${item.id}`, value: String(item.id) }))}
-                  emptyLabel="No thumbnail"
+                  options={imageMediaOptions}
+                  emptyLabel={imageMediaOptions.length ? "No thumbnail" : "No uploaded images yet"}
+                  helper="Upload images in Media Library first, then select one as the public news thumbnail."
                 />
               </div>
               <Field
@@ -1804,16 +1875,50 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                 <span className="text-sm font-medium text-slate-700">Image or PDF</span>
                 <input
                   type="file"
-                  accept="image/png,image/jpeg,image/webp,image/gif,application/pdf"
+                  accept={CMS_MEDIA_ACCEPT}
                   className="mt-1 block w-full text-sm"
-                  onChange={(event) => setMediaFile(event.target.files?.[0] || null)}
+                  onChange={(event) => {
+                    const nextFile = event.target.files?.[0] || null;
+                    if (!nextFile) {
+                      setMediaFile(null);
+                      return;
+                    }
+                    const fileError = validateSelectedMediaFile(nextFile);
+                    if (fileError) {
+                      event.target.value = "";
+                      setMediaFile(null);
+                      setNotice(fileError);
+                      return;
+                    }
+                    setNotice("");
+                    setMediaFile(nextFile);
+                  }}
                 />
                 <span className="mt-1 block text-xs text-slate-500">
-                  Allowed: PNG, JPG, WebP, GIF, and PDF. Use clear captions such as "RDP 2023 Full PDF" or "Greenprint Cover".
+                  Allowed: PNG, JPG, WebP, GIF, and PDF up to {formatMediaSize(MAX_CMS_UPLOAD_BYTES)}. Use clear
+                  captions such as "RDP 2023 Full PDF" or "Greenprint Cover".
                 </span>
               </label>
-              <Field label="Alt Text" value={mediaAlt} onChange={setMediaAlt} />
-              <Field label="Caption" value={mediaCaption} onChange={setMediaCaption} />
+              {mediaFile && (
+                <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+                  <p className="font-semibold">Ready to upload: {mediaFile.name}</p>
+                  <p>
+                    {CMS_MEDIA_TYPE_LABELS[mediaFile.type] || mediaFile.type} - {formatMediaSize(mediaFile.size)}
+                  </p>
+                </div>
+              )}
+              <Field
+                label="Alt Text"
+                value={mediaAlt}
+                onChange={setMediaAlt}
+                helper="Required for meaningful images; leave blank for decorative files or PDFs."
+              />
+              <Field
+                label="Caption"
+                value={mediaCaption}
+                onChange={setMediaCaption}
+                helper="Use a clear library name so staff can find this asset later."
+              />
               <button type="submit" className="portal-btn portal-btn-primary" disabled={loading}>
                 Upload Media
               </button>
@@ -1821,8 +1926,14 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
           </form>
 
           <div className="portal-card">
-            <div className="portal-card-header">
-              <h3 className="font-bold text-slate-900">Media Library</h3>
+            <div className="portal-card-header flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="font-bold text-slate-900">Media Library</h3>
+                <p className="text-xs text-slate-500">Active CMS assets. Files in use are protected from archiving.</p>
+              </div>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+                {media.length} active asset{media.length === 1 ? "" : "s"}
+              </span>
             </div>
             <div className="portal-card-body">
               {media.length === 0 ? (
@@ -1872,17 +1983,28 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                           <a href={item.url} target="_blank" rel="noreferrer" className="text-blue-600">
                             Open
                           </a>
-                          <button type="button" className="text-slate-600" onClick={() => navigator.clipboard?.writeText(item.url)}>
+                          <button
+                            type="button"
+                            className="text-slate-600"
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard?.writeText(item.url);
+                                setNotice(`Copied media URL for ${mediaDisplayName(item)}.`);
+                              } catch {
+                                setNotice(`Media URL: ${item.url}`);
+                              }
+                            }}
+                          >
                             Copy URL
                           </button>
                           <button
                             type="button"
                             className={canArchive ? "text-red-600" : "cursor-not-allowed text-slate-400"}
                             disabled={!canArchive || loading}
-                            title={canArchive ? "Archive this unused media file" : "Remove this file from CMS content before archiving"}
+                            title={canArchive ? "Archive this unused media file" : "This file is protected because it is referenced by CMS content"}
                             onClick={() => archiveMedia(item)}
                           >
-                            Archive
+                            {canArchive ? "Archive" : "Protected"}
                           </button>
                         </div>
                       </div>
