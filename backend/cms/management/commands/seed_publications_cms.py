@@ -11,7 +11,7 @@ PUBLICATION_CATEGORIES = [
         "id": "greenprint",
         "title": "Greenprint 2030",
         "description": "Strategic environmental and sustainability framework for Metro Manila",
-        "icon": "🌱",
+        "icon": "leaf",
         "color": "from-green-600 to-emerald-500",
         "documents": [
             {"id": "gp1", "title": "Greenprint 2030 Full Document", "year": "2023", "fileType": "PDF", "fileSize": "6.9 MB"},
@@ -22,7 +22,7 @@ PUBLICATION_CATEGORIES = [
         "id": "rdp",
         "title": "Regional Development Plans (RDP-NCR)",
         "description": "Comprehensive development blueprints and strategic plans",
-        "icon": "📋",
+        "icon": "clipboard",
         "color": "from-blue-600 to-cyan-500",
         "documents": [
             {"id": "rdp1", "title": "RDP-NCR 2023-2028 (Full Version)", "year": "2023", "fileType": "PDF", "fileSize": "36.4 MB"},
@@ -37,7 +37,7 @@ PUBLICATION_CATEGORIES = [
         "id": "rdip",
         "title": "Regional Development Investment Program (RDIP)",
         "description": "Priority investment programs and infrastructure projects",
-        "icon": "💼",
+        "icon": "briefcase",
         "color": "from-purple-600 to-indigo-500",
         "documents": [
             {"id": "rdip1", "title": "RDIP-NCR 2023-2028", "year": "2023", "fileType": "PDF", "fileSize": "12.4 MB"},
@@ -50,7 +50,7 @@ PUBLICATION_CATEGORIES = [
         "id": "rdr",
         "title": "Regional Development Report (RDR)",
         "description": "Annual progress reports and development outcomes",
-        "icon": "📊",
+        "icon": "chart-bar",
         "color": "from-orange-600 to-red-500",
         "documents": [
             {"id": "rdr1", "title": "RDR 2023", "year": "2023", "fileType": "PDF", "fileSize": "43.6 MB"},
@@ -60,7 +60,7 @@ PUBLICATION_CATEGORIES = [
         "id": "res",
         "title": "Regional Economic Situationer (RES)",
         "description": "Economic performance and trends analysis",
-        "icon": "📈",
+        "icon": "trend",
         "color": "from-teal-600 to-green-500",
         "documents": [
             {"id": "res1", "title": "RES Annual 2021", "year": "2024", "fileType": "PDF", "fileSize": "7.9 MB"},
@@ -72,7 +72,7 @@ PUBLICATION_CATEGORIES = [
         "id": "sdg",
         "title": "SDG Catch-Up Plan",
         "description": "Sustainable Development Goals acceleration strategies",
-        "icon": "🎯",
+        "icon": "target",
         "color": "from-pink-600 to-rose-500",
         "documents": [
             {"id": "sdg1", "title": "SDG Catch-Up Plan 2023-2028", "year": "2023", "fileType": "PDF", "fileSize": "3.1 MB"},
@@ -84,7 +84,7 @@ PUBLICATION_CATEGORIES = [
         "id": "rpmes",
         "title": "Regional Project Monitoring and Evaluation System (RPMES)",
         "description": "Regional Project Monitoring and Evaluation System",
-        "icon": "⚙️",
+        "icon": "gear",
         "color": "from-slate-600 to-gray-500",
         "documents": [
             {"id": "rpmes3", "title": "RPMES Operational Guidelines", "year": "2024", "fileType": "PDF", "fileSize": "8.4 MB"},
@@ -94,7 +94,7 @@ PUBLICATION_CATEGORIES = [
         "id": "rrp",
         "title": "Rehabilitation & Recovery Plan for the National Capital Region (RRP-NCR)",
         "description": "Post-disaster recovery and resilience strategies",
-        "icon": "🔄",
+        "icon": "refresh",
         "color": "from-yellow-600 to-orange-500",
         "documents": [
             {"id": "rrp1", "title": "RRP-NCR with Investment Program (Full Document)", "year": "2024", "fileType": "PDF", "fileSize": "31.5 MB"},

@@ -346,6 +346,24 @@ const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [
 const asString = (value: unknown, fallback = "") =>
   typeof value === "string" && value.trim() ? value.trim() : fallback;
 
+const publicationIcon = (value: string) => {
+  const icons: Record<string, string> = {
+    briefcase: "\u{1F4BC}",
+    "chart-bar": "\u{1F4CA}",
+    "chart-line": "\u{1F4C8}",
+    clipboard: "\u{1F4CB}",
+    document: "\u{1F4C4}",
+    file: "\u{1F4C4}",
+    gear: "\u2699\uFE0F",
+    leaf: "\u{1F331}",
+    refresh: "\u{1F504}",
+    target: "\u{1F3AF}",
+    trend: "\u{1F4C8}",
+  };
+  const key = value.toLowerCase();
+  return icons[key] || value || icons.document;
+};
+
 const isVisible = (value: unknown) => {
   const row = asRecord(value);
   return row.isVisible !== false && row.visible !== false;
@@ -394,7 +412,7 @@ const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
         id,
         title: asString(row.title, baseCategory?.title ?? "Publication Category"),
         description: asString(row.description, baseCategory?.description ?? ""),
-        icon: asString(row.icon, baseCategory?.icon ?? "📄"),
+        icon: asString(row.icon, baseCategory?.icon ?? "document"),
         color: asString(row.color, baseCategory?.color ?? "from-slate-600 to-slate-500"),
         documents,
       };
@@ -506,7 +524,7 @@ export default function Publications() {
                     className={`w-16 h-16 rounded-xl bg-gradient-to-br ${category.color} flex items-center justify-center text-3xl mb-4 group-hover:scale-110 transition-transform leading-none text-center`}
                   >
                     <span className="leading-none align-middle">
-                      {category.icon}
+                      {publicationIcon(category.icon)}
                     </span>
                   </div>
                   <h3 className="text-lg font-bold text-slate-900 mb-2 group-hover:text-blue-600 transition">
@@ -556,7 +574,7 @@ export default function Publications() {
             >
               <div className="flex items-start gap-4">
                 <div className="text-5xl leading-none text-center">
-                  {activeCategory?.icon}
+                  {publicationIcon(activeCategory?.icon || "document")}
                 </div>
                 <div>
                   <h2 className="text-3xl font-bold mb-2">
