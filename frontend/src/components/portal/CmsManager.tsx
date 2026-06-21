@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import cmsApi, {
   type CMSArticle,
   type CMSMediaAsset,
@@ -785,7 +785,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
       const slides = Array.isArray(sectionContent.slides) ? sectionContent.slides : [];
       return (
         <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h4 className="font-bold text-slate-900">Hero Carousel Slides</h4>
               <p className="text-xs text-slate-500">Use image keys like photo1, photo2, or paste a media URL.</p>
@@ -816,7 +816,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                       Remove
                     </button>
                   </div>
-                  <div className="grid gap-3 md:grid-cols-2">
+                  <div className="grid min-w-0 gap-3 md:grid-cols-2">
                     <Field label="Title" value={textValue(row.title)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, title: value }))} />
                     <Field label="Subtitle" value={textValue(row.subtitle)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, subtitle: value }))} />
                     <Field label="Image Key" value={textValue(row.imageKey)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, imageKey: value }))} helper="Built-in carousel image key, e.g. photo1" />
@@ -859,7 +859,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
 
     if (sectionForm.section_type === "text") {
       return (
-        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+        <div className="grid min-w-0 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
           <Field label="Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
           <Field label="Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
           <Area label="Body Content" value={textValue(sectionContent.body)} onChange={(value) => updateSectionContent("body", value)} rows={5} />
@@ -875,7 +875,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
           <Field label="Overview Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
 
           <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <h4 className="font-bold text-slate-900">Overview Paragraphs</h4>
               <button
                 type="button"
@@ -904,7 +904,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
           </div>
 
           <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <h4 className="font-bold text-slate-900">Quick Stats</h4>
               <button type="button" className="portal-btn portal-btn-ghost" onClick={addOverviewStat}>
                 Add Stat
@@ -920,7 +920,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                       Remove
                     </button>
                   </div>
-                  <div className="grid gap-3 md:grid-cols-2">
+                  <div className="grid min-w-0 gap-3 md:grid-cols-2">
                     <Field label="Label" value={textValue(row.label)} onChange={(value) => updateArrayItem("stats", index, { ...row, label: value })} />
                     <Field label="Value" value={textValue(row.value)} onChange={(value) => updateArrayItem("stats", index, { ...row, value })} />
                     <Field label="Subtext" value={textValue(row.subtext)} onChange={(value) => updateArrayItem("stats", index, { ...row, subtext: value })} />
@@ -994,7 +994,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
 
       return (
         <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid min-w-0 gap-3 md:grid-cols-2">
             <Field label="Page Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
             <Field label="Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
             <Field label="Browse Heading" value={textValue(sectionContent.browseTitle)} onChange={(value) => updateSectionContent("browseTitle", value)} />
@@ -1011,7 +1011,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
             </ol>
           </div>
 
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h4 className="font-bold text-slate-900">Publication Categories</h4>
               <p className="text-xs text-slate-500">Document IDs use built-in PDFs/covers by default. Select CMS Media to override with uploaded PDFs or cover images.</p>
@@ -1046,7 +1046,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
             const documents = Array.isArray(category.documents) ? category.documents : [];
             return (
               <div key={categoryIndex} className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <strong className="text-sm text-slate-800">Category {categoryIndex + 1}</strong>
                   <button
                     type="button"
@@ -1059,7 +1059,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                     Remove
                   </button>
                 </div>
-                <div className="grid gap-3 md:grid-cols-2">
+                <div className="grid min-w-0 gap-3 md:grid-cols-2">
                   <Field label="Category ID" value={textValue(category.id)} onChange={(value) => updateCategory(categoryIndex, { ...category, id: value })} helper="Use existing IDs like greenprint, rdp, rdip, rdr, res, sdg, rpmes, or rrp to keep built-in files connected." />
                   <Field label="Title" value={textValue(category.title)} onChange={(value) => updateCategory(categoryIndex, { ...category, title: value })} />
                   <Area label="Description" value={textValue(category.description)} onChange={(value) => updateCategory(categoryIndex, { ...category, description: value })} rows={2} />
@@ -1135,7 +1135,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                           <span className="font-semibold">Cover source:</span> {coverSource}
                         </div>
                       </div>
-                      <div className="grid gap-3 md:grid-cols-3">
+                      <div className="grid min-w-0 gap-3 md:grid-cols-3">
                         <Field label="Document ID" value={textValue(document.id)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, id: value })} helper="Use existing IDs like gp1, rdp1, rdip1 to keep local files connected." />
                         <Field label="Title" value={textValue(document.title)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, title: value })} />
                         <Field label="Year" value={textValue(document.year)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, year: value })} />
@@ -1215,7 +1215,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
       if (sectionForm.section_key === "lgu-directory") {
         return (
           <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+            <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
               <Field label="Directory Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
               <button
                 type="button"
@@ -1235,7 +1235,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                       Remove
                     </button>
                   </div>
-                  <div className="grid gap-3 md:grid-cols-3">
+                  <div className="grid min-w-0 gap-3 md:grid-cols-3">
                     <Field label="LGU Name" value={textValue(row.name || row.title)} onChange={(value) => updateArrayItem("items", index, { ...row, name: value })} />
                     <Field label="Official Link" value={textValue(row.website || row.link)} onChange={(value) => updateArrayItem("items", index, { ...row, website: value })} />
                     <Select
@@ -1256,7 +1256,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
       }
       return (
         <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+          <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
             <div className="grid gap-3">
               <Field label="Group Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
               <Field label="Group Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
@@ -1282,7 +1282,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                     Remove
                   </button>
                 </div>
-                <div className="grid gap-3 md:grid-cols-2">
+                <div className="grid min-w-0 gap-3 md:grid-cols-2">
                   <Field label="Stable ID (optional)" value={textValue(row.id)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, id: value }))} helper="Used by built-in pages to match existing cards, e.g. eo113 or executive." />
                   <Field label="Title" value={textValue(row.title)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, title: value }))} />
                   <Field label="Category Label" value={textValue(row.category)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, category: value }))} />
@@ -1351,7 +1351,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
 
     if (sectionForm.section_type === "dashboard_teaser") {
       return (
-        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+        <div className="grid min-w-0 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
           <Field label="Dashboard Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
           <Field label="Button Label" value={textValue(sectionContent.buttonLabel)} onChange={(value) => updateSectionContent("buttonLabel", value)} />
           <Field label="Button Link" value={textValue(sectionContent.buttonLink)} onChange={(value) => updateSectionContent("buttonLink", value)} />
@@ -1361,7 +1361,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
 
     if (sectionForm.section_type === "news_preview") {
       return (
-        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+        <div className="grid min-w-0 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
           <Field label="Section Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
           <Field label="View All Label" value={textValue(sectionContent.viewAllLabel)} onChange={(value) => updateSectionContent("viewAllLabel", value)} />
           <Field label="View All Link" value={textValue(sectionContent.viewAllLink)} onChange={(value) => updateSectionContent("viewAllLink", value)} />
@@ -1371,7 +1371,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
 
     if (sectionForm.section_type === "events_preview") {
       return (
-        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+        <div className="grid min-w-0 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
           <Field label="Section Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
           <Field label="Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
           <Field label="Button Label" value={textValue(sectionContent.buttonLabel)} onChange={(value) => updateSectionContent("buttonLabel", value)} />
@@ -1383,7 +1383,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
 
     if (sectionForm.section_type === "contact_info") {
       return (
-        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+        <div className="grid min-w-0 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
           <Field label="Card Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
           <Field label="Address Label" value={textValue(sectionContent.addressLabel)} onChange={(value) => updateSectionContent("addressLabel", value)} />
           <Area label="Address" value={textValue(sectionContent.address)} onChange={(value) => updateSectionContent("address", value)} rows={3} />
@@ -1399,7 +1399,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
 
     if (sectionForm.section_type === "location_map") {
       return (
-        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+        <div className="grid min-w-0 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
           <Field label="Map Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
           <Field label="Map Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
           <Field label="Map Caption" value={textValue(sectionContent.caption)} onChange={(value) => updateSectionContent("caption", value)} />
@@ -1410,7 +1410,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
 
     if (sectionForm.section_type === "form_intro") {
       return (
-        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
+        <div className="grid min-w-0 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
           <Field label="Form Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
           <Field label="Form Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
           <Field label="Success Title" value={textValue(sectionContent.successTitle)} onChange={(value) => updateSectionContent("successTitle", value)} />
@@ -1433,8 +1433,8 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="portal-card">
+    <div className="min-w-0 space-y-4">
+      <div className="portal-card min-w-0 overflow-hidden">
         <div className="portal-card-body flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h2 className="text-xl font-bold text-slate-900">Website CMS V1</h2>
@@ -1442,7 +1442,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
               Edit drafts safely. Public pages only change after Admin publishes a snapshot.
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
             {(["pages", "news", "media"] as ResourceTab[]).map((tab) => (
               <button
                 key={tab}
@@ -1469,7 +1469,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
       </div>
 
       {showGuide && (
-        <div className="portal-card border-blue-200 bg-blue-50">
+        <div className="portal-card min-w-0 overflow-hidden border-blue-200 bg-blue-50">
           <div className="portal-card-body grid gap-4 text-sm text-blue-950 lg:grid-cols-3">
             <div>
               <h3 className="font-bold">Safe publishing rule</h3>
@@ -1488,13 +1488,13 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
       )}
 
       {activeTab === "pages" && (
-        <div className="grid gap-4 xl:grid-cols-[420px_1fr]">
-          <div className="space-y-4">
-            <form onSubmit={savePage} className="portal-card">
-              <div className="portal-card-header">
+        <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
+          <div className="min-w-0 space-y-4">
+            <form onSubmit={savePage} className="portal-card min-w-0 overflow-hidden">
+              <div className="portal-card-header min-w-0">
                 <h3 className="font-bold text-slate-900">{pageForm.id ? "Edit Page Draft" : "Create Page Draft"}</h3>
               </div>
-              <div className="portal-card-body space-y-3">
+              <div className="portal-card-body min-w-0 space-y-3">
                 <Field
                   label="Page Title"
                   value={pageForm.title}
@@ -1512,7 +1512,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                   onChange={(value) => setPageForm((prev) => ({ ...prev, slug: value }))}
                   helper="Example: home, about-rdc, contact"
                 />
-                <div className="flex gap-2">
+                <div className="flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
                   <button type="submit" className="portal-btn portal-btn-primary" disabled={loading}>
                     {pageForm.id ? "Save Page Draft" : "Create Page"}
                   </button>
@@ -1525,11 +1525,11 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
               </div>
             </form>
 
-            <div className="portal-card">
-              <div className="portal-card-header">
+            <div className="portal-card min-w-0 overflow-hidden">
+              <div className="portal-card-header min-w-0">
                 <h3 className="font-bold text-slate-900">Pages</h3>
               </div>
-              <div className="portal-card-body space-y-3">
+              <div className="portal-card-body min-w-0 space-y-3">
                 {pages.length === 0 ? (
                   <p className="text-sm text-slate-500">No CMS pages yet.</p>
                 ) : (
@@ -1555,7 +1555,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                           <p className="text-xs text-slate-500">Public URL: {pagePublicPath(page.slug)}</p>
                           <p className="text-xs text-slate-500">Published: {formatDate(page.published_at)}</p>
                         </div>
-                        <div className="flex flex-wrap gap-2">
+                        <div className="flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
                           <button type="button" className="text-sm text-blue-600" onClick={() => editPage(page)}>
                             Edit
                           </button>
@@ -1583,13 +1583,13 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
             </div>
           </div>
 
-          <div className="space-y-4">
-            <form onSubmit={saveSection} className="portal-card">
-              <div className="portal-card-header">
+          <div className="min-w-0 space-y-4">
+            <form onSubmit={saveSection} className="portal-card min-w-0 overflow-hidden">
+              <div className="portal-card-header min-w-0">
                 <h3 className="font-bold text-slate-900">{sectionForm.id ? "Edit Section Block" : "Add Section Block"}</h3>
               </div>
-              <div className="portal-card-body space-y-4">
-                <div className="grid gap-3 md:grid-cols-2">
+              <div className="portal-card-body min-w-0 space-y-4">
+                <div className="grid min-w-0 gap-3 md:grid-cols-2">
                   <Select
                     label="Page"
                     value={String(sectionForm.page)}
@@ -1650,19 +1650,19 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                   </button>
                 </div>
                 {renderSectionVisualEditor()}
-                <details className="rounded-xl border border-slate-200 bg-white">
+                <details className="overflow-hidden rounded-xl border border-slate-200 bg-white">
                   <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-700">
                     Advanced JSON editor
                   </summary>
                   <div className="border-t border-slate-200 p-4">
                     <textarea
-                      className="h-52 w-full rounded-xl border border-slate-300 px-3 py-2 font-mono text-sm"
+                      className="h-52 min-w-0 w-full rounded-xl border border-slate-300 px-3 py-2 font-mono text-sm"
                       value={sectionForm.content_json}
                       onChange={(event) => setSectionForm((prev) => ({ ...prev, content_json: event.target.value }))}
                     />
                   </div>
                 </details>
-                <div className="flex gap-2">
+                <div className="flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
                   <button type="submit" className="portal-btn portal-btn-primary" disabled={loading}>
                     {sectionForm.id ? "Save Section" : "Add Section"}
                   </button>
@@ -1679,11 +1679,11 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
               </div>
             </form>
 
-            <div className="portal-card">
-              <div className="portal-card-header">
+            <div className="portal-card min-w-0 overflow-hidden">
+              <div className="portal-card-header min-w-0">
                 <h3 className="font-bold text-slate-900">Sections {selectedPage ? `for ${selectedPage.title}` : ""}</h3>
               </div>
-              <div className="portal-card-body space-y-3">
+              <div className="portal-card-body min-w-0 space-y-3">
                 {!selectedPage ? (
                   <p className="text-sm text-slate-500">Select or create a page to manage sections.</p>
                 ) : selectedPageSections.length === 0 ? (
@@ -1725,12 +1725,12 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
       )}
 
       {activeTab === "news" && (
-        <div className="grid gap-4 xl:grid-cols-[460px_1fr]">
-          <form onSubmit={saveArticle} className="portal-card">
-            <div className="portal-card-header">
+        <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(320px,460px)_minmax(0,1fr)]">
+          <form onSubmit={saveArticle} className="portal-card min-w-0 overflow-hidden">
+            <div className="portal-card-header min-w-0">
               <h3 className="font-bold text-slate-900">{articleForm.id ? "Edit News Draft" : "Create News Draft"}</h3>
             </div>
-            <div className="portal-card-body space-y-3">
+            <div className="portal-card-body min-w-0 space-y-3">
               <Field
                 label="Title"
                 value={articleForm.title}
@@ -1747,7 +1747,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                 value={articleForm.slug}
                 onChange={(value) => setArticleForm((prev) => ({ ...prev, slug: value }))}
               />
-              <div className="grid gap-3 md:grid-cols-2">
+              <div className="grid min-w-0 gap-3 md:grid-cols-2">
                 <Field
                   label="Category"
                   value={articleForm.category}
@@ -1767,10 +1767,10 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                 value={articleForm.summary}
                 onChange={(value) => setArticleForm((prev) => ({ ...prev, summary: value }))}
               />
-              <label className="block">
+              <label className="block min-w-0">
                 <span className="text-sm font-medium text-slate-700">Article Body</span>
                 <textarea
-                  className="mt-1 h-48 w-full rounded-xl border border-slate-300 px-3 py-2"
+                  className="mt-1 h-48 min-w-0 w-full rounded-xl border border-slate-300 px-3 py-2"
                   value={articleForm.body}
                   onChange={(event) => setArticleForm((prev) => ({ ...prev, body: event.target.value }))}
                   placeholder="<p>Public article content. Basic HTML is allowed and sanitized when published.</p>"
@@ -1789,7 +1789,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                 />
                 Feature this article
               </label>
-              <div className="flex gap-2">
+              <div className="flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
                 <button type="submit" className="portal-btn portal-btn-primary" disabled={loading}>
                   {articleForm.id ? "Save News Draft" : "Create News"}
                 </button>
@@ -1802,11 +1802,11 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
             </div>
           </form>
 
-          <div className="portal-card">
-            <div className="portal-card-header">
+          <div className="portal-card min-w-0 overflow-hidden">
+            <div className="portal-card-header min-w-0">
               <h3 className="font-bold text-slate-900">News Articles</h3>
             </div>
-            <div className="portal-card-body space-y-3">
+            <div className="portal-card-body min-w-0 space-y-3">
               {articles.length === 0 ? (
                 <p className="text-sm text-slate-500">No CMS news articles yet.</p>
               ) : (
@@ -1858,12 +1858,12 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
       )}
 
       {activeTab === "media" && (
-        <div className="grid gap-4 xl:grid-cols-[420px_1fr]">
-          <form onSubmit={uploadMedia} className="portal-card">
-            <div className="portal-card-header">
+        <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
+          <form onSubmit={uploadMedia} className="portal-card min-w-0 overflow-hidden">
+            <div className="portal-card-header min-w-0">
               <h3 className="font-bold text-slate-900">Upload Media</h3>
             </div>
-            <div className="portal-card-body space-y-3">
+            <div className="portal-card-body min-w-0 space-y-3">
               <div className="rounded-xl border border-sky-100 bg-sky-50 p-3 text-sm text-sky-900">
                 <p className="font-semibold">Use this for CMS-managed files</p>
                 <p className="mt-1">
@@ -1871,7 +1871,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                   Public pages update only after the page is published.
                 </p>
               </div>
-              <label className="block">
+              <label className="block min-w-0">
                 <span className="text-sm font-medium text-slate-700">Image or PDF</span>
                 <input
                   type="file"
@@ -1925,7 +1925,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
             </div>
           </form>
 
-          <div className="portal-card">
+          <div className="portal-card min-w-0 overflow-hidden">
             <div className="portal-card-header flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="font-bold text-slate-900">Media Library</h3>
@@ -1935,11 +1935,11 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                 {media.length} active asset{media.length === 1 ? "" : "s"}
               </span>
             </div>
-            <div className="portal-card-body">
+            <div className="portal-card-body min-w-0">
               {media.length === 0 ? (
                 <p className="text-sm text-slate-500">No uploaded media yet.</p>
               ) : (
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <div className="grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {media.map((item) => {
                     const usageCount = item.usage_count || 0;
                     const usedBy = item.used_by || [];
@@ -2031,10 +2031,10 @@ const Field = ({
   onChange: (value: string) => void;
   helper?: string;
 }) => (
-  <label className="block">
+  <label className="block min-w-0">
     <span className="text-sm font-medium text-slate-700">{label}</span>
     <input
-      className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2"
+      className="mt-1 min-w-0 w-full rounded-xl border border-slate-300 px-3 py-2"
       value={value}
       onChange={(event) => onChange(event.target.value)}
     />
@@ -2055,10 +2055,10 @@ const Area = ({
   rows?: number;
   helper?: string;
 }) => (
-  <label className="block">
+  <label className="block min-w-0">
     <span className="text-sm font-medium text-slate-700">{label}</span>
     <textarea
-      className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2"
+      className="mt-1 min-w-0 w-full rounded-xl border border-slate-300 px-3 py-2"
       value={value}
       rows={rows}
       onChange={(event) => onChange(event.target.value)}
@@ -2082,10 +2082,10 @@ const Select = ({
   emptyLabel?: string;
   helper?: string;
 }) => (
-  <label className="block">
+  <label className="block min-w-0">
     <span className="text-sm font-medium text-slate-700">{label}</span>
     <select
-      className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2"
+      className="mt-1 min-w-0 w-full rounded-xl border border-slate-300 px-3 py-2"
       value={value}
       onChange={(event) => onChange(event.target.value)}
     >
