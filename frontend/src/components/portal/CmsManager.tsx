@@ -1442,7 +1442,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
               Edit drafts safely. Public pages only change after Admin publishes a snapshot.
             </p>
           </div>
-          <div className="flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
+          <div className="flex flex-wrap gap-2">
             {(["pages", "news", "media"] as ResourceTab[]).map((tab) => (
               <button
                 key={tab}
@@ -1512,7 +1512,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                   onChange={(value) => setPageForm((prev) => ({ ...prev, slug: value }))}
                   helper="Example: home, about-rdc, contact"
                 />
-                <div className="flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
+                <div className="flex flex-wrap gap-2">
                   <button type="submit" className="portal-btn portal-btn-primary" disabled={loading}>
                     {pageForm.id ? "Save Page Draft" : "Create Page"}
                   </button>
@@ -1538,10 +1538,10 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                       key={page.id}
                       className={`rounded-xl border p-3 ${selectedPageId === page.id ? "border-blue-400 bg-blue-50" : "border-slate-200"}`}
                     >
-                      <div className="flex items-start justify-between gap-3">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <strong>{page.title}</strong>
+                            <strong className="break-words">{page.title}</strong>
                             <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(page.status)}`}>
                               {page.status}
                             </span>
@@ -1555,7 +1555,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                           <p className="text-xs text-slate-500">Public URL: {pagePublicPath(page.slug)}</p>
                           <p className="text-xs text-slate-500">Published: {formatDate(page.published_at)}</p>
                         </div>
-                        <div className="flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
+                        <div className="flex flex-wrap gap-2">
                           <button type="button" className="text-sm text-blue-600" onClick={() => editPage(page)}>
                             Edit
                           </button>
@@ -1662,7 +1662,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                     />
                   </div>
                 </details>
-                <div className="flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
+                <div className="flex flex-wrap gap-2">
                   <button type="submit" className="portal-btn portal-btn-primary" disabled={loading}>
                     {sectionForm.id ? "Save Section" : "Add Section"}
                   </button>
@@ -1789,7 +1789,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                 />
                 Feature this article
               </label>
-              <div className="flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
+              <div className="flex flex-wrap gap-2">
                 <button type="submit" className="portal-btn portal-btn-primary" disabled={loading}>
                   {articleForm.id ? "Save News Draft" : "Create News"}
                 </button>
@@ -1815,7 +1815,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
-                          <strong>{article.title}</strong>
+                          <strong className="break-words">{article.title}</strong>
                           <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(article.status)}`}>
                             {article.status}
                           </span>

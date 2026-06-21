@@ -44,7 +44,13 @@ class CMSMediaAssetSerializer(serializers.ModelSerializer):
         ]
 
     def get_url(self, obj):
-        return obj.public_url
+        url = obj.public_url
+        if not url:
+            return ""
+        request = self.context.get("request")
+        if request and url.startswith("/"):
+            return request.build_absolute_uri(url)
+        return url
 
     def get_uploaded_by_name(self, obj):
         user = obj.uploaded_by
