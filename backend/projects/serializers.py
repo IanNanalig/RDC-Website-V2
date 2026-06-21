@@ -5,7 +5,6 @@ from .models import (
     PasswordResetRequest,
     PublicChatKnowledgeGap,
     PublicEvent,
-    PublicPageContent,
     PriorityRuleSet,
     PublicContent,
     Project,
@@ -198,100 +197,6 @@ class PublicEventSerializer(serializers.ModelSerializer):
         if is_virtual and not meeting_link and not location:
             raise serializers.ValidationError("Virtual events need a meeting link or public location note.")
         return attrs
-
-
-class PublicPageContentSerializer(serializers.ModelSerializer):
-    created_by_name = serializers.SerializerMethodField()
-    submitted_by_name = serializers.SerializerMethodField()
-    reviewed_by_name = serializers.SerializerMethodField()
-    page_label = serializers.CharField(source="get_page_display", read_only=True)
-
-    class Meta:
-        model = PublicPageContent
-        fields = [
-            "id",
-            "page",
-            "page_label",
-            "section_key",
-            "title",
-            "subtitle",
-            "body",
-            "image_url",
-            "cta_label",
-            "cta_url",
-            "metadata",
-            "status",
-            "review_notes",
-            "created_by_name",
-            "submitted_by_name",
-            "reviewed_by_name",
-            "published_at",
-            "archived_at",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = [
-            "status",
-            "review_notes",
-            "created_by_name",
-            "submitted_by_name",
-            "reviewed_by_name",
-            "published_at",
-            "archived_at",
-            "created_at",
-            "updated_at",
-        ]
-
-    def _name(self, user):
-        if not user:
-            return ""
-        return user.full_name.strip() or user.get_full_name() or user.username
-
-    def get_created_by_name(self, obj):
-        return self._name(obj.created_by)
-
-    def get_submitted_by_name(self, obj):
-        return self._name(obj.submitted_by)
-
-    def get_reviewed_by_name(self, obj):
-        return self._name(obj.reviewed_by)
-
-    def validate_section_key(self, value):
-        key = str(value or "").strip().lower().replace(" ", "_")
-        if not key:
-            raise serializers.ValidationError("Section key is required.")
-        if not key.replace("_", "").replace("-", "").isalnum():
-            raise serializers.ValidationError("Use letters, numbers, dashes, or underscores only.")
-        return key[:80]
-
-    def validate_metadata(self, value):
-        if value in (None, ""):
-            return {}
-        if not isinstance(value, dict):
-            raise serializers.ValidationError("Metadata must be a JSON object.")
-        return value
-
-
-class PublicPageContentPublicSerializer(serializers.ModelSerializer):
-    page_label = serializers.CharField(source="get_page_display", read_only=True)
-
-    class Meta:
-        model = PublicPageContent
-        fields = [
-            "id",
-            "page",
-            "page_label",
-            "section_key",
-            "title",
-            "subtitle",
-            "body",
-            "image_url",
-            "cta_label",
-            "cta_url",
-            "metadata",
-            "published_at",
-            "updated_at",
-        ]
 
 
 class ProjectSerializer(serializers.ModelSerializer):
