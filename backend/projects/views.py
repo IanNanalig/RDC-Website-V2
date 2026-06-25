@@ -1523,7 +1523,7 @@ class PublicEventViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = PublicEventSerializer
 
     def get_queryset(self):
-        qs = PublicEvent.objects.filter(status="published").order_by("start_at", "title")
+        qs = PublicEvent.objects.filter(status="published")
         event_type = (self.request.query_params.get("type") or "").strip().lower()
         month = (self.request.query_params.get("month") or "").strip()
         q = (self.request.query_params.get("q") or "").strip()
@@ -1540,7 +1540,10 @@ class PublicEventViewSet(viewsets.ReadOnlyModelViewSet):
             qs = qs.filter(Q(title__icontains=q) | Q(description__icontains=q) | Q(location__icontains=q))
         if getattr(self, "action", "") == "list" and not include_past:
             qs = qs.filter(start_at__gte=timezone.now())
-        return qs
+            return qs.order_by("start_at", "title")
+        if getattr(self, "action", "") == "list" and include_past:
+            return qs.order_by("-start_at", "title")
+        return qs.order_by("start_at", "title")
 
     def list(self, request, *args, **kwargs):
         try:

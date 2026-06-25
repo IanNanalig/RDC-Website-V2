@@ -32,6 +32,7 @@ export async function getPublicEvents(filters: EventFilters = {}) {
   if (filters.type) params.set("type", filters.type);
   if (filters.month) params.set("month", filters.month);
   if (filters.q) params.set("q", filters.q);
+  params.set("_ts", String(Date.now()));
   const qs = params.toString();
   const data = await api.get(`public/events/${qs ? `?${qs}` : ""}`);
   return Array.isArray(data?.results) ? (data.results as PublicEvent[]) : [];

@@ -92,6 +92,8 @@ export type CMSPageSnapshot = {
   }>;
 };
 
+const publicCacheBust = () => `_cms=${Date.now()}`;
+
 const listFromResponse = <T>(data: unknown): T[] => {
   if (Array.isArray(data)) return data as T[];
   if (data && typeof data === "object" && Array.isArray((data as { results?: unknown }).results)) {
@@ -127,15 +129,17 @@ export const cmsApi = {
   uploadMedia: (formData: FormData) => api.postForm("admin/cms/media/", formData),
   archiveMedia: (id: number) => api.post(`admin/cms/media/${id}/archive/`),
 
-  getPublicPage: (slug: string) => api.get(`public/cms/pages/${slug}/`) as Promise<CMSPageSnapshot>,
+  getPublicPage: (slug: string) =>
+    api.get(`public/cms/pages/${slug}/?${publicCacheBust()}`) as Promise<CMSPageSnapshot>,
   listPublicNews: async (limit = 20) => {
-    const data = await api.get(`public/cms/news/?limit=${limit}`);
+    const data = await api.get(`public/cms/news/?limit=${limit}&${publicCacheBust()}`);
     if (data && typeof data === "object" && Array.isArray((data as { results?: unknown }).results)) {
       return (data as { results: CMSArticleSnapshot[] }).results;
     }
     return [];
   },
-  getPublicArticle: (slug: string) => api.get(`public/cms/news/${slug}/`) as Promise<CMSArticleSnapshot>,
+  getPublicArticle: (slug: string) =>
+    api.get(`public/cms/news/${slug}/?${publicCacheBust()}`) as Promise<CMSArticleSnapshot>,
 };
 
 export default cmsApi;

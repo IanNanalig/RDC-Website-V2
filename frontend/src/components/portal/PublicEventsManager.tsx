@@ -45,11 +45,24 @@ const emptyEventForm: PublicEventForm = {
   meeting_link: "",
 };
 
+const flattenErrorDetail = (value: unknown): string[] => {
+  if (!value) return [];
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(flattenErrorDetail);
+  if (typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>).flatMap(([field, detail]) =>
+      flattenErrorDetail(detail).map((message) => `${field}: ${message}`),
+    );
+  }
+  return [String(value)];
+};
+
 const getErrorDetail = (err: unknown, fallback: string) => {
   if (err instanceof Error && err.message) {
     try {
       const parsed = JSON.parse(err.message);
-      return parsed?.detail || fallback;
+      const messages = flattenErrorDetail(parsed?.detail ?? parsed);
+      return messages.length > 0 ? messages.join(" ") : fallback;
     } catch {
       return err.message;
     }
@@ -62,6 +75,13 @@ const toDateTimeLocal = (value?: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   return date.toISOString().slice(0, 16);
+};
+
+const toApiDateTime = (value: string) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toISOString();
 };
 
 const statusClass = (status: PublicEventRow["status"]) => {
@@ -119,13 +139,21 @@ const PublicEventsManager: React.FC<Props> = ({ mode, onChanged }) => {
       setNotice("Event title and start date/time are required.");
       return;
     }
+    if (eventForm.end_at) {
+      const startAt = new Date(eventForm.start_at);
+      const endAt = new Date(eventForm.end_at);
+      if (!Number.isNaN(startAt.getTime()) && !Number.isNaN(endAt.getTime()) && endAt <= startAt) {
+        setNotice("End date/time must be later than the start date/time. If this event has no end time yet, leave End Date and Time blank.");
+        return;
+      }
+    }
     try {
       const payload = {
         title: eventForm.title.trim(),
         description: eventForm.description.trim(),
         event_type: eventForm.event_type,
-        start_at: eventForm.start_at,
-        end_at: eventForm.end_at || null,
+        start_at: toApiDateTime(eventForm.start_at),
+        end_at: toApiDateTime(eventForm.end_at),
         location: eventForm.location.trim(),
         is_virtual: eventForm.is_virtual,
         meeting_link: eventForm.meeting_link.trim(),

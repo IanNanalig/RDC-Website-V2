@@ -62,7 +62,9 @@ def _log_cms_activity(request, event, details=None):
 
 
 def _with_public_cache(response):
-    response["Cache-Control"] = "public, max-age=300"
+    response["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
     return response
 
 

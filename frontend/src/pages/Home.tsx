@@ -143,6 +143,61 @@ const mapHomeArticle = (article: CMSArticleSnapshot): HomeNewsArticle => ({
   slug: article.slug,
 });
 
+const getEventTiming = (event: PublicEvent) => {
+  const start = new Date(event.start_at);
+  const end = event.end_at
+    ? new Date(event.end_at)
+    : new Date(start.getTime() + 2 * 60 * 60 * 1000);
+  const now = new Date();
+
+  if (Number.isNaN(start.getTime())) {
+    return {
+      rank: 1,
+      label: "Scheduled",
+      message: "This event is scheduled.",
+      className: "bg-blue-50 text-blue-700 ring-1 ring-blue-100",
+    };
+  }
+
+  if (now >= start && now < end) {
+    return {
+      rank: 0,
+      label: "Happening now",
+      message: "This event is currently happening.",
+      className: "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200",
+    };
+  }
+
+  if (now >= end) {
+    return {
+      rank: 2,
+      label: "Ended",
+      message: "This event has already ended.",
+      className: "bg-slate-100 text-slate-600 ring-1 ring-slate-200",
+    };
+  }
+
+  return {
+    rank: 1,
+    label: "Upcoming",
+    message: "This event is scheduled and has not started yet.",
+    className: "bg-blue-50 text-blue-700 ring-1 ring-blue-100",
+  };
+};
+
+const sortEventsForDisplay = (events: PublicEvent[]) =>
+  [...events].sort((a, b) => {
+    const aTiming = getEventTiming(a);
+    const bTiming = getEventTiming(b);
+    if (aTiming.rank !== bTiming.rank) return aTiming.rank - bTiming.rank;
+    const aStart = new Date(a.start_at).getTime() || 0;
+    const bStart = new Date(b.start_at).getTime() || 0;
+    if (aTiming.rank === 2) return bStart - aStart;
+    return aStart - bStart;
+  });
+
+const HOME_EVENT_PREVIEW_LIMIT = 3;
+
 const Home: React.FC = () => {
   const [currentSlide, setCurrentSlide] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
@@ -651,13 +706,11 @@ const Home: React.FC = () => {
       try {
         setEventsLoading(true);
         setEventsError("");
-        const [homeRows, fullRows] = await Promise.all([
-          getPublicEvents({ limit: 4 }),
-          getPublicEvents({ limit: 50, includePast: true }),
-        ]);
+        const fullRows = await getPublicEvents({ limit: 50, includePast: true });
+        const displayRows = sortEventsForDisplay(fullRows);
         if (!cancelled) {
-          setUpcomingEvents(homeRows);
-          setCalendarEvents(fullRows);
+          setUpcomingEvents(displayRows.slice(0, HOME_EVENT_PREVIEW_LIMIT));
+          setCalendarEvents(displayRows);
         }
       } catch (error) {
         console.error(error);
@@ -702,6 +755,8 @@ const Home: React.FC = () => {
       ),
     [calendarEvents, calendarFilter],
   );
+
+  const remainingEventCount = Math.max(0, calendarEvents.length - upcomingEvents.length);
 
   const goToSlide = (index: number) => {
     setCurrentSlide(index);
@@ -1297,11 +1352,13 @@ const Home: React.FC = () => {
                   </div>
                 ) : upcomingEvents.length === 0 ? (
                   <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-600">
-                    No upcoming public events are posted yet.
+                    No public events are posted yet.
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {upcomingEvents.map((event) => (
+                    {upcomingEvents.map((event) => {
+                      const timing = getEventTiming(event);
+                      return (
                       <div
                         key={event.id}
                         className="flex items-start gap-3 p-4 border border-gray-100 rounded-lg hover:bg-gray-50 transition-colors"
@@ -1328,19 +1385,33 @@ const Home: React.FC = () => {
                                 ? "Virtual"
                                 : "Location to be announced")}
                           </p>
-                          <div className="flex items-center gap-2 mt-2">
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
                             <span
                               className={`text-xs px-2 py-1 rounded-full ${eventPillTone(event.event_type)}`}
                             >
                               {event.event_type}
                             </span>
+                            <span
+                              className={`text-xs px-2 py-1 rounded-full font-semibold ${timing.className}`}
+                            >
+                              {timing.label}
+                            </span>
                           </div>
+                          <p className="mt-2 text-xs font-medium text-slate-500">
+                            {timing.message}
+                          </p>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
                 <div className="mt-6 pt-4 border-t">
+                  {remainingEventCount > 0 && (
+                    <div className="mb-3 rounded-lg border border-purple-100 bg-purple-50 px-3 py-2 text-center text-xs font-medium text-purple-700">
+                      {remainingEventCount} more event{remainingEventCount === 1 ? "" : "s"} available in the full calendar.
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => setShowCalendar(true)}
@@ -1410,7 +1481,9 @@ const Home: React.FC = () => {
                 </div>
               ) : (
                 <div className="grid gap-4">
-                  {filteredCalendarEvents.map((event) => (
+                  {filteredCalendarEvents.map((event) => {
+                    const timing = getEventTiming(event);
+                    return (
                     <article
                       key={event.id}
                       className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
@@ -1431,6 +1504,11 @@ const Home: React.FC = () => {
                             >
                               {event.event_type}
                             </span>
+                            <span
+                              className={`rounded-full px-2.5 py-1 text-xs font-semibold ${timing.className}`}
+                            >
+                              {timing.label}
+                            </span>
                             <span className="text-xs text-slate-500">
                               {event.time}
                               {event.end_time ? ` - ${event.end_time}` : ""}
@@ -1444,6 +1522,9 @@ const Home: React.FC = () => {
                               (event.is_virtual
                                 ? "Virtual event"
                                 : "Location to be announced")}
+                          </p>
+                          <p className="mt-2 text-sm font-semibold text-slate-500">
+                            {timing.message}
                           </p>
                           {event.description && (
                             <p className="mt-3 text-sm leading-6 text-slate-600">
@@ -1463,7 +1544,8 @@ const Home: React.FC = () => {
                         </div>
                       </div>
                     </article>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
