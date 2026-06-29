@@ -115,6 +115,12 @@ class AdminCMSPageViewSet(viewsets.ModelViewSet):
             {"content_type": "page", "id": page.pk, "slug": page.slug},
         )
 
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {"detail": "CMS pages cannot be hard-deleted. Keep the page as a draft or hide its sections."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
     def publish(self, request, pk=None):
         page = self.get_object()
@@ -184,6 +190,41 @@ class AdminCMSPageSectionViewSet(viewsets.ModelViewSet):
             },
         )
 
+    def perform_destroy(self, instance):
+        page = instance.page
+        section_id = instance.pk
+        snapshot = {
+            "page": instance.page_id,
+            "sectionKey": instance.section_key,
+            "sectionType": instance.section_type,
+            "order": instance.order,
+            "schemaVersion": instance.schema_version,
+            "isVisible": instance.is_visible,
+            "content": instance.content_json or {},
+            "deleted": True,
+        }
+        with transaction.atomic():
+            instance.delete()
+            mark_page_changed(page, self.request.user)
+            create_revision(
+                CMSRevision.CONTENT_SECTION,
+                section_id,
+                CMSRevision.ACTION_UPDATE,
+                snapshot,
+                user=self.request.user,
+            )
+        _log_cms_activity(
+            self.request,
+            "cms_content_updated",
+            {
+                "content_type": "section",
+                "id": section_id,
+                "page": page.pk,
+                "section_key": snapshot["sectionKey"],
+                "action": "delete",
+            },
+        )
+
 
 class AdminCMSArticleViewSet(viewsets.ModelViewSet):
     serializer_class = CMSArticleSerializer
@@ -226,6 +267,12 @@ class AdminCMSArticleViewSet(viewsets.ModelViewSet):
             self.request,
             "cms_content_updated",
             {"content_type": "article", "id": article.pk, "slug": article.slug},
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {"detail": "CMS news articles cannot be hard-deleted. Leave the article unpublished instead."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
         )
 
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])

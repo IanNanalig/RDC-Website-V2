@@ -143,6 +143,53 @@ const mapHomeArticle = (article: CMSArticleSnapshot): HomeNewsArticle => ({
   slug: article.slug,
 });
 
+const EVENT_TIME_ZONE = "Asia/Manila";
+
+const eventDayKey = (date: Date) =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: EVENT_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+
+const formatEventMoment = (date: Date, now: Date) => {
+  const time = date.toLocaleTimeString("en-US", {
+    timeZone: EVENT_TIME_ZONE,
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const todayKey = eventDayKey(now);
+  const dateKey = eventDayKey(date);
+  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
+  if (dateKey === todayKey) return `today at ${time}`;
+  if (dateKey === eventDayKey(tomorrow)) return `tomorrow at ${time}`;
+
+  const day = date.toLocaleDateString("en-US", {
+    timeZone: EVENT_TIME_ZONE,
+    month: "short",
+    day: "numeric",
+    year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
+  });
+  return `${day} at ${time}`;
+};
+
+const formatTimeRemaining = (milliseconds: number) => {
+  const totalMinutes = Math.max(1, Math.ceil(milliseconds / 60_000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) {
+    return `${days} day${days === 1 ? "" : "s"}${hours ? ` ${hours} hr` : ""}`;
+  }
+  if (hours > 0) {
+    return `${hours} hr${minutes ? ` ${minutes} min` : ""}`;
+  }
+  return `${minutes} min`;
+};
+
 const getEventTiming = (event: PublicEvent) => {
   const start = new Date(event.start_at);
   const end = event.end_at
@@ -156,6 +203,7 @@ const getEventTiming = (event: PublicEvent) => {
       label: "Scheduled",
       message: "This event is scheduled.",
       className: "bg-blue-50 text-blue-700 ring-1 ring-blue-100",
+      messageClassName: "border-blue-100 bg-blue-50 text-blue-700",
     };
   }
 
@@ -163,8 +211,9 @@ const getEventTiming = (event: PublicEvent) => {
     return {
       rank: 0,
       label: "Happening now",
-      message: "This event is currently happening.",
+      message: `Ends ${formatEventMoment(end, now)} · ${formatTimeRemaining(end.getTime() - now.getTime())} remaining.`,
       className: "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200",
+      messageClassName: "border-emerald-100 bg-emerald-50 text-emerald-800",
     };
   }
 
@@ -172,16 +221,18 @@ const getEventTiming = (event: PublicEvent) => {
     return {
       rank: 2,
       label: "Ended",
-      message: "This event has already ended.",
+      message: `Ended ${formatEventMoment(end, now)}.`,
       className: "bg-slate-100 text-slate-600 ring-1 ring-slate-200",
+      messageClassName: "border-slate-200 bg-slate-50 text-slate-600",
     };
   }
 
   return {
     rank: 1,
     label: "Upcoming",
-    message: "This event is scheduled and has not started yet.",
+    message: `Starts ${formatEventMoment(start, now)} · Ends ${formatEventMoment(end, now)}.`,
     className: "bg-blue-50 text-blue-700 ring-1 ring-blue-100",
+    messageClassName: "border-blue-100 bg-blue-50 text-blue-700",
   };
 };
 
@@ -1256,10 +1307,10 @@ const Home: React.FC = () => {
         </section>
 
         {/* News and Events Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-3">
           {/* Latest Media Releases */}
           <div className="lg:col-span-2">
-            <section className="bg-white rounded-xl shadow-md overflow-hidden h-full">
+            <section className="overflow-hidden rounded-xl bg-white shadow-md">
               <div className="bg-gray-800 text-white px-5 py-3">
                 <div className="flex justify-between items-center">
                   <h2 className="text-xl font-bold">{latestMediaTitle}</h2>
@@ -1283,6 +1334,9 @@ const Home: React.FC = () => {
                           <img
                             src={article.image}
                             alt={article.title}
+                            onError={(event) => {
+                              event.currentTarget.src = photo2;
+                            }}
                             className="w-full h-48 md:h-full object-cover"
                           />
                           <div className="absolute top-2 left-2">
@@ -1397,7 +1451,9 @@ const Home: React.FC = () => {
                               {timing.label}
                             </span>
                           </div>
-                          <p className="mt-2 text-xs font-medium text-slate-500">
+                          <p
+                            className={`mt-2 rounded-md border px-2 py-1.5 text-xs font-medium leading-5 ${timing.messageClassName || "border-slate-200 bg-slate-50 text-slate-600"}`}
+                          >
                             {timing.message}
                           </p>
                         </div>
@@ -1523,7 +1579,9 @@ const Home: React.FC = () => {
                                 ? "Virtual event"
                                 : "Location to be announced")}
                           </p>
-                          <p className="mt-2 text-sm font-semibold text-slate-500">
+                          <p
+                            className={`mt-3 rounded-lg border px-3 py-2 text-sm font-semibold ${timing.messageClassName || "border-slate-200 bg-slate-50 text-slate-600"}`}
+                          >
                             {timing.message}
                           </p>
                           {event.description && (

@@ -354,6 +354,25 @@ const pagePublicPath = (slug: string) => {
 
 const articlePublicPath = (slug: string) => `/news/${slug}`;
 
+const portableMediaUrl = (value: string) => {
+  try {
+    const parsed = new URL(value, window.location.origin);
+    if (parsed.pathname.startsWith("/media/")) {
+      return `${parsed.pathname}${parsed.search}`;
+    }
+  } catch {
+    return value;
+  }
+  return value;
+};
+
+const publishedSlug = (item: CMSPage | CMSArticle) => {
+  const snapshotSlug = item.published_snapshot_json?.slug;
+  return typeof snapshotSlug === "string" && snapshotSlug.trim()
+    ? snapshotSlug.trim()
+    : item.slug;
+};
+
 const absolutePublicUrl = (path: string) => {
   if (typeof window === "undefined") return path;
   return `${window.location.origin}${path}`;
@@ -553,8 +572,13 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
   const publishPage = async (page: CMSPage) => {
     if (!isAdmin) return;
     const publicPath = pagePublicPath(page.slug);
+    const currentPublicPath = pagePublicPath(publishedSlug(page));
+    const slugWarning =
+      page.status === "published" && currentPublicPath !== publicPath
+        ? `\n\nURL change warning: the live URL will change from ${currentPublicPath} to ${publicPath}. Existing saved links may stop working.`
+        : "";
     const confirmed = window.confirm(
-      `Publish "${page.title}" to the public website?\n\nPublic URL: ${publicPath}\n\nThis will replace the published snapshot visitors see.`,
+      `Publish "${page.title}" to the public website?\n\nPublic URL: ${publicPath}\n\nThis will replace the published snapshot visitors see.${slugWarning}`,
     );
     if (!confirmed) return;
     setLoading(true);
@@ -707,8 +731,13 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
   const publishArticle = async (article: CMSArticle) => {
     if (!isAdmin) return;
     const publicPath = articlePublicPath(article.slug);
+    const currentPublicPath = articlePublicPath(publishedSlug(article));
+    const slugWarning =
+      article.status === "published" && currentPublicPath !== publicPath
+        ? `\n\nURL change warning: the live URL will change from ${currentPublicPath} to ${publicPath}. Existing saved links may stop working.`
+        : "";
     const confirmed = window.confirm(
-      `Publish "${article.title}" to the public News page?\n\nPublic URL: ${publicPath}\n\nThis will update the article visitors see.`,
+      `Publish "${article.title}" to the public News page?\n\nPublic URL: ${publicPath}\n\nThis will update the article visitors see.${slugWarning}`,
     );
     if (!confirmed) return;
     setLoading(true);
@@ -833,7 +862,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                             ...current,
                             mediaAssetId: selected.id,
                             imageAssetId: selected.id,
-                            imageUrl: selected.url,
+                            imageUrl: portableMediaUrl(selected.url),
                             imageAlt: textValue(current.imageAlt) || selected.alt_text || selected.caption || textValue(current.title),
                           };
                         });
@@ -968,7 +997,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
         updatePublicationDocument(categoryIndex, documentIndex, {
           ...document,
           mediaAssetId: selected.id,
-          url: selected.url,
+          url: portableMediaUrl(selected.url),
           fileType: mediaFileTypeLabel(selected),
           fileSize: formatMediaSize(selected.size) || textValue(document.fileSize),
         });
@@ -987,7 +1016,7 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
         updatePublicationDocument(categoryIndex, documentIndex, {
           ...document,
           coverAssetId: selected.id,
-          coverImage: selected.url,
+          coverImage: portableMediaUrl(selected.url),
           coverAlt: textValue(document.coverAlt) || selected.alt_text || selected.caption || textValue(document.title),
         });
       };
@@ -1306,8 +1335,8 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                           ...current,
                           mediaAssetId: selected.id,
                           documentAssetId: selected.id,
-                          url: selected.url,
-                          link: selected.url,
+                          url: portableMediaUrl(selected.url),
+                          link: portableMediaUrl(selected.url),
                           fileType: mediaFileTypeLabel(selected),
                           fileSize: formatMediaSize(selected.size) || textValue(current.fileSize),
                         };
@@ -1552,7 +1581,12 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                             )}
                           </div>
                           <p className="text-xs text-slate-500">CMS slug: /{page.slug}</p>
-                          <p className="text-xs text-slate-500">Public URL: {pagePublicPath(page.slug)}</p>
+                          <p className="text-xs text-slate-500">Public URL: {pagePublicPath(publishedSlug(page))}</p>
+                          {page.status === "published" && publishedSlug(page) !== page.slug && (
+                            <p className="text-xs font-medium text-orange-700">
+                              Draft URL after publish: {pagePublicPath(page.slug)}
+                            </p>
+                          )}
                           <p className="text-xs text-slate-500">Published: {formatDate(page.published_at)}</p>
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -1562,11 +1596,11 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                           <button
                             type="button"
                             className="text-sm text-slate-600"
-                            onClick={() => window.open(pagePublicPath(page.slug), "_blank", "noopener,noreferrer")}
+                            onClick={() => window.open(pagePublicPath(publishedSlug(page)), "_blank", "noopener,noreferrer")}
                           >
                             View Published
                           </button>
-                          <button type="button" className="text-sm text-slate-600" onClick={() => copyPublicUrl(pagePublicPath(page.slug))}>
+                          <button type="button" className="text-sm text-slate-600" onClick={() => copyPublicUrl(pagePublicPath(publishedSlug(page)))}>
                             Copy URL
                           </button>
                           {isAdmin && (
@@ -1825,7 +1859,12 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                             </span>
                           )}
                         </div>
-                        <p className="text-xs text-slate-500">Public URL: {articlePublicPath(article.slug)}</p>
+                        <p className="text-xs text-slate-500">Public URL: {articlePublicPath(publishedSlug(article))}</p>
+                        {article.status === "published" && publishedSlug(article) !== article.slug && (
+                          <p className="text-xs font-medium text-orange-700">
+                            Draft URL after publish: {articlePublicPath(article.slug)}
+                          </p>
+                        )}
                         <p className="mt-1 text-sm text-slate-600">{article.summary || "No summary yet."}</p>
                       </div>
                       <div className="flex flex-wrap gap-2 text-sm">
@@ -1835,11 +1874,11 @@ const CmsManager: React.FC<Props> = ({ mode }) => {
                         <button
                           type="button"
                           className="text-slate-600"
-                          onClick={() => window.open(articlePublicPath(article.slug), "_blank", "noopener,noreferrer")}
+                          onClick={() => window.open(articlePublicPath(publishedSlug(article)), "_blank", "noopener,noreferrer")}
                         >
                           View Published
                         </button>
-                        <button type="button" className="text-slate-600" onClick={() => copyPublicUrl(articlePublicPath(article.slug))}>
+                        <button type="button" className="text-slate-600" onClick={() => copyPublicUrl(articlePublicPath(publishedSlug(article)))}>
                           Copy URL
                         </button>
                         {isAdmin && (

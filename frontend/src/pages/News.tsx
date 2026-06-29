@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type SyntheticEvent } from "react";
 import { Link } from "react-router-dom";
 import { useParams } from "react-router-dom";
 import cmsApi, { type CMSArticleSnapshot } from "../services/cmsApi";
@@ -174,6 +174,12 @@ const ITEMS_PER_PAGE = 9;
 const fallbackThumbnail =
   "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?q=80&w=800&auto=format&fit=crop";
 
+const useFallbackThumbnail = (event: SyntheticEvent<HTMLImageElement>) => {
+  const image = event.currentTarget;
+  if (image.src === fallbackThumbnail) return;
+  image.src = fallbackThumbnail;
+};
+
 const mapCmsArticle = (article: CMSArticleSnapshot): NewsItem => ({
   id: article.slug,
   title: article.title,
@@ -279,18 +285,29 @@ export default function NewsPage() {
       <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
         <header className="bg-gradient-to-r from-[#012a5a] via-[#0b6fb7] to-[#0d8fb3] text-white">
           <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
-            <Link to="/news" className="mb-6 inline-flex text-sm font-semibold text-white/80 hover:text-white">
-              Back to News
-            </Link>
-            <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${colors.bg} ${colors.text}`}>
-              {selectedArticle.category}
-            </span>
-            <h1 className="mt-4 text-4xl md:text-5xl font-extrabold">{selectedArticle.title}</h1>
+            <div className="flex flex-wrap items-center gap-3">
+              <Link
+                to="/news"
+                className="inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20"
+              >
+                <span aria-hidden="true">←</span>
+                Back to all news
+              </Link>
+              <span className={`inline-flex rounded-full px-3 py-1.5 text-xs font-semibold ${colors.bg} ${colors.text}`}>
+                {selectedArticle.category}
+              </span>
+            </div>
+            <h1 className="mt-7 max-w-4xl text-4xl font-extrabold leading-tight md:text-5xl">{selectedArticle.title}</h1>
             <p className="mt-4 text-white/85">{formatDate(selectedArticle.date)}</p>
           </div>
         </header>
         <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-          <img src={selectedArticle.thumbnail} alt={selectedArticle.title} className="mb-8 h-80 w-full rounded-2xl object-cover shadow-lg" />
+          <img
+            src={selectedArticle.thumbnail}
+            alt={selectedArticle.title}
+            onError={useFallbackThumbnail}
+            className="mb-8 aspect-[16/7] w-full rounded-2xl bg-slate-200 object-cover shadow-lg"
+          />
           <p className="mb-8 text-xl leading-relaxed text-slate-700">{selectedArticle.summary}</p>
           {selectedArticle.source === "cms" && selectedArticle.body ? (
             <article
@@ -478,6 +495,7 @@ export default function NewsPage() {
                       <img
                         src={news.thumbnail}
                         alt={news.title}
+                        onError={useFallbackThumbnail}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
                       {/* Category Badge */}

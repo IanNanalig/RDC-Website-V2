@@ -37,6 +37,11 @@ const typeMeta: Record<AnswerType, { label: string; className: string }> = {
 const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 const PublicChatbot: React.FC = () => {
+  const isDashboardPage =
+    typeof window !== "undefined" && window.location.pathname.toLowerCase().startsWith("/projects");
+  const panelPositionClass = isDashboardPage ? "sm:bottom-6 sm:right-6 sm:w-[360px]" : "sm:bottom-6 sm:right-6 sm:w-[440px]";
+  const panelMaxWidthClass = isDashboardPage ? "max-w-[380px]" : "max-w-[460px]";
+  const panelBodyClass = isDashboardPage ? "max-h-[50vh] sm:max-h-[54vh]" : "max-h-[58vh] sm:max-h-[62vh]";
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -156,7 +161,7 @@ const PublicChatbot: React.FC = () => {
       )}
 
       {open && (
-        <div className="fixed inset-x-3 bottom-3 z-50 mx-auto w-auto max-w-[460px] sm:inset-x-auto sm:bottom-6 sm:right-6 sm:w-[440px]">
+        <div className={`fixed inset-x-3 bottom-3 z-50 mx-auto w-auto ${panelMaxWidthClass} sm:inset-x-auto ${panelPositionClass}`}>
           <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl">
             <div className="bg-gradient-to-r from-emerald-800 via-teal-800 to-cyan-800 px-5 py-4 text-white">
               <div className="flex items-start justify-between gap-4">
@@ -178,13 +183,13 @@ const PublicChatbot: React.FC = () => {
               </div>
             </div>
 
-            <div ref={listRef} className="max-h-[58vh] overflow-y-auto bg-slate-50 px-4 py-4 sm:max-h-[62vh]">
+            <div ref={listRef} className={`${panelBodyClass} overflow-y-auto bg-slate-50 px-4 py-4`}>
               {messages.length === 0 && (
                 <div className="space-y-4">
                   <div className="rounded-2xl bg-white p-4 text-sm text-slate-700 shadow-sm ring-1 ring-slate-100">
                     Ask in English, Tagalog, or Taglish. I can help with public pages, documents, dashboard data, contact details, and navigation.
                   </div>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className={`grid grid-cols-1 gap-2 ${isDashboardPage ? "" : "sm:grid-cols-2"}`}>
                     {quickActions.map((action) => (
                       <button
                         key={action.label}

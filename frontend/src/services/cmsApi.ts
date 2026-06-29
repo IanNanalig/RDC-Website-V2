@@ -1,4 +1,5 @@
 import { api } from "./api";
+import { API_BASE_URL } from "../config/api";
 
 export type CMSStatus = "draft" | "published";
 
@@ -94,6 +95,48 @@ export type CMSPageSnapshot = {
 
 const publicCacheBust = () => `_cms=${Date.now()}`;
 
+export const resolveCmsMediaUrl = (value?: string | null) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^(data:|blob:)/i.test(raw)) return raw;
+
+  try {
+    const browserOrigin =
+      typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1";
+    const apiOrigin = new URL(API_BASE_URL, browserOrigin).origin;
+    const parsed = new URL(raw, apiOrigin);
+    if (parsed.pathname.startsWith("/media/")) {
+      return new URL(`${parsed.pathname}${parsed.search}`, apiOrigin).toString();
+    }
+    return /^(https?:)/i.test(raw)
+      ? raw
+      : new URL(raw.startsWith("/") ? raw : `/${raw}`, apiOrigin).toString();
+  } catch {
+    return raw;
+  }
+};
+
+const normalizeCmsValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(normalizeCmsValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+        key,
+        normalizeCmsValue(child),
+      ]),
+    );
+  }
+  if (typeof value === "string" && /(?:^\/media\/|\/media\/)/i.test(value)) {
+    return resolveCmsMediaUrl(value);
+  }
+  return value;
+};
+
+const normalizeArticleSnapshot = (article: CMSArticleSnapshot): CMSArticleSnapshot => ({
+  ...article,
+  thumbnailUrl: resolveCmsMediaUrl(article.thumbnailUrl),
+});
+
 const listFromResponse = <T>(data: unknown): T[] => {
   if (Array.isArray(data)) return data as T[];
   if (data && typeof data === "object" && Array.isArray((data as { results?: unknown }).results)) {
@@ -125,21 +168,32 @@ export const cmsApi = {
     api.put(`admin/cms/articles/${id}/`, payload),
   publishArticle: (id: number) => api.post(`admin/cms/articles/${id}/publish/`),
 
-  listMedia: async () => listFromResponse<CMSMediaAsset>(await api.get("admin/cms/media/")),
+  listMedia: async () =>
+    listFromResponse<CMSMediaAsset>(await api.get("admin/cms/media/")).map((asset) => ({
+      ...asset,
+      file: resolveCmsMediaUrl(asset.file),
+      url: resolveCmsMediaUrl(asset.url),
+    })),
   uploadMedia: (formData: FormData) => api.postForm("admin/cms/media/", formData),
   archiveMedia: (id: number) => api.post(`admin/cms/media/${id}/archive/`),
 
   getPublicPage: (slug: string) =>
-    api.get(`public/cms/pages/${slug}/?${publicCacheBust()}`) as Promise<CMSPageSnapshot>,
+    api
+      .get(`public/cms/pages/${slug}/?${publicCacheBust()}`)
+      .then((page) => normalizeCmsValue(page) as CMSPageSnapshot),
   listPublicNews: async (limit = 20) => {
     const data = await api.get(`public/cms/news/?limit=${limit}&${publicCacheBust()}`);
     if (data && typeof data === "object" && Array.isArray((data as { results?: unknown }).results)) {
-      return (data as { results: CMSArticleSnapshot[] }).results;
+      return (data as { results: CMSArticleSnapshot[] }).results.map(normalizeArticleSnapshot);
     }
     return [];
   },
-  getPublicArticle: (slug: string) =>
-    api.get(`public/cms/news/${slug}/?${publicCacheBust()}`) as Promise<CMSArticleSnapshot>,
+  getPublicArticle: async (slug: string) =>
+    normalizeArticleSnapshot(
+      (await api.get(
+        `public/cms/news/${slug}/?${publicCacheBust()}`,
+      )) as CMSArticleSnapshot,
+    ),
 };
 
 export default cmsApi;
