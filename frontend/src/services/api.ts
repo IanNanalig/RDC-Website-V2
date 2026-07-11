@@ -86,6 +86,32 @@ async function errorMessageFromResponse(res: Response) {
   }
 }
 
+async function requestErrorMessageFromResponse(res: Response) {
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    try {
+      const data = await res.clone().json();
+      if (typeof data?.detail === "string" && data.detail.trim()) {
+        return data.detail.trim();
+      }
+      if (typeof data === "object" && data !== null) {
+        const firstError = Object.values(data).flat().find(Boolean);
+        if (firstError) {
+          return String(firstError);
+        }
+      }
+    } catch {
+      // Fall through to the generic status message.
+    }
+  }
+
+  const text = await res.text();
+  if (/^\s*<!doctype html/i.test(text) || /^\s*<html/i.test(text)) {
+    return `${res.status} ${res.statusText || "Server error"}`.trim();
+  }
+  return text || res.statusText || "Request failed";
+}
+
 async function refreshAccessToken() {
   if (refreshInFlight) {
     return refreshInFlight;
@@ -175,8 +201,7 @@ async function request(path: string, options: RequestInit = {}, hasRetried = fal
   }
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || res.statusText);
+    throw new Error(await requestErrorMessageFromResponse(res));
   }
 
   const contentType = res.headers.get("content-type") || "";

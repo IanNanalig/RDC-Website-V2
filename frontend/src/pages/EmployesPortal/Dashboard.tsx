@@ -278,7 +278,7 @@ const Dashboard: React.FC = () => {
             >
               <p className="font-semibold">Create New Project</p>
               <p className="text-sm text-slate-500 mt-1">
-                {canEncode ? "Start filling the full template form." : "Available only during an active encoding schedule."}
+                {canEncode ? "Choose the required submission form." : "Available only during an active encoding schedule."}
               </p>
             </Link>
             <Link to="/employee/projects?status=draft" className="portal-card p-4 hover:shadow-md transition-shadow">
