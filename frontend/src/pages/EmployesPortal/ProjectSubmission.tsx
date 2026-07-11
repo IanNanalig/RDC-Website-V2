@@ -1118,10 +1118,6 @@ const projectCostYearKeys: Array<
   "y2022Prior" | "y2023" | "y2024" | "y2025" | "y2026" | "y2027" | "y2028" | "y2029" | "continuingYears"
 > = ["y2022Prior", "y2023", "y2024", "y2025", "y2026", "y2027", "y2028", "y2029", "continuingYears"];
 
-const provincialYearKeys: Array<
-  "y2022Prior" | "y2023" | "y2024" | "y2025" | "y2026" | "y2027" | "y2028" | "y2029" | "continuingYears"
-> = ["y2022Prior", "y2023", "y2024", "y2025", "y2026", "y2027", "y2028", "y2029", "continuingYears"];
-
 const fundingYearKeyToCalendarYear: Record<
   "y2022Prior" | "y2023" | "y2024" | "y2025" | "y2026" | "y2027" | "y2028" | "y2029",
   number
@@ -1478,8 +1474,10 @@ const ProjectSubmission: React.FC = () => {
             rawProfile?.contributor_snapshot && typeof rawProfile.contributor_snapshot === "object"
               ? (rawProfile.contributor_snapshot as Record<string, unknown>)
               : (() => {
-                  const { validator_review, contributor_snapshot, ...rest } = rawProfile;
-                  return rest as Record<string, unknown>;
+                  const rest = { ...rawProfile };
+                  delete rest.validator_review;
+                  delete rest.contributor_snapshot;
+                  return rest;
                 })();
           const workingCopy =
             validatorReview &&
