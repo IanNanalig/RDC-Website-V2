@@ -152,7 +152,12 @@ const Projects: React.FC = () => {
         lgu: municipalityFilter === "all" ? undefined : municipalityFilter,
       };
       const [list, st] = await Promise.all([
-        getPublicProjects({ ...filters, limit: 500, offset: 0, cacheBust: true }),
+        getPublicProjects({
+          ...filters,
+          limit: 500,
+          offset: 0,
+          cacheBust: true,
+        }),
         getPublicProjectsStats({ ...statsFilters, cacheBust: true }),
       ]);
       setProjects(list);
@@ -400,7 +405,7 @@ const Projects: React.FC = () => {
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
             <div>
               <h1 className="text-3xl md:text-4xl font-extrabold text-blue-900 tracking-tight">
-                Projects Dashboard
+                RDIP Projects Dashboard
               </h1>
               <p className="text-blue-700 mt-1 text-sm md:text-base">
                 Explore, filter, and visualize NCR Regional Development projects
@@ -499,7 +504,9 @@ const Projects: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    setUpdateFilter(updateFilter === "recent" ? "all" : "recent");
+                    setUpdateFilter(
+                      updateFilter === "recent" ? "all" : "recent",
+                    );
                     setActiveTab("table");
                   }}
                   className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold shadow-sm ${
@@ -508,7 +515,10 @@ const Projects: React.FC = () => {
                       : "bg-emerald-600 text-white hover:bg-emerald-700"
                   }`}
                 >
-                  {updateFilter === "recent" ? "Back to all projects" : "View updated projects"} <FaArrowRight />
+                  {updateFilter === "recent"
+                    ? "Back to all projects"
+                    : "View updated projects"}{" "}
+                  <FaArrowRight />
                 </button>
               </div>
               <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -524,7 +534,9 @@ const Projects: React.FC = () => {
                         Updated {formatDateShort(project.latest_update_date)}
                       </span>
                       <span className="text-[11px] font-semibold text-slate-500">
-                        {publicUpdateCountLabel(project.public_progress_update_count)}
+                        {publicUpdateCountLabel(
+                          project.public_progress_update_count,
+                        )}
                       </span>
                     </div>
                     <p className="mt-2 line-clamp-2 text-sm font-bold text-blue-950">
@@ -547,7 +559,9 @@ const Projects: React.FC = () => {
         {updateFilter === "recent" && (
           <div className="mb-4 flex flex-col gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 shadow-sm sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <span className="font-semibold">Viewing recently updated projects only.</span>{" "}
+              <span className="font-semibold">
+                Viewing recently updated projects only.
+              </span>{" "}
               <span className="text-emerald-700">
                 Clear this filter to return to the full public dashboard.
               </span>
@@ -955,10 +969,13 @@ const Projects: React.FC = () => {
                               {p.has_public_updates && (
                                 <div className="mt-1 flex flex-wrap items-center gap-1.5">
                                   <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
-                                    Updated {formatDateShort(p.latest_update_date)}
+                                    Updated{" "}
+                                    {formatDateShort(p.latest_update_date)}
                                   </span>
                                   <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
-                                    {publicUpdateCountLabel(p.public_progress_update_count)}
+                                    {publicUpdateCountLabel(
+                                      p.public_progress_update_count,
+                                    )}
                                   </span>
                                 </div>
                               )}
@@ -1080,12 +1097,16 @@ const Projects: React.FC = () => {
                             </p>
                             <p className="mt-1 text-sm font-semibold text-slate-900">
                               {detailProject.latest_update_date
-                                ? formatDateTime(detailProject.latest_update_date)
+                                ? formatDateTime(
+                                    detailProject.latest_update_date,
+                                  )
                                 : "Date unavailable"}
                             </p>
                           </div>
                           <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-emerald-700 shadow-sm">
-                            {publicUpdateCountLabel(detailProject.public_progress_update_count)}
+                            {publicUpdateCountLabel(
+                              detailProject.public_progress_update_count,
+                            )}
                           </span>
                         </div>
                         <p className="mt-3 text-sm text-slate-700 whitespace-pre-wrap break-words">
@@ -1095,14 +1116,16 @@ const Projects: React.FC = () => {
                         {Array.isArray(detailProject.latest_update_badges) &&
                           detailProject.latest_update_badges.length > 0 && (
                             <div className="mt-3 flex flex-wrap gap-2">
-                              {detailProject.latest_update_badges.map((badge) => (
-                                <span
-                                  key={badge}
-                                  className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800"
-                                >
-                                  {badge}
-                                </span>
-                              ))}
+                              {detailProject.latest_update_badges.map(
+                                (badge) => (
+                                  <span
+                                    key={badge}
+                                    className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800"
+                                  >
+                                    {badge}
+                                  </span>
+                                ),
+                              )}
                             </div>
                           )}
                       </div>
@@ -1228,11 +1251,14 @@ const Projects: React.FC = () => {
                             Approved Progress Timeline
                           </p>
                           <p className="text-xs text-slate-500 mt-1">
-                            Initial endorsement and validator-approved progress updates are shown publicly.
+                            Initial endorsement and validator-approved progress
+                            updates are shown publicly.
                           </p>
                         </div>
                         <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700">
-                          {publicUpdateCountLabel(detailProject.public_progress_update_count)}
+                          {publicUpdateCountLabel(
+                            detailProject.public_progress_update_count,
+                          )}
                         </span>
                       </div>
                       {detailProject.public_update_timeline?.length ? (
@@ -1275,18 +1301,19 @@ const Projects: React.FC = () => {
                                     "Approved project progress update recorded."}
                                 </p>
                               )}
-                              {Array.isArray(item.change_badges) && item.change_badges.length > 0 && (
-                                <div className="mt-3 flex flex-wrap gap-2">
-                                  {item.change_badges.map((badge) => (
-                                    <span
-                                      key={`${item.revision_number}-${badge}`}
-                                      className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200"
-                                    >
-                                      {badge}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
+                              {Array.isArray(item.change_badges) &&
+                                item.change_badges.length > 0 && (
+                                  <div className="mt-3 flex flex-wrap gap-2">
+                                    {item.change_badges.map((badge) => (
+                                      <span
+                                        key={`${item.revision_number}-${badge}`}
+                                        className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200"
+                                      >
+                                        {badge}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
                               <div className="mt-3 grid gap-2 text-xs text-slate-700 sm:grid-cols-2">
                                 {item.status ? (
                                   <div className="rounded-md bg-white/80 px-3 py-2 ring-1 ring-slate-100">
@@ -1298,7 +1325,8 @@ const Projects: React.FC = () => {
                                     </span>
                                   </div>
                                 ) : null}
-                                {item.budget !== undefined && item.budget !== "" ? (
+                                {item.budget !== undefined &&
+                                item.budget !== "" ? (
                                   <div className="rounded-md bg-white/80 px-3 py-2 ring-1 ring-slate-100">
                                     <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                                       Funding
@@ -1330,14 +1358,16 @@ const Projects: React.FC = () => {
                                     What changed
                                   </p>
                                   <div className="mt-2 flex flex-wrap gap-2">
-                                    {item.changed_fields.slice(0, 8).map((field, index) => (
-                                      <span
-                                        key={`${item.revision_number}-${field.label}-${index}`}
-                                        className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-700"
-                                      >
-                                        {field.label}
-                                      </span>
-                                    ))}
+                                    {item.changed_fields
+                                      .slice(0, 8)
+                                      .map((field, index) => (
+                                        <span
+                                          key={`${item.revision_number}-${field.label}-${index}`}
+                                          className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-700"
+                                        >
+                                          {field.label}
+                                        </span>
+                                      ))}
                                     {item.changed_fields.length > 8 ? (
                                       <span className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-500">
                                         +{item.changed_fields.length - 8} more

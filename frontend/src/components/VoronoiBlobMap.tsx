@@ -46,7 +46,9 @@ function getProjectLgus(project: Project): string[] {
       : project.lgu
         ? [project.lgu]
         : [];
-  return Array.from(new Set(lgus)).filter((lgu) => Boolean(ncrCityCenters[lgu]));
+  return Array.from(new Set(lgus)).filter((lgu) =>
+    Boolean(ncrCityCenters[lgu]),
+  );
 }
 
 function getProjectCoordinates(project: Project): [number, number][] {

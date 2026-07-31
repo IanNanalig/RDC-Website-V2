@@ -79,22 +79,31 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 const asString = (value: unknown, fallback = "") =>
   typeof value === "string" && value.trim() ? value.trim() : fallback;
 
-const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+const asArray = (value: unknown): unknown[] =>
+  Array.isArray(value) ? value : [];
 
 const getHomeSection = (page: CMSPageSnapshot | null, sectionKey: string) =>
-  page?.sections.find((section) => section.sectionKey === sectionKey)?.content ?? null;
+  page?.sections.find((section) => section.sectionKey === sectionKey)
+    ?.content ?? null;
 
 const iconForCms = (icon: unknown, fallback = "file") => {
   const key = asString(icon, fallback).toLowerCase();
   if (key === "leaf") return <FaLeaf className="w-8 h-8 text-green-500" />;
-  if (key === "target" || key === "bullseye") return <FaBullseye className="w-8 h-8 text-indigo-600" />;
-  if (key === "chart-line") return <FaChartLine className="w-8 h-8 text-green-600" />;
-  if (key === "chart-bar") return <FaChartBar className="w-8 h-8 text-purple-600" />;
-  if (key === "clipboard") return <FaClipboardList className="w-8 h-8 text-purple-500" />;
+  if (key === "target" || key === "bullseye")
+    return <FaBullseye className="w-8 h-8 text-indigo-600" />;
+  if (key === "chart-line")
+    return <FaChartLine className="w-8 h-8 text-green-600" />;
+  if (key === "chart-bar")
+    return <FaChartBar className="w-8 h-8 text-purple-600" />;
+  if (key === "clipboard")
+    return <FaClipboardList className="w-8 h-8 text-purple-500" />;
   return <FaFileAlt className="w-8 h-8 text-gray-700" />;
 };
 
-const mapCmsDocItems = (content: Record<string, unknown> | null, fallback: DocCard[]) => {
+const mapCmsDocItems = (
+  content: Record<string, unknown> | null,
+  fallback: DocCard[],
+) => {
   const items = asArray(content?.items)
     .map((item) => {
       const row = asRecord(item);
@@ -315,71 +324,74 @@ const Home: React.FC = () => {
     [],
   );
 
-  const fallbackCarouselImages = useMemo<HomeSlide[]>(() => [
-    {
-      src: photo1,
-      title: "Regional Development Council NCR",
-      subtitle: "Planning a sustainable and resilient Metro Manila",
-      button1: { text: "View Plans", link: "/plans" },
-      button2: { text: "Latest Reports", link: "/reports" },
-    },
-    {
-      src: photo2,
-      title: "Building a Better Future",
-      subtitle: "Collaborative governance for Metro Manila's growth",
-      button1: { text: "View Plans", link: "/plans" },
-      button2: { text: "Latest Reports", link: "/reports" },
-    },
-    {
-      src: photo3,
-      title: "Strategic Development",
-      subtitle: "Empowering communities through effective planning",
-      button1: { text: "View Plans", link: "/plans" },
-      button2: { text: "Latest Reports", link: "/reports" },
-    },
-    {
-      src: photo4,
-      title: "Infrastructure Excellence",
-      subtitle: "Modern solutions for urban challenges",
-      button1: { text: "View Plans", link: "/plans" },
-      button2: { text: "Latest Reports", link: "/reports" },
-    },
-    {
-      src: photo5,
-      title: "Sustainable Growth",
-      subtitle: "Balancing progress with environmental care",
-      button1: { text: "View Plans", link: "/plans" },
-      button2: { text: "Latest Reports", link: "/reports" },
-    },
-    {
-      src: photo6,
-      title: "Urban Innovation Hub",
-      subtitle: "Transforming Metro Manila into a smart metropolis",
-      button1: { text: "View Plans", link: "/plans" },
-      button2: { text: "Latest Reports", link: "/reports" },
-    },
-    {
-      src: photo7,
-      title: "Community Engagement",
-      subtitle: "Working together for inclusive development",
-      button1: { text: "View Plans", link: "/plans" },
-      button2: { text: "Latest Reports", link: "/reports" },
-    },
-    {
-      src: photo8,
-      title: "Economic Resilience",
-      subtitle: "Strengthening NCR's economic foundations",
-      button1: { text: "View Plans", link: "/plans" },
-      button2: { text: "Latest Reports", link: "/reports" },
-    },
-    {
-      src: photo9,
-      title: "Future-Ready Infrastructure",
-      subtitle: "Building for tomorrow's needs today",
-      button1: { text: "View Plans", link: "/plans" },
-      button2: { text: "Latest Reports", link: "/reports" },
-    },
-  ], []);
+  const fallbackCarouselImages = useMemo<HomeSlide[]>(
+    () => [
+      {
+        src: photo1,
+        title: "Regional Development Council NCR",
+        subtitle: "Planning a sustainable and resilient Metro Manila",
+        button1: { text: "View Plans", link: "/plans" },
+        button2: { text: "Latest Reports", link: "/reports" },
+      },
+      {
+        src: photo2,
+        title: "Building a Better Future",
+        subtitle: "Collaborative governance for Metro Manila's growth",
+        button1: { text: "View Plans", link: "/plans" },
+        button2: { text: "Latest Reports", link: "/reports" },
+      },
+      {
+        src: photo3,
+        title: "Strategic Development",
+        subtitle: "Empowering communities through effective planning",
+        button1: { text: "View Plans", link: "/plans" },
+        button2: { text: "Latest Reports", link: "/reports" },
+      },
+      {
+        src: photo4,
+        title: "Infrastructure Excellence",
+        subtitle: "Modern solutions for urban challenges",
+        button1: { text: "View Plans", link: "/plans" },
+        button2: { text: "Latest Reports", link: "/reports" },
+      },
+      {
+        src: photo5,
+        title: "Sustainable Growth",
+        subtitle: "Balancing progress with environmental care",
+        button1: { text: "View Plans", link: "/plans" },
+        button2: { text: "Latest Reports", link: "/reports" },
+      },
+      {
+        src: photo6,
+        title: "Urban Innovation Hub",
+        subtitle: "Transforming Metro Manila into a smart metropolis",
+        button1: { text: "View Plans", link: "/plans" },
+        button2: { text: "Latest Reports", link: "/reports" },
+      },
+      {
+        src: photo7,
+        title: "Community Engagement",
+        subtitle: "Working together for inclusive development",
+        button1: { text: "View Plans", link: "/plans" },
+        button2: { text: "Latest Reports", link: "/reports" },
+      },
+      {
+        src: photo8,
+        title: "Economic Resilience",
+        subtitle: "Strengthening NCR's economic foundations",
+        button1: { text: "View Plans", link: "/plans" },
+        button2: { text: "Latest Reports", link: "/reports" },
+      },
+      {
+        src: photo9,
+        title: "Future-Ready Infrastructure",
+        subtitle: "Building for tomorrow's needs today",
+        button1: { text: "View Plans", link: "/plans" },
+        button2: { text: "Latest Reports", link: "/reports" },
+      },
+    ],
+    [],
+  );
 
   const heroSection = getHomeSection(homeCmsPage, "hero-carousel");
   const carouselImages = useMemo(() => {
@@ -390,7 +402,8 @@ const Home: React.FC = () => {
         const imageUrl = asString(row.imageUrl);
         const button1 = asRecord(row.button1);
         const button2 = asRecord(row.button2);
-        const fallback = fallbackCarouselImages[index % fallbackCarouselImages.length];
+        const fallback =
+          fallbackCarouselImages[index % fallbackCarouselImages.length];
         return {
           src: imageUrl || imageByKey[imageKey] || fallback.src,
           title: asString(row.title, fallback.title),
@@ -453,7 +466,8 @@ const Home: React.FC = () => {
     },
   ];
 
-  const newsArticles = cmsNewsArticles.length > 0 ? cmsNewsArticles : fallbackNewsArticles;
+  const newsArticles =
+    cmsNewsArticles.length > 0 ? cmsNewsArticles : fallbackNewsArticles;
 
   const fallbackDevelopmentPlans: DocCard[] = [
     {
@@ -504,9 +518,18 @@ const Home: React.FC = () => {
     },
   ];
 
-  const developmentPlansSection = getHomeSection(homeCmsPage, "development-plans");
-  const investmentProgrammingSection = getHomeSection(homeCmsPage, "investment-programming");
-  const monitoringEvaluationSection = getHomeSection(homeCmsPage, "monitoring-evaluation");
+  const developmentPlansSection = getHomeSection(
+    homeCmsPage,
+    "development-plans",
+  );
+  const investmentProgrammingSection = getHomeSection(
+    homeCmsPage,
+    "investment-programming",
+  );
+  const monitoringEvaluationSection = getHomeSection(
+    homeCmsPage,
+    "monitoring-evaluation",
+  );
   const dashboardSection = getHomeSection(homeCmsPage, "dashboard-teaser");
   const latestMediaSection = getHomeSection(homeCmsPage, "latest-media");
   const upcomingEventsSection = getHomeSection(homeCmsPage, "upcoming-events");
@@ -527,23 +550,59 @@ const Home: React.FC = () => {
     dashboardSection?.title,
     "Regional Development Dashboard",
   );
-  const dashboardButtonLabel = asString(dashboardSection?.buttonLabel, "View Full Dashboard ->");
-  const dashboardButtonLink = asString(dashboardSection?.buttonLink, "/Projects");
-  const latestMediaTitle = asString(latestMediaSection?.title, "Latest Media Releases");
-  const latestMediaViewAllLabel = asString(latestMediaSection?.viewAllLabel, "View all ->");
-  const latestMediaViewAllLink = asString(latestMediaSection?.viewAllLink, "/news");
-  const upcomingEventsTitle = asString(upcomingEventsSection?.title, "Upcoming Events");
-  const upcomingEventsSubtitle = asString(upcomingEventsSection?.subtitle, "Calendar & Meetings");
-  const upcomingEventsButtonLabel = asString(upcomingEventsSection?.buttonLabel, "View Full Calendar");
-  const calendarTitle = asString(upcomingEventsSection?.calendarTitle, "Public Events and Meetings");
+  const dashboardButtonLabel = asString(
+    dashboardSection?.buttonLabel,
+    "View Full Dashboard ->",
+  );
+  const dashboardButtonLink = asString(
+    dashboardSection?.buttonLink,
+    "/Projects",
+  );
+  const latestMediaTitle = asString(
+    latestMediaSection?.title,
+    "Latest Media Releases",
+  );
+  const latestMediaViewAllLabel = asString(
+    latestMediaSection?.viewAllLabel,
+    "View all ->",
+  );
+  const latestMediaViewAllLink = asString(
+    latestMediaSection?.viewAllLink,
+    "/news",
+  );
+  const upcomingEventsTitle = asString(
+    upcomingEventsSection?.title,
+    "Upcoming Events",
+  );
+  const upcomingEventsSubtitle = asString(
+    upcomingEventsSection?.subtitle,
+    "Calendar & Meetings",
+  );
+  const upcomingEventsButtonLabel = asString(
+    upcomingEventsSection?.buttonLabel,
+    "View Full Calendar",
+  );
+  const calendarTitle = asString(
+    upcomingEventsSection?.calendarTitle,
+    "Public Events and Meetings",
+  );
   const calendarSubtitle = asString(
     upcomingEventsSection?.calendarSubtitle,
     "Published schedules from the RDC-NCR public website.",
   );
 
-  const developmentPlans = mapCmsDocItems(developmentPlansSection, fallbackDevelopmentPlans);
-  const investmentProgramming = mapCmsDocItems(investmentProgrammingSection, fallbackInvestmentProgramming);
-  const monitoringEvaluation = mapCmsDocItems(monitoringEvaluationSection, fallbackMonitoringEvaluation);
+  const developmentPlans = mapCmsDocItems(
+    developmentPlansSection,
+    fallbackDevelopmentPlans,
+  );
+  const investmentProgramming = mapCmsDocItems(
+    investmentProgrammingSection,
+    fallbackInvestmentProgramming,
+  );
+  const monitoringEvaluation = mapCmsDocItems(
+    monitoringEvaluationSection,
+    fallbackMonitoringEvaluation,
+  );
 
   const formatMoneyCompact = (n: number) => {
     const value = Number(n || 0);
@@ -757,7 +816,10 @@ const Home: React.FC = () => {
       try {
         setEventsLoading(true);
         setEventsError("");
-        const fullRows = await getPublicEvents({ limit: 50, includePast: true });
+        const fullRows = await getPublicEvents({
+          limit: 50,
+          includePast: true,
+        });
         const displayRows = sortEventsForDisplay(fullRows);
         if (!cancelled) {
           setUpcomingEvents(displayRows.slice(0, HOME_EVENT_PREVIEW_LIMIT));
@@ -807,7 +869,10 @@ const Home: React.FC = () => {
     [calendarEvents, calendarFilter],
   );
 
-  const remainingEventCount = Math.max(0, calendarEvents.length - upcomingEvents.length);
+  const remainingEventCount = Math.max(
+    0,
+    calendarEvents.length - upcomingEvents.length,
+  );
 
   const goToSlide = (index: number) => {
     setCurrentSlide(index);
@@ -1067,9 +1132,7 @@ const Home: React.FC = () => {
             {/* Development Plans and Frameworks */}
             <div className="bg-white rounded-xl shadow-md overflow-hidden">
               <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white px-6 py-4">
-                <h2 className="text-xl font-bold">
-                  {developmentPlansTitle}
-                </h2>
+                <h2 className="text-xl font-bold">{developmentPlansTitle}</h2>
               </div>
               <div className="p-5 space-y-5">
                 {developmentPlans.map(renderDocumentCard)}
@@ -1079,7 +1142,9 @@ const Home: React.FC = () => {
             {/* Investment Programming */}
             <div className="bg-white rounded-xl shadow-md overflow-hidden">
               <div className="bg-gradient-to-r from-green-600 to-green-700 text-white px-6 py-4">
-                <h2 className="text-xl font-bold">{investmentProgrammingTitle}</h2>
+                <h2 className="text-xl font-bold">
+                  {investmentProgrammingTitle}
+                </h2>
               </div>
               <div className="p-5 space-y-5">
                 {investmentProgramming.map((doc, index) => (
@@ -1129,7 +1194,9 @@ const Home: React.FC = () => {
                             <div
                               key={idx}
                               className="flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors group cursor-pointer"
-                              onClick={() => handleDocumentClick(quickLink.link)}
+                              onClick={() =>
+                                handleDocumentClick(quickLink.link)
+                              }
                             >
                               <span className="font-medium text-gray-800">
                                 {quickLink.label}
@@ -1160,7 +1227,9 @@ const Home: React.FC = () => {
             {/* Monitoring and Evaluation */}
             <div className="bg-white rounded-xl shadow-md overflow-hidden">
               <div className="bg-gradient-to-r from-purple-600 to-purple-700 text-white px-6 py-4">
-                <h2 className="text-xl font-bold">{monitoringEvaluationTitle}</h2>
+                <h2 className="text-xl font-bold">
+                  {monitoringEvaluationTitle}
+                </h2>
               </div>
               <div className="p-5 space-y-5">
                 {monitoringEvaluation.map(renderDocumentCard)}
@@ -1174,9 +1243,7 @@ const Home: React.FC = () => {
           <div className="bg-white rounded-xl shadow-lg overflow-hidden">
             <div className="bg-gradient-to-r from-gray-900 to-black text-white px-6 py-4">
               <div className="flex justify-between items-center">
-                <h2 className="text-2xl font-bold">
-                  {dashboardTitle}
-                </h2>
+                <h2 className="text-2xl font-bold">{dashboardTitle}</h2>
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-gray-300">
                     Last updated: {lastUpdatedLabel}
@@ -1388,7 +1455,9 @@ const Home: React.FC = () => {
             <div className="bg-white rounded-xl shadow-md overflow-hidden h-full">
               <div className="bg-gradient-to-r from-purple-600 to-purple-700 text-white px-5 py-4">
                 <h3 className="text-lg font-bold">{upcomingEventsTitle}</h3>
-                <p className="text-sm opacity-90 mt-0.5">{upcomingEventsSubtitle}</p>
+                <p className="text-sm opacity-90 mt-0.5">
+                  {upcomingEventsSubtitle}
+                </p>
               </div>
               <div className="p-5">
                 {eventsLoading ? (
@@ -1413,51 +1482,53 @@ const Home: React.FC = () => {
                     {upcomingEvents.map((event) => {
                       const timing = getEventTiming(event);
                       return (
-                      <div
-                        key={event.id}
-                        className="flex items-start gap-3 p-4 border border-gray-100 rounded-lg hover:bg-gray-50 transition-colors"
-                      >
-                        <div className="flex-shrink-0">
-                          <div
-                            className={`${eventTone(event.event_type)} p-3 rounded-lg text-center min-w-[60px]`}
-                          >
-                            <div className="text-lg font-bold">{event.day}</div>
-                            <div className="text-xs font-semibold">
-                              {event.month}
+                        <div
+                          key={event.id}
+                          className="flex items-start gap-3 p-4 border border-gray-100 rounded-lg hover:bg-gray-50 transition-colors"
+                        >
+                          <div className="flex-shrink-0">
+                            <div
+                              className={`${eventTone(event.event_type)} p-3 rounded-lg text-center min-w-[60px]`}
+                            >
+                              <div className="text-lg font-bold">
+                                {event.day}
+                              </div>
+                              <div className="text-xs font-semibold">
+                                {event.month}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <h4 className="font-bold text-gray-800 text-sm mb-1 line-clamp-2">
-                            {event.title}
-                          </h4>
-                          <p className="text-xs text-gray-600">
-                            <span className="font-medium">{event.time}</span>
-                            <span className="px-1.5">-</span>
-                            {event.location ||
-                              (event.is_virtual
-                                ? "Virtual"
-                                : "Location to be announced")}
-                          </p>
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <span
-                              className={`text-xs px-2 py-1 rounded-full ${eventPillTone(event.event_type)}`}
+                          <div className="min-w-0 flex-1">
+                            <h4 className="font-bold text-gray-800 text-sm mb-1 line-clamp-2">
+                              {event.title}
+                            </h4>
+                            <p className="text-xs text-gray-600">
+                              <span className="font-medium">{event.time}</span>
+                              <span className="px-1.5">-</span>
+                              {event.location ||
+                                (event.is_virtual
+                                  ? "Virtual"
+                                  : "Location to be announced")}
+                            </p>
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <span
+                                className={`text-xs px-2 py-1 rounded-full ${eventPillTone(event.event_type)}`}
+                              >
+                                {event.event_type}
+                              </span>
+                              <span
+                                className={`text-xs px-2 py-1 rounded-full font-semibold ${timing.className}`}
+                              >
+                                {timing.label}
+                              </span>
+                            </div>
+                            <p
+                              className={`mt-2 rounded-md border px-2 py-1.5 text-xs font-medium leading-5 ${timing.messageClassName || "border-slate-200 bg-slate-50 text-slate-600"}`}
                             >
-                              {event.event_type}
-                            </span>
-                            <span
-                              className={`text-xs px-2 py-1 rounded-full font-semibold ${timing.className}`}
-                            >
-                              {timing.label}
-                            </span>
+                              {timing.message}
+                            </p>
                           </div>
-                          <p
-                            className={`mt-2 rounded-md border px-2 py-1.5 text-xs font-medium leading-5 ${timing.messageClassName || "border-slate-200 bg-slate-50 text-slate-600"}`}
-                          >
-                            {timing.message}
-                          </p>
                         </div>
-                      </div>
                       );
                     })}
                   </div>
@@ -1465,7 +1536,9 @@ const Home: React.FC = () => {
                 <div className="mt-6 pt-4 border-t">
                   {remainingEventCount > 0 && (
                     <div className="mb-3 rounded-lg border border-purple-100 bg-purple-50 px-3 py-2 text-center text-xs font-medium text-purple-700">
-                      {remainingEventCount} more event{remainingEventCount === 1 ? "" : "s"} available in the full calendar.
+                      {remainingEventCount} more event
+                      {remainingEventCount === 1 ? "" : "s"} available in the
+                      full calendar.
                     </div>
                   )}
                   <button
@@ -1496,9 +1569,7 @@ const Home: React.FC = () => {
                   <p className="text-xs font-semibold uppercase tracking-[0.25em] text-purple-100">
                     RDC-NCR Calendar
                   </p>
-                  <h2 className="mt-1 text-2xl font-black">
-                    {calendarTitle}
-                  </h2>
+                  <h2 className="mt-1 text-2xl font-black">{calendarTitle}</h2>
                   <p className="mt-1 text-sm text-purple-50">
                     {calendarSubtitle}
                   </p>
@@ -1540,68 +1611,70 @@ const Home: React.FC = () => {
                   {filteredCalendarEvents.map((event) => {
                     const timing = getEventTiming(event);
                     return (
-                    <article
-                      key={event.id}
-                      className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-                    >
-                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-                        <div
-                          className={`${eventTone(event.event_type)} rounded-2xl px-4 py-3 text-center sm:w-24`}
-                        >
-                          <div className="text-2xl font-black">{event.day}</div>
-                          <div className="text-xs font-bold uppercase tracking-wide">
-                            {event.month}
-                          </div>
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span
-                              className={`rounded-full px-2.5 py-1 text-xs font-semibold ${eventPillTone(event.event_type)}`}
-                            >
-                              {event.event_type}
-                            </span>
-                            <span
-                              className={`rounded-full px-2.5 py-1 text-xs font-semibold ${timing.className}`}
-                            >
-                              {timing.label}
-                            </span>
-                            <span className="text-xs text-slate-500">
-                              {event.time}
-                              {event.end_time ? ` - ${event.end_time}` : ""}
-                            </span>
-                          </div>
-                          <h3 className="mt-2 text-lg font-black text-slate-900">
-                            {event.title}
-                          </h3>
-                          <p className="mt-1 text-sm font-medium text-slate-600">
-                            {event.location ||
-                              (event.is_virtual
-                                ? "Virtual event"
-                                : "Location to be announced")}
-                          </p>
-                          <p
-                            className={`mt-3 rounded-lg border px-3 py-2 text-sm font-semibold ${timing.messageClassName || "border-slate-200 bg-slate-50 text-slate-600"}`}
+                      <article
+                        key={event.id}
+                        className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+                      >
+                        <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+                          <div
+                            className={`${eventTone(event.event_type)} rounded-2xl px-4 py-3 text-center sm:w-24`}
                           >
-                            {timing.message}
-                          </p>
-                          {event.description && (
-                            <p className="mt-3 text-sm leading-6 text-slate-600">
-                              {event.description}
+                            <div className="text-2xl font-black">
+                              {event.day}
+                            </div>
+                            <div className="text-xs font-bold uppercase tracking-wide">
+                              {event.month}
+                            </div>
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span
+                                className={`rounded-full px-2.5 py-1 text-xs font-semibold ${eventPillTone(event.event_type)}`}
+                              >
+                                {event.event_type}
+                              </span>
+                              <span
+                                className={`rounded-full px-2.5 py-1 text-xs font-semibold ${timing.className}`}
+                              >
+                                {timing.label}
+                              </span>
+                              <span className="text-xs text-slate-500">
+                                {event.time}
+                                {event.end_time ? ` - ${event.end_time}` : ""}
+                              </span>
+                            </div>
+                            <h3 className="mt-2 text-lg font-black text-slate-900">
+                              {event.title}
+                            </h3>
+                            <p className="mt-1 text-sm font-medium text-slate-600">
+                              {event.location ||
+                                (event.is_virtual
+                                  ? "Virtual event"
+                                  : "Location to be announced")}
                             </p>
-                          )}
-                          {event.meeting_link && (
-                            <a
-                              href={event.meeting_link}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="mt-3 inline-flex rounded-full bg-purple-600 px-4 py-2 text-sm font-semibold text-white hover:bg-purple-700"
+                            <p
+                              className={`mt-3 rounded-lg border px-3 py-2 text-sm font-semibold ${timing.messageClassName || "border-slate-200 bg-slate-50 text-slate-600"}`}
                             >
-                              Open event link
-                            </a>
-                          )}
+                              {timing.message}
+                            </p>
+                            {event.description && (
+                              <p className="mt-3 text-sm leading-6 text-slate-600">
+                                {event.description}
+                              </p>
+                            )}
+                            {event.meeting_link && (
+                              <a
+                                href={event.meeting_link}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="mt-3 inline-flex rounded-full bg-purple-600 px-4 py-2 text-sm font-semibold text-white hover:bg-purple-700"
+                              >
+                                Open event link
+                              </a>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    </article>
+                      </article>
                     );
                   })}
                 </div>
