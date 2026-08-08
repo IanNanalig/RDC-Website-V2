@@ -15,6 +15,10 @@ type Props = {
 
 type NavItem = { label: string; to: string };
 
+type StoredPortalUser = {
+  agency?: string | null;
+};
+
 const roleLabel: Record<Role, string> = {
   admin: "Administrator",
   validator: "Validator",
@@ -90,6 +94,17 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
   const navigate = useNavigate();
   const navItems = useMemo(() => navByRole[role], [role]);
   const encodingWindow = useEncodingWindow(role === "employee");
+  const workspaceLabel = useMemo(() => {
+    try {
+      const raw = localStorage.getItem("user");
+      if (!raw) return "NCR Workspace";
+      const user = JSON.parse(raw) as StoredPortalUser;
+      const agency = String(user.agency || "").trim();
+      return agency ? `${agency} Workspace` : "NCR Workspace";
+    } catch {
+      return "NCR Workspace";
+    }
+  }, []);
 
   useEffect(() => {
     setMobileOpen(false);
@@ -129,7 +144,7 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
               <div className="portal-brand-dot" />
               <div>
                 <p className="portal-brand-title">RDC Portal</p>
-                <p className="portal-brand-sub">NCR Workspace</p>
+                <p className="portal-brand-sub">{workspaceLabel}</p>
               </div>
             </div>
 

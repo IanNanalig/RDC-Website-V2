@@ -47,6 +47,7 @@ interface User {
   username: string;
   email: string;
   role: "admin" | "validator" | "employee" | "content_editor";
+  agency?: string | null;
   department?: string;
   position?: string;
 }
