@@ -11,6 +11,7 @@ router.register(r"admin/users", views.AdminUserViewSet, basename="admin-users")
 router.register(r"access-requests", views.AccessRequestViewSet, basename="access-requests")
 router.register(r"password-reset-requests", views.PasswordResetRequestViewSet, basename="password-reset-requests")
 router.register(r"project-revisions", views.ProjectRevisionViewSet, basename="project-revisions")
+router.register(r"notifications", views.NotificationViewSet, basename="notifications")
 router.register(r"admin/events", views.AdminEventViewSet, basename="admin-events")
 
 public_projects_list = views.PublicProjectsViewSet.as_view({"get": "list"})

@@ -12,6 +12,10 @@ type ApiProject = {
   agency?: string;
   budget?: number;
   status?: string;
+  workflow_status?: string;
+  workflow_status_label?: string;
+  official_priority_label?: string;
+  validation_comment?: string;
   completion?: number;
   profile_data?: Record<string, any>;
   submitted_by_name?: string;
@@ -32,8 +36,8 @@ const formatReviewStatus = (raw: string) => {
   const normalized = String(raw || "").toLowerCase();
   if (!normalized) return "Not Reviewed";
   if (normalized === "draft") return "Draft";
-  if (normalized === "reviewed") return "Reviewed";
-  if (normalized === "endorsed" || normalized === "validated") return "Endorsed";
+  if (normalized === "reviewed") return "Needs Revision";
+  if (normalized === "endorsed" || normalized === "validated") return "Validated";
   if (normalized === "rejected") return "Rejected";
   return normalized.replaceAll("_", " ");
 };
@@ -192,8 +196,14 @@ const ProjectReview: React.FC = () => {
           </div>
           <div>
             <p className="text-xs text-gray-500">Status</p>
-            <p className="uppercase">{project.status || "N/A"}</p>
+            <p className="uppercase">{project.workflow_status_label || project.status || "N/A"}</p>
           </div>
+          {project.official_priority_label && (
+            <div>
+              <p className="text-xs text-gray-500">Priority</p>
+              <p className="uppercase">{project.official_priority_label}</p>
+            </div>
+          )}
           <div>
             <p className="text-xs text-gray-500">Form Type</p>
             <p>Simplified (RDIP)</p>
@@ -205,6 +215,12 @@ const ProjectReview: React.FC = () => {
             </div>
           )}
         </div>
+        {(project.validation_comment || project.workflow_status === "needs_revision" || project.workflow_status === "rejected") && (
+          <div className="border border-amber-200 bg-amber-50 rounded p-3 text-sm text-amber-900">
+            <p className="font-semibold">{project.workflow_status_label || "Validator decision"}</p>
+            {project.validation_comment ? <p className="mt-1">{project.validation_comment}</p> : null}
+          </div>
+        )}
         {(isAdmin || isValidator) && (
           <div className="border border-indigo-200 bg-indigo-50 rounded p-3 text-sm space-y-1">
             <p className="font-semibold text-indigo-900">Validator Review Metadata</p>

@@ -12,6 +12,11 @@ type ApiProject = {
   budget?: number;
   completion?: number;
   status?: string;
+  workflow_status?: string;
+  workflow_status_label?: string;
+  official_priority?: string;
+  official_priority_label?: string;
+  validation_comment?: string;
   updated_at?: string;
   validated?: boolean;
   is_revision?: boolean;
@@ -28,6 +33,8 @@ type ApiProject = {
   profile_data?: Record<string, unknown>;
 };
 
+type WorkflowFilter = "all" | "pending_validation" | "needs_revision" | "validated" | "priority" | "non_priority" | "rejected";
+
 type ProjectRevisionRow = {
   id: number;
   project: number;
@@ -43,14 +50,15 @@ type ProjectRevisionRow = {
   updated_at?: string;
 };
 
-const statusLabel = (status?: string) => {
+const statusLabel = (status?: string, workflowLabel?: string) => {
+  if (workflowLabel) return workflowLabel;
   switch (status) {
     case "planning":
       return "Draft";
     case "proposed":
       return "Submitted";
     case "completed":
-      return "Approved";
+      return "Validated";
     case "ongoing":
       return "Ongoing";
     default:
@@ -59,6 +67,10 @@ const statusLabel = (status?: string) => {
 };
 
 const statusBadge = (status?: string) => {
+  if (status === "needs_revision") return "bg-amber-100 text-amber-800";
+  if (status === "pending_validation") return "bg-blue-100 text-blue-700";
+  if (status === "validated") return "bg-emerald-100 text-emerald-700";
+  if (status === "rejected") return "bg-rose-100 text-rose-700";
   switch (status) {
     case "planning":
       return "bg-amber-100 text-amber-700";
@@ -84,14 +96,14 @@ const reviewStateLabel = (p: ApiProject) => {
     if (state === "draft") return "Draft";
     if (state === "submitted") return "Submitted";
     if (state === "validator_draft") return "Validator Draft";
-    if (state === "reviewed") return "Reviewed";
+    if (state === "reviewed") return "Needs Revision";
     if (state === "endorsed") return "Endorsed";
     if (state === "rejected") return "Rejected";
   }
   const vr = getValidatorReview(p);
   const status = String(vr?.review_status || "").toLowerCase();
   if (status === "draft") return "Draft";
-  if (status === "reviewed") return "Reviewed";
+  if (status === "reviewed") return "Needs Revision";
   if (status === "endorsed" || status === "validated") return "Endorsed";
   if (status === "rejected") return "Rejected";
   return "Not Reviewed";
@@ -115,7 +127,7 @@ const reviewStateBadge = (p: ApiProject) => {
 };
 
 const ProjectsPage: React.FC = () => {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const [projects, setProjects] = useState<ApiProject[]>([]);
   const [loading, setLoading] = useState(true);
@@ -133,15 +145,18 @@ const ProjectsPage: React.FC = () => {
   const canProgressUpdate = progressWindow.can_encode;
   const progressMessage = progressWindow.message;
 
-  const endpoint = useMemo(
-    () =>
-      role === "admin"
-        ? "admin/projects/"
-        : role === "validator"
-        ? "validator/projects/?scope=queue"
-        : "employee/projects/",
-    [role],
-  );
+  const selectedWorkflow = (searchParams.get("workflow") || searchParams.get("status") || "all") as WorkflowFilter;
+
+  const endpoint = useMemo(() => {
+    const workflowParam = selectedWorkflow && selectedWorkflow !== "all" ? `workflow=${encodeURIComponent(selectedWorkflow)}` : "";
+    if (role === "admin") {
+      return `admin/projects/${workflowParam ? `?${workflowParam}` : ""}`;
+    }
+    if (role === "validator") {
+      return `validator/projects/?scope=queue${workflowParam ? `&${workflowParam}` : ""}`;
+    }
+    return `employee/projects/${workflowParam ? `?${workflowParam}` : ""}`;
+  }, [role, selectedWorkflow]);
 
   const loadProjects = useCallback(async () => {
     setLoading(true);
@@ -192,17 +207,19 @@ const ProjectsPage: React.FC = () => {
     return () => window.removeEventListener("storage", onStorage);
   }, [loadProjects, navigate, user]);
 
-  const selectedStatus = searchParams.get("status");
   const filtered = useMemo(() => {
     let list = projects;
-    if (selectedStatus === "draft") list = list.filter((p) => p.status === "planning");
-    else if (selectedStatus === "pending") list = list.filter((p) => p.status === "proposed");
-    else if (selectedStatus === "approved") list = list.filter((p) => p.status === "completed");
+    if (selectedWorkflow === "pending_validation") list = list.filter((p) => p.workflow_status === "pending_validation" || p.status === "proposed");
+    else if (selectedWorkflow === "needs_revision") list = list.filter((p) => p.workflow_status === "needs_revision");
+    else if (selectedWorkflow === "validated") list = list.filter((p) => p.workflow_status === "validated" || p.status === "completed");
+    else if (selectedWorkflow === "rejected") list = list.filter((p) => p.workflow_status === "rejected");
+    else if (selectedWorkflow === "priority") list = list.filter((p) => p.official_priority_label === "Priority");
+    else if (selectedWorkflow === "non_priority") list = list.filter((p) => p.official_priority_label === "Non-Priority");
 
     const q = query.trim().toLowerCase();
     if (!q) return list;
     return list.filter((p) => `${p.title || p.name || ""} ${p.agency || ""}`.toLowerCase().includes(q));
-  }, [projects, selectedStatus, query]);
+  }, [projects, selectedWorkflow, query]);
 
   const handleSubmit = async (id: number) => {
     if (role === "employee" && !canEncode) return;
@@ -228,6 +245,30 @@ const ProjectsPage: React.FC = () => {
     !p.is_revision &&
     Boolean(p.validated) &&
     formStatus(p).toLowerCase() !== "completed";
+
+  const canEditProject = (p: ApiProject) =>
+    role === "employee" &&
+    !p.is_revision &&
+    (p.status === "planning" || p.workflow_status === "needs_revision") &&
+    (canEncode || p.workflow_status === "needs_revision");
+
+  const canSubmitProject = (p: ApiProject) =>
+    role === "employee" &&
+    !p.is_revision &&
+    ((canEncode && p.status === "planning") || p.workflow_status === "needs_revision");
+
+  const editPath = (p: ApiProject) => {
+    const pd = p.profile_data as Record<string, any> | undefined;
+    return pd?.simplified_form ? `/employee/projects/${p.id}/edit/simplified` : `/employee/projects/${p.id}/edit`;
+  };
+
+  const setWorkflowFilter = (value: WorkflowFilter) => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("status");
+    if (value === "all") next.delete("workflow");
+    else next.set("workflow", value);
+    setSearchParams(next);
+  };
 
   const handleStartProgressUpdate = async (p: ApiProject) => {
     if (!canProgressUpdate) {
@@ -285,13 +326,26 @@ const ProjectsPage: React.FC = () => {
       )}
 
       <div className="portal-card mb-3">
-        <div className="portal-card-body">
+        <div className="portal-card-body grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search by project title or agency"
             className="w-full border border-slate-200 rounded-xl px-3 py-2 bg-white"
           />
+          <select
+            value={selectedWorkflow}
+            onChange={(event) => setWorkflowFilter(event.target.value as WorkflowFilter)}
+            className="w-full border border-slate-200 rounded-xl px-3 py-2 bg-white"
+          >
+            <option value="all">All</option>
+            <option value="pending_validation">Pending Validation</option>
+            <option value="needs_revision">Needs Revision</option>
+            <option value="validated">Validated</option>
+            <option value="priority">Priority</option>
+            <option value="non_priority">Non-Priority</option>
+            <option value="rejected">Rejected</option>
+          </select>
         </div>
       </div>
 
@@ -311,6 +365,7 @@ const ProjectsPage: React.FC = () => {
                 <th className="hidden lg:table-cell">Agency</th>
                 <th className="hidden xl:table-cell">Budget</th>
                 <th>Status</th>
+                <th className="hidden xl:table-cell">Priority</th>
                 {(role === "admin" || role === "validator") && <th className="hidden xl:table-cell">Review State</th>}
                 <th className="hidden 2xl:table-cell">Updated</th>
                 <th>Actions</th>
@@ -328,8 +383,9 @@ const ProjectsPage: React.FC = () => {
                   <td className="hidden lg:table-cell max-w-[170px] truncate" title={p.agency || "N/A"}>{p.agency || "N/A"}</td>
                   <td className="hidden xl:table-cell">PHP {(p.budget || 0).toLocaleString()}</td>
                   <td>
-                    <span className={`px-2 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${statusBadge(p.status)}`}>{statusLabel(p.status)}</span>
+                    <span className={`px-2 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${statusBadge(p.workflow_status || p.status)}`}>{statusLabel(p.status, p.workflow_status_label)}</span>
                   </td>
+                  <td className="hidden xl:table-cell">{p.official_priority_label || "-"}</td>
                   {(role === "admin" || role === "validator") && (
                     <td className="hidden xl:table-cell">
                       <span className={`px-2 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${reviewStateBadge(p)}`}>
@@ -344,18 +400,18 @@ const ProjectsPage: React.FC = () => {
                       <>
                         <button onClick={() => navigate(`/employee/projects/${p.id}/view`)} className="text-blue-700 hover:underline whitespace-nowrap">View</button>
                         <button
-                          disabled={!canEncode || p.status !== "planning"}
-                          onClick={() => navigate(`/employee/projects/${p.id}/edit`)}
-                          className={`whitespace-nowrap ${canEncode && p.status === "planning" ? "text-blue-600 hover:underline" : "text-slate-400 cursor-not-allowed"}`}
+                          disabled={!canEditProject(p)}
+                          onClick={() => navigate(editPath(p))}
+                          className={`whitespace-nowrap ${canEditProject(p) ? "text-blue-600 hover:underline" : "text-slate-400 cursor-not-allowed"}`}
                         >
-                          Edit
+                          {p.workflow_status === "needs_revision" ? "Revise" : "Edit"}
                         </button>
                         <button
-                          disabled={!canEncode || p.status !== "planning"}
+                          disabled={!canSubmitProject(p)}
                           onClick={() => handleSubmit(p.id)}
-                          className={`whitespace-nowrap ${canEncode && p.status === "planning" ? "text-indigo-600 hover:underline" : "text-slate-400 cursor-not-allowed"}`}
+                          className={`whitespace-nowrap ${canSubmitProject(p) ? "text-indigo-600 hover:underline" : "text-slate-400 cursor-not-allowed"}`}
                         >
-                          Submit
+                          {p.workflow_status === "needs_revision" ? "Resubmit" : "Submit"}
                         </button>
                         {canStartProgressUpdate(p) && (
                           <button

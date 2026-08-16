@@ -2,6 +2,7 @@ from django.contrib import admin
 from .models import (
     AuditTrail,
     EditRequest,
+    Notification,
     PriorityRuleSet,
     Project,
     ProjectPriorityAnalysis,
@@ -18,6 +19,7 @@ admin.site.register(EditRequest)
 admin.site.register(AuditTrail)
 admin.site.register(SystemSetting)
 admin.site.register(UserActivity)
+admin.site.register(Notification)
 admin.site.register(PriorityRuleSet)
 admin.site.register(ProjectPriorityAnalysis)
 admin.site.register(ProjectPriorityConfirmation)

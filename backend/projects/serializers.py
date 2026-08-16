@@ -2,6 +2,7 @@ from rest_framework import serializers
 from datetime import datetime
 from .models import (
     AccessRequest,
+    Notification,
     PasswordResetRequest,
     PublicChatKnowledgeGap,
     PublicEvent,
@@ -207,6 +208,11 @@ class ProjectSerializer(serializers.ModelSerializer):
     submitted_by_name = serializers.SerializerMethodField()
     validated_by = serializers.SerializerMethodField()
     priority_analysis = serializers.SerializerMethodField()
+    workflow_status = serializers.SerializerMethodField()
+    workflow_status_label = serializers.SerializerMethodField()
+    official_priority = serializers.SerializerMethodField()
+    official_priority_label = serializers.SerializerMethodField()
+    validation_comment = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
@@ -235,8 +241,25 @@ class ProjectSerializer(serializers.ModelSerializer):
             "year",
             "priority_analysis_eligible",
             "priority_analysis",
+            "workflow_status",
+            "workflow_status_label",
+            "official_priority",
+            "official_priority_label",
+            "validation_comment",
         ]
-        read_only_fields = ["id", "created_at", "updated_at", "submitted_by", "submitted_by_name", "validated_by"]
+        read_only_fields = [
+            "id",
+            "created_at",
+            "updated_at",
+            "submitted_by",
+            "submitted_by_name",
+            "validated_by",
+            "workflow_status",
+            "workflow_status_label",
+            "official_priority",
+            "official_priority_label",
+            "validation_comment",
+        ]
         extra_kwargs = {
             "name": {"required": False},
             "implementing_agency": {"required": False},
@@ -274,6 +297,52 @@ class ProjectSerializer(serializers.ModelSerializer):
             "confirmed": bool(confirmation),
             "created_at": analysis.created_at,
         }
+
+    def _validator_review(self, obj):
+        profile_data = obj.profile_data if isinstance(obj.profile_data, dict) else {}
+        review = profile_data.get("validator_review")
+        return review if isinstance(review, dict) else {}
+
+    def get_workflow_status(self, obj):
+        review_status = str(self._validator_review(obj).get("review_status") or "").lower()
+        if review_status in ("reviewed", "rejected"):
+            return "needs_revision" if review_status == "reviewed" else "rejected"
+        if review_status in ("endorsed", "validated") or obj.validated or obj.status == "completed":
+            return "validated"
+        if obj.status == "proposed":
+            return "pending_validation"
+        if obj.status == "planning":
+            return "draft"
+        return obj.status or ""
+
+    def get_workflow_status_label(self, obj):
+        return {
+            "draft": "Draft",
+            "pending_validation": "Pending Validation",
+            "needs_revision": "Needs Revision",
+            "validated": "Validated",
+            "rejected": "Rejected",
+            "ongoing": "Ongoing",
+            "completed": "Validated",
+        }.get(self.get_workflow_status(obj), self.get_workflow_status(obj).replace("_", " ").title())
+
+    def _latest_confirmation(self, obj):
+        return ProjectPriorityConfirmation.objects.filter(analysis__project=obj).order_by("-created_at").first()
+
+    def get_official_priority(self, obj):
+        confirmation = self._latest_confirmation(obj)
+        return confirmation.final_priority if confirmation else ""
+
+    def get_official_priority_label(self, obj):
+        value = self.get_official_priority(obj)
+        if value == "high":
+            return "Priority"
+        if value in ("medium", "low"):
+            return "Non-Priority"
+        return ""
+
+    def get_validation_comment(self, obj):
+        return str(self._validator_review(obj).get("review_notes") or "")
 
     def validate_status(self, value):
         mapping = {
@@ -937,6 +1006,45 @@ class ProjectCommentSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "project", "user", "username", "full_name", "role", "agency", "created_at"]
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    actor_name = serializers.SerializerMethodField()
+    project_title = serializers.SerializerMethodField()
+    is_read = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Notification
+        fields = [
+            "id",
+            "recipient",
+            "actor",
+            "actor_name",
+            "project",
+            "project_title",
+            "comment",
+            "event_type",
+            "title",
+            "message",
+            "link_path",
+            "read_at",
+            "is_read",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_actor_name(self, obj):
+        if not obj.actor:
+            return "System"
+        return obj.actor.full_name.strip() or obj.actor.get_full_name() or obj.actor.username
+
+    def get_project_title(self, obj):
+        if not obj.project:
+            return ""
+        return obj.project.title
+
+    def get_is_read(self, obj):
+        return bool(obj.read_at)
 
 
 class PasswordResetRequestSerializer(serializers.ModelSerializer):

@@ -475,6 +475,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const [form, setForm] = useState<SimplifiedForm>(initialForm);
   const [loading, setLoading] = useState(false);
   const [projectStatus, setProjectStatus] = useState<string>("planning");
+  const [workflowStatus, setWorkflowStatus] = useState<string>("draft");
+  const [workflowStatusLabel, setWorkflowStatusLabel] = useState<string>("Draft");
+  const [officialPriorityLabel, setOfficialPriorityLabel] = useState<string>("");
+  const [validationComment, setValidationComment] = useState<string>("");
   const [revisionState, setRevisionState] = useState<string>("");
   const [formReady, setFormReady] = useState(false);
   const [localDraftHydrated, setLocalDraftHydrated] = useState(false);
@@ -499,6 +503,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const currentWindowMessage = isRevisionMode ? progressWindow.message : encodeMessage;
   const isDiffMode = isAdmin && searchParams.get("mode") === "diff";
   const normalizedReviewStatus = validatorReviewStatus === "validated" ? "endorsed" : validatorReviewStatus;
+  const canReviseSubmitted = isEmployee && isEditMode && !isRevisionMode && workflowStatus === "needs_revision";
   const formRef = useRef(form);
 
   const draftStorageKey = useMemo(() => {
@@ -552,6 +557,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
           const state = String(data?.state || "").toLowerCase();
           setRevisionState(state);
           setProjectStatus(state === "draft" ? "planning" : state === "endorsed" ? "completed" : "proposed");
+          setWorkflowStatus(state === "endorsed" ? "validated" : state === "rejected" ? "rejected" : "pending_validation");
+          setWorkflowStatusLabel(state === "endorsed" ? "Validated" : state === "rejected" ? "Rejected" : "Pending Validation");
+          setOfficialPriorityLabel("");
+          setValidationComment(String(data?.public_note || ""));
           if (data?.updated_at) {
             setServerUpdatedAt(String(data.updated_at));
           }
@@ -560,6 +569,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
           const base = isValidator ? "validator" : isAdmin ? "admin" : "employee";
           data = await api.get(`${base}/projects/${id}/`);
           setProjectStatus(data?.status || "planning");
+          setWorkflowStatus(String(data?.workflow_status || ""));
+          setWorkflowStatusLabel(String(data?.workflow_status_label || ""));
+          setOfficialPriorityLabel(String(data?.official_priority_label || ""));
+          setValidationComment(String(data?.validation_comment || ""));
           setRevisionState("");
           if (data?.updated_at) {
             setServerUpdatedAt(String(data.updated_at));
@@ -884,9 +897,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
   const isReadOnly =
     isAdmin ||
-    (isEmployee && !canWriteCurrentForm) ||
+    (isEmployee && !canWriteCurrentForm && !canReviseSubmitted) ||
     (isEmployee && isRevisionMode && revisionState !== "draft") ||
-    (isEmployee && isEditMode && !isRevisionMode && projectStatus !== "planning") ||
+    (isEmployee && isEditMode && !isRevisionMode && projectStatus !== "planning" && !canReviseSubmitted) ||
     (isValidator && normalizedReviewStatus === "endorsed");
   const diffOf = (field: string) => diffMap[field];
   const editMetaOf = (field: string) => fieldEditMeta[field];
@@ -959,6 +972,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
       const normalizedProfileData = prioritySnapshot;
 
       if (isValidator && id) {
+        if (action === "reviewed" && !validatorNotes.trim()) {
+          alert("Please add a clear revision request before sending this back to the contributor.");
+          setLoading(false);
+          return;
+        }
         const validatorAction =
           action === "draft"
             ? "save_draft"
@@ -1001,8 +1019,8 @@ const SimplifiedProjectSubmission: React.FC = () => {
           action === "draft"
             ? "Saved as draft."
             : action === "reviewed"
-            ? "Saved as reviewed."
-            : "Project endorsed.",
+            ? "Revision request sent."
+            : "Project validated.",
         );
         navigate("/validator/projects");
         return;
@@ -1033,7 +1051,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
         municipality: "NCR",
         profile_data: normalizedProfileData,
       };
-      if (action === "save") {
+      if (action === "save" && !canReviseSubmitted) {
         payload.status = "draft";
       }
       let targetId = id;
@@ -1123,7 +1141,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
         </>
       }
     >
-      {isEmployee && !canWriteCurrentForm && (
+      {isEmployee && !canWriteCurrentForm && !canReviseSubmitted && (
         <div className="portal-card p-3 mb-3 border-amber-200 bg-amber-50 text-amber-800">
           {currentWindowMessage || "This workflow is currently closed by admin."}
         </div>
@@ -1135,7 +1153,22 @@ const SimplifiedProjectSubmission: React.FC = () => {
       )}
       {isEditMode && !isRevisionMode && isEmployee && projectStatus !== "planning" && (
         <div className="portal-card p-3 mb-3 border-blue-200 bg-blue-50 text-blue-800">
-          This submission is already sent and is now view-only for contributors.
+          {canReviseSubmitted
+            ? "This submission needs revision. Update the form and submit it again for validation."
+            : "This submission is already sent and is now view-only for contributors."}
+        </div>
+      )}
+      {isEditMode && !isRevisionMode && (
+        <div className="portal-card p-3 mb-3 border-slate-200 bg-white text-sm text-slate-700">
+          <div className="flex flex-wrap gap-2">
+            {workflowStatusLabel && <span className="rounded-full bg-blue-50 px-3 py-1 font-semibold text-blue-700">Status: {workflowStatusLabel}</span>}
+            {officialPriorityLabel && <span className="rounded-full bg-emerald-50 px-3 py-1 font-semibold text-emerald-700">Priority: {officialPriorityLabel}</span>}
+          </div>
+          {validationComment && (
+            <p className="mt-2">
+              <span className="font-semibold">Validator note:</span> {validationComment}
+            </p>
+          )}
         </div>
       )}
       {(restoreNotice || localSavedLabel) && (
@@ -1350,7 +1383,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                   rows={3}
                   value={validatorNotes}
                   onChange={(e) => setValidatorNotes(e.target.value)}
-                  placeholder="Optional notes for admin and audit trail"
+                  placeholder="Required when requesting revisions or rejecting"
                 />
               </label>
             </div>
@@ -1382,7 +1415,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                     className="portal-btn portal-btn-ghost"
                     disabled={loading || isReadOnly || rangeTooLarge}
                   >
-                    {loading ? "Saving..." : "Save as Reviewed"}
+                    {loading ? "Saving..." : "Request Revision"}
                   </button>
                   <button
                     type="button"
@@ -1390,7 +1423,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                     className="portal-btn portal-btn-primary"
                     disabled={loading || isReadOnly || rangeTooLarge}
                   >
-                    {loading ? "Submitting..." : "Save as Endorsed"}
+                    {loading ? "Submitting..." : "Validate / Endorse"}
                   </button>
                 </>
               ) : (

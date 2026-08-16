@@ -285,6 +285,34 @@ class ProjectComment(models.Model):
         return f"{self.project_id} {self.user.username} {self.created_at.isoformat()}"
 
 
+class Notification(models.Model):
+    recipient = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notifications")
+    actor = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="triggered_notifications"
+    )
+    project = models.ForeignKey(Project, on_delete=models.SET_NULL, null=True, blank=True, related_name="notifications")
+    comment = models.ForeignKey(
+        ProjectComment, on_delete=models.SET_NULL, null=True, blank=True, related_name="notifications"
+    )
+    event_type = models.CharField(max_length=60)
+    title = models.CharField(max_length=180)
+    message = models.TextField(blank=True)
+    link_path = models.CharField(max_length=255, blank=True)
+    dedupe_key = models.CharField(max_length=160, unique=True, null=True, blank=True)
+    read_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["recipient", "read_at", "-created_at"]),
+            models.Index(fields=["event_type", "-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.recipient_id} {self.event_type} {self.created_at.isoformat()}"
+
+
 class PriorityRuleSet(models.Model):
     version = models.CharField(max_length=40, unique=True)
     algorithm_version = models.CharField(max_length=40, default="expert-v1")

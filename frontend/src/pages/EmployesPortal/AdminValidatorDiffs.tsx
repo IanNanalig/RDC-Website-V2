@@ -36,8 +36,8 @@ const stateLabel = (value: string) => {
   const normalized = String(value || "").toLowerCase();
   if (!normalized) return "Not Reviewed";
   if (normalized === "draft") return "Draft";
-  if (normalized === "reviewed") return "Reviewed";
-  if (normalized === "endorsed" || normalized === "validated") return "Endorsed";
+  if (normalized === "reviewed") return "Needs Revision";
+  if (normalized === "endorsed" || normalized === "validated") return "Validated";
   if (normalized === "rejected") return "Rejected";
   return normalized;
 };
@@ -187,15 +187,17 @@ const AdminValidatorDiffs: React.FC = () => {
                     <td className="hidden lg:table-cell">
                       {p.priority_analysis ? (
                         <span className={`px-2 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${
-                          (p.priority_analysis.final_priority || p.priority_analysis.suggested_priority) === "high"
+                          p.priority_analysis.final_priority === "high"
                             ? "bg-emerald-100 text-emerald-700"
-                            : (p.priority_analysis.final_priority || p.priority_analysis.suggested_priority) === "medium"
+                            : p.priority_analysis.final_priority === "medium"
                             ? "bg-amber-100 text-amber-700"
-                            : (p.priority_analysis.final_priority || p.priority_analysis.suggested_priority) === "low"
+                            : p.priority_analysis.final_priority === "low"
                             ? "bg-rose-100 text-rose-700"
                             : "bg-slate-100 text-slate-700"
                         }`}>
-                          {p.priority_analysis.confirmed ? "Confirmed" : "Suggested"}: {(p.priority_analysis.final_priority || p.priority_analysis.suggested_priority || "incomplete").replace("_", " ")} ({Number(p.priority_analysis.score || 0).toFixed(2)})
+                          {p.priority_analysis.confirmed
+                            ? `Confirmed: ${String(p.priority_analysis.final_priority || "").replace("_", " ")}`
+                            : "No official decision"} ({Number(p.priority_analysis.score || 0).toFixed(2)})
                         </span>
                       ) : "-"}
                     </td>

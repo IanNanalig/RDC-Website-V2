@@ -26,9 +26,11 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import (
     AccessRequest,
+    Notification,
     PasswordResetRequest,
     PasswordSetupToken,
     ProjectPriorityAnalysis,
+    ProjectPriorityConfirmation,
     Project,
     ProjectComment,
     ProjectRevision,
@@ -43,6 +45,7 @@ from .models import (
 )
 from .serializers import (
     AccessRequestSerializer,
+    NotificationSerializer,
     PasswordResetRequestSerializer,
     ProjectCommentSerializer,
     PublicEventSerializer,
@@ -594,6 +597,148 @@ def _log_activity(request, event: str, project=None, details=None):
         location_hint=_location_hint(request),
         details=details or {},
     )
+
+
+def _project_title(project):
+    return getattr(project, "title", "") or getattr(project, "name", "") or "Project"
+
+
+def _project_review_status(project):
+    profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
+    review = profile_data.get("validator_review")
+    if not isinstance(review, dict):
+        return ""
+    status_value = str(review.get("review_status") or "").lower()
+    return "endorsed" if status_value == "validated" else status_value
+
+
+def _project_needs_revision(project):
+    return getattr(project, "status", "") == "proposed" and _project_review_status(project) == "reviewed"
+
+
+def _project_link(project, recipient):
+    role = getattr(recipient, "role", "")
+    if role == "admin":
+        return f"/admin/projects/{project.id}/view"
+    if role == "validator":
+        return f"/validator/projects/{project.id}/review"
+    return f"/employee/projects/{project.id}/view"
+
+
+def _active_validators():
+    return User.objects.filter(role="validator", is_active=True)
+
+
+def _project_employee_recipients(project):
+    if project.created_by_id:
+        return User.objects.filter(id=project.created_by_id, is_active=True)
+    agency = (project.agency or "").strip()
+    if not agency:
+        return User.objects.none()
+    return User.objects.filter(role="staff", is_active=True, agency__iexact=agency)
+
+
+def _admins():
+    return User.objects.filter(role="admin", is_active=True)
+
+
+def _notify_user(recipient, *, event_type, title, message, project=None, actor=None, comment=None, dedupe_key=None):
+    if not recipient or not getattr(recipient, "is_active", True):
+        return None
+    defaults = {
+        "actor": actor if getattr(actor, "is_authenticated", False) else None,
+        "project": project,
+        "comment": comment,
+        "event_type": event_type,
+        "title": title,
+        "message": message,
+        "link_path": _project_link(project, recipient) if project else "",
+    }
+    if dedupe_key:
+        notification, _ = Notification.objects.get_or_create(
+            recipient=recipient,
+            dedupe_key=f"{dedupe_key}:u{recipient.id}",
+            defaults=defaults,
+        )
+        return notification
+    return Notification.objects.create(recipient=recipient, **defaults)
+
+
+def _notify_many(recipients, **kwargs):
+    sent = []
+    actor = kwargs.get("actor")
+    actor_id = getattr(actor, "id", None)
+    seen = set()
+    for recipient in recipients:
+        if not recipient or recipient.id in seen or recipient.id == actor_id:
+            continue
+        seen.add(recipient.id)
+        notification = _notify_user(recipient, **kwargs)
+        if notification:
+            sent.append(notification)
+    return sent
+
+
+def _priority_group(value):
+    if value == "high":
+        return "priority"
+    if value in ("medium", "low"):
+        return "non_priority"
+    return ""
+
+
+def _priority_label(value):
+    if value == "high":
+        return "Priority"
+    if value in ("medium", "low"):
+        return "Non-Priority"
+    return ""
+
+
+def _latest_project_confirmation(project):
+    return ProjectPriorityConfirmation.objects.filter(analysis__project=project).order_by("-created_at").first()
+
+
+def _workflow_status_for_project(project):
+    review_status = _project_review_status(project)
+    if review_status == "reviewed":
+        return "needs_revision"
+    if review_status == "rejected":
+        return "rejected"
+    if review_status == "endorsed" or getattr(project, "validated", False) or getattr(project, "status", "") == "completed":
+        return "validated"
+    if getattr(project, "status", "") == "proposed":
+        return "pending_validation"
+    if getattr(project, "status", "") == "planning":
+        return "draft"
+    return getattr(project, "status", "") or ""
+
+
+def _filter_projects_for_workflow(qs, workflow):
+    workflow = str(workflow or "").strip().lower().replace("-", "_")
+    if workflow in ("", "all"):
+        return qs
+    projects = list(qs)
+    if workflow in ("priority", "non_priority"):
+        ids = []
+        for project in projects:
+            confirmation = _latest_project_confirmation(project)
+            if confirmation and _priority_group(confirmation.final_priority) == workflow:
+                ids.append(project.id)
+        return Project.objects.filter(id__in=ids)
+    aliases = {
+        "pending": "pending_validation",
+        "pending_validation": "pending_validation",
+        "needs_revision": "needs_revision",
+        "revision": "needs_revision",
+        "validated": "validated",
+        "approved": "validated",
+        "rejected": "rejected",
+        "draft": "draft",
+    }
+    expected = aliases.get(workflow, workflow)
+    ids = [project.id for project in projects if _workflow_status_for_project(project) == expected]
+    return Project.objects.filter(id__in=ids)
 
 
 def _get_window_config(key):
@@ -2123,7 +2268,9 @@ class ProjectPermission(permissions.BasePermission):
             return False
         if obj.created_by_id == request.user.id:
             return True
-        if role in ("staff", "employee") and getattr(obj, "status", "") == "planning":
+        if role in ("staff", "employee") and (
+            getattr(obj, "status", "") == "planning" or _project_needs_revision(obj)
+        ):
             user_agency = (getattr(request.user, "agency", "") or "").strip().lower()
             project_agency = (getattr(obj, "agency", "") or "").strip().lower()
             return bool(user_agency and user_agency == project_agency)
@@ -2155,6 +2302,49 @@ class AdminOnlyPermission(permissions.BasePermission):
         return bool(request.user and request.user.is_authenticated and request.user.role == "admin")
 
 
+class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = NotificationSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = Notification.objects.filter(recipient=self.request.user).select_related(
+            "actor",
+            "project",
+            "comment",
+        )
+        unread = (self.request.query_params.get("unread") or "").strip().lower()
+        if unread in ("1", "true", "yes"):
+            qs = qs.filter(read_at__isnull=True)
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        try:
+            limit = max(1, min(50, int(request.query_params.get("limit") or 30)))
+        except Exception:
+            limit = 30
+        qs = self.filter_queryset(self.get_queryset())[:limit]
+        return Response(self.get_serializer(qs, many=True).data)
+
+    @action(detail=False, methods=["get"], url_path="unread-count")
+    def unread_count(self, request):
+        count = Notification.objects.filter(recipient=request.user, read_at__isnull=True).count()
+        return Response({"unread_count": count})
+
+    @action(detail=True, methods=["post"], url_path="mark-read")
+    def mark_read(self, request, pk=None):
+        notification = self.get_object()
+        if not notification.read_at:
+            notification.read_at = timezone.now()
+            notification.save(update_fields=["read_at"])
+        return Response(NotificationSerializer(notification).data)
+
+    @action(detail=False, methods=["post"], url_path="mark-all-read")
+    def mark_all_read(self, request):
+        now = timezone.now()
+        updated = Notification.objects.filter(recipient=request.user, read_at__isnull=True).update(read_at=now)
+        return Response({"updated": updated, "read_at": now})
+
+
 class BaseProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated, ProjectPermission]
@@ -2163,16 +2353,25 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         user = self.request.user
         role = getattr(user, "role", "")
         if role == "admin":
-            return Project.objects.all().order_by("-created_at")
-        if role == "validator":
-            return Project.objects.filter(Q(status="proposed") | Q(status="planning")).order_by("-created_at")
-        return Project.objects.filter(created_by=user).order_by("-created_at")
+            qs = Project.objects.all().order_by("-created_at")
+        elif role == "validator":
+            qs = Project.objects.filter(Q(status="proposed") | Q(status="planning")).order_by("-created_at")
+        else:
+            qs = Project.objects.filter(created_by=user).order_by("-created_at")
+        workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
+        return _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
 
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
         project = self.get_object()
-        if project.created_by_id != request.user.id and request.user.role != "admin":
+        same_agency_staff = (
+            getattr(request.user, "role", "") in ("staff", "employee")
+            and (getattr(request.user, "agency", "") or "").strip().lower()
+            and (getattr(request.user, "agency", "") or "").strip().lower() == (project.agency or "").strip().lower()
+        )
+        if project.created_by_id != request.user.id and request.user.role != "admin" and not same_agency_staff:
             raise PermissionDenied("Only owner or admin can submit")
+        was_needs_revision = _project_needs_revision(project)
         if project.status == "planning":
             project.status = "proposed"
             # Refresh deterministic public summary on submit.
@@ -2187,6 +2386,47 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             else:
                 project.save(update_fields=["status", "updated_at"])
             _log_activity(request, "project_submit", project, {"status": project.status})
+            _notify_user(
+                request.user,
+                event_type="project_submit_confirmation",
+                title="Project submitted successfully",
+                message=f"{_project_title(project)} was submitted for validation.",
+                project=project,
+                actor=None,
+                dedupe_key=f"project:{project.id}:submitted:employee",
+            )
+            _notify_many(
+                _active_validators(),
+                event_type="project_submitted",
+                title="New project submitted",
+                message=f"New project submitted for validation: {_project_title(project)}",
+                project=project,
+                actor=request.user,
+                dedupe_key=f"project:{project.id}:submitted:validators",
+            )
+        elif was_needs_revision:
+            profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
+            review = profile_data.get("validator_review")
+            if isinstance(review, dict):
+                next_review = dict(review)
+                next_review["review_status"] = "draft"
+                next_review["resubmitted_by_id"] = request.user.id
+                next_review["resubmitted_at"] = timezone.now().isoformat()
+                profile_data["validator_review"] = next_review
+                project.profile_data = profile_data
+                project.save(update_fields=["profile_data", "updated_at"])
+            else:
+                project.save(update_fields=["updated_at"])
+            _log_activity(request, "project_submit", project, {"status": project.status, "revision_resubmitted": True})
+            _notify_many(
+                _active_validators(),
+                event_type="project_revision_resubmitted",
+                title="Project revision submitted",
+                message=f"{request.user.full_name or request.user.username} resubmitted {_project_title(project)} for validation.",
+                project=project,
+                actor=request.user,
+                dedupe_key=f"project:{project.id}:revision-resubmitted:{project.updated_at.isoformat()}",
+            )
         return Response({"status": project.status})
 
     @action(detail=True, methods=["post"])
@@ -2230,6 +2470,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         review_notes = str(request.data.get("comment") or request.data.get("notes") or "").strip()
         reviewed_at = timezone.now().isoformat()
         update_fields = ["profile_data", "updated_at"]
+        if action_value in ("save_reviewed", "reviewed", "review", "save", "reject") and not review_notes:
+            return Response({"detail": "A comment/reason is required for Needs Revision or Rejected decisions."}, status=400)
 
         warning = ""
         if action_value in ("save_draft", "draft"):
@@ -2298,6 +2540,39 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if warning:
             details["warning"] = warning
         _log_activity(request, event, project, details)
+        if review_state == "reviewed" and existing_status != "reviewed":
+            _notify_many(
+                _project_employee_recipients(project),
+                event_type="project_needs_revision",
+                title="Project needs revision",
+                message=review_notes or "Your project submission requires additional information.",
+                project=project,
+                actor=request.user,
+                dedupe_key=(
+                    f"project:{project.id}:needs-revision:"
+                    f"{Notification.objects.filter(project=project, event_type='project_needs_revision').count() + 1}"
+                ),
+            )
+        elif review_state == "endorsed" and existing_status not in ("endorsed", "validated"):
+            _notify_many(
+                _project_employee_recipients(project),
+                event_type="project_validated",
+                title="Project validated",
+                message=f"Your project submission has been validated: {_project_title(project)}",
+                project=project,
+                actor=request.user,
+                dedupe_key=f"project:{project.id}:validated",
+            )
+        elif review_state == "rejected" and existing_status != "rejected":
+            _notify_many(
+                _project_employee_recipients(project),
+                event_type="project_rejected",
+                title="Project rejected",
+                message=review_notes or "Your project submission has been rejected.",
+                project=project,
+                actor=request.user,
+                dedupe_key=f"project:{project.id}:rejected",
+            )
         return Response(
             {
                 "status": project.status,
@@ -2385,6 +2660,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             analysis = project.priority_analyses.get(pk=analysis_id)
         except ProjectPriorityAnalysis.DoesNotExist:
             return Response({"detail": "Priority analysis not found."}, status=404)
+        previous_confirmation = _latest_project_confirmation(project)
+        previous_group = _priority_group(previous_confirmation.final_priority) if previous_confirmation else ""
         try:
             confirmation = confirm_analysis(
                 analysis,
@@ -2412,6 +2689,18 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 "score": float(analysis.base_score),
             },
         )
+        next_group = _priority_group(confirmation.final_priority)
+        if next_group and next_group != previous_group:
+            label = _priority_label(confirmation.final_priority)
+            _notify_many(
+                _project_employee_recipients(project),
+                event_type=f"classification_{next_group}",
+                title=f"Project classified as {label}",
+                message=f"Your project has been classified as a {label.lower()} project.",
+                project=project,
+                actor=request.user,
+                dedupe_key=f"project:{project.id}:priority-confirmation:{confirmation.id}",
+            )
         return Response(ProjectPriorityAnalysisSerializer(analysis).data)
 
     @action(detail=True, methods=["post"], url_path="public-summary")
@@ -2490,6 +2779,40 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             comment=comment_text,
         )
         _log_activity(request, "project_comment", project, {"comment": comment_text[:160]})
+        if role == "validator":
+            _notify_many(
+                _project_employee_recipients(project),
+                event_type="project_message",
+                title="New project message",
+                message=comment_text[:500],
+                project=project,
+                actor=request.user,
+                comment=comment,
+                dedupe_key=f"comment:{comment.id}:employee",
+            )
+        elif role == "staff":
+            _notify_many(
+                _active_validators(),
+                event_type="project_message",
+                title="Employee replied on project",
+                message=f"{request.user.full_name or request.user.username} replied on {_project_title(project)}.",
+                project=project,
+                actor=request.user,
+                comment=comment,
+                dedupe_key=f"comment:{comment.id}:validators",
+            )
+        elif role == "admin":
+            recipients = list(_project_employee_recipients(project)) + list(_active_validators())
+            _notify_many(
+                recipients,
+                event_type="project_message",
+                title="Admin project message",
+                message=comment_text[:500],
+                project=project,
+                actor=request.user,
+                comment=comment,
+                dedupe_key=f"comment:{comment.id}:admin",
+            )
         serializer = ProjectCommentSerializer(comment)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -2510,8 +2833,11 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
     def get_queryset(self):
         agency = (self.request.user.agency or "").strip()
         if agency:
-            return Project.objects.filter(agency__iexact=agency).order_by("-created_at")
-        return Project.objects.filter(created_by=self.request.user).order_by("-created_at")
+            qs = Project.objects.filter(agency__iexact=agency).order_by("-created_at")
+        else:
+            qs = Project.objects.filter(created_by=self.request.user).order_by("-created_at")
+        workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
+        return _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
 
     def _ensure_encoding_open(self):
         state = _resolve_encoding_window_state()
@@ -2523,9 +2849,15 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
         if not state["is_open"]:
             raise PermissionDenied(state["message"])
 
+    def _ensure_project_write_open(self, project):
+        if _project_needs_revision(project):
+            return
+        self._ensure_encoding_open()
+
     def _ensure_mutable_project(self, project):
-        if project.status != "planning":
-            raise PermissionDenied("Submitted/validated projects are view-only for contributors.")
+        if project.status == "planning" or _project_needs_revision(project):
+            return
+        raise PermissionDenied("Submitted/validated projects are view-only for contributors.")
 
     def create(self, request, *args, **kwargs):
         self._ensure_encoding_open()
@@ -2570,9 +2902,10 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     def update(self, request, *args, **kwargs):
-        self._ensure_encoding_open()
         project = self.get_object()
+        self._ensure_project_write_open(project)
         self._ensure_mutable_project(project)
+        was_needs_revision = _project_needs_revision(project)
         data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
         changed_fields = []
         profile_data = data.get("profile_data")
@@ -2585,6 +2918,13 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             updated_profile, changed_fields, changes = _apply_simplified_meta(
                 profile_data, project.profile_data or {}, request.user
             )
+            if was_needs_revision:
+                existing_profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+                existing_review = existing_profile.get("validator_review")
+                if isinstance(existing_review, dict):
+                    updated_profile["validator_review"] = existing_review
+                updated_profile["contributor_snapshot"] = _strip_validator_meta(updated_profile)
+                data["status"] = "proposed"
             data["profile_data"] = updated_profile
         else:
             changes = []
@@ -2605,9 +2945,10 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
         return Response(serializer.data)
 
     def partial_update(self, request, *args, **kwargs):
-        self._ensure_encoding_open()
         project = self.get_object()
+        self._ensure_project_write_open(project)
         self._ensure_mutable_project(project)
+        was_needs_revision = _project_needs_revision(project)
         data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
         changed_fields = []
         profile_data = data.get("profile_data")
@@ -2620,6 +2961,13 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             updated_profile, changed_fields, changes = _apply_simplified_meta(
                 profile_data, project.profile_data or {}, request.user
             )
+            if was_needs_revision:
+                existing_profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+                existing_review = existing_profile.get("validator_review")
+                if isinstance(existing_review, dict):
+                    updated_profile["validator_review"] = existing_review
+                updated_profile["contributor_snapshot"] = _strip_validator_meta(updated_profile)
+                data["status"] = "proposed"
             data["profile_data"] = updated_profile
         else:
             changes = []
@@ -2644,8 +2992,11 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
 
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
-        self._ensure_encoding_open()
-        self._ensure_mutable_project(self.get_object())
+        project = self.get_object()
+        if project.status == "proposed" and not _project_needs_revision(project):
+            return Response({"status": project.status})
+        self._ensure_project_write_open(project)
+        self._ensure_mutable_project(project)
         return super().submit(request, pk=pk)
 
     @action(detail=True, methods=["post"], url_path="start-update")
@@ -2912,19 +3263,25 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
                     if reviewed_by_validator(p)
                     and review_status_for(p) in ("reviewed", "endorsed", "rejected")
                 ]
-                return Project.objects.filter(id__in=ids).order_by("-updated_at")
+                qs = Project.objects.filter(id__in=ids).order_by("-updated_at")
+                workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
+                return _filter_projects_for_workflow(qs, workflow).order_by("-updated_at")
             draft_review_ids = [
                 p.id
                 for p in all_projects
                 if reviewed_by_validator(p)
                 and review_status_for(p) in ("draft", "reviewed")
             ]
-            return Project.objects.filter(
+            qs = Project.objects.filter(
                 Q(status="proposed") | Q(id__in=draft_review_ids)
             ).order_by("-created_at")
+            workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
+            return _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
 
         allowed_ids = [p.id for p in all_projects if p.status == "proposed" or reviewed_by_validator(p)]
-        return Project.objects.filter(id__in=allowed_ids).order_by("-created_at")
+        qs = Project.objects.filter(id__in=allowed_ids).order_by("-created_at")
+        workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
+        return _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
 
     def update(self, request, *args, **kwargs):
         raise PermissionDenied("Use validator review actions instead of direct project edit.")
@@ -2941,7 +3298,9 @@ class AdminProjectViewSet(BaseProjectViewSet):
     permission_classes = [IsAuthenticated, AdminOnlyPermission, ProjectPermission]
 
     def get_queryset(self):
-        return Project.objects.all().order_by("-created_at")
+        qs = Project.objects.all().order_by("-created_at")
+        workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
+        return _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
 
 
 class AdminUserViewSet(viewsets.ModelViewSet):

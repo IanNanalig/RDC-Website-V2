@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useEncodingWindow } from "../../hooks/useEncodingWindow";
+import { api } from "../../services/api";
 
 type Role = "admin" | "validator" | "employee" | "content_editor";
 
@@ -17,6 +18,17 @@ type NavItem = { label: string; to: string };
 
 type StoredPortalUser = {
   agency?: string | null;
+};
+
+type PortalNotification = {
+  id: number;
+  title: string;
+  message: string;
+  link_path?: string;
+  read_at?: string | null;
+  is_read?: boolean;
+  created_at?: string;
+  project_title?: string;
 };
 
 const roleLabel: Record<Role, string> = {
@@ -90,6 +102,9 @@ const iconFor = (label: string) => {
 
 const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, children, topActions }) => {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState<PortalNotification[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const location = useLocation();
   const navigate = useNavigate();
   const navItems = useMemo(() => navByRole[role], [role]);
@@ -110,6 +125,37 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
     setMobileOpen(false);
   }, [location.pathname]);
 
+  const loadNotifications = useCallback(async () => {
+    try {
+      const [items, unread] = await Promise.all([
+        api.get("notifications/?limit=10"),
+        api.get("notifications/unread-count/"),
+      ]);
+      setNotifications(Array.isArray(items) ? items : []);
+      setUnreadCount(Number(unread?.unread_count || 0));
+    } catch {
+      setNotifications([]);
+      setUnreadCount(0);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadNotifications();
+    const id = window.setInterval(loadNotifications, 15000);
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === "projects_last_update") loadNotifications();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [loadNotifications]);
+
+  useEffect(() => {
+    setNotificationsOpen(false);
+  }, [location.pathname]);
+
   useEffect(() => {
     const media = window.matchMedia("(min-width: 768px)");
     const onChange = (event: MediaQueryListEvent) => {
@@ -128,6 +174,26 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
     localStorage.removeItem("accessToken");
     localStorage.removeItem("refreshToken");
     navigate("/login");
+  };
+
+  const markRead = async (notification: PortalNotification) => {
+    if (!notification.is_read && !notification.read_at) {
+      try {
+        await api.post(`notifications/${notification.id}/mark-read/`, {});
+      } catch {
+        // Navigation should not fail because a read receipt failed.
+      }
+    }
+    await loadNotifications();
+  };
+
+  const markAllRead = async () => {
+    try {
+      await api.post("notifications/mark-all-read/", {});
+      await loadNotifications();
+    } catch {
+      // Keep the dropdown usable even if the server rejects the action.
+    }
   };
 
   return (
@@ -200,7 +266,75 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
                   {subtitle && <p className="portal-subtitle">{subtitle}</p>}
                 </div>
               </div>
-              <div className="portal-top-actions">{topActions}</div>
+              <div className="portal-top-actions">
+                <div className="relative">
+                  <button
+                    type="button"
+                    className="portal-btn portal-btn-ghost relative px-3"
+                    title="Notifications"
+                    aria-label="Notifications"
+                    onClick={() => setNotificationsOpen((value) => !value)}
+                  >
+                    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+                      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                    </svg>
+                    {unreadCount > 0 && (
+                      <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-rose-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                        {unreadCount > 9 ? "9+" : unreadCount}
+                      </span>
+                    )}
+                  </button>
+                  {notificationsOpen && (
+                    <div className="absolute right-0 z-40 mt-2 w-[min(22rem,calc(100vw-2rem))] rounded-lg border border-slate-200 bg-white shadow-xl">
+                      <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
+                        <p className="text-sm font-semibold text-slate-900">Notifications</p>
+                        <button type="button" onClick={markAllRead} className="text-xs font-medium text-blue-700 hover:underline">
+                          Mark all read
+                        </button>
+                      </div>
+                      <div className="max-h-96 overflow-y-auto">
+                        {notifications.length === 0 ? (
+                          <p className="px-3 py-4 text-sm text-slate-500">No notifications yet.</p>
+                        ) : (
+                          notifications.map((notification) => {
+                            const unread = !notification.is_read && !notification.read_at;
+                            const body = (
+                              <div className={`border-b border-slate-100 px-3 py-3 text-left last:border-b-0 ${unread ? "bg-blue-50/70" : "bg-white"}`}>
+                                <div className="flex items-start gap-2">
+                                  {unread && <span className="mt-1.5 h-2 w-2 rounded-full bg-blue-600" />}
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-sm font-semibold text-slate-900">{notification.title}</p>
+                                    {notification.message && <p className="mt-1 line-clamp-2 text-xs text-slate-600">{notification.message}</p>}
+                                    <p className="mt-1 text-[11px] text-slate-400">
+                                      {notification.created_at ? new Date(notification.created_at).toLocaleString() : ""}
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                            return notification.link_path ? (
+                              <Link
+                                key={notification.id}
+                                to={notification.link_path}
+                                onClick={() => markRead(notification)}
+                                className="block hover:bg-slate-50"
+                              >
+                                {body}
+                              </Link>
+                            ) : (
+                              <button key={notification.id} type="button" onClick={() => markRead(notification)} className="block w-full hover:bg-slate-50">
+                                {body}
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {topActions}
+              </div>
             </header>
 
             <section>{children}</section>

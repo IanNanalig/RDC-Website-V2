@@ -25,7 +25,7 @@ const statusLabel = (status?: string) => {
     case "proposed":
       return "Submitted";
     case "completed":
-      return "Approved";
+      return "Validated";
     case "ongoing":
       return "Ongoing";
     default:
@@ -57,8 +57,8 @@ const reviewStateLabel = (p: ApiProject) => {
   const vr = getValidatorReview(p);
   const status = String(vr?.review_status || "").toLowerCase();
   if (status === "draft") return "Draft";
-  if (status === "reviewed") return "Reviewed";
-  if (status === "endorsed" || status === "validated") return "Endorsed";
+  if (status === "reviewed") return "Needs Revision";
+  if (status === "endorsed" || status === "validated") return "Validated";
   if (status === "rejected") return "Rejected";
   return "Not Reviewed";
 };

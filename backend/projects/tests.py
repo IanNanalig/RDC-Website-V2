@@ -4,7 +4,7 @@ from django.utils import timezone
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
-from .models import Project, SystemSetting, User, UserActivity
+from .models import Notification, PriorityRuleSet, Project, ProjectPriorityAnalysis, SystemSetting, User, UserActivity
 
 
 class PortalWorkflowTests(APITestCase):
@@ -84,6 +84,175 @@ class PortalWorkflowTests(APITestCase):
         dashboard = self.client.get("/api/dashboard/")
         self.assertEqual(dashboard.status_code, status.HTTP_200_OK)
         self.assertGreaterEqual(dashboard.data.get("approved_projects", 0), 1)
+
+    def test_submit_creates_employee_and_validator_notifications_once(self):
+        self._as(self.employee)
+        create_res = self.client.post(
+            "/api/employee/projects/",
+            {
+                "title": "Notify Submit",
+                "agency": "MMDA",
+                "budget": 100000,
+                "completion": 0,
+                "status": "draft",
+                "description": "notification flow",
+            },
+            format="json",
+        )
+        self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
+        project_id = create_res.data["id"]
+
+        first = self.client.post(f"/api/employee/projects/{project_id}/submit/", {}, format="json")
+        second = self.client.post(f"/api/employee/projects/{project_id}/submit/", {}, format="json")
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+
+        project = Project.objects.get(id=project_id)
+        self.assertEqual(
+            Notification.objects.filter(project=project, recipient=self.employee, event_type="project_submit_confirmation").count(),
+            1,
+        )
+        self.assertEqual(
+            Notification.objects.filter(project=project, recipient=self.validator, event_type="project_submitted").count(),
+            1,
+        )
+
+    def test_needs_revision_requires_comment_unlocks_edit_and_notifies(self):
+        self._as(self.employee)
+        create_res = self.client.post(
+            "/api/employee/projects/",
+            {"title": "Revision Project", "agency": "MMDA", "budget": 1, "status": "draft"},
+            format="json",
+        )
+        self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
+        project_id = create_res.data["id"]
+        project = Project.objects.get(id=project_id)
+        project.priority_analysis_eligible = False
+        project.save(update_fields=["priority_analysis_eligible"])
+        self.assertEqual(self.client.post(f"/api/employee/projects/{project_id}/submit/", {}, format="json").status_code, 200)
+
+        self._as(self.validator)
+        missing_comment = self.client.post(
+            f"/api/validator/projects/{project_id}/validate/",
+            {"action": "save_reviewed"},
+            format="json",
+        )
+        self.assertEqual(missing_comment.status_code, status.HTTP_400_BAD_REQUEST)
+        needs_revision = self.client.post(
+            f"/api/validator/projects/{project_id}/validate/",
+            {"action": "save_reviewed", "notes": "Please attach the project proposal."},
+            format="json",
+        )
+        self.assertEqual(needs_revision.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            Notification.objects.filter(project_id=project_id, recipient=self.employee, event_type="project_needs_revision").count(),
+            1,
+        )
+
+        self._set_encoding_window(timezone.now(), timezone.now(), enabled=False)
+        self._as(self.employee)
+        update_res = self.client.put(
+            f"/api/employee/projects/{project_id}/",
+            {
+                "title": "Revision Project Updated",
+                "agency": "MMDA",
+                "budget": 2,
+                "status": "draft",
+                "profile_data": {"revision_note": "Proposal attached."},
+            },
+            format="json",
+        )
+        self.assertEqual(update_res.status_code, status.HTTP_200_OK)
+        resubmit = self.client.post(f"/api/employee/projects/{project_id}/submit/", {}, format="json")
+        self.assertEqual(resubmit.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            Notification.objects.filter(project_id=project_id, recipient=self.validator, event_type="project_revision_resubmitted").count(),
+            1,
+        )
+        refreshed = Project.objects.get(id=project_id)
+        self.assertEqual(refreshed.status, "proposed")
+        self.assertEqual(refreshed.profile_data.get("validator_review", {}).get("review_status"), "draft")
+
+    def test_notification_list_and_mark_read_are_scoped_to_recipient(self):
+        project = Project.objects.create(
+            name="Scoped Notification",
+            implementing_agency="MMDA",
+            municipality="NCR",
+            status="proposed",
+            cost=1,
+            latitude=14.5,
+            agency="MMDA",
+            budget=1,
+            created_by=self.employee,
+        )
+        mine = Notification.objects.create(
+            recipient=self.employee,
+            actor=self.validator,
+            project=project,
+            event_type="project_message",
+            title="Mine",
+            message="Visible",
+        )
+        Notification.objects.create(
+            recipient=self.validator,
+            actor=self.employee,
+            project=project,
+            event_type="project_message",
+            title="Theirs",
+            message="Hidden",
+        )
+
+        self._as(self.employee)
+        list_res = self.client.get("/api/notifications/")
+        self.assertEqual(list_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(list_res.data), 1)
+        self.assertEqual(list_res.data[0]["id"], mine.id)
+        count_res = self.client.get("/api/notifications/unread-count/")
+        self.assertEqual(count_res.data["unread_count"], 1)
+        mark_res = self.client.post(f"/api/notifications/{mine.id}/mark-read/", {}, format="json")
+        self.assertEqual(mark_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(mark_res.data["is_read"])
+        self.assertEqual(self.client.get("/api/notifications/unread-count/").data["unread_count"], 0)
+
+    def test_priority_confirmation_notifies_from_official_decision(self):
+        project = Project.objects.create(
+            name="Priority Official",
+            implementing_agency="MMDA",
+            municipality="NCR",
+            status="proposed",
+            cost=1,
+            latitude=14.5,
+            agency="MMDA",
+            budget=1,
+            created_by=self.employee,
+            profile_data={"simplified_form": {"startYear": "2026", "endYear": "2026"}},
+        )
+        rules = PriorityRuleSet.objects.create(version="test-rules", is_active=True)
+        analysis = ProjectPriorityAnalysis.objects.create(
+            project=project,
+            validator=self.validator,
+            rule_set=rules,
+            source_hash="abc",
+            input_snapshot={},
+            suggested_scores={"missing_facts": []},
+            suggested_priority="low",
+            base_score=10,
+        )
+
+        self._as(self.validator)
+        confirm = self.client.post(
+            f"/api/validator/projects/{project.id}/priority-analysis/{analysis.id}/confirm/",
+            {"final_priority": "high", "override_rationale": "Official validator decision."},
+            format="json",
+        )
+        self.assertEqual(confirm.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            Notification.objects.filter(project=project, recipient=self.employee, event_type="classification_priority").count(),
+            1,
+        )
+        filtered = self.client.get("/api/validator/projects/?workflow=priority")
+        self.assertEqual(filtered.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(item["id"] == project.id for item in filtered.data))
 
     def test_role_access_restrictions(self):
         # Employee cannot access admin and validator list endpoints.
