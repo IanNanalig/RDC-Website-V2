@@ -115,9 +115,6 @@ const Projects: React.FC = () => {
   const [agencyFilter, setAgencyFilter] = useState<string | "all">("all");
   const [updateFilter, setUpdateFilter] = useState<"all" | "recent">("all");
   const [search, setSearch] = useState("");
-  const [selectedCity, setSelectedCity] = useState<string | undefined>(
-    undefined,
-  );
   const [municipalityFilter, setMunicipalityFilter] = useState<string>("all");
   const [activeTab, setActiveTab] = useState<"visual" | "table" | "map">(
     "visual",
@@ -207,23 +204,12 @@ const Projects: React.FC = () => {
     return [...Object.keys(ncrCityCenters).sort(), "Unspecified"];
   }, []);
 
-  useEffect(() => {
-    if (municipalityFilter === "all" || municipalityFilter === "Unspecified") {
-      setSelectedCity(undefined);
-    } else {
-      setSelectedCity(municipalityFilter);
-    }
-  }, [municipalityFilter]);
-
-  useEffect(() => {
-    if (!selectedCity) {
-      if (municipalityFilter !== "Unspecified") {
-        setMunicipalityFilter("all");
-      }
-    } else {
-      setMunicipalityFilter(selectedCity);
-    }
-  }, [municipalityFilter, selectedCity]);
+  // Municipality filter is the single source of truth. Keeping a second
+  // selected-city state caused the two values to overwrite one another.
+  const selectedCity =
+    municipalityFilter === "all" || municipalityFilter === "Unspecified"
+      ? undefined
+      : municipalityFilter;
 
   // Filter projects by year, status, agency, and search (NOT by municipality yet)
   const filtered = useMemo(() => projects, [projects]);
@@ -1415,7 +1401,7 @@ const Projects: React.FC = () => {
                   projects={mapProjects}
                   selectedCity={selectedCity}
                   selectedStatus={statusFilter === "all" ? "all" : statusFilter}
-                  onCitySelect={(city) => setSelectedCity(city)}
+                  onCitySelect={(city) => setMunicipalityFilter(city || "all")}
                   height={600}
                 />
               </div>
