@@ -82,6 +82,11 @@ const asString = (value: unknown, fallback = "") =>
 const asArray = (value: unknown): unknown[] =>
   Array.isArray(value) ? value : [];
 
+const isVisible = (value: unknown) => {
+  const row = asRecord(value);
+  return row.isVisible !== false && row.visible !== false;
+};
+
 const getHomeSection = (page: CMSPageSnapshot | null, sectionKey: string) =>
   page?.sections.find((section) => section.sectionKey === sectionKey)
     ?.content ?? null;
@@ -104,32 +109,47 @@ const mapCmsDocItems = (
   content: Record<string, unknown> | null,
   fallback: DocCard[],
 ) => {
-  const items = asArray(content?.items)
-    .map((item) => {
-      const row = asRecord(item);
-      const title = asString(row.title);
-      const link = asString(row.link);
-      if (!title || !link) return null;
-      const quickLinks = asArray(row.quickLinks)
-        .map((quickLink) => {
-          const quick = asRecord(quickLink);
-          const label = asString(quick.label);
-          const quickLinkUrl = asString(quick.link);
-          return label && quickLinkUrl ? { label, link: quickLinkUrl } : null;
-        })
-        .filter(Boolean) as Array<{ label: string; link: string }>;
+  const baseItems = fallback.map((item) => ({ ...item }));
+  const result = [...baseItems];
 
-      return {
-        title,
-        link,
-        category: asString(row.category, "Featured"),
-        icon: iconForCms(row.icon),
-        quickLinks,
-      };
-    })
-    .filter(Boolean) as DocCard[];
+  asArray(content?.items).forEach((item) => {
+    const row = asRecord(item);
+    const title = asString(row.title);
+    const link = asString(row.link);
+    if (!title && !link) return;
+    const matchIndex = result.findIndex(
+      (candidate) =>
+        (!!link && candidate.link === link) ||
+        (!!title && candidate.title.toLowerCase() === title.toLowerCase()),
+    );
+    const fallbackItem = matchIndex >= 0 ? result[matchIndex] : undefined;
+    if (!isVisible(row)) {
+      if (matchIndex >= 0) result.splice(matchIndex, 1);
+      return;
+    }
+    const quickLinks = asArray(row.quickLinks)
+      .map((quickLink) => {
+        const quick = asRecord(quickLink);
+        const label = asString(quick.label);
+        const quickLinkUrl = asString(quick.link);
+        return label && quickLinkUrl ? { label, link: quickLinkUrl } : null;
+      })
+      .filter(Boolean) as Array<{ label: string; link: string }>;
 
-  return items.length > 0 ? items : fallback;
+    const nextItem: DocCard = {
+      title: asString(row.title, fallbackItem?.title ?? "Featured Document"),
+      link: asString(row.link, fallbackItem?.link ?? ""),
+      category: asString(row.category, fallbackItem?.category ?? "Featured"),
+      icon: row.icon ? iconForCms(row.icon) : fallbackItem?.icon ?? iconForCms(row.icon),
+      quickLinks: quickLinks.length ? quickLinks : fallbackItem?.quickLinks,
+    };
+
+    if (!nextItem.link) return;
+    if (matchIndex >= 0) result[matchIndex] = nextItem;
+    else result.push(nextItem);
+  });
+
+  return result.length > 0 ? result : fallback;
 };
 
 const formatArticleDate = (value: string) => {

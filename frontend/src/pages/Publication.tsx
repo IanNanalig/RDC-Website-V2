@@ -372,54 +372,94 @@ const isVisible = (value: unknown) => {
 const getPublicationCatalog = (page: CMSPageSnapshot | null) =>
   page?.sections.find((section) => section.sectionKey === "publication-catalog")?.content ?? null;
 
+const cloneCategory = (category: Category): Category => ({
+  ...category,
+  documents: category.documents.map((document) => ({ ...document })),
+});
+
+const mergeDocuments = (cmsDocuments: unknown[], baseCategory?: Category): DocumentItem[] => {
+  const result = baseCategory?.documents.map((document) => ({ ...document })) ?? [];
+
+  cmsDocuments.forEach((documentEntry, documentIndex) => {
+    const documentRow = asRecord(documentEntry);
+    const documentId = asString(documentRow.id);
+    const title = asString(documentRow.title);
+    const matchIndex = result.findIndex(
+      (document) =>
+        (!!documentId && document.id === documentId) ||
+        (!!title && document.title.toLowerCase() === title.toLowerCase()),
+    );
+    const baseDocument = matchIndex >= 0 ? result[matchIndex] : undefined;
+    if (!isVisible(documentRow)) {
+      if (matchIndex >= 0) result.splice(matchIndex, 1);
+      return;
+    }
+
+    const id = documentId || baseDocument?.id || `${baseCategory?.id ?? "publication"}-${documentIndex + 1}`;
+    const url = asString(documentRow.url, baseDocument?.url ?? "");
+    if (!url) return;
+
+    const coverImage = asString(documentRow.coverImage, baseDocument?.coverImage ?? "");
+    const nextDocument: DocumentItem = {
+      id,
+      title: asString(documentRow.title, baseDocument?.title ?? "Untitled publication"),
+      year: asString(documentRow.year, baseDocument?.year ?? ""),
+      fileType: asString(documentRow.fileType, baseDocument?.fileType ?? "PDF"),
+      fileSize: asString(documentRow.fileSize, baseDocument?.fileSize ?? ""),
+      url,
+      coverImage: coverImage || undefined,
+      coverAlt: asString(documentRow.coverAlt, baseDocument?.coverAlt ?? ""),
+    };
+
+    if (matchIndex >= 0) result[matchIndex] = nextDocument;
+    else result.push(nextDocument);
+  });
+
+  return result.filter((document) => Boolean(document.url));
+};
+
 const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
   const catalog = getPublicationCatalog(page);
   const cmsCategories = asArray(catalog?.categories);
   if (!cmsCategories.length) return CATEGORIES;
 
-  const mapped = cmsCategories
-    .filter(isVisible)
-    .map((entry, categoryIndex) => {
-      const row = asRecord(entry);
-      const id = asString(row.id, `category-${categoryIndex + 1}`);
-      const baseCategory = CATEGORIES.find((category) => category.id === id);
-      const cmsDocuments = asArray(row.documents);
-      const sourceDocuments = cmsDocuments.length ? cmsDocuments.filter(isVisible) : baseCategory?.documents ?? [];
+  const result = CATEGORIES.map(cloneCategory);
 
-      const documents = sourceDocuments
-        .map((documentEntry, documentIndex) => {
-          const documentRow = asRecord(documentEntry);
-          const documentId = asString(documentRow.id, `${id}-${documentIndex + 1}`);
-          const baseDocument = baseCategory?.documents.find((document) => document.id === documentId);
-          const url = asString(documentRow.url, baseDocument?.url ?? "");
-          if (!url) return null;
+  cmsCategories.forEach((entry, categoryIndex) => {
+    const row = asRecord(entry);
+    const id = asString(row.id);
+    const title = asString(row.title);
+    const matchIndex = result.findIndex(
+      (category) =>
+        (!!id && category.id === id) ||
+        (!!title && category.title.toLowerCase() === title.toLowerCase()),
+    );
+    const baseCategory = matchIndex >= 0 ? result[matchIndex] : undefined;
 
-          const coverImage = asString(documentRow.coverImage, baseDocument?.coverImage ?? "");
-          return {
-            id: documentId,
-            title: asString(documentRow.title, baseDocument?.title ?? "Untitled publication"),
-            year: asString(documentRow.year, baseDocument?.year ?? ""),
-            fileType: asString(documentRow.fileType, baseDocument?.fileType ?? "PDF"),
-            fileSize: asString(documentRow.fileSize, baseDocument?.fileSize ?? ""),
-            url,
-            coverImage: coverImage || undefined,
-            coverAlt: asString(documentRow.coverAlt, baseDocument?.coverAlt ?? ""),
-          };
-        })
-        .filter(Boolean) as DocumentItem[];
+    if (!isVisible(row)) {
+      if (matchIndex >= 0) result.splice(matchIndex, 1);
+      return;
+    }
 
-      return {
-        id,
-        title: asString(row.title, baseCategory?.title ?? "Publication Category"),
-        description: asString(row.description, baseCategory?.description ?? ""),
-        icon: asString(row.icon, baseCategory?.icon ?? "document"),
-        color: asString(row.color, baseCategory?.color ?? "from-slate-600 to-slate-500"),
-        documents,
-      };
-    })
-    .filter((category) => category.documents.length > 0);
+    const nextId = id || baseCategory?.id || `category-${categoryIndex + 1}`;
+    const cmsDocuments = asArray(row.documents);
+    const documents = mergeDocuments(cmsDocuments, baseCategory);
+    if (documents.length === 0) return;
 
-  return mapped.length ? mapped : CATEGORIES;
+    const nextCategory: Category = {
+      id: nextId,
+      title: asString(row.title, baseCategory?.title ?? "Publication Category"),
+      description: asString(row.description, baseCategory?.description ?? ""),
+      icon: asString(row.icon, baseCategory?.icon ?? "document"),
+      color: asString(row.color, baseCategory?.color ?? "from-slate-600 to-slate-500"),
+      documents,
+    };
+
+    if (matchIndex >= 0) result[matchIndex] = nextCategory;
+    else result.push(nextCategory);
+  });
+
+  return result.length ? result : CATEGORIES;
 };
 
 export default function Publications() {
