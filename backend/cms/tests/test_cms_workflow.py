@@ -3,13 +3,30 @@ import tempfile
 from datetime import timedelta
 
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import override_settings
+from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from cms.models import CMSArticle, CMSMediaAsset, CMSPage, CMSPageSection, CMSRevision
 from projects.models import PublicEvent, User
+
+
+class CMSMediaRoutingTests(SimpleTestCase):
+    @override_settings(SERVE_MEDIA_FILES=False, MEDIA_URL="/media/", MEDIA_ROOT="/var/data/media")
+    def test_media_routes_can_be_disabled(self):
+        from rdc_site.urls import media_urlpatterns
+
+        self.assertEqual(media_urlpatterns(), [])
+
+    @override_settings(SERVE_MEDIA_FILES=True, MEDIA_URL="/media/", MEDIA_ROOT="/var/data/media")
+    def test_media_routes_can_serve_render_disk_media(self):
+        from rdc_site.urls import media_urlpatterns
+
+        patterns = media_urlpatterns()
+
+        self.assertEqual(len(patterns), 1)
+        self.assertIn("^media/", str(patterns[0].pattern))
 
 
 class CMSWorkflowTests(APITestCase):

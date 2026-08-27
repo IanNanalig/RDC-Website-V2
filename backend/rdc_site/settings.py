@@ -215,7 +215,8 @@ STORAGES = {
 # CMS media uploads. Local development uses backend/media; production can replace
 # storage later without changing the CMS API contract.
 MEDIA_URL = os.environ.get('MEDIA_URL', '/media/')
-MEDIA_ROOT = Path(os.environ.get('MEDIA_ROOT', BASE_DIR / 'media'))
+MEDIA_ROOT = Path(os.environ.get('MEDIA_ROOT') or BASE_DIR / 'media')
+SERVE_MEDIA_FILES = env_bool('SERVE_MEDIA_FILES', DEBUG)
 CMS_MAX_UPLOAD_BYTES = env_int('CMS_MAX_UPLOAD_BYTES', 10 * 1024 * 1024)
 
 # Production security toggles. Enable these in Render once HTTPS domains are set.
