@@ -87,9 +87,16 @@ const isVisible = (value: unknown) => {
   return row.isVisible !== false && row.visible !== false;
 };
 
-const getHomeSection = (page: CMSPageSnapshot | null, sectionKey: string) =>
-  page?.sections.find((section) => section.sectionKey === sectionKey)
-    ?.content ?? null;
+const getHomeSection = (
+  page: CMSPageSnapshot | null,
+  sectionKey: string | string[],
+) => {
+  const sectionKeys = Array.isArray(sectionKey) ? sectionKey : [sectionKey];
+  return (
+    page?.sections.find((section) => sectionKeys.includes(section.sectionKey))
+      ?.content ?? null
+  );
+};
 
 const iconForCms = (icon: unknown, fallback = "file") => {
   const key = asString(icon, fallback).toLowerCase();
@@ -413,7 +420,10 @@ const Home: React.FC = () => {
     [],
   );
 
-  const heroSection = getHomeSection(homeCmsPage, "hero-carousel");
+  const heroSection = getHomeSection(homeCmsPage, [
+    "hero-carousel",
+    "carousel",
+  ]);
   const carouselImages = useMemo(() => {
     const slides = asArray(heroSection?.slides)
       .map((slide, index) => {
@@ -1065,13 +1075,13 @@ const Home: React.FC = () => {
 
                   <div className="flex flex-wrap gap-4">
                     <Link
-                      to="/publications"
+                      to={slide.button1.link}
                       className="bg-white text-green-800 hover:bg-gray-100 px-6 py-3 rounded-lg font-semibold text-lg shadow-lg hover:shadow-xl transition-all duration-300"
                     >
                       {slide.button1.text}
                     </Link>
                     <Link
-                      to="/publications?category=rdr"
+                      to={slide.button2.link}
                       className="bg-transparent border-2 border-white hover:bg-white/10 text-white px-6 py-3 rounded-lg font-semibold text-lg transition-all duration-300"
                     >
                       {slide.button2.text}
