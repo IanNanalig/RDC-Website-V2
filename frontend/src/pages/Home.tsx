@@ -44,6 +44,7 @@ type HomeButton = {
 };
 
 type HomeSlide = {
+  imageKey?: string;
   src: string;
   title: string;
   subtitle: string;
@@ -354,6 +355,7 @@ const Home: React.FC = () => {
   const fallbackCarouselImages = useMemo<HomeSlide[]>(
     () => [
       {
+        imageKey: "photo1",
         src: photo1,
         title: "Regional Development Council NCR",
         subtitle: "Planning a sustainable and resilient Metro Manila",
@@ -361,6 +363,7 @@ const Home: React.FC = () => {
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
+        imageKey: "photo2",
         src: photo2,
         title: "Building a Better Future",
         subtitle: "Collaborative governance for Metro Manila's growth",
@@ -368,6 +371,7 @@ const Home: React.FC = () => {
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
+        imageKey: "photo3",
         src: photo3,
         title: "Strategic Development",
         subtitle: "Empowering communities through effective planning",
@@ -375,6 +379,7 @@ const Home: React.FC = () => {
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
+        imageKey: "photo4",
         src: photo4,
         title: "Infrastructure Excellence",
         subtitle: "Modern solutions for urban challenges",
@@ -382,6 +387,7 @@ const Home: React.FC = () => {
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
+        imageKey: "photo5",
         src: photo5,
         title: "Sustainable Growth",
         subtitle: "Balancing progress with environmental care",
@@ -389,6 +395,7 @@ const Home: React.FC = () => {
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
+        imageKey: "photo6",
         src: photo6,
         title: "Urban Innovation Hub",
         subtitle: "Transforming Metro Manila into a smart metropolis",
@@ -396,6 +403,7 @@ const Home: React.FC = () => {
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
+        imageKey: "photo7",
         src: photo7,
         title: "Community Engagement",
         subtitle: "Working together for inclusive development",
@@ -403,6 +411,7 @@ const Home: React.FC = () => {
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
+        imageKey: "photo8",
         src: photo8,
         title: "Economic Resilience",
         subtitle: "Strengthening NCR's economic foundations",
@@ -410,6 +419,7 @@ const Home: React.FC = () => {
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
+        imageKey: "photo9",
         src: photo9,
         title: "Future-Ready Infrastructure",
         subtitle: "Building for tomorrow's needs today",
@@ -425,7 +435,7 @@ const Home: React.FC = () => {
     "carousel",
   ]);
   const carouselImages = useMemo(() => {
-    const slides = asArray(heroSection?.slides)
+    const cmsSlides = asArray(heroSection?.slides)
       .map((slide, index) => {
         const row = asRecord(slide);
         const imageKey = asString(row.imageKey);
@@ -435,6 +445,7 @@ const Home: React.FC = () => {
         const fallback =
           fallbackCarouselImages[index % fallbackCarouselImages.length];
         return {
+          imageKey,
           src: imageUrl || imageByKey[imageKey] || fallback.src,
           title: asString(row.title, fallback.title),
           subtitle: asString(row.subtitle, fallback.subtitle),
@@ -450,7 +461,16 @@ const Home: React.FC = () => {
       })
       .filter((slide) => slide.title && slide.src);
 
-    return slides.length > 0 ? slides : fallbackCarouselImages;
+    if (cmsSlides.length === 0) return fallbackCarouselImages;
+
+    const customizedImageKeys = new Set(
+      cmsSlides.map((slide) => slide.imageKey).filter(Boolean),
+    );
+    const remainingBuiltInSlides = fallbackCarouselImages.filter(
+      (slide) => !slide.imageKey || !customizedImageKeys.has(slide.imageKey),
+    );
+
+    return [...cmsSlides, ...remainingBuiltInSlides];
   }, [heroSection, fallbackCarouselImages]);
 
   const fallbackNewsArticles: HomeNewsArticle[] = [
