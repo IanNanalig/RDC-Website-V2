@@ -7,22 +7,32 @@ from cms.views import (
     AdminCMSPageSectionViewSet,
     AdminCMSPageViewSet,
     AdminCMSRevisionViewSet,
+    AdminCMSReviewQueueView,
+    AdminCMSSiteSettingViewSet,
     PublicCMSArticleDetailView,
     PublicCMSArticleListView,
     PublicCMSPageView,
+    PublicCMSSiteSettingsView,
 )
+from projects.views import AdminEventViewSet, PublicEventViewSet
 
 router = DefaultRouter()
 router.register("admin/cms/pages", AdminCMSPageViewSet, basename="admin-cms-pages")
 router.register("admin/cms/sections", AdminCMSPageSectionViewSet, basename="admin-cms-sections")
 router.register("admin/cms/articles", AdminCMSArticleViewSet, basename="admin-cms-articles")
+router.register("admin/cms/news", AdminCMSArticleViewSet, basename="admin-cms-news")
 router.register("admin/cms/media", AdminCMSMediaAssetViewSet, basename="admin-cms-media")
 router.register("admin/cms/revisions", AdminCMSRevisionViewSet, basename="admin-cms-revisions")
+router.register("admin/cms/settings", AdminCMSSiteSettingViewSet, basename="admin-cms-settings")
+router.register("admin/cms/events", AdminEventViewSet, basename="admin-cms-events")
 
 urlpatterns = [
     path("public/cms/pages/<slug:slug>/", PublicCMSPageView.as_view(), name="public-cms-page"),
     path("public/cms/news/", PublicCMSArticleListView.as_view(), name="public-cms-news"),
     path("public/cms/news/<slug:slug>/", PublicCMSArticleDetailView.as_view(), name="public-cms-news-detail"),
+    path("public/cms/events/", PublicEventViewSet.as_view({"get": "list"}), name="public-cms-events"),
+    path("public/cms/site-settings/", PublicCMSSiteSettingsView.as_view(), name="public-cms-site-settings"),
+    path("admin/cms/review-queue/", AdminCMSReviewQueueView.as_view(), name="admin-cms-review-queue"),
 ]
 
 urlpatterns += router.urls

@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useNavigate, Link, useLocation } from "react-router-dom";
 import photo1 from "../assets/Photo-Corousel/Photos/photo1.jpg";
-import rdcLogo from "../assets/Photo-Corousel/Photos/RDC-NCR LOGO.png";
+import rdcLogo from "../assets/optimized/rdc-logo-256.webp";
 import { API_BASE_URL } from "../config/api";
 
 const Login: React.FC = () => {
@@ -122,6 +122,9 @@ const Login: React.FC = () => {
                 <img
                   src={rdcLogo}
                   alt="RDC-NCR Logo"
+                  width={256}
+                  height={256}
+                  decoding="async"
                   className="w-full h-full object-contain drop-shadow-sm"
                 />
               </div>
@@ -319,21 +322,6 @@ const Login: React.FC = () => {
               </button>
             </form>
 
-            {/* Simple Footer */}
-            <div className="mt-6 pt-4 border-t border-gray-200/70 text-center">
-              <p className="text-xs text-gray-500 mt-1">
-                Trouble signing in?{" "}
-                <Link
-                  to="/request-password-reset"
-                  className="text-blue-600 hover:text-blue-800 font-medium transition-colors"
-                >
-                  Request a password reset
-                </Link>
-              </p>
-              <p className="text-xs text-gray-500 mt-1">
-                v1.0.0 • RDC-NCR Portal System
-              </p>
-            </div>
           </div>
         </div>
       </div>

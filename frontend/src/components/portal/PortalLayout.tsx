@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useEncodingWindow } from "../../hooks/useEncodingWindow";
 import { api } from "../../services/api";
@@ -105,6 +105,7 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<PortalNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const notificationsRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
   const navigate = useNavigate();
   const navItems = useMemo(() => navByRole[role], [role]);
@@ -127,12 +128,16 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
 
   const loadNotifications = useCallback(async () => {
     try {
-      const [items, unread] = await Promise.all([
-        api.get("notifications/?limit=10"),
-        api.get("notifications/unread-count/"),
-      ]);
-      setNotifications(Array.isArray(items) ? items : []);
-      setUnreadCount(Number(unread?.unread_count || 0));
+      const data = await api.get("notifications/?limit=10&include_meta=1");
+      if (data && Array.isArray(data.results)) {
+        setNotifications(data.results);
+        setUnreadCount(Number(data.unread_count || 0));
+      } else {
+        const items = Array.isArray(data) ? data : [];
+        const unread = await api.get("notifications/unread-count/");
+        setNotifications(items);
+        setUnreadCount(Number(unread?.unread_count || 0));
+      }
     } catch {
       setNotifications([]);
       setUnreadCount(0);
@@ -141,20 +146,48 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
 
   useEffect(() => {
     loadNotifications();
-    const id = window.setInterval(loadNotifications, 15000);
+    const id = window.setInterval(loadNotifications, 60000);
     const onStorage = (event: StorageEvent) => {
       if (event.key === "projects_last_update") loadNotifications();
     };
+    const onFocus = () => loadNotifications();
+    const onDataChanged = () => loadNotifications();
     window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("portal:data-changed", onDataChanged);
     return () => {
       window.clearInterval(id);
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("portal:data-changed", onDataChanged);
     };
   }, [loadNotifications]);
 
   useEffect(() => {
+    if (notificationsOpen) loadNotifications();
+  }, [loadNotifications, notificationsOpen]);
+
+  useEffect(() => {
     setNotificationsOpen(false);
   }, [location.pathname]);
+
+  useEffect(() => {
+    if (!notificationsOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!notificationsRef.current?.contains(event.target as Node)) {
+        setNotificationsOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setNotificationsOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [notificationsOpen]);
 
   useEffect(() => {
     const media = window.matchMedia("(min-width: 768px)");
@@ -256,7 +289,7 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
           </aside>
 
           <main className="space-y-3 md:space-y-5 min-w-0">
-            <header className="portal-topbar">
+            <header className="portal-topbar relative z-40 overflow-visible">
               <div className="flex items-center gap-2 md:gap-3 min-w-0">
                 <button onClick={() => setMobileOpen((v) => !v)} className="portal-menu-btn md:hidden">
                   Menu
@@ -267,12 +300,14 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
                 </div>
               </div>
               <div className="portal-top-actions">
-                <div className="relative">
+                <div ref={notificationsRef} className="static md:relative md:z-50">
                   <button
                     type="button"
                     className="portal-btn portal-btn-ghost relative px-3"
                     title="Notifications"
                     aria-label="Notifications"
+                    aria-expanded={notificationsOpen}
+                    aria-controls="portal-notifications-panel"
                     onClick={() => setNotificationsOpen((value) => !value)}
                   >
                     <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -286,16 +321,35 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
                     )}
                   </button>
                   {notificationsOpen && (
-                    <div className="absolute right-0 z-40 mt-2 w-[min(22rem,calc(100vw-2rem))] rounded-lg border border-slate-200 bg-white shadow-xl">
-                      <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
+                    <div
+                      id="portal-notifications-panel"
+                      role="dialog"
+                      aria-label="Notifications"
+                      className="absolute right-0 top-full z-[60] mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
+                    >
+                      <div className="flex min-h-11 items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
                         <p className="text-sm font-semibold text-slate-900">Notifications</p>
-                        <button type="button" onClick={markAllRead} className="text-xs font-medium text-blue-700 hover:underline">
+                        <button
+                          type="button"
+                          onClick={markAllRead}
+                          disabled={unreadCount === 0}
+                          className="shrink-0 text-xs font-medium text-blue-700 hover:underline disabled:cursor-default disabled:text-slate-400 disabled:no-underline"
+                        >
                           Mark all read
                         </button>
                       </div>
-                      <div className="max-h-96 overflow-y-auto">
+                      <div className="max-h-96 overflow-y-auto bg-white">
                         {notifications.length === 0 ? (
-                          <p className="px-3 py-4 text-sm text-slate-500">No notifications yet.</p>
+                          <div className="px-5 py-8 text-center">
+                            <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                                <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+                                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                              </svg>
+                            </span>
+                            <p className="mt-3 text-sm font-semibold text-slate-700">No notifications yet</p>
+                            <p className="mt-1 text-xs text-slate-500">New project and CMS activity will appear here.</p>
+                          </div>
                         ) : (
                           notifications.map((notification) => {
                             const unread = !notification.is_read && !notification.read_at;

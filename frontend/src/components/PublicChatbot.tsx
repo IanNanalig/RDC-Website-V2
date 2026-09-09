@@ -36,13 +36,13 @@ const typeMeta: Record<AnswerType, { label: string; className: string }> = {
 
 const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-const PublicChatbot: React.FC = () => {
+const PublicChatbot: React.FC<{ initiallyOpen?: boolean }> = ({ initiallyOpen = false }) => {
   const isDashboardPage =
     typeof window !== "undefined" && window.location.pathname.toLowerCase().startsWith("/projects");
   const panelPositionClass = isDashboardPage ? "sm:bottom-6 sm:right-6 sm:w-[360px]" : "sm:bottom-6 sm:right-6 sm:w-[440px]";
   const panelMaxWidthClass = isDashboardPage ? "max-w-[380px]" : "max-w-[460px]";
   const panelBodyClass = isDashboardPage ? "max-h-[50vh] sm:max-h-[54vh]" : "max-h-[58vh] sm:max-h-[62vh]";
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);

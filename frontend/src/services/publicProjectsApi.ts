@@ -10,7 +10,7 @@ function buildQuery(filters: PublicProjectsFilters) {
   if (filters.status && filters.status !== "all") params.set("status", filters.status);
   if (filters.limit) params.set("limit", String(filters.limit));
   if (filters.offset) params.set("offset", String(filters.offset));
-  if (filters.cacheBust) params.set("_", String(Date.now()));
+  if (filters.view) params.set("view", filters.view);
   const qs = params.toString();
   return qs ? `?${qs}` : "";
 }

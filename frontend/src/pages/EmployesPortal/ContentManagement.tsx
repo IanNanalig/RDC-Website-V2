@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import PortalLayout from "../../components/portal/PortalLayout";
 import CmsManager from "../../components/portal/CmsManager";
 import PublicEventsManager from "../../components/portal/PublicEventsManager";
@@ -10,7 +11,23 @@ type PortalUser = {
 };
 
 const ContentManagement = () => {
-  const [activeTab, setActiveTab] = useState<"cms" | "events">("cms");
+  const location = useLocation();
+  const routeTab = useMemo(() => {
+    const path = location.pathname.toLowerCase();
+    if (path.includes("/events")) return "events";
+    return "cms";
+  }, [location.pathname]);
+  const cmsInitialTab = useMemo(() => {
+    const path = location.pathname.toLowerCase();
+    if (path.includes("/news")) return "news" as const;
+    if (path.includes("/media")) return "media" as const;
+    if (path.includes("/settings")) return "settings" as const;
+    if (path.includes("/revisions")) return "revisions" as const;
+    if (path.includes("/review")) return "review" as const;
+    return "pages" as const;
+  }, [location.pathname]);
+  const [activeTab, setActiveTab] = useState<"cms" | "events">(routeTab);
+  useEffect(() => setActiveTab(routeTab), [routeTab]);
   const userRaw = localStorage.getItem("user");
   const user: PortalUser = userRaw ? JSON.parse(userRaw) : {};
   const role = user.role === "content_editor" ? "content_editor" : "admin";
@@ -43,7 +60,7 @@ const ContentManagement = () => {
       </div>
 
       {activeTab === "cms" ? (
-        <CmsManager mode={role === "admin" ? "admin" : "editor"} />
+        <CmsManager mode={role === "admin" ? "admin" : "editor"} initialTab={cmsInitialTab} />
       ) : (
         <PublicEventsManager mode={role === "admin" ? "admin" : "editor"} />
       )}

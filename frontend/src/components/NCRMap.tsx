@@ -101,6 +101,20 @@ function FitBoundsToMarkers({
   return null;
 }
 
+function ConfigureNcrBounds() {
+  const map = useMap();
+  useEffect(() => {
+    const bounds = L.latLngBounds(NCR_BOUNDS);
+    map.setMaxBounds(bounds);
+    const keepInsideBounds = () => {
+      if (!map.getBounds().intersects(bounds)) map.panInsideBounds(bounds);
+    };
+    map.on("drag", keepInsideBounds);
+    return () => { map.off("drag", keepInsideBounds); };
+  }, [map]);
+  return null;
+}
+
 const NCRMap: React.FC<NCRMapProps> = ({
   projects,
   selectedCity,
@@ -176,19 +190,10 @@ const NCRMap: React.FC<NCRMapProps> = ({
         minZoom={10}
         maxZoom={16}
         style={{ height: "100%", width: "100%" }}
-        whenCreated={(m) => {
-          mapRef.current = m;
-          // enforce max bounds
-          m.setMaxBounds(NCR_BOUNDS);
-          m.on("drag", () => {
-            // keep inside bounds
-            if (!m.getBounds().intersects(L.latLngBounds(NCR_BOUNDS))) {
-              m.panInsideBounds(L.latLngBounds(NCR_BOUNDS));
-            }
-          });
-        }}
+        ref={mapRef}
         scrollWheelZoom
       >
+        <ConfigureNcrBounds />
         <TileLayer
           attribution="&copy; OpenStreetMap contributors"
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"

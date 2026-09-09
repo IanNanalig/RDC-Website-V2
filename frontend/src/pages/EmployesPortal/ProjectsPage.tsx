@@ -25,6 +25,12 @@ type ApiProject = {
   revision_state?: string;
   revision_type?: string;
   submitted_by_name?: string;
+  submission_type?: string;
+  rdip_status?: string;
+  review_status?: string;
+  reviewed_by_username?: string;
+  validator_edited?: boolean;
+  validator_edited_fields_count?: number;
   submitted_by?: {
     username?: string;
     email?: string;
@@ -44,6 +50,8 @@ type ProjectRevisionRow = {
   revision_type?: string;
   state?: string;
   profile_data_snapshot?: Record<string, unknown>;
+  budget?: number;
+  submission_type?: string;
   changed_fields?: unknown[];
   created_by_name?: string;
   submitted_by_name?: string;
@@ -86,7 +94,15 @@ const statusBadge = (status?: string) => {
 const getValidatorReview = (p: ApiProject) => {
   const pd = p.profile_data as Record<string, unknown> | undefined;
   const vr = pd?.validator_review;
-  if (!vr || typeof vr !== "object") return null;
+  if (!vr || typeof vr !== "object") {
+    if (!p.review_status && !p.reviewed_by_username && !p.validator_edited) return null;
+    return {
+      review_status: p.review_status,
+      reviewed_by_username: p.reviewed_by_username,
+      edited: p.validator_edited,
+      edited_fields_count: p.validator_edited_fields_count,
+    };
+  }
   return vr as Record<string, unknown>;
 };
 
@@ -148,14 +164,16 @@ const ProjectsPage: React.FC = () => {
   const selectedWorkflow = (searchParams.get("workflow") || searchParams.get("status") || "all") as WorkflowFilter;
 
   const endpoint = useMemo(() => {
-    const workflowParam = selectedWorkflow && selectedWorkflow !== "all" ? `workflow=${encodeURIComponent(selectedWorkflow)}` : "";
+    const params = new URLSearchParams({ view: "summary" });
+    if (selectedWorkflow && selectedWorkflow !== "all") params.set("workflow", selectedWorkflow);
     if (role === "admin") {
-      return `admin/projects/${workflowParam ? `?${workflowParam}` : ""}`;
+      return `admin/projects/?${params.toString()}`;
     }
     if (role === "validator") {
-      return `validator/projects/?scope=queue${workflowParam ? `&${workflowParam}` : ""}`;
+      params.set("scope", "queue");
+      return `validator/projects/?${params.toString()}`;
     }
-    return `employee/projects/${workflowParam ? `?${workflowParam}` : ""}`;
+    return `employee/projects/?${params.toString()}`;
   }, [role, selectedWorkflow]);
 
   const loadProjects = useCallback(async () => {
@@ -164,7 +182,9 @@ const ProjectsPage: React.FC = () => {
       const data = await api.get(endpoint);
       let rows: ApiProject[] = Array.isArray(data) ? data : [];
       if (role === "validator" || role === "admin") {
-        const revisions = await api.get(`project-revisions/${role === "validator" ? "?scope=queue" : ""}`);
+        const revisionParams = new URLSearchParams({ view: "summary" });
+        if (role === "validator") revisionParams.set("scope", "queue");
+        const revisions = await api.get(`project-revisions/?${revisionParams.toString()}`);
         if (Array.isArray(revisions)) {
           const revisionRows: ApiProject[] = revisions.map((r: ProjectRevisionRow) => ({
             id: r.project,
@@ -176,11 +196,12 @@ const ProjectsPage: React.FC = () => {
             title: `${r.project_title || "Project"} - Progress Update v${r.revision_number || ""}`,
             name: `${r.project_title || "Project"} - Progress Update v${r.revision_number || ""}`,
             agency: r.project_agency || "",
-            budget: Number((r.profile_data_snapshot as any)?.public_summary?.key_facts?.funding_requirement_total || 0),
+            budget: Number(r.budget ?? ((r.profile_data_snapshot as any)?.public_summary?.key_facts?.funding_requirement_total || 0)),
             status: r.state === "endorsed" ? "completed" : "proposed",
             updated_at: r.updated_at,
             submitted_by_name: r.submitted_by_name || r.created_by_name || "Unknown",
-            profile_data: r.profile_data_snapshot || {},
+            submission_type: r.submission_type,
+            profile_data: r.profile_data_snapshot || (r.submission_type === "simplified" ? { submission_type: "simplified", simplified_form: {} } : {}),
           }));
           rows = [...revisionRows, ...rows];
         }
@@ -203,8 +224,16 @@ const ProjectsPage: React.FC = () => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === "projects_last_update") loadProjects();
     };
+    const onDataChanged = () => loadProjects();
+    const onFocus = () => loadProjects();
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    window.addEventListener("portal:data-changed", onDataChanged);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("portal:data-changed", onDataChanged);
+      window.removeEventListener("focus", onFocus);
+    };
   }, [loadProjects, navigate, user]);
 
   const filtered = useMemo(() => {
@@ -237,7 +266,7 @@ const ProjectsPage: React.FC = () => {
   const formStatus = (p: ApiProject) => {
     const pd = p.profile_data as Record<string, any> | undefined;
     const sf = pd?.simplified_form as Record<string, any> | undefined;
-    return String(sf?.status || "").trim();
+    return String(p.rdip_status || sf?.status || "").trim();
   };
 
   const canStartProgressUpdate = (p: ApiProject) =>
@@ -259,7 +288,9 @@ const ProjectsPage: React.FC = () => {
 
   const editPath = (p: ApiProject) => {
     const pd = p.profile_data as Record<string, any> | undefined;
-    return pd?.simplified_form ? `/employee/projects/${p.id}/edit/simplified` : `/employee/projects/${p.id}/edit`;
+    return p.submission_type === "simplified" || pd?.simplified_form
+      ? `/employee/projects/${p.id}/edit/simplified`
+      : `/employee/projects/${p.id}/edit`;
   };
 
   const setWorkflowFilter = (value: WorkflowFilter) => {
@@ -278,7 +309,7 @@ const ProjectsPage: React.FC = () => {
     try {
       const revision = await api.post(`employee/projects/${p.id}/start-update/`, {});
       if (revision?.id) {
-        navigate(`/employee/projects/${p.id}/edit?revision=${revision.id}`);
+        navigate(`${editPath(p)}?revision=${revision.id}`);
       }
     } catch (error) {
       console.error("Failed to start progress update:", error);

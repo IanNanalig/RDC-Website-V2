@@ -16,7 +16,7 @@ from django.utils import timezone
 from django.utils.crypto import get_random_string
 from django.utils.text import slugify
 from django.db import connection, transaction
-from django.db.models import Q
+from django.db.models import Count, Max, Prefetch, Q
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
@@ -51,8 +51,11 @@ from .serializers import (
     PublicEventSerializer,
     PublicChatKnowledgeGapSerializer,
     PublicProjectSerializer,
+    PublicProjectSummarySerializer,
     ProjectSerializer,
+    ProjectSummarySerializer,
     ProjectRevisionSerializer,
+    ProjectRevisionSummarySerializer,
     UserActivitySerializer,
     UserSerializer,
     ProjectPriorityAnalysisSerializer,
@@ -74,7 +77,7 @@ PUBLIC_CHAT_MIN_SCORE = 1.0
 PUBLIC_CHAT_DIRECT_CONFIDENCE = 0.62
 PUBLIC_CHAT_RELATED_CONFIDENCE = 0.60
 PUBLIC_PROJECTS_CACHE_TTL_SECONDS = 3600
-PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL = "public, max-age=0, must-revalidate"
+PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL = "public, no-cache, must-revalidate"
 PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 3
 PUBLIC_PROJECTS_CACHE_VERSION_KEY = "public_projects:version"
 
@@ -642,7 +645,18 @@ def _admins():
     return User.objects.filter(role="admin", is_active=True)
 
 
-def _notify_user(recipient, *, event_type, title, message, project=None, actor=None, comment=None, dedupe_key=None):
+def _notify_user(
+    recipient,
+    *,
+    event_type,
+    title,
+    message,
+    project=None,
+    actor=None,
+    comment=None,
+    dedupe_key=None,
+    link_path=None,
+):
     if not recipient or not getattr(recipient, "is_active", True):
         return None
     defaults = {
@@ -652,7 +666,7 @@ def _notify_user(recipient, *, event_type, title, message, project=None, actor=N
         "event_type": event_type,
         "title": title,
         "message": message,
-        "link_path": _project_link(project, recipient) if project else "",
+        "link_path": link_path if link_path is not None else (_project_link(project, recipient) if project else ""),
     }
     if dedupe_key:
         notification, _ = Notification.objects.get_or_create(
@@ -1662,6 +1676,22 @@ def _sync_public_event_content(event: PublicEvent):
     )
 
 
+def _sync_public_event_content_safely(request, event: PublicEvent, operation: str):
+    try:
+        _sync_public_event_content(event)
+    except Exception as exc:
+        _log_activity(
+            request,
+            "cms_chatbot_sync_failed",
+            details={
+                "content_type": "event",
+                "id": event.pk,
+                "operation": operation,
+                "error": str(exc)[:1000],
+            },
+        )
+
+
 class PublicEventViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -1697,9 +1727,11 @@ class PublicEventViewSet(viewsets.ReadOnlyModelViewSet):
             limit = 20
         qs = self.get_queryset()
         data = PublicEventSerializer(qs[:limit], many=True).data
-        resp = Response({"results": data, "count": qs.count()})
-        resp["Cache-Control"] = "public, max-age=300"
-        return resp
+        return _conditional_public_response(request, {"results": data, "count": qs.count()})
+
+    def retrieve(self, request, *args, **kwargs):
+        payload = self.get_serializer(self.get_object()).data
+        return _conditional_public_response(request, payload)
 
 
 class AdminEventViewSet(viewsets.ModelViewSet):
@@ -1741,7 +1773,7 @@ class AdminEventViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         self._ensure_editor_can_change(serializer.instance)
         event = serializer.save()
-        _sync_public_event_content(event)
+        _sync_public_event_content_safely(self.request, event, "update")
         _log_activity(
             self.request,
             "cms_event_updated",
@@ -1772,7 +1804,7 @@ class AdminEventViewSet(viewsets.ModelViewSet):
         event.published_at = timezone.now()
         event.review_notes = str(request.data.get("review_notes") or "").strip()
         event.save(update_fields=["status", "reviewed_by", "published_at", "review_notes", "updated_at"])
-        _sync_public_event_content(event)
+        _sync_public_event_content_safely(request, event, "publish")
         _log_activity(request, "cms_event_published", details={"event_id": event.id, "title": event.title})
         return Response(PublicEventSerializer(event).data)
 
@@ -1786,7 +1818,7 @@ class AdminEventViewSet(viewsets.ModelViewSet):
         event.reviewed_by = request.user
         event.review_notes = str(request.data.get("review_notes") or "Rejected by admin review.").strip()
         event.save(update_fields=["status", "reviewed_by", "review_notes", "updated_at"])
-        _sync_public_event_content(event)
+        _sync_public_event_content_safely(request, event, "reject")
         _log_activity(
             request,
             "cms_event_rejected",
@@ -1802,8 +1834,25 @@ class AdminEventViewSet(viewsets.ModelViewSet):
         event.reviewed_by = request.user
         event.archived_at = timezone.now()
         event.save(update_fields=["status", "reviewed_by", "archived_at", "updated_at"])
-        _sync_public_event_content(event)
+        _sync_public_event_content_safely(request, event, "archive")
         _log_activity(request, "cms_event_archived", details={"event_id": event.id, "title": event.title})
+        return Response(PublicEventSerializer(event).data)
+
+    @action(detail=True, methods=["post"])
+    def unarchive(self, request, pk=None):
+        self._ensure_admin_action()
+        event = self.get_object()
+        if event.status != "archived":
+            return Response({"detail": "Only archived events can be unarchived."}, status=400)
+        event.status = "published"
+        event.reviewed_by = request.user
+        event.archived_at = None
+        event.published_at = event.published_at or timezone.now()
+        event.save(
+            update_fields=["status", "reviewed_by", "archived_at", "published_at", "updated_at"]
+        )
+        _sync_public_event_content_safely(request, event, "unarchive")
+        _log_activity(request, "cms_event_unarchived", details={"event_id": event.id, "title": event.title})
         return Response(PublicEventSerializer(event).data)
 
 
@@ -2323,7 +2372,12 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
         except Exception:
             limit = 30
         qs = self.filter_queryset(self.get_queryset())[:limit]
-        return Response(self.get_serializer(qs, many=True).data)
+        results = self.get_serializer(qs, many=True).data
+        include_meta = (request.query_params.get("include_meta") or "").strip().lower() in ("1", "true", "yes")
+        if include_meta:
+            unread_count = Notification.objects.filter(recipient=request.user, read_at__isnull=True).count()
+            return Response({"results": results, "unread_count": unread_count})
+        return Response(results)
 
     @action(detail=False, methods=["get"], url_path="unread-count")
     def unread_count(self, request):
@@ -2345,9 +2399,27 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
         return Response({"updated": updated, "read_at": now})
 
 
+def _project_queryset_with_related(qs, *, prefetch_priority=True):
+    qs = qs.select_related("created_by")
+    if not prefetch_priority:
+        return qs
+    latest_confirmations = ProjectPriorityConfirmation.objects.order_by("-created_at")
+    latest_analyses = ProjectPriorityAnalysis.objects.prefetch_related(
+        Prefetch("confirmations", queryset=latest_confirmations)
+    ).order_by("-created_at")[:1]
+    return qs.prefetch_related(
+        Prefetch("priority_analyses", queryset=latest_analyses, to_attr="_latest_priority_analyses")
+    )
+
+
 class BaseProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated, ProjectPermission]
+
+    def get_serializer_class(self):
+        if getattr(self, "action", "") == "list" and self.request.query_params.get("view") == "summary":
+            return ProjectSummarySerializer
+        return ProjectSerializer
 
     def get_queryset(self):
         user = self.request.user
@@ -2359,7 +2431,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         else:
             qs = Project.objects.filter(created_by=user).order_by("-created_at")
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
-        return _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
+        qs = _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
+        return _project_queryset_with_related(qs, prefetch_priority=getattr(self, "action", "") == "list")
 
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
@@ -2540,6 +2613,25 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if warning:
             details["warning"] = warning
         _log_activity(request, event, project, details)
+        if role == "validator" and review_state == "draft":
+            _notify_user(
+                request.user,
+                event_type="validator_review_draft_saved",
+                title="Review draft saved",
+                message=f"Your review draft was saved: {_project_title(project)}",
+                project=project,
+                actor=request.user,
+            )
+        elif role == "validator" and review_state == "endorsed":
+            _notify_user(
+                request.user,
+                event_type="validator_project_validated",
+                title="Project validated",
+                message=f"You validated and endorsed: {_project_title(project)}",
+                project=project,
+                actor=request.user,
+                dedupe_key=f"project:{project.id}:validator:{request.user.id}:validated",
+            )
         if review_state == "reviewed" and existing_status != "reviewed":
             _notify_many(
                 _project_employee_recipients(project),
@@ -2833,11 +2925,17 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
     def get_queryset(self):
         agency = (self.request.user.agency or "").strip()
         if agency:
-            qs = Project.objects.filter(agency__iexact=agency).order_by("-created_at")
+            # A detailed form stores its office/unit separately from the account's
+            # agency. Always include records created by this contributor so an
+            # office label mismatch cannot make a successfully saved draft vanish.
+            qs = Project.objects.filter(
+                Q(created_by=self.request.user) | Q(agency__iexact=agency)
+            ).distinct().order_by("-created_at")
         else:
             qs = Project.objects.filter(created_by=self.request.user).order_by("-created_at")
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
-        return _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
+        qs = _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
+        return _project_queryset_with_related(qs, prefetch_priority=getattr(self, "action", "") == "list")
 
     def _ensure_encoding_open(self):
         state = _resolve_encoding_window_state()
@@ -3042,6 +3140,11 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectRevisionSerializer
     permission_classes = [IsAuthenticated]
 
+    def get_serializer_class(self):
+        if getattr(self, "action", "") == "list" and self.request.query_params.get("view") == "summary":
+            return ProjectRevisionSummarySerializer
+        return ProjectRevisionSerializer
+
     def get_queryset(self):
         role = getattr(self.request.user, "role", "")
         qs = ProjectRevision.objects.select_related(
@@ -3224,6 +3327,36 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                 "changed_fields_count": len(revision.changed_fields or []),
             },
         )
+        if getattr(request.user, "role", "") == "validator" and revision.state == "validator_draft":
+            _notify_user(
+                request.user,
+                event_type="validator_progress_draft_saved",
+                title="Progress review draft saved",
+                message=(
+                    f"Your review draft for progress update v{revision.revision_number} was saved: "
+                    f"{_project_title(revision.project)}"
+                ),
+                project=revision.project,
+                actor=request.user,
+                link_path=f"/validator/projects/{revision.project_id}/review?revision={revision.id}",
+            )
+        elif getattr(request.user, "role", "") == "validator" and revision.state == "endorsed":
+            _notify_user(
+                request.user,
+                event_type="validator_progress_validated",
+                title="Progress update validated",
+                message=(
+                    f"You validated and endorsed progress update v{revision.revision_number}: "
+                    f"{_project_title(revision.project)}"
+                ),
+                project=revision.project,
+                actor=request.user,
+                dedupe_key=(
+                    f"project:{revision.project_id}:revision:{revision.id}:"
+                    f"validator:{request.user.id}:validated"
+                ),
+                link_path=f"/validator/projects/{revision.project_id}/review?revision={revision.id}",
+            )
         return Response(ProjectRevisionSerializer(revision).data)
 
 
@@ -3233,7 +3366,7 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        all_projects = Project.objects.all().order_by("-created_at")
+        all_projects = Project.objects.only("id", "status", "profile_data").order_by("-created_at")
         scope = (self.request.query_params.get("scope") or "").strip().lower()
         def review_status_for(project):
             pd = project.profile_data if isinstance(project.profile_data, dict) else {}
@@ -3265,7 +3398,10 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
                 ]
                 qs = Project.objects.filter(id__in=ids).order_by("-updated_at")
                 workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
-                return _filter_projects_for_workflow(qs, workflow).order_by("-updated_at")
+                return _project_queryset_with_related(
+                    _filter_projects_for_workflow(qs, workflow).order_by("-updated_at"),
+                    prefetch_priority=True,
+                )
             draft_review_ids = [
                 p.id
                 for p in all_projects
@@ -3276,12 +3412,18 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
                 Q(status="proposed") | Q(id__in=draft_review_ids)
             ).order_by("-created_at")
             workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
-            return _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
+            return _project_queryset_with_related(
+                _filter_projects_for_workflow(qs, workflow).order_by("-created_at"),
+                prefetch_priority=True,
+            )
 
         allowed_ids = [p.id for p in all_projects if p.status == "proposed" or reviewed_by_validator(p)]
         qs = Project.objects.filter(id__in=allowed_ids).order_by("-created_at")
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
-        return _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
+        return _project_queryset_with_related(
+            _filter_projects_for_workflow(qs, workflow).order_by("-created_at"),
+            prefetch_priority=False,
+        )
 
     def update(self, request, *args, **kwargs):
         raise PermissionDenied("Use validator review actions instead of direct project edit.")
@@ -3300,7 +3442,10 @@ class AdminProjectViewSet(BaseProjectViewSet):
     def get_queryset(self):
         qs = Project.objects.all().order_by("-created_at")
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
-        return _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
+        return _project_queryset_with_related(
+            _filter_projects_for_workflow(qs, workflow).order_by("-created_at"),
+            prefetch_priority=getattr(self, "action", "") == "list",
+        )
 
 
 class AdminUserViewSet(viewsets.ModelViewSet):
@@ -3672,79 +3817,46 @@ class DashboardView(APIView):
         user = request.user
         role = getattr(user, "role", "")
         if role == "admin":
-            all_projects = Project.objects.all()
-            reviewed_projects = 0
-            validator_edited_projects = 0
-            review_draft = 0
-            review_reviewed = 0
-            review_endorsed = 0
-            for project in all_projects:
-                pd = project.profile_data if isinstance(project.profile_data, dict) else {}
-                vr = pd.get("validator_review")
-                if isinstance(vr, dict):
-                    if str(vr.get("review_status") or "").lower() == "reviewed":
-                        reviewed_projects += 1
-                    if bool(vr.get("edited")):
-                        validator_edited_projects += 1
-                    status = str(vr.get("review_status") or "").lower()
-                    if status == "draft":
-                        review_draft += 1
-                    elif status == "reviewed":
-                        review_reviewed += 1
-                    elif status == "endorsed":
-                        review_endorsed += 1
-            admin_users = User.objects.filter(role="admin").count()
-            validator_users = User.objects.filter(role="validator").count()
-            contributor_users = User.objects.filter(role="staff").count()
+            project_counts = Project.objects.aggregate(
+                total_projects=Count("id"),
+                draft_projects=Count("id", filter=Q(status="planning")),
+                pending_projects=Count("id", filter=Q(status="proposed")),
+                approved_projects=Count("id", filter=Q(status="completed")),
+                archived_projects=Count("id", filter=Q(archived=True)),
+                reviewed_projects=Count("id", filter=Q(profile_data__validator_review__review_status="reviewed")),
+                validator_edited_projects=Count("id", filter=Q(profile_data__validator_review__edited=True)),
+                review_draft=Count("id", filter=Q(profile_data__validator_review__review_status="draft")),
+                review_reviewed=Count("id", filter=Q(profile_data__validator_review__review_status="reviewed")),
+                review_endorsed=Count("id", filter=Q(profile_data__validator_review__review_status="endorsed")),
+            )
+            user_counts = User.objects.aggregate(
+                users=Count("id"),
+                admin_users=Count("id", filter=Q(role="admin")),
+                validator_users=Count("id", filter=Q(role="validator")),
+                contributor_users=Count("id", filter=Q(role="staff")),
+            )
             data = {
-                "total_projects": all_projects.count(),
-                "draft_projects": all_projects.filter(status="planning").count(),
-                "pending_projects": all_projects.filter(status="proposed").count(),
-                "approved_projects": all_projects.filter(status="completed").count(),
-                "archived_projects": all_projects.filter(archived=True).count(),
-                "reviewed_projects": reviewed_projects,
-                "validator_edited_projects": validator_edited_projects,
-                "users": User.objects.count(),
-                "admin_users": admin_users,
-                "validator_users": validator_users,
-                "contributor_users": contributor_users,
-                "review_draft": review_draft,
-                "review_reviewed": review_reviewed,
-                "review_endorsed": review_endorsed,
+                **project_counts,
+                **user_counts,
             }
         elif role == "validator":
-            review_draft = 0
-            review_reviewed = 0
-            review_endorsed = 0
-            for project in Project.objects.all():
-                pd = project.profile_data if isinstance(project.profile_data, dict) else {}
-                vr = pd.get("validator_review")
-                if not isinstance(vr, dict):
-                    continue
-                status = str(vr.get("review_status") or "").lower()
-                if status == "draft":
-                    review_draft += 1
-                elif status == "reviewed":
-                    review_reviewed += 1
-                elif status == "endorsed":
-                    review_endorsed += 1
-            data = {
-                "review_draft": review_draft,
-                "review_reviewed": review_reviewed,
-                "review_endorsed": review_endorsed,
-            }
+            data = Project.objects.aggregate(
+                review_draft=Count("id", filter=Q(profile_data__validator_review__review_status="draft")),
+                review_reviewed=Count("id", filter=Q(profile_data__validator_review__review_status="reviewed")),
+                review_endorsed=Count("id", filter=Q(profile_data__validator_review__review_status="endorsed")),
+            )
         else:
             agency = (user.agency or "").strip()
             if agency:
                 my = Project.objects.filter(agency__iexact=agency)
             else:
                 my = Project.objects.filter(created_by=user)
-            data = {
-                "my_projects": my.count(),
-                "draft_projects": my.filter(status="planning").count(),
-                "submitted_projects": my.filter(status="proposed").count(),
-                "approved_projects": my.filter(status="completed").count(),
-            }
+            data = my.aggregate(
+                my_projects=Count("id"),
+                draft_projects=Count("id", filter=Q(status="planning")),
+                submitted_projects=Count("id", filter=Q(status="proposed")),
+                approved_projects=Count("id", filter=Q(status="completed")),
+            )
         return Response(data)
 
 
@@ -4130,25 +4242,36 @@ class AgencyActivityView(APIView):
         return Response(serializer.data)
 
 
-def _get_public_projects_cache_version() -> int:
-    try:
-        v = cache.get(PUBLIC_PROJECTS_CACHE_VERSION_KEY)
-        if isinstance(v, int) and v >= 1:
-            return v
-    except Exception:
-        pass
-    try:
-        cache.add(PUBLIC_PROJECTS_CACHE_VERSION_KEY, 1, None)
-    except Exception:
-        pass
-    return 1
+def _get_public_projects_cache_version() -> str:
+    """Database-derived version so every web worker observes a publish immediately."""
+    state = Project.objects.filter(validated=True, archived=False, is_active=True).aggregate(
+        count=Count("id"),
+        updated_at=Max("updated_at"),
+    )
+    updated_at = state.get("updated_at")
+    return f"{state.get('count') or 0}:{updated_at.isoformat() if updated_at else ''}"
+
+
+def _etag(value) -> str:
+    if not isinstance(value, str):
+        value = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return f'"{hashlib.sha256(value.encode("utf-8")).hexdigest()}"'
+
+
+def _conditional_public_response(request, payload, etag_seed=None):
+    etag = _etag(payload if etag_seed is None else etag_seed)
+    candidates = [value.strip() for value in request.META.get("HTTP_IF_NONE_MATCH", "").split(",")]
+    response = Response(status=status.HTTP_304_NOT_MODIFIED) if etag in candidates else Response(payload)
+    response["ETag"] = etag
+    response["Cache-Control"] = PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL
+    return response
 
 
 def _hash_query(params: dict) -> str:
     # Stable key regardless of ordering.
     items = []
     for k in sorted(params.keys()):
-        if k == "_":
+        if k in {"_", "_ts", "_cms"}:
             continue
         items.append((k, str(params[k])))
     raw = urllib.parse.urlencode(items, doseq=True)
@@ -4166,20 +4289,43 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = PublicProjectSerializer
 
     def _base_queryset(self):
-        return Project.objects.filter(validated=True, archived=False, is_active=True)
+        endorsed_revisions = ProjectRevision.objects.filter(state="endorsed").order_by(
+            "-endorsed_at", "-revision_number"
+        )
+        qs = Project.objects.filter(validated=True, archived=False, is_active=True)
+        if getattr(self, "action", "") == "list" and self.request.query_params.get("view") == "summary":
+            latest_progress = endorsed_revisions.filter(revision_type="progress_update")[:1]
+            return qs.annotate(
+                _public_progress_update_count=Count(
+                    "revisions",
+                    filter=Q(revisions__state="endorsed", revisions__revision_type="progress_update"),
+                )
+            ).prefetch_related(
+                Prefetch("revisions", queryset=endorsed_revisions[:1], to_attr="_public_latest_endorsed_revision"),
+                Prefetch("revisions", queryset=latest_progress, to_attr="_public_latest_progress_revision"),
+            )
+        return qs.prefetch_related(
+            Prefetch("revisions", queryset=endorsed_revisions, to_attr="_public_endorsed_revisions")
+        )
+
+    def get_serializer_class(self):
+        if getattr(self, "action", "") == "list" and self.request.query_params.get("view") == "summary":
+            return PublicProjectSummarySerializer
+        return PublicProjectSerializer
 
     def _project_to_public_payload(self, project: Project) -> dict:
-        return PublicProjectSerializer(project).data
+        return self.get_serializer(project).data
 
     def list(self, request, *args, **kwargs):
         version = _get_public_projects_cache_version()
         params = dict(request.query_params)
         cache_key = f"public_projects:list:v{PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION}:{version}:{_hash_query(params)}"
+        etag_seed = f"projects-list:{PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION}:{version}:{_hash_query(params)}"
+        if _etag(etag_seed) in [value.strip() for value in request.META.get("HTTP_IF_NONE_MATCH", "").split(",")]:
+            return _conditional_public_response(request, [], etag_seed=etag_seed)
         cached = cache.get(cache_key)
         if cached is not None:
-            resp = Response(cached)
-            resp["Cache-Control"] = PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL
-            return resp
+            return _conditional_public_response(request, cached, etag_seed=etag_seed)
 
         qs = self._base_queryset().order_by("-updated_at")
 
@@ -4232,18 +4378,14 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
             payload = [self._project_to_public_payload(p) for p in qs]
 
         cache.set(cache_key, payload, timeout=PUBLIC_PROJECTS_CACHE_TTL_SECONDS)
-        resp = Response(payload)
-        resp["Cache-Control"] = PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL
-        return resp
+        return _conditional_public_response(request, payload, etag_seed=etag_seed)
 
     def retrieve(self, request, *args, **kwargs):
-        project = Project.objects.filter(validated=True, archived=False, is_active=True).filter(pk=kwargs.get("pk")).first()
+        project = self._base_queryset().filter(pk=kwargs.get("pk")).first()
         if not project:
             return Response({"detail": "Not found."}, status=404)
         payload = self._project_to_public_payload(project)
-        resp = Response(payload)
-        resp["Cache-Control"] = PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL
-        return resp
+        return _conditional_public_response(request, payload)
 
 
 class PublicProjectsStatsView(APIView):
@@ -4254,11 +4396,12 @@ class PublicProjectsStatsView(APIView):
         version = _get_public_projects_cache_version()
         params = dict(request.query_params)
         cache_key = f"public_projects:stats:v{PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION}:{version}:{_hash_query(params)}"
+        etag_seed = f"projects-stats:{PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION}:{version}:{_hash_query(params)}"
+        if _etag(etag_seed) in [value.strip() for value in request.META.get("HTTP_IF_NONE_MATCH", "").split(",")]:
+            return _conditional_public_response(request, {}, etag_seed=etag_seed)
         cached = cache.get(cache_key)
         if cached is not None:
-            resp = Response(cached)
-            resp["Cache-Control"] = PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL
-            return resp
+            return _conditional_public_response(request, cached, etag_seed=etag_seed)
 
         qs = Project.objects.filter(validated=True, archived=False, is_active=True)
 
@@ -4352,6 +4495,4 @@ class PublicProjectsStatsView(APIView):
         }
 
         cache.set(cache_key, payload, timeout=PUBLIC_PROJECTS_CACHE_TTL_SECONDS)
-        resp = Response(payload)
-        resp["Cache-Control"] = PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL
-        return resp
+        return _conditional_public_response(request, payload, etag_seed=etag_seed)

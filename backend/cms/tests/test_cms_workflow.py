@@ -54,6 +54,31 @@ class CMSWorkflowTests(APITestCase):
     def authenticate(self, user=None):
         self.client.force_authenticate(user=user or self.admin)
 
+    def test_public_page_etag_revalidates_and_publish_is_immediately_fresh(self):
+        page = CMSPage.objects.create(
+            title="ETag page",
+            slug="etag-page",
+            status=CMSPage.STATUS_PUBLISHED,
+            published_at=timezone.now(),
+            published_snapshot_json={"title": "First", "slug": "etag-page", "sections": [{"content": {"body": "x" * 1000}}]},
+        )
+        first = self.client.get("/api/public/cms/pages/etag-page/", HTTP_ACCEPT_ENCODING="gzip")
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(first["Cache-Control"], "public, no-cache, must-revalidate")
+        etag = first["ETag"]
+        self.assertFalse(etag.startswith("W/"))
+        self.assertEqual(
+            self.client.get("/api/public/cms/pages/etag-page/", HTTP_IF_NONE_MATCH=etag).status_code,
+            status.HTTP_304_NOT_MODIFIED,
+        )
+
+        page.published_snapshot_json = {"title": "Second", "slug": "etag-page", "sections": []}
+        page.save(update_fields=["published_snapshot_json", "updated_at"])
+        fresh = self.client.get("/api/public/cms/pages/etag-page/", HTTP_IF_NONE_MATCH=etag)
+        self.assertEqual(fresh.status_code, status.HTTP_200_OK)
+        self.assertEqual(fresh.data["title"], "Second")
+        self.assertNotEqual(fresh["ETag"], etag)
+
     def test_page_draft_is_private_and_publish_snapshot_isolated(self):
         self.authenticate()
         page_response = self.client.post(
@@ -120,6 +145,54 @@ class CMSWorkflowTests(APITestCase):
         public_response = self.client.get("/api/public/cms/pages/test-home/")
         self.assertEqual(public_response.data["sections"][0]["content"]["title"], "Draft-only title")
 
+    def test_draft_publish_isolation_for_structurally_different_sections(self):
+        cases = {
+            "hero_carousel": lambda label: {"slides": [{"title": label, "subtitle": "Hero"}]},
+            "cards": lambda label: {"title": "Cards", "items": [{"id": "card-1", "title": label}]},
+            "faq": lambda label: {"title": "FAQ", "items": [{"id": "question-1", "question": label, "answer": "Answer"}]},
+        }
+
+        for section_type, content_for in cases.items():
+            with self.subTest(section_type=section_type):
+                self.authenticate()
+                page = CMSPage.objects.create(title=f"{section_type} isolation", slug=f"{section_type}-isolation")
+                section = CMSPageSection.objects.create(
+                    page=page,
+                    section_key=section_type,
+                    section_type=section_type,
+                    order=1,
+                    content_json=content_for("Initial public value"),
+                    is_visible=True,
+                )
+                self.client.post(f"/api/admin/cms/pages/{page.pk}/publish/")
+
+                self.client.patch(
+                    f"/api/admin/cms/sections/{section.pk}/",
+                    {"content_json": content_for("First draft value")},
+                    format="json",
+                )
+                self.client.force_authenticate(user=None)
+                public_before_publish = self.client.get(f"/api/public/cms/pages/{page.slug}/")
+                self.assertIn("Initial public value", str(public_before_publish.data))
+                self.assertNotIn("First draft value", str(public_before_publish.data))
+
+                self.authenticate()
+                self.client.post(f"/api/admin/cms/sections/{section.pk}/publish/")
+                self.client.force_authenticate(user=None)
+                public_after_publish = self.client.get(f"/api/public/cms/pages/{page.slug}/")
+                self.assertIn("First draft value", str(public_after_publish.data))
+
+                self.authenticate()
+                self.client.patch(
+                    f"/api/admin/cms/sections/{section.pk}/",
+                    {"content_json": content_for("Second unpublished value")},
+                    format="json",
+                )
+                self.client.force_authenticate(user=None)
+                public_after_second_draft = self.client.get(f"/api/public/cms/pages/{page.slug}/")
+                self.assertIn("First draft value", str(public_after_second_draft.data))
+                self.assertNotIn("Second unpublished value", str(public_after_second_draft.data))
+
     def test_published_page_converts_backend_media_urls_to_portable_paths(self):
         page = CMSPage.objects.create(title="Media Page", slug="media-page")
         CMSPageSection.objects.create(
@@ -159,7 +232,7 @@ class CMSWorkflowTests(APITestCase):
                 "slug": "safe-news",
                 "category": "Updates",
                 "summary": "A public summary",
-                "body": '<p>Safe</p><script>alert("x")</script><a href="javascript:alert(1)">Bad link</a>',
+                "body": '<p>Safe</p><script>alert(1)</script><img src=x onerror=alert(1)><a href="javascript:alert(1)">Bad link</a>',
                 "author": "RDC-NCR",
             },
             format="json",
@@ -183,6 +256,8 @@ class CMSWorkflowTests(APITestCase):
         self.assertEqual(public_response.status_code, status.HTTP_200_OK)
         self.assertIn("<p>Safe</p>", public_response.data["body"])
         self.assertNotIn("<script", public_response.data["body"])
+        self.assertNotIn("<img", public_response.data["body"])
+        self.assertNotIn("onerror", public_response.data["body"])
         self.assertNotIn("javascript:", public_response.data["body"])
 
         self.authenticate()
@@ -194,6 +269,40 @@ class CMSWorkflowTests(APITestCase):
         self.client.force_authenticate(user=None)
         public_response = self.client.get("/api/public/cms/news/safe-news/")
         self.assertEqual(public_response.data["title"], "Safe News")
+
+    def test_plain_section_fields_strip_markup_and_executable_links_on_publish(self):
+        self.authenticate()
+        page_response = self.client.post(
+            "/api/admin/cms/pages/",
+            {"title": "Plain Field Safety", "slug": "plain-field-safety"},
+            format="json",
+        )
+        payload = '<script>alert(1)</script><img src=x onerror=alert(1)><a href="javascript:alert(1)">link</a>'
+        section_response = self.client.post(
+            "/api/admin/cms/sections/",
+            {
+                "page": page_response.data["id"],
+                "section_key": "safe-title",
+                "section_type": "text",
+                "order": 1,
+                "content_json": {"title": payload, "buttonLabel": payload, "buttonLink": "javascript:alert(1)"},
+                "is_visible": True,
+            },
+            format="json",
+        )
+        self.assertEqual(section_response.status_code, status.HTTP_201_CREATED)
+        publish_response = self.client.post(f"/api/admin/cms/pages/{page_response.data['id']}/publish/")
+        self.assertEqual(publish_response.status_code, status.HTTP_200_OK)
+
+        self.client.force_authenticate(user=None)
+        public_response = self.client.get("/api/public/cms/pages/plain-field-safety/")
+        content = public_response.data["sections"][0]["content"]
+        self.assertNotIn("<script", content["title"])
+        self.assertNotIn("<img", content["title"])
+        self.assertNotIn("onerror", content["title"])
+        self.assertNotIn("javascript:", content["title"])
+        self.assertNotIn("<", content["buttonLabel"])
+        self.assertEqual(content["buttonLink"], "")
 
     def test_section_reorder_is_atomic_and_published_order_stays_stable(self):
         page = CMSPage.objects.create(title="Order Page", slug="order-page")
@@ -252,7 +361,7 @@ class CMSWorkflowTests(APITestCase):
         page.refresh_from_db()
         self.assertTrue(page.has_unpublished_changes)
         revision = CMSRevision.objects.filter(
-            content_type=CMSRevision.CONTENT_SECTION,
+            content_type__model="cmspagesection",
             object_id=section.pk,
         ).latest("version_number")
         self.assertTrue(revision.snapshot_json["deleted"])

@@ -72,6 +72,7 @@ function headersToRecord(headers?: HeadersInit): Record<string, string> {
 
 let refreshInFlight: Promise<string | null> | null = null;
 let lastAuthFailureMessage = "";
+const getRequestsInFlight = new Map<string, ReturnType<typeof request>>();
 
 async function errorMessageFromResponse(res: Response) {
   try {
@@ -91,6 +92,9 @@ async function requestErrorMessageFromResponse(res: Response) {
   if (contentType.includes("application/json")) {
     try {
       const data = await res.clone().json();
+      if (typeof data?.reason === "string") {
+        return JSON.stringify(data);
+      }
       if (typeof data?.detail === "string" && data.detail.trim()) {
         return data.detail.trim();
       }
@@ -169,12 +173,10 @@ async function request(path: string, options: RequestInit = {}, hasRetried = fal
   const normalizedPath = normalizePath(path);
   const isFormData =
     typeof FormData !== "undefined" && options.body instanceof FormData;
-  const headers: Record<string, string> = isFormData
-    ? headersToRecord(options.headers)
-    : {
-        "Content-Type": "application/json",
-        ...headersToRecord(options.headers),
-      };
+  const headers: Record<string, string> = headersToRecord(options.headers);
+  if (!isFormData && options.body !== undefined && options.body !== null) {
+    headers["Content-Type"] = headers["Content-Type"] || "application/json";
+  }
 
   const token = getToken();
   if (token && !isPublicRequest(normalizedPath, method)) {
@@ -204,6 +206,10 @@ async function request(path: string, options: RequestInit = {}, hasRetried = fal
     throw new Error(await requestErrorMessageFromResponse(res));
   }
 
+  if (method.toUpperCase() !== "GET" && typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("portal:data-changed", { detail: { path: normalizedPath } }));
+  }
+
   const contentType = res.headers.get("content-type") || "";
   if (contentType.includes("application/json")) {
     return res.json();
@@ -211,14 +217,28 @@ async function request(path: string, options: RequestInit = {}, hasRetried = fal
   return res.text();
 }
 
+function get(path: string) {
+  const key = `${normalizePath(path)}|${getToken() || "public"}`;
+  const existing = getRequestsInFlight.get(key);
+  if (existing) return existing;
+
+  const pending = request(path, { method: "GET" }).finally(() => {
+    if (getRequestsInFlight.get(key) === pending) getRequestsInFlight.delete(key);
+  });
+  getRequestsInFlight.set(key, pending);
+  return pending;
+}
+
 export const api = {
-  get: (path: string) => request(path, { method: "GET" }),
+  get,
   post: (path: string, body?: unknown) =>
     request(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
   postForm: (path: string, body: FormData) =>
     request(path, { method: "POST", body }),
   put: (path: string, body?: unknown) =>
     request(path, { method: "PUT", body: body ? JSON.stringify(body) : undefined }),
+  patch: (path: string, body?: unknown) =>
+    request(path, { method: "PATCH", body: body ? JSON.stringify(body) : undefined }),
   putForm: (path: string, body: FormData) =>
     request(path, { method: "PUT", body }),
   del: (path: string) => request(path, { method: "DELETE" }),

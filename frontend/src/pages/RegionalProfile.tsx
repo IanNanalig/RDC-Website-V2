@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import ncrMapImage from "../assets/NCR MAP (2).png";
+import ncrMapAvif768 from "../assets/optimized/ncr-map-768.avif";
+import ncrMapAvif1408 from "../assets/optimized/ncr-map-1408.avif";
+import ncrMapWebp768 from "../assets/optimized/ncr-map-768.webp";
+import ncrMapWebp1408 from "../assets/optimized/ncr-map-1408.webp";
 import cmsApi, { type CMSPageSnapshot } from "../services/cmsApi";
 
 type CityLink = {
@@ -252,7 +255,19 @@ export default function RegionalProfile() {
             <div className="lg:col-span-2">
               <div className="rounded-2xl border border-slate-100 bg-white p-6 shadow-lg">
                 <div className="overflow-hidden rounded-xl border-2 border-slate-200 bg-slate-50">
-                  <img src={ncrMapImage} alt="Metro Manila Map" className="h-auto w-full object-cover" />
+                  <picture>
+                    <source type="image/avif" srcSet={`${ncrMapAvif768} 768w, ${ncrMapAvif1408} 1408w`} sizes="(min-width: 1024px) 50vw, 100vw" />
+                    <source type="image/webp" srcSet={`${ncrMapWebp768} 768w, ${ncrMapWebp1408} 1408w`} sizes="(min-width: 1024px) 50vw, 100vw" />
+                    <img
+                      src={ncrMapWebp1408}
+                      alt="Metro Manila Map"
+                      width={1408}
+                      height={768}
+                      loading="lazy"
+                      decoding="async"
+                      className="h-auto w-full object-cover"
+                    />
+                  </picture>
                 </div>
                 <div className="mt-4 text-center text-sm text-slate-600">
                   {asString(coverage.caption, "Political map showing the 16 cities and 1 municipality of NCR")}

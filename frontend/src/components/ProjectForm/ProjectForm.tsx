@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import schema from "../../forms/project_form_schema.json";
 import FieldRenderer from "./FieldRenderer";
@@ -83,11 +83,14 @@ export default function ProjectForm({ initial, onSave, onCancel }: Props) {
       }
 
       // if files were attached, upload them to attachments endpoint
-      if (files && files.length > 0) {
+      const fileList: File[] = files instanceof FileList
+        ? Array.from(files)
+        : Array.isArray(files)
+          ? files.filter((file): file is File => file instanceof File)
+          : [];
+      if (fileList.length > 0) {
         const formData = new FormData();
         formData.append("project", project.id);
-        // files may be FileList or an array
-        const fileList = files instanceof FileList ? Array.from(files) : files;
         fileList.forEach((f: File) => formData.append("file", f));
 
         const up = await fetch("/api/attachments/", {

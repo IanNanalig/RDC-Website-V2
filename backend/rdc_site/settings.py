@@ -2,6 +2,7 @@
 import os
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
 import sys
@@ -167,6 +168,7 @@ if DATABASES['default']['ENGINE'] == 'django.db.backends.postgresql':
 # Minimal middleware and templates required for admin and management commands
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'rdc_site.middleware.StrongETagGZipMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -176,6 +178,8 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+CORS_PREFLIGHT_MAX_AGE = 86400
 
 TEMPLATES = [
     {
@@ -203,21 +207,52 @@ except Exception:
     STATIC_ROOT = str(BASE_DIR / 'staticfiles')
     STATICFILES_DIRS = [str(BASE_DIR / 'static')]
 
+CMS_STORAGE_BACKEND = os.environ.get('CMS_STORAGE_BACKEND', 'local').strip().lower()
+if CMS_STORAGE_BACKEND not in {'local', 'r2'}:
+    raise ImproperlyConfigured('CMS_STORAGE_BACKEND must be either local or r2')
+
 STORAGES = {
-    'default': {
-        'BACKEND': 'django.core.files.storage.FileSystemStorage',
-    },
     'staticfiles': {
         'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
     },
 }
+
+if CMS_STORAGE_BACKEND == 'r2':
+    r2_account_id = os.environ.get('R2_ACCOUNT_ID', '').strip()
+    r2_public_base_url = os.environ.get('R2_PUBLIC_BASE_URL', '').strip().rstrip('/')
+    r2_required = {
+        'R2_ACCOUNT_ID': r2_account_id,
+        'R2_ACCESS_KEY_ID': os.environ.get('R2_ACCESS_KEY_ID', '').strip(),
+        'R2_SECRET_ACCESS_KEY': os.environ.get('R2_SECRET_ACCESS_KEY', '').strip(),
+        'R2_BUCKET_NAME': os.environ.get('R2_BUCKET_NAME', '').strip(),
+        'R2_PUBLIC_BASE_URL': r2_public_base_url,
+    }
+    missing_r2 = [name for name, value in r2_required.items() if not value]
+    if missing_r2:
+        raise ImproperlyConfigured(f"Missing Cloudflare R2 settings: {', '.join(missing_r2)}")
+    STORAGES['default'] = {
+        'BACKEND': 'storages.backends.s3.S3Storage',
+        'OPTIONS': {
+            'access_key': r2_required['R2_ACCESS_KEY_ID'],
+            'secret_key': r2_required['R2_SECRET_ACCESS_KEY'],
+            'bucket_name': r2_required['R2_BUCKET_NAME'],
+            'endpoint_url': f'https://{r2_account_id}.r2.cloudflarestorage.com',
+            'region_name': 'auto',
+            'custom_domain': urlsplit(r2_public_base_url).netloc,
+            'querystring_auth': False,
+            'default_acl': None,
+            'file_overwrite': False,
+        },
+    }
+else:
+    STORAGES['default'] = {'BACKEND': 'django.core.files.storage.FileSystemStorage'}
 
 # CMS media uploads. Local development uses backend/media; production can replace
 # storage later without changing the CMS API contract.
 MEDIA_URL = os.environ.get('MEDIA_URL', '/media/')
 MEDIA_ROOT = Path(os.environ.get('MEDIA_ROOT') or BASE_DIR / 'media')
 SERVE_MEDIA_FILES = env_bool('SERVE_MEDIA_FILES', DEBUG)
-CMS_MAX_UPLOAD_BYTES = env_int('CMS_MAX_UPLOAD_BYTES', 10 * 1024 * 1024)
+CMS_SECTION_LOCK_SECONDS = env_int('CMS_SECTION_LOCK_SECONDS', 600)
 
 # Production security toggles. Enable these in Render once HTTPS domains are set.
 SECURE_SSL_REDIRECT = env_bool('SECURE_SSL_REDIRECT', False)

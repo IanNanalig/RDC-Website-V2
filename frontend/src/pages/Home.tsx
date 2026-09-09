@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   getPublicProjects,
@@ -10,15 +10,6 @@ import cmsApi, {
   type CMSPageSnapshot,
 } from "../services/cmsApi";
 import type { PublicProjectsStats } from "../types/api";
-import photo1 from "../assets/Photo-Corousel/Photos/photo1.jpg";
-import photo2 from "../assets/Photo-Corousel/Photos/photo2.jpg";
-import photo3 from "../assets/Photo-Corousel/Photos/photo3.jpg";
-import photo4 from "../assets/Photo-Corousel/Photos/photo4.jpg";
-import photo5 from "../assets/Photo-Corousel/Photos/photo5.jpg";
-import photo6 from "../assets/Photo-Corousel/Photos/photo6.jpg";
-import photo7 from "../assets/Photo-Corousel/Photos/photo7.jpg";
-import photo8 from "../assets/Photo-Corousel/Photos/photo8.jpg";
-import photo9 from "../assets/Photo-Corousel/Photos/photo9.jpg";
 import {
   FaLeaf,
   FaFileAlt,
@@ -46,6 +37,9 @@ type HomeButton = {
 type HomeSlide = {
   imageKey?: string;
   src: string;
+  avifSrcSet?: string;
+  webpSrcSet?: string;
+  preloadSrc?: string;
   title: string;
   subtitle: string;
   button1: HomeButton;
@@ -58,18 +52,6 @@ type DocCard = {
   icon?: React.ReactNode;
   category?: string;
   quickLinks?: Array<{ label: string; link: string }>;
-};
-
-const imageByKey: Record<string, string> = {
-  photo1,
-  photo2,
-  photo3,
-  photo4,
-  photo5,
-  photo6,
-  photo7,
-  photo8,
-  photo9,
 };
 
 const asRecord = (value: unknown): Record<string, unknown> =>
@@ -86,6 +68,29 @@ const asArray = (value: unknown): unknown[] =>
 const isVisible = (value: unknown) => {
   const row = asRecord(value);
   return row.isVisible !== false && row.visible !== false;
+};
+
+const optimizedHeroAssets = import.meta.glob<string>(
+  "../assets/optimized/hero-photo*.{avif,webp}",
+  { eager: true, query: "?url", import: "default" },
+);
+
+const optimizedHeroUrl = (imageKey: string, width: number, format: "avif" | "webp") => {
+  const suffix = `/hero-${imageKey}-${width}.${format}`;
+  const match = Object.entries(optimizedHeroAssets).find(([path]) => path.endsWith(suffix));
+  return match?.[1] || "";
+};
+
+const optimizedHero = (imageKey: string) => {
+  const webp = [768, 1280, 1920].map((width) => [width, optimizedHeroUrl(imageKey, width, "webp")] as const);
+  const avif = [768, 1280, 1920].map((width) => [width, optimizedHeroUrl(imageKey, width, "avif")] as const);
+  return {
+    imageKey,
+    src: optimizedHeroUrl(imageKey, 1280, "webp") || optimizedHeroUrl(imageKey, 768, "webp"),
+    preloadSrc: optimizedHeroUrl(imageKey, 1280, "webp") || optimizedHeroUrl(imageKey, 768, "webp"),
+    webpSrcSet: webp.every(([, url]) => url) ? webp.map(([width, url]) => `${url} ${width}w`).join(", ") : undefined,
+    avifSrcSet: avif.every(([, url]) => url) ? avif.map(([width, url]) => `${url} ${width}w`).join(", ") : undefined,
+  };
 };
 
 const getHomeSection = (
@@ -174,8 +179,8 @@ const mapHomeArticle = (article: CMSArticleSnapshot): HomeNewsArticle => ({
   id: article.slug,
   title: article.title,
   excerpt: article.summary || "Read the latest public update from RDC-NCR.",
-  date: formatArticleDate(article.publishedAt),
-  image: article.thumbnailUrl || photo2,
+  date: formatArticleDate(article.publicationDate || article.publishedAt),
+  image: article.thumbnailUrl || optimizedHero("photo2").src,
   category: article.category || "Updates",
   slug: article.slug,
 });
@@ -301,6 +306,9 @@ const Home: React.FC = () => {
   const [publicStatsError, setPublicStatsError] = useState<string>("");
   const [homeCmsPage, setHomeCmsPage] = useState<CMSPageSnapshot | null>(null);
   const [cmsNewsArticles, setCmsNewsArticles] = useState<HomeNewsArticle[]>([]);
+  const [homeAnnouncement, setHomeAnnouncement] = useState<Record<string, unknown> | null>(null);
+  const [loadBelowFold, setLoadBelowFold] = useState(false);
+  const belowFoldRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
   const buildStatsFromProjects = useCallback(
@@ -355,72 +363,63 @@ const Home: React.FC = () => {
   const fallbackCarouselImages = useMemo<HomeSlide[]>(
     () => [
       {
-        imageKey: "photo1",
-        src: photo1,
+        ...optimizedHero("photo1"),
         title: "Regional Development Council NCR",
         subtitle: "Planning a sustainable and resilient Metro Manila",
         button1: { text: "View Plans", link: "/plans" },
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
-        imageKey: "photo2",
-        src: photo2,
+        ...optimizedHero("photo2"),
         title: "Building a Better Future",
         subtitle: "Collaborative governance for Metro Manila's growth",
         button1: { text: "View Plans", link: "/plans" },
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
-        imageKey: "photo3",
-        src: photo3,
+        ...optimizedHero("photo3"),
         title: "Strategic Development",
         subtitle: "Empowering communities through effective planning",
         button1: { text: "View Plans", link: "/plans" },
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
-        imageKey: "photo4",
-        src: photo4,
+        ...optimizedHero("photo4"),
         title: "Infrastructure Excellence",
         subtitle: "Modern solutions for urban challenges",
         button1: { text: "View Plans", link: "/plans" },
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
-        imageKey: "photo5",
-        src: photo5,
+        ...optimizedHero("photo5"),
         title: "Sustainable Growth",
         subtitle: "Balancing progress with environmental care",
         button1: { text: "View Plans", link: "/plans" },
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
-        imageKey: "photo6",
-        src: photo6,
+        ...optimizedHero("photo6"),
         title: "Urban Innovation Hub",
         subtitle: "Transforming Metro Manila into a smart metropolis",
         button1: { text: "View Plans", link: "/plans" },
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
-        imageKey: "photo7",
-        src: photo7,
+        ...optimizedHero("photo7"),
         title: "Community Engagement",
         subtitle: "Working together for inclusive development",
         button1: { text: "View Plans", link: "/plans" },
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
-        imageKey: "photo8",
-        src: photo8,
+        ...optimizedHero("photo8"),
         title: "Economic Resilience",
         subtitle: "Strengthening NCR's economic foundations",
         button1: { text: "View Plans", link: "/plans" },
         button2: { text: "Latest Reports", link: "/reports" },
       },
       {
-        imageKey: "photo9",
-        src: photo9,
+        ...optimizedHero("photo9"),
         title: "Future-Ready Infrastructure",
         subtitle: "Building for tomorrow's needs today",
         button1: { text: "View Plans", link: "/plans" },
@@ -444,9 +443,13 @@ const Home: React.FC = () => {
         const button2 = asRecord(row.button2);
         const fallback =
           fallbackCarouselImages[index % fallbackCarouselImages.length];
+        const keyedImage = /^photo[1-9]$/.test(imageKey) ? optimizedHero(imageKey) : fallback;
         return {
           imageKey,
-          src: imageUrl || imageByKey[imageKey] || fallback.src,
+          src: imageUrl || keyedImage.src,
+          avifSrcSet: imageUrl ? undefined : keyedImage.avifSrcSet,
+          webpSrcSet: imageUrl ? undefined : keyedImage.webpSrcSet,
+          preloadSrc: imageUrl || keyedImage.preloadSrc || keyedImage.src,
           title: asString(row.title, fallback.title),
           subtitle: asString(row.subtitle, fallback.subtitle),
           button1: {
@@ -480,7 +483,7 @@ const Home: React.FC = () => {
       excerpt:
         "The Regional Development Council elected a new chairperson during its fourth quarter meeting...",
       date: "November 17, 2025",
-      image: photo2,
+      image: optimizedHero("photo2").src,
       category: "Announcement",
       slug: "new-chairperson-2025",
     },
@@ -490,7 +493,7 @@ const Home: React.FC = () => {
       excerpt:
         "The Infrastructure Development Committee endorsed support for digital initiatives across the region...",
       date: "November 12, 2025",
-      image: photo3,
+      image: optimizedHero("photo3").src,
       category: "Technology",
       slug: "digital-transformation",
     },
@@ -500,7 +503,7 @@ const Home: React.FC = () => {
       excerpt:
         "The latest economic indicators show positive growth trends in the National Capital Region...",
       date: "November 8, 2025",
-      image: photo4,
+      image: optimizedHero("photo4").src,
       category: "Report",
       slug: "q3-economic-report",
     },
@@ -510,7 +513,7 @@ const Home: React.FC = () => {
       excerpt:
         "New initiatives to improve public transportation and reduce congestion in Metro Manila...",
       date: "November 5, 2025",
-      image: photo5,
+      image: optimizedHero("photo5").src,
       category: "Infrastructure",
       slug: "transportation-plan-update",
     },
@@ -649,6 +652,18 @@ const Home: React.FC = () => {
     investmentProgrammingSection,
     fallbackInvestmentProgramming,
   );
+  const investmentQuickLinks = (() => {
+    const sectionLinks = asArray(investmentProgrammingSection?.quickLinks)
+      .map((value) => {
+        const row = asRecord(value);
+        const label = asString(row.label);
+        const link = asString(row.link);
+        return label && link ? { label, link } : null;
+      })
+      .filter(Boolean) as Array<{ label: string; link: string }>;
+    if (sectionLinks.length) return sectionLinks;
+    return investmentProgramming.flatMap((card) => card.quickLinks || []);
+  })();
   const monitoringEvaluation = mapCmsDocItems(
     monitoringEvaluationSection,
     fallbackMonitoringEvaluation,
@@ -791,18 +806,28 @@ const Home: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
+    cmsApi.getPublicSettings().then((data) => {
+      if (cancelled || !data || typeof data !== "object") return;
+      const value = (data as Record<string, unknown>)["homepage-announcement-banner"];
+      setHomeAnnouncement(asRecord(value));
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
 
     const loadPublicStats = async () => {
       try {
         setPublicStatsError("");
-        const st = await getPublicProjectsStats({ cacheBust: true });
+        const st = await getPublicProjectsStats();
         if (!cancelled) setPublicStats(st);
       } catch (err: unknown) {
         try {
           const list = await getPublicProjects({
             limit: 500,
             offset: 0,
-            cacheBust: true,
+            view: "summary",
           });
           if (!cancelled) {
             setPublicStats(buildStatsFromProjects(list));
@@ -829,6 +854,26 @@ const Home: React.FC = () => {
   }, [buildStatsFromProjects]);
 
   useEffect(() => {
+    const node = belowFoldRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") {
+      setLoadBelowFold(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setLoadBelowFold(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "700px 0px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!loadBelowFold) return;
     let cancelled = false;
     const loadCmsNews = async () => {
       try {
@@ -847,7 +892,7 @@ const Home: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadBelowFold]);
 
   useEffect(() => {
     if (isPaused) return;
@@ -860,6 +905,28 @@ const Home: React.FC = () => {
   }, [isPaused, carouselImages.length]);
 
   useEffect(() => {
+    if (carouselImages.length < 2) return;
+    const next = carouselImages[(currentSlide + 1) % carouselImages.length];
+    let idleId: number | undefined;
+    const preload = () => {
+      const image = new Image();
+      image.decoding = "async";
+      image.src = next.preloadSrc || next.src;
+    };
+    if ("requestIdleCallback" in window) {
+      idleId = window.requestIdleCallback(preload, { timeout: 1500 });
+    } else {
+      idleId = window.setTimeout(preload, 0);
+    }
+    return () => {
+      if (idleId === undefined) return;
+      if ("cancelIdleCallback" in window) window.cancelIdleCallback(idleId);
+      else window.clearTimeout(idleId);
+    };
+  }, [carouselImages, currentSlide]);
+
+  useEffect(() => {
+    if (!loadBelowFold) return;
     let cancelled = false;
 
     const loadEvents = async () => {
@@ -893,7 +960,7 @@ const Home: React.FC = () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [loadBelowFold]);
 
   const eventTone = (type: string) => {
     if (type === "meeting") return "bg-blue-100 text-blue-700";
@@ -940,13 +1007,6 @@ const Home: React.FC = () => {
 
   const handleDocumentClick = (link: string) => {
     navigate(link);
-  };
-
-  type DocCard = {
-    title: string;
-    link: string;
-    icon?: React.ReactNode;
-    category?: string;
   };
 
   const renderDocumentCard = (doc: DocCard) => (
@@ -1061,6 +1121,13 @@ const Home: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans">
+      {homeAnnouncement?.enabled === true && asString(homeAnnouncement.text) && (
+        <div className="bg-blue-950 px-4 py-3 text-center text-sm font-semibold text-white">
+          {asString(homeAnnouncement.link) ? (
+            <Link className="underline decoration-blue-300 underline-offset-4" to={asString(homeAnnouncement.link)}>{asString(homeAnnouncement.text)}</Link>
+          ) : asString(homeAnnouncement.text)}
+        </div>
+      )}
       {/* Hero Carousel Section - Clean Rectangle */}
       <section
         className="relative overflow-hidden"
@@ -1068,19 +1135,24 @@ const Home: React.FC = () => {
         onMouseLeave={() => setIsPaused(false)}
       >
         <div className="relative h-[70vh] min-h-[500px]">
-          {carouselImages.map((slide, index) => (
-            <div
-              key={index}
-              className={`absolute inset-0 transition-opacity duration-1000 ease-in-out ${
-                index === currentSlide ? "opacity-100" : "opacity-0"
-              }`}
-              style={{
-                backgroundImage: `url(${slide.src})`,
-                backgroundSize: "cover",
-                backgroundPosition: "center",
-                backgroundRepeat: "no-repeat",
-              }}
-            >
+          {carouselImages[currentSlide] && (() => {
+            const slide = carouselImages[currentSlide];
+            return (
+            <div key={`${currentSlide}-${slide.src}`} className="absolute inset-0">
+              <picture>
+                {slide.avifSrcSet && <source type="image/avif" srcSet={slide.avifSrcSet} sizes="100vw" />}
+                {slide.webpSrcSet && <source type="image/webp" srcSet={slide.webpSrcSet} sizes="100vw" />}
+                <img
+                  src={slide.src}
+                  alt=""
+                  width={1920}
+                  height={1080}
+                  fetchPriority={currentSlide === 0 ? "high" : "auto"}
+                  loading="eager"
+                  decoding="async"
+                  className="absolute inset-0 h-full w-full object-cover"
+                />
+              </picture>
               {/* Dark overlay for better text readability */}
               <div className="absolute inset-0 bg-black/50"></div>
 
@@ -1110,7 +1182,8 @@ const Home: React.FC = () => {
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })()}
         </div>
 
         {/* Carousel Controls */}
@@ -1198,79 +1271,62 @@ const Home: React.FC = () => {
               </div>
               <div className="p-5 space-y-5">
                 {investmentProgramming.map((doc, index) => (
-                  <div key={index} className="space-y-5">
-                    <div
-                      className="bg-white rounded-lg border border-gray-200 hover:border-green-500 hover:shadow-lg transition-all duration-300 group cursor-pointer"
-                      onClick={() => handleDocumentClick(doc.link)}
-                    >
-                      <div className="p-5">
-                        <div className="flex items-start gap-4">
-                          <div className="text-3xl mt-1">{doc.icon}</div>
-                          <div className="flex-1">
-                            <span className="inline-block px-3 py-1 bg-gray-100 text-gray-700 text-xs font-medium rounded-full mb-3">
-                              {doc.category}
-                            </span>
-                            <h4 className="font-bold text-gray-800 text-lg group-hover:text-green-700 transition-colors">
-                              {doc.title}
-                            </h4>
-                            <div className="inline-flex items-center gap-2 text-green-600 hover:text-green-800 font-medium mt-4 transition-colors">
-                              View Details
-                              <svg
-                                className="w-4 h-4"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M9 5l7 7-7 7"
-                                />
-                              </svg>
-                            </div>
+                  <div
+                    key={index}
+                    className="bg-white rounded-lg border border-gray-200 hover:border-green-500 hover:shadow-lg transition-all duration-300 group cursor-pointer"
+                    onClick={() => handleDocumentClick(doc.link)}
+                  >
+                    <div className="p-5">
+                      <div className="flex items-start gap-4">
+                        <div className="text-3xl mt-1">{doc.icon}</div>
+                        <div className="flex-1">
+                          <span className="inline-block px-3 py-1 bg-gray-100 text-gray-700 text-xs font-medium rounded-full mb-3">
+                            {doc.category}
+                          </span>
+                          <h4 className="font-bold text-gray-800 text-lg group-hover:text-green-700 transition-colors">
+                            {doc.title}
+                          </h4>
+                          <div className="inline-flex items-center gap-2 text-green-600 hover:text-green-800 font-medium mt-4 transition-colors">
+                            View Details
+                            <svg
+                              className="w-4 h-4"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M9 5l7 7-7 7"
+                              />
+                            </svg>
                           </div>
                         </div>
                       </div>
                     </div>
-
-                    {(doc.quickLinks?.length ?? 0) > 0 ? (
-                      <div className="border-t pt-5">
-                        <h5 className="font-semibold text-gray-700 mb-3">
-                          Quick Access:
-                        </h5>
-                        <div className="space-y-2">
-                          {(doc.quickLinks || []).map((quickLink, idx) => (
-                            <div
-                              key={idx}
-                              className="flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors group cursor-pointer"
-                              onClick={() =>
-                                handleDocumentClick(quickLink.link)
-                              }
-                            >
-                              <span className="font-medium text-gray-800">
-                                {quickLink.label}
-                              </span>
-                              <svg
-                                className="w-4 h-4 text-gray-400 group-hover:text-green-600 transition-colors"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M9 5l7 7-7 7"
-                                />
-                              </svg>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
                   </div>
                 ))}
+                {investmentQuickLinks.length > 0 && (
+                  <div className="border-t pt-5">
+                    <h5 className="font-semibold text-gray-700 mb-3">Quick Access:</h5>
+                    <div className="space-y-2">
+                      {investmentQuickLinks.map((quickLink, index) => (
+                        <button
+                          type="button"
+                          key={`${quickLink.label}-${index}`}
+                          className="flex w-full items-center justify-between rounded-lg bg-gray-50 p-3 text-left transition-colors hover:bg-gray-100 group"
+                          onClick={() => handleDocumentClick(quickLink.link)}
+                        >
+                          <span className="font-medium text-gray-800">{quickLink.label}</span>
+                          <svg className="w-4 h-4 text-gray-400 group-hover:text-green-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                          </svg>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1424,7 +1480,7 @@ const Home: React.FC = () => {
         </section>
 
         {/* News and Events Section */}
-        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-3">
+        <div ref={belowFoldRef} className="grid grid-cols-1 items-start gap-6 lg:grid-cols-3">
           {/* Latest Media Releases */}
           <div className="lg:col-span-2">
             <section className="overflow-hidden rounded-xl bg-white shadow-md">
@@ -1452,9 +1508,13 @@ const Home: React.FC = () => {
                             src={article.image}
                             alt={article.title}
                             onError={(event) => {
-                              event.currentTarget.src = photo2;
+                              event.currentTarget.src = optimizedHero("photo2").src;
                             }}
                             className="w-full h-48 md:h-full object-cover"
+                            width={768}
+                            height={512}
+                            loading="lazy"
+                            decoding="async"
                           />
                           <div className="absolute top-2 left-2">
                             <span className="bg-blue-600 text-white text-xs px-2 py-1 rounded">

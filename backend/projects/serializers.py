@@ -285,10 +285,11 @@ class ProjectSerializer(serializers.ModelSerializer):
         return obj.created_by.username
 
     def get_priority_analysis(self, obj):
-        analysis = obj.priority_analyses.prefetch_related("confirmations").order_by("-created_at").first()
+        analysis = self._latest_analysis(obj)
         if not analysis:
             return None
-        confirmation = analysis.confirmations.first()
+        confirmations = list(analysis.confirmations.all())
+        confirmation = confirmations[0] if confirmations else None
         return {
             "analysis_id": analysis.id,
             "score": float(analysis.base_score),
@@ -327,7 +328,22 @@ class ProjectSerializer(serializers.ModelSerializer):
         }.get(self.get_workflow_status(obj), self.get_workflow_status(obj).replace("_", " ").title())
 
     def _latest_confirmation(self, obj):
-        return ProjectPriorityConfirmation.objects.filter(analysis__project=obj).order_by("-created_at").first()
+        analysis = self._latest_analysis(obj)
+        if not analysis:
+            return None
+        confirmations = list(analysis.confirmations.all())
+        return confirmations[0] if confirmations else None
+
+    def _latest_analysis(self, obj):
+        if hasattr(obj, "_serializer_latest_analysis"):
+            return obj._serializer_latest_analysis
+        prefetched = getattr(obj, "_latest_priority_analyses", None)
+        if prefetched is not None:
+            analysis = prefetched[0] if prefetched else None
+        else:
+            analysis = obj.priority_analyses.prefetch_related("confirmations").order_by("-created_at").first()
+        obj._serializer_latest_analysis = analysis
+        return analysis
 
     def get_official_priority(self, obj):
         confirmation = self._latest_confirmation(obj)
@@ -502,6 +518,117 @@ class ProjectSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class ProjectSummarySerializer(serializers.ModelSerializer):
+    """Compact, additive projection used only when list callers request view=summary."""
+
+    title = serializers.CharField(source="name", read_only=True)
+    submitted_by_name = serializers.SerializerMethodField()
+    workflow_status = serializers.SerializerMethodField()
+    workflow_status_label = serializers.SerializerMethodField()
+    official_priority = serializers.SerializerMethodField()
+    official_priority_label = serializers.SerializerMethodField()
+    validation_comment = serializers.SerializerMethodField()
+    submission_type = serializers.SerializerMethodField()
+    rdip_status = serializers.SerializerMethodField()
+    review_status = serializers.SerializerMethodField()
+    reviewed_by_username = serializers.SerializerMethodField()
+    validator_edited = serializers.SerializerMethodField()
+    validator_edited_fields_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Project
+        fields = [
+            "id",
+            "title",
+            "name",
+            "agency",
+            "budget",
+            "completion",
+            "status",
+            "workflow_status",
+            "workflow_status_label",
+            "official_priority",
+            "official_priority_label",
+            "validation_comment",
+            "updated_at",
+            "validated",
+            "submitted_by_name",
+            "submission_type",
+            "rdip_status",
+            "review_status",
+            "reviewed_by_username",
+            "validator_edited",
+            "validator_edited_fields_count",
+        ]
+        read_only_fields = fields
+
+    def _full(self):
+        serializer = getattr(self, "_full_serializer", None)
+        if serializer is None:
+            serializer = ProjectSerializer(context=self.context)
+            self._full_serializer = serializer
+        return serializer
+
+    def _profile(self, obj):
+        return obj.profile_data if isinstance(obj.profile_data, dict) else {}
+
+    def _review(self, obj):
+        review = self._profile(obj).get("validator_review")
+        return review if isinstance(review, dict) else {}
+
+    def get_submitted_by_name(self, obj):
+        return self._full().get_submitted_by_name(obj)
+
+    def get_workflow_status(self, obj):
+        return self._full().get_workflow_status(obj)
+
+    def get_workflow_status_label(self, obj):
+        return self._full().get_workflow_status_label(obj)
+
+    def get_official_priority(self, obj):
+        return self._full().get_official_priority(obj)
+
+    def get_official_priority_label(self, obj):
+        return self._full().get_official_priority_label(obj)
+
+    def get_validation_comment(self, obj):
+        return self._full().get_validation_comment(obj)
+
+    def get_submission_type(self, obj):
+        profile = self._profile(obj)
+        value = str(profile.get("submission_type") or "").strip().lower()
+        if value:
+            return value
+        return "simplified" if isinstance(profile.get("simplified_form"), dict) else "detailed"
+
+    def get_rdip_status(self, obj):
+        simplified = self._profile(obj).get("simplified_form")
+        return str(simplified.get("status") or "").strip() if isinstance(simplified, dict) else ""
+
+    def get_review_status(self, obj):
+        return str(self._review(obj).get("review_status") or "").strip().lower()
+
+    def get_reviewed_by_username(self, obj):
+        return str(self._review(obj).get("reviewed_by_username") or "").strip()
+
+    def _edited_fields(self, obj):
+        raw = self._review(obj).get("edited_fields")
+        if not isinstance(raw, list):
+            return []
+        return [
+            item
+            for item in raw
+            if isinstance(item, dict)
+            and str(item.get("field") or "").split(".")[0] not in SYSTEM_MANAGED_DIFF_ROOTS
+        ]
+
+    def get_validator_edited(self, obj):
+        return bool(self._edited_fields(obj))
+
+    def get_validator_edited_fields_count(self, obj):
+        return len(self._edited_fields(obj))
+
+
 class ProjectPriorityConfirmationSerializer(serializers.ModelSerializer):
     validator_name = serializers.SerializerMethodField()
 
@@ -618,6 +745,45 @@ class ProjectRevisionSerializer(serializers.ModelSerializer):
 
     def get_endorsed_by_name(self, obj):
         return self._name(obj.endorsed_by)
+
+
+class ProjectRevisionSummarySerializer(ProjectRevisionSerializer):
+    budget = serializers.SerializerMethodField()
+    submission_type = serializers.SerializerMethodField()
+
+    class Meta(ProjectRevisionSerializer.Meta):
+        fields = [
+            "id",
+            "project",
+            "project_title",
+            "project_agency",
+            "revision_number",
+            "revision_type",
+            "state",
+            "budget",
+            "submission_type",
+            "created_by_name",
+            "submitted_by_name",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def _profile(self, obj):
+        return obj.profile_data_snapshot if isinstance(obj.profile_data_snapshot, dict) else {}
+
+    def get_budget(self, obj):
+        summary = self._profile(obj).get("public_summary")
+        facts = summary.get("key_facts") if isinstance(summary, dict) else None
+        value = facts.get("funding_requirement_total") if isinstance(facts, dict) else None
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def get_submission_type(self, obj):
+        profile = self._profile(obj)
+        value = str(profile.get("submission_type") or "").strip().lower()
+        return value or ("simplified" if isinstance(profile.get("simplified_form"), dict) else "detailed")
 
 
 class PublicProjectSerializer(serializers.ModelSerializer):
@@ -768,14 +934,24 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         return {}
 
     def _endorsed_revisions(self, obj):
+        cached = getattr(obj, "_serializer_endorsed_revisions", None)
+        if cached is not None:
+            return cached
         try:
-            return list(
-                obj.revisions.filter(state="endorsed").order_by("-endorsed_at", "-revision_number")
-            )
+            prefetched = getattr(obj, "_public_endorsed_revisions", None)
+            latest = getattr(obj, "_public_latest_endorsed_revision", None)
+            revisions = prefetched if prefetched is not None else latest
+            if revisions is None:
+                revisions = list(obj.revisions.filter(state="endorsed").order_by("-endorsed_at", "-revision_number"))
         except Exception:
-            return []
+            revisions = []
+        obj._serializer_endorsed_revisions = revisions
+        return revisions
 
     def _progress_revisions(self, obj):
+        latest = getattr(obj, "_public_latest_progress_revision", None)
+        if latest is not None:
+            return latest
         return [r for r in self._endorsed_revisions(obj) if r.revision_type == "progress_update"]
 
     def _field_label(self, field):
@@ -904,13 +1080,15 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         return obj.updated_at.isoformat() if getattr(obj, "validated", False) and obj.updated_at else None
 
     def get_endorsed_update_count(self, obj):
-        return len(self._progress_revisions(obj))
+        count = getattr(obj, "_public_progress_update_count", None)
+        return count if count is not None else len(self._progress_revisions(obj))
 
     def get_has_public_updates(self, obj):
-        return len(self._progress_revisions(obj)) > 0
+        return self.get_public_progress_update_count(obj) > 0
 
     def get_public_progress_update_count(self, obj):
-        return len(self._progress_revisions(obj))
+        count = getattr(obj, "_public_progress_update_count", None)
+        return count if count is not None else len(self._progress_revisions(obj))
 
     def get_latest_update_date(self, obj):
         revisions = self._progress_revisions(obj)
@@ -929,6 +1107,29 @@ class PublicProjectSerializer(serializers.ModelSerializer):
 
     def get_public_update_timeline(self, obj):
         return [self._timeline_entry(revision) for revision in self._endorsed_revisions(obj)]
+
+
+class PublicProjectSummarySerializer(PublicProjectSerializer):
+    class Meta(PublicProjectSerializer.Meta):
+        fields = [
+            "id",
+            "title",
+            "agency",
+            "implementation_status",
+            "budget",
+            "year",
+            "lgu",
+            "lgus",
+            "location_raw",
+            "last_endorsed_update_at",
+            "has_public_updates",
+            "public_progress_update_count",
+            "latest_update_date",
+            "latest_update_headline",
+            "latest_update_badges",
+            "updated_at",
+        ]
+        read_only_fields = fields
 
 
 class AccessRequestSerializer(serializers.ModelSerializer):

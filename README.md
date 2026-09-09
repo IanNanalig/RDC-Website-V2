@@ -45,6 +45,7 @@ npm run lint
 cd ..\backend
 .\venv\Scripts\python manage.py check
 .\venv\Scripts\python manage.py test projects
+.\venv\Scripts\python manage.py test cms
 ```
 
 ## Deployment Notes

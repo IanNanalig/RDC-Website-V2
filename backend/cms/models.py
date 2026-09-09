@@ -1,5 +1,21 @@
 from django.conf import settings
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 from django.db import models
+
+
+CMS_STATUS_DRAFT = "draft"
+CMS_STATUS_SUBMITTED = "submitted"
+CMS_STATUS_PUBLISHED = "published"
+CMS_STATUS_REJECTED = "rejected"
+CMS_STATUS_ARCHIVED = "archived"
+CMS_STATUS_CHOICES = [
+    (CMS_STATUS_DRAFT, "Draft"),
+    (CMS_STATUS_SUBMITTED, "Submitted for review"),
+    (CMS_STATUS_PUBLISHED, "Published"),
+    (CMS_STATUS_REJECTED, "Rejected"),
+    (CMS_STATUS_ARCHIVED, "Archived"),
+]
 
 
 class CMSMediaAsset(models.Model):
@@ -13,6 +29,9 @@ class CMSMediaAsset(models.Model):
     ]
 
     file = models.FileField(upload_to="cms/%Y/%m/")
+    storage_backend = models.CharField(max_length=20, default="local")
+    storage_key = models.CharField(max_length=500, blank=True)
+    public_url = models.URLField(max_length=1000, blank=True)
     file_type = models.CharField(max_length=30, choices=FILE_TYPE_CHOICES, default=FILE_TYPE_OTHER)
     mime_type = models.CharField(max_length=120, blank=True)
     size = models.PositiveBigIntegerField(default=0)
@@ -39,7 +58,9 @@ class CMSMediaAsset(models.Model):
         return self.file.name
 
     @property
-    def public_url(self):
+    def resolved_public_url(self):
+        if self.public_url:
+            return self.public_url
         try:
             return self.file.url
         except ValueError:
@@ -47,12 +68,12 @@ class CMSMediaAsset(models.Model):
 
 
 class CMSPage(models.Model):
-    STATUS_DRAFT = "draft"
-    STATUS_PUBLISHED = "published"
-    STATUS_CHOICES = [
-        (STATUS_DRAFT, "Draft"),
-        (STATUS_PUBLISHED, "Published"),
-    ]
+    STATUS_DRAFT = CMS_STATUS_DRAFT
+    STATUS_SUBMITTED = CMS_STATUS_SUBMITTED
+    STATUS_PUBLISHED = CMS_STATUS_PUBLISHED
+    STATUS_REJECTED = CMS_STATUS_REJECTED
+    STATUS_ARCHIVED = CMS_STATUS_ARCHIVED
+    STATUS_CHOICES = CMS_STATUS_CHOICES
 
     title = models.CharField(max_length=200)
     slug = models.SlugField(max_length=120, unique=True)
@@ -73,7 +94,23 @@ class CMSPage(models.Model):
         on_delete=models.SET_NULL,
         related_name="updated_cms_pages",
     )
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="submitted_cms_pages",
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="reviewed_cms_pages",
+    )
+    review_notes = models.TextField(blank=True)
     published_at = models.DateTimeField(null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -97,6 +134,15 @@ class CMSPageSection(models.Model):
     content_json = models.JSONField(default=dict, blank=True)
     schema_version = models.PositiveIntegerField(default=1)
     is_visible = models.BooleanField(default=True)
+    status = models.CharField(max_length=20, choices=CMS_STATUS_CHOICES, default=CMS_STATUS_DRAFT)
+    lock_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="locked_cms_sections",
+    )
+    lock_acquired_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -107,8 +153,9 @@ class CMSPageSection(models.Model):
             models.UniqueConstraint(fields=["page", "order"], name="unique_cms_section_order_per_page"),
         ]
         indexes = [
-            models.Index(fields=["page", "is_visible", "order"]),
+            models.Index(fields=["page", "status", "is_visible", "order"]),
             models.Index(fields=["section_type"]),
+            models.Index(fields=["lock_acquired_at"]),
         ]
 
     def __str__(self):
@@ -116,12 +163,12 @@ class CMSPageSection(models.Model):
 
 
 class CMSArticle(models.Model):
-    STATUS_DRAFT = "draft"
-    STATUS_PUBLISHED = "published"
-    STATUS_CHOICES = [
-        (STATUS_DRAFT, "Draft"),
-        (STATUS_PUBLISHED, "Published"),
-    ]
+    STATUS_DRAFT = CMS_STATUS_DRAFT
+    STATUS_SUBMITTED = CMS_STATUS_SUBMITTED
+    STATUS_PUBLISHED = CMS_STATUS_PUBLISHED
+    STATUS_REJECTED = CMS_STATUS_REJECTED
+    STATUS_ARCHIVED = CMS_STATUS_ARCHIVED
+    STATUS_CHOICES = CMS_STATUS_CHOICES
 
     title = models.CharField(max_length=220)
     slug = models.SlugField(max_length=140, unique=True)
@@ -136,6 +183,7 @@ class CMSArticle(models.Model):
         related_name="thumbnail_articles",
     )
     author = models.CharField(max_length=150, blank=True)
+    publication_date = models.DateField(null=True, blank=True)
     featured = models.BooleanField(default=False)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT)
     published_snapshot_json = models.JSONField(default=dict, blank=True)
@@ -154,7 +202,23 @@ class CMSArticle(models.Model):
         on_delete=models.SET_NULL,
         related_name="updated_cms_articles",
     )
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="submitted_cms_articles",
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="reviewed_cms_articles",
+    )
+    review_notes = models.TextField(blank=True)
     published_at = models.DateTimeField(null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -188,16 +252,23 @@ class CMSRevision(models.Model):
     ACTION_PUBLISH = "publish"
     ACTION_ARCHIVE = "archive"
     ACTION_REORDER = "reorder"
+    ACTION_SUBMIT = "submit"
+    ACTION_REJECT = "reject"
+    ACTION_RESTORE = "restore"
     ACTION_CHOICES = [
         (ACTION_CREATE, "Create"),
         (ACTION_UPDATE, "Update"),
         (ACTION_PUBLISH, "Publish"),
         (ACTION_ARCHIVE, "Archive"),
         (ACTION_REORDER, "Reorder"),
+        (ACTION_SUBMIT, "Submit"),
+        (ACTION_REJECT, "Reject"),
+        (ACTION_RESTORE, "Restore"),
     ]
 
-    content_type = models.CharField(max_length=20, choices=CONTENT_TYPE_CHOICES)
+    content_type = models.ForeignKey(ContentType, on_delete=models.PROTECT, related_name="cms_revisions")
     object_id = models.PositiveBigIntegerField()
+    content_object = GenericForeignKey("content_type", "object_id")
     version_number = models.PositiveIntegerField()
     action = models.CharField(max_length=20, choices=ACTION_CHOICES)
     status_before = models.CharField(max_length=40, blank=True)
@@ -227,4 +298,33 @@ class CMSRevision(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.content_type}#{self.object_id} v{self.version_number}"
+        return f"{self.content_type.model}#{self.object_id} v{self.version_number}"
+
+    @property
+    def content_type_key(self):
+        return {
+            "cmspage": self.CONTENT_PAGE,
+            "cmsarticle": self.CONTENT_ARTICLE,
+            "cmspagesection": self.CONTENT_SECTION,
+            "cmsmediaasset": self.CONTENT_MEDIA,
+        }.get(self.content_type.model, self.content_type.model)
+
+
+class CMSSiteSetting(models.Model):
+    key = models.SlugField(max_length=160, unique=True)
+    value_json = models.JSONField(default=dict, blank=True)
+    description = models.TextField(blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="updated_cms_site_settings",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["key"]
+
+    def __str__(self):
+        return self.key

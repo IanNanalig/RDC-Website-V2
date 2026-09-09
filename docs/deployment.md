@@ -281,6 +281,19 @@ Manual smoke tests:
 - Contributor save/submit workflow works.
 - Validator review workflow works.
 
+## Single-Push Release Gate
+
+Before promoting the combined functional/performance release:
+
+1. Back up the Supabase production database and rehearse all pending migrations against a staging copy.
+2. Verify project-revision counts, published CMS snapshots, and duplicate-carousel archival before and after the rehearsal.
+3. Run frontend lint/build, backend workflow and PostgreSQL tests, `makemigrations --check --dry-run`, deploy checks, and a secret scan.
+4. Create one release commit, then deploy that exact commit to Vercel Preview and Render staging.
+5. Promote the same commit only after contributor, validator, admin, update, download, and CMS smoke tests pass.
+6. Roll back the release commit if workflows fail or HTTP 5xx exceeds 1%. Keep additive database changes unless rehearsal proves a migration unsafe.
+
+The release intentionally keeps the existing Gunicorn command and every original media asset. Optimized derivatives can be regenerated with `npm run optimize:images` from `frontend/`.
+
 ## Docker Fallback
 
 For local production-like testing:
@@ -302,3 +315,27 @@ If uploaded files become production-critical, use one of:
 - Cloudinary for image-only assets
 
 Do not rely on temporary Render filesystem storage for permanent public records.
+## CMS Media Storage
+
+Local/development storage is the default:
+
+```env
+CMS_STORAGE_BACKEND=local
+MEDIA_ROOT=/var/data/media
+MEDIA_URL=/media/
+SERVE_MEDIA_FILES=true
+```
+
+For Cloudflare R2, install the repository requirements and configure:
+
+```env
+CMS_STORAGE_BACKEND=r2
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_BUCKET_NAME=
+R2_PUBLIC_BASE_URL=https://media.example.gov.ph
+SERVE_MEDIA_FILES=false
+```
+
+The R2 token should be limited to the selected media bucket. `R2_PUBLIC_BASE_URL` must point to a public bucket domain or custom domain. Existing local media is not copied automatically when the switch is enabled.

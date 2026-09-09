@@ -71,16 +71,16 @@ HOME_SECTIONS = [
         "order": 3,
         "content_json": {
             "title": "Investment Programming",
+            "quickLinks": [
+                {"label": "RDIP DOCUMENTS", "link": "/publications?category=rdip"},
+                {"label": "RDIP DASHBOARD", "link": "/Projects"},
+            ],
             "items": [
                 {
                     "title": "Regional Development Investment Program",
                     "category": "Investment Portfolio",
                     "icon": "chart-line",
                     "link": "/publications?category=rdip",
-                    "quickLinks": [
-                        {"label": "RDIP DOCUMENTS", "link": "/publications?category=rdip"},
-                        {"label": "RDIP DASHBOARD", "link": "/Projects"},
-                    ],
                 }
             ],
         },

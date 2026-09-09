@@ -11,6 +11,8 @@ class Command(BaseCommand):
         "seed_contact_cms",
         "seed_region_profile_cms",
         "seed_publications_cms",
+        "seed_news_cms",
+        "seed_projects_dashboard_cms",
     ]
 
     def handle(self, *args, **options):

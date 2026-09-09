@@ -103,6 +103,20 @@ ABOUT_SECTIONS = [
         "content_json": {
             "title": "RDC-NCR Organizational Structure",
             "subtitle": "Clear governance framework showing decision-making flow and reporting lines",
+            "nodes": [
+                {"id": "chairperson", "label": "Leadership", "title": "Chairperson", "subtitle": "NEDA Regional Director", "items": []},
+                {"id": "vice-chair", "label": "Leadership", "title": "Vice-Chairperson", "subtitle": "Designated Representative", "items": []},
+                {"id": "secretariat", "label": "Core Office", "title": "Secretariat", "subtitle": "NCR Regional Office", "items": []},
+                {"id": "secretary", "label": "Core Office", "title": "Secretary", "subtitle": "Coordinating Officer", "items": []},
+                {"id": "executive-committee", "label": "Decision Body", "title": "Executive Committee", "subtitle": "Core Decision Body", "items": []},
+                {"id": "voting-members", "label": "Membership", "title": "Voting Members", "subtitle": "", "items": ["17 MM Mayors", "President of MMVML", "President of MMCL"]},
+                {"id": "non-voting-members", "label": "Membership", "title": "Non-Voting Members", "subtitle": "", "items": ["Secretary/Head of Agency", "Regional Directors (DOF, DOTI, DICT, etc.)", "PSO/NGO Representatives"]},
+                {"id": "special-non-voting", "label": "Membership", "title": "Designation of Special Non-Voting Members (SNVMs)", "subtitle": "Members of House of Representatives, NEDA Central Office, Other Agencies", "items": []},
+                {"id": "sectoral-committees", "label": "Committees", "title": "Sectoral Committees", "subtitle": "", "items": ["Economic & Environment", "Finance & Dev Admin", "Infrastructure", "Social Development"]},
+                {"id": "special-committees", "label": "Committees", "title": "Special Committees", "subtitle": "", "items": ["Project Monitoring (RPMES)", "Land Use (RLUC)", "Research & Innovation", "Dev Committees"]},
+                {"id": "affiliate-committees", "label": "Committees", "title": "Affiliate Committees", "subtitle": "", "items": ["Welfare of Children (RCWC)", "SME Development (RSMEDC)", "Statistical Committee (RSC)", "Peace & Order (RPOC)"]},
+                {"id": "advisory-committee", "label": "Advisory", "title": "Advisory Committee", "subtitle": "Expert Consultation Body", "items": []},
+            ],
         },
     },
     {
@@ -114,6 +128,7 @@ ABOUT_SECTIONS = [
             "subtitle": "Complete historical record of all RDC-NCR resolutions from 2010 to present",
             "legendTitle": "Document Type Legend",
             "categoryTitle": "Resolution Categories Summary",
+            "years": [],
         },
     },
 ]

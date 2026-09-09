@@ -1,10 +1,22 @@
+import json
 from datetime import timedelta
 
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
-from .models import Notification, PriorityRuleSet, Project, ProjectPriorityAnalysis, SystemSetting, User, UserActivity
+from .models import (
+    Notification,
+    PriorityRuleSet,
+    Project,
+    ProjectPriorityAnalysis,
+    ProjectRevision,
+    SystemSetting,
+    User,
+    UserActivity,
+)
 
 
 class PortalWorkflowTests(APITestCase):
@@ -117,6 +129,126 @@ class PortalWorkflowTests(APITestCase):
             1,
         )
 
+    def test_validator_draft_and_validation_create_notifications(self):
+        project = Project.objects.create(
+            name="Validator Notification Project",
+            implementing_agency="MMDA",
+            municipality="NCR",
+            status="proposed",
+            cost=100000,
+            latitude=14.5,
+            agency="MMDA",
+            budget=100000,
+            created_by=self.employee,
+            priority_analysis_eligible=False,
+        )
+
+        self._as(self.validator)
+        draft = self.client.post(
+            f"/api/validator/projects/{project.id}/validate/",
+            {"action": "save_draft", "edited_profile_data": {}},
+            format="json",
+        )
+        self.assertEqual(draft.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            Notification.objects.filter(
+                project=project,
+                recipient=self.validator,
+                event_type="validator_review_draft_saved",
+            ).count(),
+            1,
+        )
+
+        validated = self.client.post(
+            f"/api/validator/projects/{project.id}/validate/",
+            {"action": "validate", "edited_profile_data": {}},
+            format="json",
+        )
+        self.assertEqual(validated.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            Notification.objects.filter(
+                project=project,
+                recipient=self.validator,
+                event_type="validator_project_validated",
+            ).count(),
+            1,
+        )
+
+    def test_validator_progress_draft_and_validation_create_notifications(self):
+        profile = {
+            "simplified_form": {
+                "projectActivity": "Validator Progress Notification",
+                "startYear": "2026",
+                "endYear": "2027",
+            }
+        }
+        project = Project.objects.create(
+            name="Validator Progress Notification",
+            implementing_agency="MMDA",
+            municipality="NCR",
+            status="ongoing",
+            validated=True,
+            cost=100000,
+            latitude=14.5,
+            agency="MMDA",
+            budget=100000,
+            created_by=self.employee,
+            profile_data=profile,
+        )
+        ProjectRevision.objects.create(
+            project=project,
+            revision_number=1,
+            revision_type="initial_submission",
+            state="endorsed",
+            profile_data_snapshot=profile,
+            is_public_current=True,
+            created_by=self.employee,
+            submitted_by=self.employee,
+            reviewed_by=self.validator,
+            endorsed_by=self.validator,
+        )
+        progress = ProjectRevision.objects.create(
+            project=project,
+            revision_number=2,
+            revision_type="progress_update",
+            state="submitted",
+            profile_data_snapshot=profile,
+            created_by=self.employee,
+            submitted_by=self.employee,
+        )
+
+        self._as(self.validator)
+        draft = self.client.post(
+            f"/api/project-revisions/{progress.id}/review/",
+            {"action": "save_draft", "edited_profile_data": profile},
+            format="json",
+        )
+        self.assertEqual(draft.status_code, status.HTTP_200_OK)
+        draft_notification = Notification.objects.get(
+            project=project,
+            recipient=self.validator,
+            event_type="validator_progress_draft_saved",
+        )
+        self.assertEqual(
+            draft_notification.link_path,
+            f"/validator/projects/{project.id}/review?revision={progress.id}",
+        )
+
+        validated = self.client.post(
+            f"/api/project-revisions/{progress.id}/review/",
+            {"action": "validate", "edited_profile_data": profile},
+            format="json",
+        )
+        self.assertEqual(validated.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            Notification.objects.filter(
+                project=project,
+                recipient=self.validator,
+                event_type="validator_progress_validated",
+            ).count(),
+            1,
+        )
+
     def test_needs_revision_requires_comment_unlocks_edit_and_notifies(self):
         self._as(self.employee)
         create_res = self.client.post(
@@ -207,6 +339,10 @@ class PortalWorkflowTests(APITestCase):
         self.assertEqual(list_res.status_code, status.HTTP_200_OK)
         self.assertEqual(len(list_res.data), 1)
         self.assertEqual(list_res.data[0]["id"], mine.id)
+        meta_res = self.client.get("/api/notifications/?include_meta=1")
+        self.assertEqual(meta_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(meta_res.data["unread_count"], 1)
+        self.assertEqual(meta_res.data["results"][0]["id"], mine.id)
         count_res = self.client.get("/api/notifications/unread-count/")
         self.assertEqual(count_res.data["unread_count"], 1)
         mark_res = self.client.post(f"/api/notifications/{mine.id}/mark-read/", {}, format="json")
@@ -253,6 +389,60 @@ class PortalWorkflowTests(APITestCase):
         filtered = self.client.get("/api/validator/projects/?workflow=priority")
         self.assertEqual(filtered.status_code, status.HTTP_200_OK)
         self.assertTrue(any(item["id"] == project.id for item in filtered.data))
+
+    def test_validator_can_run_priority_analysis_for_detailed_form(self):
+        detailed_profile = {
+            "submission_type": "detailed",
+            "projectTitle": "Metro Manila Circular Waste Facilities",
+            "programOrProject": "Project",
+            "description": "Regional solid waste recovery, recycling, and climate mitigation facilities.",
+            "objective": "Reduce landfill waste and improve environmental resilience.",
+            "mainPdpChapter": "Chapter 15 Accelerate Climate Action and Strengthen Disaster Resilience",
+            "mainInfrastructureSector": "Social Infrastructure",
+            "mainInfrastructureSubsector": "Solid Waste Management",
+            "costLocalities": "Manila, Quezon City, Pasig, Marikina",
+            "spatialCoverageByImpact": "Region-wide NCR environmental benefits",
+            "physicalFinancialStatus": "Proposed project",
+            "totalProjectCost": "480,000,000",
+        }
+        project = Project.objects.create(
+            name=detailed_profile["projectTitle"],
+            implementing_agency="DENR",
+            municipality="NCR",
+            status="proposed",
+            cost=480000000,
+            latitude=14.5,
+            agency="DENR",
+            budget=480000000,
+            created_by=self.employee,
+            profile_data=detailed_profile,
+        )
+
+        self._as(self.validator)
+        response = self.client.post(
+            f"/api/validator/projects/{project.id}/priority-analysis/run/",
+            {
+                "edited_profile_data": detailed_profile,
+                "supplements": {
+                    "readinessLevel": "ongoing_documents",
+                    "gadResponsiveness": "gender_sensitive",
+                    "spatialCoverageScope": "region_wide",
+                    "sceeedTrack": "environment",
+                    "beneficiaryCount": "2500000",
+                    "regionalSpatialCategory": "region_wide",
+                    "contributedOutcomeCount": "2",
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        analysis = response.data["analysis"]
+        self.assertEqual(analysis["suggested_scores"]["missing_facts"], [])
+        self.assertEqual(analysis["suggested_scores"]["rdp_track"], "environment")
+        self.assertTrue(analysis["regional_scorecard"]["applicable"])
+        stored_analysis = ProjectPriorityAnalysis.objects.get(pk=analysis["id"])
+        self.assertEqual(stored_analysis.input_snapshot["submission_type"], "detailed")
 
     def test_role_access_restrictions(self):
         # Employee cannot access admin and validator list endpoints.
@@ -512,6 +702,37 @@ class PortalWorkflowTests(APITestCase):
         self.assertEqual(project.profile_data.get("projectTitle"), "Profile Data Project")
         self.assertEqual(len(project.profile_data.get("projectCostRows", [])), 1)
 
+    def test_employee_can_list_own_detailed_draft_when_office_differs_from_account_agency(self):
+        self.employee.agency = "DENR"
+        self.employee.save(update_fields=["agency"])
+        self._as(self.employee)
+        create_res = self.client.post(
+            "/api/employee/projects/",
+            {
+                "title": "DENR Detailed Draft",
+                "agency": "DENR-NCR Environmental Management and Solid Waste Management Unit",
+                "budget": 480000000,
+                "completion": 0,
+                "status": "draft",
+                "profile_data": {
+                    "submission_type": "detailed",
+                    "projectTitle": "DENR Detailed Draft",
+                    "officeUnit": "DENR-NCR Environmental Management and Solid Waste Management Unit",
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
+
+        project_id = create_res.data["id"]
+        list_res = self.client.get("/api/employee/projects/")
+        self.assertEqual(list_res.status_code, status.HTTP_200_OK)
+        self.assertIn(project_id, [project["id"] for project in list_res.data])
+        self.assertEqual(
+            self.client.get(f"/api/employee/projects/{project_id}/").status_code,
+            status.HTTP_200_OK,
+        )
+
     def test_employee_profile_data_must_be_json_object(self):
         self._as(self.employee)
         payload = {
@@ -524,3 +745,94 @@ class PortalWorkflowTests(APITestCase):
         create_res = self.client.post("/api/employee/projects/", payload, format="json")
         self.assertEqual(create_res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("profile_data", create_res.data)
+
+
+class PerformanceApiTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username="performance-admin", password="password", role="admin", email="performance@example.com"
+        )
+
+    def _project(self, index=1, validated=False):
+        return Project.objects.create(
+            name=f"Performance Project {index}",
+            description="A complete narrative that belongs only in detail responses.",
+            implementing_agency="MMDA",
+            municipality="NCR",
+            status="completed" if validated else "planning",
+            cost=1000,
+            latitude=14.5,
+            longitude=121.0,
+            agency="MMDA",
+            budget=1000,
+            validated=validated,
+            created_by=self.admin,
+            profile_data={
+                "submission_type": "simplified",
+                "simplified_form": {"status": "Ongoing", "location": "Manila"},
+                "validator_review": {"review_status": "endorsed", "reviewed_by_username": "validator"},
+            },
+        )
+
+    def test_project_and_revision_summary_views_omit_large_snapshots(self):
+        project = self._project()
+        revision = ProjectRevision.objects.create(
+            project=project,
+            revision_number=1,
+            revision_type="progress_update",
+            state="draft",
+            created_by=self.admin,
+            profile_data_snapshot={"submission_type": "simplified", "large": "x" * 5000},
+        )
+        self.client.force_authenticate(user=self.admin)
+
+        summary = self.client.get("/api/admin/projects/?view=summary")
+        self.assertEqual(summary.status_code, status.HTTP_200_OK)
+        self.assertNotIn("profile_data", summary.data[0])
+        self.assertEqual(summary.data[0]["submission_type"], "simplified")
+        self.assertLess(len(json.dumps(summary.data[0], default=str).encode("utf-8")), 2048)
+        detail = self.client.get(f"/api/admin/projects/{project.pk}/")
+        self.assertIn("profile_data", detail.data)
+
+        revision_summary = self.client.get("/api/project-revisions/?view=summary")
+        row = next(item for item in revision_summary.data if item["id"] == revision.pk)
+        self.assertNotIn("profile_data_snapshot", row)
+        revision_detail = self.client.get(f"/api/project-revisions/{revision.pk}/")
+        self.assertIn("profile_data_snapshot", revision_detail.data)
+
+    def test_project_summary_query_count_stays_bounded(self):
+        self.client.force_authenticate(user=self.admin)
+        for index in range(2):
+            self._project(index)
+        with CaptureQueriesContext(connection) as small_context:
+            response = self.client.get("/api/admin/projects/?view=summary")
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        for index in range(2, 12):
+            self._project(index)
+        with CaptureQueriesContext(connection) as large_context:
+            response = self.client.get("/api/admin/projects/?view=summary")
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.assertLessEqual(len(large_context), len(small_context) + 1)
+
+    def test_public_summary_is_lightweight_and_etag_changes_after_update(self):
+        project = self._project(validated=True)
+        first = self.client.get("/api/public/projects/?view=summary")
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertNotIn("description", first.data[0])
+        self.assertNotIn("public_update_timeline", first.data[0])
+        self.assertLess(len(json.dumps(first.data[0], default=str).encode("utf-8")), 2048)
+        etag = first["ETag"]
+
+        unchanged = self.client.get("/api/public/projects/?view=summary", HTTP_IF_NONE_MATCH=etag)
+        self.assertEqual(unchanged.status_code, status.HTTP_304_NOT_MODIFIED)
+
+        project.budget = 2000
+        project.save(update_fields=["budget", "updated_at"])
+        changed = self.client.get("/api/public/projects/?view=summary", HTTP_IF_NONE_MATCH=etag)
+        self.assertEqual(changed.status_code, status.HTTP_200_OK)
+        self.assertNotEqual(changed["ETag"], etag)
+        detail = self.client.get(f"/api/public/projects/{project.pk}/")
+        self.assertIn("description", detail.data)
+        self.assertIn("public_update_timeline", detail.data)

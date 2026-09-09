@@ -8,7 +8,7 @@ import {
 import { lazy, Suspense, useEffect, useState } from "react";
 import Navbar from "./components/Navbar";
 import Footer from "./components/Footer";
-import PublicChatbot from "./components/PublicChatbot";
+import PublicChatbot from "./components/DeferredPublicChatbot";
 import SafeBoundary from "./components/SafeBoundary";
 
 const Home = lazy(() => import("./pages/Home"));
@@ -519,6 +519,14 @@ export default function App() {
           path="/content/dashboard"
           element={
             <ProtectedRoute roles={["content_editor"]}>
+              <ContentManagementPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/employee/cms/*"
+          element={
+            <ProtectedRoute roles={["admin", "content_editor"]}>
               <ContentManagementPage />
             </ProtectedRoute>
           }

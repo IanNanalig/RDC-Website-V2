@@ -60,7 +60,7 @@ def media_is_used(media: CMSMediaAsset) -> bool:
 
 def _media_references(media: CMSMediaAsset):
     references = {media.file.name}
-    public_url = media.public_url
+    public_url = media.resolved_public_url
     if public_url:
         references.add(public_url)
     return {reference for reference in references if reference}

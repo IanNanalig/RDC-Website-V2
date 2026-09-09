@@ -27,8 +27,8 @@ export default function SubmissionFormChooser() {
   if (!encodingWindow.loading && !canEncode) {
     return (
       <PortalLayout
-        title="Choose Submission Form"
-        subtitle="Select the form format required for your project entry"
+        title="New Project Submission"
+        subtitle="Create a project using the streamlined RDIP form"
         role="employee"
         userName={displayName}
         topActions={
@@ -46,8 +46,8 @@ export default function SubmissionFormChooser() {
 
   return (
     <PortalLayout
-      title="Choose Submission Form"
-      subtitle="Select the form format required for your project entry"
+      title="New Project Submission"
+      subtitle="Create a project using the streamlined RDIP form"
       role="employee"
       userName={displayName}
       topActions={
@@ -56,7 +56,7 @@ export default function SubmissionFormChooser() {
         </button>
       }
     >
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="max-w-3xl">
         <section className="portal-card overflow-hidden">
           <div className="border-b border-slate-200 px-4 py-3">
             <h2 className="text-base font-semibold text-slate-900">Simplified Form (RDIP)</h2>
@@ -77,30 +77,6 @@ export default function SubmissionFormChooser() {
               disabled={encodingWindow.loading}
             >
               Use Simplified Form
-            </button>
-          </div>
-        </section>
-
-        <section className="portal-card overflow-hidden">
-          <div className="border-b border-slate-200 px-4 py-3">
-            <h2 className="text-base font-semibold text-slate-900">Detailed Form (RDIP)</h2>
-          </div>
-          <div className="portal-card-body space-y-4">
-            <p className="text-sm text-slate-600">
-              Use this for the full detailed project profile with all sections and comprehensive planning fields.
-            </p>
-            <ul className="list-disc space-y-1 pl-5 text-sm text-slate-700">
-              <li>Full template with multi-step sections</li>
-              <li>Detailed planning and implementation metadata</li>
-              <li>Best for complete PAP documentation</li>
-            </ul>
-            <button
-              type="button"
-              onClick={() => navigate("/employee/projects/new/detailed")}
-              className="portal-btn portal-btn-primary"
-              disabled={encodingWindow.loading}
-            >
-              Use Detailed Form
             </button>
           </div>
         </section>

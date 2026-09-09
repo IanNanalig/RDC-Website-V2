@@ -14,6 +14,16 @@ If something is not ready for the public, save it as a draft and do not publish 
 
 ## Pages and Sections
 
+The Pages workspace includes all seven core public pages:
+
+- Home
+- About RDC
+- Region Profile
+- Publications
+- News
+- Projects Dashboard
+- Contact
+
 Public pages are made of sections. Examples:
 
 - Hero banner
@@ -29,10 +39,16 @@ Typical workflow:
 2. Choose the page you want to edit.
 3. Edit the section fields.
 4. Save the section draft.
-5. Review the preview/public page.
-6. Publish the page when the content is final.
+5. After publishing, use `View Published` to review the public page.
+6. Content editors submit the change for review; administrators publish or reject it.
 
 Sections can be shown or hidden with `Visibility`. Hidden sections are not included in the next published public snapshot.
+
+Opening an existing section acquires a 10-minute editing lock. The editor refreshes the lock every two minutes and releases it on save or close. If another editor owns the lock, the section opens read-only and staff can send a Request Access notification.
+
+The News page record controls the landing-page hero and introduction. Individual news articles remain in the separate `CMS > News` workspace. The Projects Dashboard page record controls headings and explanatory copy only; totals, budgets, statuses, maps, and project updates continue to come from endorsed portal project records.
+
+The core-page migration fills missing pages and required sections without replacing text already edited by staff. For manual local repair or reseeding, run `python manage.py seed_all_cms`.
 
 ## Publications
 
@@ -43,7 +59,7 @@ The Publications page can use two kinds of files:
 
 Recommended workflow for replacing or adding a publication file:
 
-1. Open `CMS > Media`.
+1. Open `CMS > Media Library`.
 2. Upload the PDF document.
 3. Upload the cover image if available.
 4. Add clear captions, such as `RDP 2023 Full PDF` or `Greenprint Cover`.
@@ -66,21 +82,23 @@ Recommended workflow:
 1. Open `CMS > News`.
 2. Create or edit an article.
 3. Add a short summary that can fit on a public card.
-4. Add the full body content.
+4. Add the full body content with the visual formatting toolbar. Staff do not need to enter HTML.
 5. Select or upload a thumbnail image when available.
 6. Save as draft.
 7. Publish when ready.
 
-Published news appears on the public News page and can be linked from the Home page.
+Published news appears on the public News page and can be linked from the Home page. Article and page slugs become read-only after their first publish so shared public links are not broken.
 
 ## Media Library
 
 The Media Library stores reusable public website files.
 
-Allowed file types:
+Default allowed file types:
 
-- Images: PNG, JPG, WebP, GIF
-- Documents: PDF
+- Images: PNG, JPG, WebP (5 MB)
+- Documents: PDF, DOC, DOCX, XLS, XLSX (20 MB)
+
+Administrators can change allowed MIME types and per-category limits in `CMS > Site Settings`. Changes take effect on the next upload without a deployment. A rejected upload reports whether its type is disallowed or it exceeds the current size limit.
 
 Good practices:
 
@@ -93,6 +111,20 @@ Good practices:
 The Media Library shows where a file is used. If a file is still connected to CMS content, the Archive action is disabled. Replace or remove that file from the related content first, save the draft, and publish if the public page needs to change.
 
 Future storage note: the system is designed so media can later move to durable cloud storage such as Cloudflare R2 without changing the staff workflow.
+
+## Review Queue and Revisions
+
+`CMS > Review Queue` combines submitted pages, sections, news, and events. Administrators can publish or reject submitted page content from this view. Rejection remarks remain staff-only; an older published snapshot stays public while revised content is under review.
+
+`CMS > Revision History` records create, update, submit, publish, reject, archive, reorder, and restore actions. Deleted targets are marked `(deleted)`. An administrator can restore a deleted section when its parent page still exists; if the page was also deleted, the CMS refuses to create an orphan.
+
+## Site Settings
+
+Global settings cover the logo, footer text, contact details, social links, office address, quick links, chatbot contact fallback, Home announcement banner, and media upload policy. These are presented as grouped visual forms. Only administrators can modify settings.
+
+Raw section, article, and setting source is hidden from the CMS interface. Staff and administrators edit website content only through the visual forms.
+
+The CMS warns before leaving or reloading with unsaved changes. Save or intentionally discard the open draft before publishing it.
 
 ## Publishing Checklist
 

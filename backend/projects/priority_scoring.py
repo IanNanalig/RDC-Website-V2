@@ -92,6 +92,43 @@ def _simplified(snapshot):
     return value if isinstance(value, dict) else snapshot
 
 
+def _scoring_form(snapshot):
+    """Expose detailed and simplified submissions through one scoring shape."""
+    form = _simplified(snapshot)
+    if not isinstance(form, dict):
+        return {}
+    if isinstance(snapshot, dict) and isinstance(snapshot.get("simplified_form"), dict):
+        return form
+    if str(form.get("submission_type") or "").lower() != "detailed" and not form.get("projectTitle"):
+        return form
+
+    normalized = dict(form)
+    normalized.setdefault("program", form.get("programOrProject") or "")
+    normalized.setdefault("projectActivity", form.get("projectTitle") or "")
+    normalized.setdefault("rdpMainChapter", form.get("mainPdpChapter") or "")
+    normalized.setdefault("developmentSector", form.get("mainInfrastructureSector") or "")
+    normalized.setdefault(
+        "location",
+        " | ".join(
+            str(value).strip()
+            for value in (
+                form.get("costLocalities"),
+                form.get("costProvinces"),
+                form.get("impactProvinces"),
+                form.get("convergenceLgu"),
+                form.get("spatialCoverageByCost"),
+                form.get("spatialCoverageByImpact"),
+            )
+            if str(value or "").strip()
+        ),
+    )
+    physical_status = str(form.get("physicalFinancialStatus") or "")
+    normalized.setdefault("status", "New" if "proposed" in physical_status.lower() else physical_status)
+    if not isinstance(normalized.get("fundingRequirementByYear"), dict):
+        normalized["fundingRequirementByYear"] = {"total": form.get("totalProjectCost") or 0}
+    return normalized
+
+
 def _normalized_text(form):
     fields = [
         "program",
@@ -101,6 +138,10 @@ def _normalized_text(form):
         "objective",
         "remarks",
         "rdpMainChapter",
+        "mainInfrastructureSector",
+        "mainInfrastructureSubsector",
+        "spatialCoverageByCost",
+        "spatialCoverageByImpact",
         "status",
     ]
     raw = " ".join(str(form.get(field) or "") for field in fields)
@@ -158,6 +199,9 @@ def _spatial_rating(scope, lgu_count):
 
 
 def _sector_track(form, facts, text):
+    selected = str(facts.get("sceeedTrack") or "").strip().lower()
+    if selected in ("economic", "environment"):
+        return selected
     sector = str(form.get("developmentSector") or "")
     if "Infrastructure" in sector:
         return "infrastructure"
@@ -166,9 +210,6 @@ def _sector_track(form, facts, text):
     if "Finance" in sector:
         return "financial_admin"
     if "Economic and Environment" in sector:
-        selected = str(facts.get("sceeedTrack") or "").strip().lower()
-        if selected in ("economic", "environment"):
-            return selected
         environment_hits = sum(text.count(token) for token in ["climate", "environment", "flood", "river", "waste", "green"])
         economic_hits = sum(text.count(token) for token in ["trade", "industry", "business", "tourism", "agriculture", "investment"])
         return "environment" if environment_hits > economic_hits else "economic"
@@ -229,7 +270,7 @@ def analyze_project(project, validator, snapshot, supplements=None):
     if existing:
         return existing, True
 
-    form = _simplified(snapshot)
+    form = _scoring_form(snapshot)
     facts = _merge_facts(form, supplements)
     text = _normalized_text(form)
     lgu_count = len(derive_ncr_lgus(str(form.get("location") or "")))

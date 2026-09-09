@@ -103,7 +103,7 @@ const PublicEventsManager: React.FC<Props> = ({ mode, onChanged }) => {
   const loadEvents = useCallback(async () => {
     setEventsLoading(true);
     try {
-      const data = await api.get("admin/events/");
+      const data = await api.get("admin/cms/events/");
       setEvents(Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : []);
     } catch (error) {
       console.error(error);
@@ -159,10 +159,10 @@ const PublicEventsManager: React.FC<Props> = ({ mode, onChanged }) => {
         meeting_link: eventForm.meeting_link.trim(),
       };
       if (eventForm.id) {
-        await api.put(`admin/events/${eventForm.id}/`, payload);
+        await api.put(`admin/cms/events/${eventForm.id}/`, payload);
         setNotice("Event draft updated.");
       } else {
-        await api.post("admin/events/", payload);
+        await api.post("admin/cms/events/", payload);
         setNotice("Event draft created.");
       }
       setEventForm(emptyEventForm);
@@ -175,16 +175,17 @@ const PublicEventsManager: React.FC<Props> = ({ mode, onChanged }) => {
 
   const runEventAction = async (
     event: PublicEventRow,
-    action: "submit" | "publish" | "reject" | "archive",
+    action: "submit" | "publish" | "reject" | "archive" | "unarchive",
   ) => {
     setNotice("");
     try {
-      await api.post(`admin/events/${event.id}/${action}/`, {});
+      await api.post(`admin/cms/events/${event.id}/${action}/`, {});
       const labels: Record<typeof action, string> = {
         submit: "Event submitted for admin review.",
         publish: "Event published to the public website.",
         reject: "Event rejected.",
         archive: "Event archived.",
+        unarchive: "Event restored and published on the public calendar.",
       };
       setNotice(labels[action]);
       await loadEvents();
@@ -381,6 +382,15 @@ const PublicEventsManager: React.FC<Props> = ({ mode, onChanged }) => {
                         className="text-sm font-semibold text-slate-500 hover:underline"
                       >
                         Archive
+                      </button>
+                    )}
+                    {isAdmin && event.status === "archived" && (
+                      <button
+                        type="button"
+                        onClick={() => runEventAction(event, "unarchive")}
+                        className="text-sm font-semibold text-emerald-600 hover:underline"
+                      >
+                        Unarchive & Publish
                       </button>
                     )}
                   </div>

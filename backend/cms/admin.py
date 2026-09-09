@@ -1,12 +1,12 @@
 from django.contrib import admin
 
-from cms.models import CMSArticle, CMSMediaAsset, CMSPage, CMSPageSection, CMSRevision
+from cms.models import CMSArticle, CMSMediaAsset, CMSPage, CMSPageSection, CMSRevision, CMSSiteSetting
 
 
 class CMSPageSectionInline(admin.TabularInline):
     model = CMSPageSection
     extra = 0
-    fields = ["section_key", "section_type", "order", "is_visible", "schema_version"]
+    fields = ["section_key", "section_type", "order", "status", "is_visible", "schema_version"]
 
 
 @admin.register(CMSPage)
@@ -19,8 +19,8 @@ class CMSPageAdmin(admin.ModelAdmin):
 
 @admin.register(CMSPageSection)
 class CMSPageSectionAdmin(admin.ModelAdmin):
-    list_display = ["section_key", "page", "section_type", "order", "is_visible", "updated_at"]
-    list_filter = ["section_type", "is_visible"]
+    list_display = ["section_key", "page", "section_type", "order", "status", "is_visible", "lock_owner", "updated_at"]
+    list_filter = ["section_type", "status", "is_visible"]
     search_fields = ["section_key", "page__title", "page__slug"]
 
 
@@ -44,3 +44,9 @@ class CMSRevisionAdmin(admin.ModelAdmin):
     list_filter = ["content_type", "action"]
     search_fields = ["object_id", "changed_by__username", "changed_by__full_name"]
     readonly_fields = ["snapshot_json", "created_at"]
+
+
+@admin.register(CMSSiteSetting)
+class CMSSiteSettingAdmin(admin.ModelAdmin):
+    list_display = ["key", "description", "updated_by", "updated_at"]
+    search_fields = ["key", "description"]

@@ -2,6 +2,8 @@ from html import escape
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
+from django.utils.html import strip_tags
+
 
 ALLOWED_TAGS = {
     "p",
@@ -77,4 +79,34 @@ def sanitize_public_html(value):
     parser.feed(str(value))
     parser.close()
     return "".join(parser.parts)
+
+
+def sanitize_public_text(value):
+    """Remove markup from values rendered by public React text fields."""
+    if value is None:
+        return ""
+    return strip_tags(str(value))
+
+
+def sanitize_public_link(value):
+    """Keep ordinary public links while removing executable URI schemes."""
+    if not value:
+        return ""
+    raw = str(value).strip()
+    return raw if _safe_href(raw) else ""
+
+
+def sanitize_public_structure(value, key=""):
+    """Sanitize nested CMS section content before it enters a public snapshot."""
+    if isinstance(value, dict):
+        return {child_key: sanitize_public_structure(child, child_key) for child_key, child in value.items()}
+    if isinstance(value, list):
+        return [sanitize_public_structure(child, key) for child in value]
+    if not isinstance(value, str):
+        return value
+
+    normalized_key = str(key).lower()
+    if normalized_key.endswith(("url", "link", "website", "href")):
+        return sanitize_public_link(value)
+    return sanitize_public_text(value)
 

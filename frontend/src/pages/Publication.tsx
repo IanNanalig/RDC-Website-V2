@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import cmsApi, { type CMSPageSnapshot } from "../services/cmsApi";
+import { canDownloadDocument, downloadDocument } from "../utils/documentDownload";
 
 const publicDocument = (fileName: string) => `/assets/Documents/${encodeURIComponent(fileName)}`;
 const publicationCover = (fileName: string) => `/assets/PublicationCovers/${encodeURIComponent(fileName)}`;
@@ -397,7 +398,6 @@ const mergeDocuments = (cmsDocuments: unknown[], baseCategory?: Category): Docum
 
     const id = documentId || baseDocument?.id || `${baseCategory?.id ?? "publication"}-${documentIndex + 1}`;
     const url = asString(documentRow.url, baseDocument?.url ?? "");
-    if (!url) return;
 
     const coverImage = asString(documentRow.coverImage, baseDocument?.coverImage ?? "");
     const nextDocument: DocumentItem = {
@@ -415,7 +415,7 @@ const mergeDocuments = (cmsDocuments: unknown[], baseCategory?: Category): Docum
     else result.push(nextDocument);
   });
 
-  return result.filter((document) => Boolean(document.url));
+  return result;
 };
 
 const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
@@ -444,7 +444,6 @@ const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
     const nextId = id || baseCategory?.id || `category-${categoryIndex + 1}`;
     const cmsDocuments = asArray(row.documents);
     const documents = mergeDocuments(cmsDocuments, baseCategory);
-    if (documents.length === 0) return;
 
     const nextCategory: Category = {
       id: nextId,
@@ -470,6 +469,7 @@ export default function Publications() {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(
     categoryParam || null,
   );
+  const [downloadingDocumentId, setDownloadingDocumentId] = useState<string | null>(null);
 
   const categories = useMemo(() => buildCategoriesFromCms(cmsPage), [cmsPage]);
   const catalogContent = getPublicationCatalog(cmsPage);
@@ -522,7 +522,21 @@ export default function Publications() {
     navigate("/publications");
   };
 
-  // Download action removed — view-only interface
+  const handleDownload = async (document: DocumentItem) => {
+    setDownloadingDocumentId(document.id);
+    try {
+      await downloadDocument({
+        url: document.url,
+        title: document.title,
+        fileType: document.fileType,
+      });
+    } catch (error) {
+      console.error(error);
+      alert(`The file for "${document.title}" is not available for direct download.`);
+    } finally {
+      setDownloadingDocumentId(null);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
@@ -632,6 +646,12 @@ export default function Publications() {
 
             {/* Document Cards Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {activeCategory?.documents.length === 0 && (
+                <div className="col-span-full rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center">
+                  <h3 className="font-semibold text-slate-800">No documents added yet</h3>
+                  <p className="mt-2 text-sm text-slate-500">Documents for this publication category will appear here once added through the CMS.</p>
+                </div>
+              )}
               {activeCategory?.documents.map((doc) => (
                 <div
                   key={doc.id}
@@ -649,6 +669,10 @@ export default function Publications() {
                           <img
                             src={doc.coverImage}
                             alt={doc.coverAlt || doc.title}
+                            width={600}
+                            height={800}
+                            loading="lazy"
+                            decoding="async"
                             className="w-full h-full object-cover"
                           />
                         ) : (
@@ -679,25 +703,42 @@ export default function Publications() {
                     </div>
 
                     {/* Actions */}
-                    <div className="flex gap-2">
-                      <a
-                        href={doc.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition text-center"
-                      >
-                        View
-                      </a>
-                      <a
-                        href={doc.url}
-                        download
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex-1 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition text-center"
-                      >
-                        Download
-                      </a>
-                    </div>
+                    {doc.url ? (
+                      <div className="flex gap-2">
+                        <a
+                          href={doc.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition text-center"
+                        >
+                          View
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => handleDownload(doc)}
+                          disabled={
+                            downloadingDocumentId === doc.id ||
+                            !canDownloadDocument(doc.url)
+                          }
+                          className="flex-1 px-4 py-2 bg-slate-100 hover:bg-slate-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed text-slate-700 text-sm font-medium rounded-lg transition text-center"
+                          title={
+                            canDownloadDocument(doc.url)
+                              ? `Download ${doc.title}`
+                              : "A direct download file has not been provided"
+                          }
+                        >
+                          {downloadingDocumentId === doc.id
+                            ? "Downloading..."
+                            : canDownloadDocument(doc.url)
+                              ? "Download"
+                              : "Unavailable"}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="rounded-lg bg-amber-50 px-4 py-2 text-center text-sm font-medium text-amber-700">
+                        Document file not yet available
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}

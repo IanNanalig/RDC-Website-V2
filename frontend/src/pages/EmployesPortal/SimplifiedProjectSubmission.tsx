@@ -1343,7 +1343,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
             <TextAreaField label="Remarks" value={form.remarks} onChange={(v) => setField("remarks", v)} rows={4} diffBefore={diffOf("remarks")?.before} editMeta={editMetaOf("remarks")} />
           </div>
 
-          {!isValidator && (
+          {isAdmin && (
             <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-4 space-y-4">
               <div>
                 <h3 className="font-semibold text-slate-900">Priority Analysis Facts <span className="text-xs font-normal text-slate-500">(optional)</span></h3>

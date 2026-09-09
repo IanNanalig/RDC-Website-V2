@@ -48,12 +48,17 @@ const AdminDashboard: React.FC = () => {
 
     fetchStats();
     const onStorage = (e: StorageEvent) => e.key === "projects_last_update" && fetchStats();
-    const pollId = window.setInterval(fetchStats, 10000);
+    const onRefresh = () => fetchStats();
+    const pollId = window.setInterval(fetchStats, 30000);
     window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", onRefresh);
+    window.addEventListener("portal:data-changed", onRefresh);
     return () => {
       mounted = false;
       window.clearInterval(pollId);
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", onRefresh);
+      window.removeEventListener("portal:data-changed", onRefresh);
     };
   }, [navigate]);
 

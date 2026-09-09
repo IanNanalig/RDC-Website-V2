@@ -1,8 +1,8 @@
 import { Link, useLocation } from "react-router-dom";
 import { useState, useEffect } from "react";
-import rdcLogo from "../assets/Photo-Corousel/Photos/RDC-NCR LOGO.png";
-import bagongPilipinasLogo from "../assets/Photo-Corousel/Photos/Bagong_Pilipinas_logo.png.webp";
-import mmdaLogo from "../assets/Photo-Corousel/Photos/MMDA_Logo.png";
+import rdcLogo from "../assets/optimized/rdc-logo-256.webp";
+import bagongPilipinasLogo from "../assets/optimized/bagong-pilipinas-logo-256.webp";
+import mmdaLogo from "../assets/optimized/mmda-logo-256.webp";
 
 const navLinks = [
   { to: "/", label: "Home" },
@@ -61,6 +61,9 @@ const Navbar: React.FC = () => {
               <img
                 src={rdcLogo}
                 alt="RDC Logo"
+                width={256}
+                height={256}
+                decoding="async"
                 className="w-full h-full object-contain"
               />
             </Link>
@@ -80,6 +83,9 @@ const Navbar: React.FC = () => {
                 <img
                   src={bagongPilipinasLogo}
                   alt="Bagong Pilipinas Logo"
+                  width={256}
+                  height={256}
+                  decoding="async"
                   className="w-[85%] h-[85%] object-contain"
                 />
               </div>
@@ -93,6 +99,9 @@ const Navbar: React.FC = () => {
                 <img
                   src={mmdaLogo}
                   alt="MMDA Logo"
+                  width={256}
+                  height={256}
+                  decoding="async"
                   className="w-[85%] h-[85%] object-contain"
                 />
               </a>

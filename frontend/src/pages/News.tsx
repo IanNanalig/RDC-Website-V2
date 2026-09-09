@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState, type SyntheticEvent } from "react";
 import { Link } from "react-router-dom";
 import { useParams } from "react-router-dom";
-import cmsApi, { type CMSArticleSnapshot } from "../services/cmsApi";
+import cmsApi, {
+  type CMSArticleSnapshot,
+  type CMSPageSnapshot,
+} from "../services/cmsApi";
 
 type NewsItem = {
   id: string;
@@ -184,7 +187,7 @@ const mapCmsArticle = (article: CMSArticleSnapshot): NewsItem => ({
   id: article.slug,
   title: article.title,
   category: article.category || "Updates",
-  date: article.publishedAt,
+  date: article.publicationDate || article.publishedAt,
   summary: article.summary || "Read the latest RDC-NCR public update.",
   thumbnail: article.thumbnailUrl || fallbackThumbnail,
   slug: article.slug,
@@ -192,8 +195,22 @@ const mapCmsArticle = (article: CMSArticleSnapshot): NewsItem => ({
   source: "cms",
 });
 
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const asString = (value: unknown, fallback = "") =>
+  typeof value === "string" && value.trim() ? value.trim() : fallback;
+
+const getPageSection = (page: CMSPageSnapshot | null, sectionKey: string) =>
+  asRecord(
+    page?.sections.find((section) => section.sectionKey === sectionKey)?.content,
+  );
+
 export default function NewsPage() {
   const { slug } = useParams();
+  const [cmsPage, setCmsPage] = useState<CMSPageSnapshot | null>(null);
   const [cmsNews, setCmsNews] = useState<NewsItem[]>([]);
   const [newsLoading, setNewsLoading] = useState(true);
   const [newsError, setNewsError] = useState("");
@@ -201,6 +218,21 @@ export default function NewsPage() {
   const [selectedCategory, setSelectedCategory] = useState<string>("All");
   const [currentPage, setCurrentPage] = useState(1);
   const [showMobileFilters, setShowMobileFilters] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    cmsApi
+      .getPublicPage("news")
+      .then((page) => {
+        if (!cancelled) setCmsPage(page);
+      })
+      .catch(() => {
+        if (!cancelled) setCmsPage(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -230,6 +262,8 @@ export default function NewsPage() {
 
   const newsItems = cmsNews.length > 0 ? cmsNews : SAMPLE_NEWS;
   const selectedArticle = slug ? newsItems.find((item) => item.slug === slug || item.id === slug) : null;
+  const heroContent = getPageSection(cmsPage, "news-hero");
+  const listingContent = getPageSection(cmsPage, "news-listing");
 
   // Extract unique years
   const years = useMemo(() => {
@@ -306,6 +340,9 @@ export default function NewsPage() {
             src={selectedArticle.thumbnail}
             alt={selectedArticle.title}
             onError={useFallbackThumbnail}
+            width={1200}
+            height={525}
+            decoding="async"
             className="mb-8 aspect-[16/7] w-full rounded-2xl bg-slate-200 object-cover shadow-lg"
           />
           <p className="mb-8 text-xl leading-relaxed text-slate-700">{selectedArticle.summary}</p>
@@ -331,14 +368,32 @@ export default function NewsPage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
           <div className="text-center max-w-3xl mx-auto">
             <h1 className="text-4xl md:text-5xl font-extrabold mb-4">
-              News & Announcements
+              {asString(heroContent.title, "News & Announcements")}
             </h1>
-            <p className="text-lg text-white/90">Latest updates from RDC-NCR</p>
+            <p className="text-lg text-white/90">
+              {asString(heroContent.subtitle, "Latest updates from RDC-NCR")}
+            </p>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        <section className="mb-8 rounded-2xl border border-blue-100 bg-white p-6 shadow-sm">
+          <h2 className="text-2xl font-bold text-slate-900">
+            {asString(listingContent.title, "Published News and Announcements")}
+          </h2>
+          <p className="mt-2 text-slate-600">
+            {asString(
+              listingContent.subtitle,
+              "Browse official updates, resolutions, committee announcements, and events.",
+            )}
+          </p>
+          {asString(listingContent.body) && (
+            <p className="mt-2 text-sm text-slate-500">
+              {asString(listingContent.body)}
+            </p>
+          )}
+        </section>
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
           {/* Sidebar Filters */}
           <aside className="lg:col-span-1">
@@ -496,6 +551,10 @@ export default function NewsPage() {
                         src={news.thumbnail}
                         alt={news.title}
                         onError={useFallbackThumbnail}
+                        width={640}
+                        height={384}
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
                       {/* Category Badge */}

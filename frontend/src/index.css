@@ -290,6 +290,92 @@ body {
   color: #22304f;
 }
 
+.cms-rich-editor {
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.cms-rich-editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 9px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.cms-rich-editor-button {
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.cms-rich-editor-button:hover:not(:disabled),
+.cms-rich-editor-button-active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.cms-rich-editor-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.cms-rich-editor .tiptap {
+  min-height: 220px;
+  padding: 14px;
+  color: #1e293b;
+  outline: none;
+}
+
+.cms-rich-editor .tiptap:focus {
+  box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.25);
+}
+
+.cms-rich-editor .tiptap p,
+.cms-rich-editor .tiptap ul,
+.cms-rich-editor .tiptap ol,
+.cms-rich-editor .tiptap blockquote,
+.cms-rich-editor .tiptap h2,
+.cms-rich-editor .tiptap h3,
+.cms-rich-editor .tiptap h4 {
+  margin: 0.65rem 0;
+}
+
+.cms-rich-editor .tiptap ul,
+.cms-rich-editor .tiptap ol {
+  padding-left: 1.5rem;
+}
+
+.cms-rich-editor .tiptap ul { list-style: disc; }
+.cms-rich-editor .tiptap ol { list-style: decimal; }
+.cms-rich-editor .tiptap h2 { font-size: 1.5rem; font-weight: 750; }
+.cms-rich-editor .tiptap h3 { font-size: 1.25rem; font-weight: 750; }
+.cms-rich-editor .tiptap h4 { font-size: 1.05rem; font-weight: 750; }
+.cms-rich-editor .tiptap blockquote { border-left: 3px solid #93c5fd; padding-left: 0.9rem; color: #475569; }
+.cms-rich-editor .tiptap a { color: #1d4ed8; text-decoration: underline; }
+
+.cms-rich-editor-help,
+.cms-rich-editor-loading {
+  padding: 8px 12px;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.cms-rich-editor-disabled {
+  opacity: 0.7;
+}
+
 .portal-table {
   width: 100%;
   border-collapse: collapse;

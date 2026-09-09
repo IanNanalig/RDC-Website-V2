@@ -1,7 +1,7 @@
 import { api } from "./api";
 import { API_BASE_URL } from "../config/api";
 
-export type CMSStatus = "draft" | "published";
+export type CMSStatus = "draft" | "submitted" | "published" | "rejected" | "archived";
 
 export type CMSSection = {
   id: number;
@@ -12,6 +12,13 @@ export type CMSSection = {
   content_json: Record<string, unknown>;
   schema_version: number;
   is_visible: boolean;
+  status: CMSStatus;
+  lock_owner?: number | null;
+  lock_owner_name?: string;
+  lock_acquired_at?: string | null;
+  lock_expires_at?: string | null;
+  is_locked?: boolean;
+  locked_by_me?: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -25,6 +32,8 @@ export type CMSPage = {
   has_unpublished_changes: boolean;
   sections: CMSSection[];
   published_at?: string | null;
+  archived_at?: string | null;
+  review_notes?: string;
   updated_at: string;
 };
 
@@ -38,11 +47,14 @@ export type CMSArticle = {
   thumbnail?: number | null;
   thumbnail_url?: string;
   author: string;
+  publication_date?: string | null;
   featured: boolean;
   status: CMSStatus;
   published_snapshot_json: Record<string, unknown>;
   has_unpublished_changes: boolean;
   published_at?: string | null;
+  archived_at?: string | null;
+  review_notes?: string;
   updated_at: string;
 };
 
@@ -68,6 +80,36 @@ export type CMSMediaAsset = {
   created_at: string;
 };
 
+export type CMSRevision = {
+  id: number;
+  content_type: "page" | "article" | "section" | "media";
+  object_id: number;
+  version_number: number;
+  action: string;
+  status_before: string;
+  status_after: string;
+  snapshot_json: Record<string, unknown>;
+  changed_by_name: string;
+  is_target_deleted: boolean;
+  created_at: string;
+};
+
+export type CMSSiteSetting = {
+  id: number;
+  key: string;
+  value_json: unknown;
+  description: string;
+  updated_by_name?: string;
+  updated_at: string;
+};
+
+export type CMSReviewQueue = {
+  pages: CMSPage[];
+  sections: CMSSection[];
+  news: CMSArticle[];
+  events: Array<Record<string, unknown>>;
+};
+
 export type CMSArticleSnapshot = {
   title: string;
   slug: string;
@@ -77,6 +119,7 @@ export type CMSArticleSnapshot = {
   thumbnailUrl: string;
   featured: boolean;
   author: string;
+  publicationDate?: string;
   publishedAt: string;
 };
 
@@ -92,8 +135,6 @@ export type CMSPageSnapshot = {
     content: Record<string, unknown>;
   }>;
 };
-
-const publicCacheBust = () => `_cms=${Date.now()}`;
 
 export const resolveCmsMediaUrl = (value?: string | null) => {
   const raw = String(value || "").trim();
@@ -151,6 +192,9 @@ export const cmsApi = {
   updatePage: (id: number, payload: Pick<CMSPage, "title" | "slug">) =>
     api.put(`admin/cms/pages/${id}/`, payload),
   publishPage: (id: number) => api.post(`admin/cms/pages/${id}/publish/`),
+  submitPage: (id: number) => api.post(`admin/cms/pages/${id}/submit/`),
+  rejectPage: (id: number, remarks = "") => api.post(`admin/cms/pages/${id}/reject/`, { remarks }),
+  archivePage: (id: number) => api.post(`admin/cms/pages/${id}/archive/`),
   reorderSections: (pageId: number, sectionIds: number[]) =>
     api.post(`admin/cms/pages/${pageId}/reorder_sections/`, { section_ids: sectionIds }),
 
@@ -161,12 +205,23 @@ export const cmsApi = {
   createSection: (payload: Partial<CMSSection>) => api.post("admin/cms/sections/", payload),
   updateSection: (id: number, payload: Partial<CMSSection>) =>
     api.put(`admin/cms/sections/${id}/`, payload),
+  lockSection: (id: number) => api.post(`admin/cms/sections/${id}/lock/`),
+  unlockSection: (id: number) => api.post(`admin/cms/sections/${id}/unlock/`),
+  heartbeatSection: (id: number) => api.post(`admin/cms/sections/${id}/heartbeat/`),
+  requestSectionAccess: (id: number) => api.post(`admin/cms/sections/${id}/request-access/`),
+  submitSection: (id: number) => api.post(`admin/cms/sections/${id}/submit/`),
+  publishSection: (id: number) => api.post(`admin/cms/sections/${id}/publish/`),
+  rejectSection: (id: number, remarks = "") => api.post(`admin/cms/sections/${id}/reject/`, { remarks }),
+  archiveSection: (id: number) => api.post(`admin/cms/sections/${id}/archive/`),
 
   listArticles: async () => listFromResponse<CMSArticle>(await api.get("admin/cms/articles/")),
   createArticle: (payload: Partial<CMSArticle>) => api.post("admin/cms/articles/", payload),
   updateArticle: (id: number, payload: Partial<CMSArticle>) =>
     api.put(`admin/cms/articles/${id}/`, payload),
   publishArticle: (id: number) => api.post(`admin/cms/articles/${id}/publish/`),
+  submitArticle: (id: number) => api.post(`admin/cms/articles/${id}/submit/`),
+  rejectArticle: (id: number, remarks = "") => api.post(`admin/cms/articles/${id}/reject/`, { remarks }),
+  archiveArticle: (id: number) => api.post(`admin/cms/articles/${id}/archive/`),
 
   listMedia: async () =>
     listFromResponse<CMSMediaAsset>(await api.get("admin/cms/media/")).map((asset) => ({
@@ -177,12 +232,19 @@ export const cmsApi = {
   uploadMedia: (formData: FormData) => api.postForm("admin/cms/media/", formData),
   archiveMedia: (id: number) => api.post(`admin/cms/media/${id}/archive/`),
 
+  listSettings: async () => listFromResponse<CMSSiteSetting>(await api.get("admin/cms/settings/")),
+  updateSetting: (key: string, payload: Pick<CMSSiteSetting, "value_json" | "description">) =>
+    api.patch(`admin/cms/settings/${key}/`, payload),
+  listRevisions: async () => listFromResponse<CMSRevision>(await api.get("admin/cms/revisions/")),
+  restoreRevision: (id: number) => api.post(`admin/cms/revisions/${id}/restore-revision/`),
+  getReviewQueue: () => api.get("admin/cms/review-queue/") as Promise<CMSReviewQueue>,
+
   getPublicPage: (slug: string) =>
     api
-      .get(`public/cms/pages/${slug}/?${publicCacheBust()}`)
+      .get(`public/cms/pages/${slug}/`)
       .then((page) => normalizeCmsValue(page) as CMSPageSnapshot),
   listPublicNews: async (limit = 20) => {
-    const data = await api.get(`public/cms/news/?limit=${limit}&${publicCacheBust()}`);
+    const data = await api.get(`public/cms/news/?limit=${limit}`);
     if (data && typeof data === "object" && Array.isArray((data as { results?: unknown }).results)) {
       return (data as { results: CMSArticleSnapshot[] }).results.map(normalizeArticleSnapshot);
     }
@@ -190,10 +252,9 @@ export const cmsApi = {
   },
   getPublicArticle: async (slug: string) =>
     normalizeArticleSnapshot(
-      (await api.get(
-        `public/cms/news/${slug}/?${publicCacheBust()}`,
-      )) as CMSArticleSnapshot,
+      (await api.get(`public/cms/news/${slug}/`)) as CMSArticleSnapshot,
     ),
+  getPublicSettings: () => api.get("public/cms/site-settings/"),
 };
 
 export default cmsApi;

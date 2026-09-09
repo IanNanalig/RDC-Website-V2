@@ -1,22 +1,11 @@
 // src/pages/Projects.tsx
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  PieChart,
-  Pie,
-  Cell,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-  CartesianGrid,
-} from "recharts";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   getPublicProjects,
+  getPublicProject,
   getPublicProjectsStats,
 } from "../services/publicProjectsApi";
+import cmsApi, { type CMSPageSnapshot } from "../services/cmsApi";
 import type {
   PublicProject as Project,
   PublicProjectsStats,
@@ -37,20 +26,10 @@ import {
   FaSortDown,
   FaArrowRight,
 } from "react-icons/fa";
-import VoronoiBlobMap from "../components/VoronoiBlobMap";
 import { ncrCityCenters } from "../services/ncrCityCenters";
 
-const COLORS: Record<string, string> = {
-  Completed: "#10B981",
-  Ongoing: "#F59E0B",
-  New: "#3B82F6",
-  Updated: "#6366F1",
-  Discontinued: "#EF4444",
-  "Not Implemented": "#94A3B8",
-  Dropped: "#F97316",
-  "N/A": "#64748B",
-  Unspecified: "#94A3B8",
-};
+const PublicProjectCharts = React.lazy(() => import("../components/PublicProjectCharts"));
+const VoronoiBlobMap = React.lazy(() => import("../components/VoronoiBlobMap"));
 
 const money = (value: number | string | null | undefined) => {
   const numeric =
@@ -108,13 +87,28 @@ const publicUpdateCountLabel = (count?: number) => {
   return `${n} public update${n === 1 ? "" : "s"}`;
 };
 
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const asString = (value: unknown, fallback = "") =>
+  typeof value === "string" && value.trim() ? value.trim() : fallback;
+
+const getPageSection = (page: CMSPageSnapshot | null, sectionKey: string) =>
+  asRecord(
+    page?.sections.find((section) => section.sectionKey === sectionKey)?.content,
+  );
+
 const Projects: React.FC = () => {
+  const [cmsPage, setCmsPage] = useState<CMSPageSnapshot | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [yearFilter, setYearFilter] = useState<number | "all">("all");
   const [statusFilter, setStatusFilter] = useState<string | "all">("all");
   const [agencyFilter, setAgencyFilter] = useState<string | "all">("all");
   const [updateFilter, setUpdateFilter] = useState<"all" | "recent">("all");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [municipalityFilter, setMunicipalityFilter] = useState<string>("all");
   const [activeTab, setActiveTab] = useState<"visual" | "table" | "map">(
     "visual",
@@ -129,13 +123,21 @@ const Projects: React.FC = () => {
   const [error, setError] = useState<string>("");
   const [stats, setStats] = useState<PublicProjectsStats | null>(null);
   const [detailProject, setDetailProject] = useState<Project | null>(null);
+  const requestSequence = useRef(0);
+  const detailRequestSequence = useRef(0);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
 
   const fetchData = useCallback(async () => {
+    const sequence = ++requestSequence.current;
     setLoading(true);
     setError("");
     try {
       const filters = {
-        q: search || undefined,
+        q: debouncedSearch || undefined,
         agency: agencyFilter === "all" ? undefined : agencyFilter,
         status: statusFilter === "all" ? undefined : statusFilter,
         year: yearFilter === "all" ? undefined : yearFilter,
@@ -143,7 +145,7 @@ const Projects: React.FC = () => {
       };
       // Fetch stats without agency filter to keep agency dropdown stable
       const statsFilters = {
-        q: search || undefined,
+        q: debouncedSearch || undefined,
         status: statusFilter === "all" ? undefined : statusFilter,
         year: yearFilter === "all" ? undefined : yearFilter,
         lgu: municipalityFilter === "all" ? undefined : municipalityFilter,
@@ -153,10 +155,11 @@ const Projects: React.FC = () => {
           ...filters,
           limit: 500,
           offset: 0,
-          cacheBust: true,
+          view: "summary",
         }),
-        getPublicProjectsStats({ ...statsFilters, cacheBust: true }),
+        getPublicProjectsStats(statsFilters),
       ]);
+      if (sequence !== requestSequence.current) return;
       setProjects(list);
       setStats(st);
     } catch (e: unknown) {
@@ -164,11 +167,27 @@ const Projects: React.FC = () => {
         e && typeof e === "object" && "message" in e
           ? String((e as Error).message)
           : String(e);
-      setError(msg || "Failed to load projects.");
+      if (sequence === requestSequence.current) setError(msg || "Failed to load projects.");
     } finally {
-      setLoading(false);
+      if (sequence === requestSequence.current) setLoading(false);
     }
-  }, [agencyFilter, municipalityFilter, search, statusFilter, yearFilter]);
+  }, [agencyFilter, debouncedSearch, municipalityFilter, statusFilter, yearFilter]);
+
+  const openProjectDetail = useCallback(async (project: Project) => {
+    const sequence = ++detailRequestSequence.current;
+    setDetailProject(project);
+    try {
+      const detail = await getPublicProject(project.id);
+      if (sequence === detailRequestSequence.current) setDetailProject(detail);
+    } catch {
+      // Keep the summary card open as a compatibility fallback during staggered deploys.
+    }
+  }, []);
+
+  const closeProjectDetail = () => {
+    detailRequestSequence.current += 1;
+    setDetailProject(null);
+  };
 
   useEffect(() => {
     fetchData();
@@ -180,6 +199,21 @@ const Projects: React.FC = () => {
       window.removeEventListener("focus", handleFocus);
     };
   }, [fetchData]);
+
+  useEffect(() => {
+    let cancelled = false;
+    cmsApi
+      .getPublicPage("projects-dashboard")
+      .then((page) => {
+        if (!cancelled) setCmsPage(page);
+      })
+      .catch(() => {
+        if (!cancelled) setCmsPage(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const yearOptions = useMemo(
     () =>
@@ -383,6 +417,10 @@ const Projects: React.FC = () => {
     }
   };
 
+  const heroContent = getPageSection(cmsPage, "projects-hero");
+  const updatesContent = getPageSection(cmsPage, "projects-updates");
+  const dataNoteContent = getPageSection(cmsPage, "projects-data-note");
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-green-50">
       {/* Header */}
@@ -391,10 +429,13 @@ const Projects: React.FC = () => {
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
             <div>
               <h1 className="text-3xl md:text-4xl font-extrabold text-blue-900 tracking-tight">
-                RDIP Projects Dashboard
+                {asString(heroContent.title, "RDIP Projects Dashboard")}
               </h1>
               <p className="text-blue-700 mt-1 text-sm md:text-base">
-                Explore, filter, and visualize NCR Regional Development projects
+                {asString(
+                  heroContent.subtitle,
+                  "Explore, filter, and visualize NCR Regional Development projects",
+                )}
               </p>
             </div>
             <div className="flex gap-3 items-center">
@@ -473,18 +514,36 @@ const Projects: React.FC = () => {
             </div>
           )}
 
+          <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50/70 px-4 py-3">
+            <p className="text-sm font-bold text-blue-950">
+              {asString(dataNoteContent.title, "About this dashboard")}
+            </p>
+            <p className="mt-1 text-xs text-blue-800">
+              {asString(
+                dataNoteContent.body || heroContent.body,
+                "Project figures come from endorsed public records that completed the RDC-NCR portal review workflow.",
+              )}
+            </p>
+          </div>
+
           {recentlyUpdatedProjects.length > 0 && (
             <div className="mt-5 rounded-2xl border border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-blue-50 p-4 shadow-sm">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">
-                    Recently Updated
+                    {asString(updatesContent.subtitle, "Recently Updated")}
                   </p>
                   <h2 className="text-lg font-bold text-slate-900">
-                    Latest validator-approved project progress
+                    {asString(
+                      updatesContent.title,
+                      "Latest validator-approved project progress",
+                    )}
                   </h2>
                   <p className="text-sm text-slate-600">
-                    Only endorsed public updates are shown here.
+                    {asString(
+                      updatesContent.body,
+                      "Only endorsed public updates are shown here.",
+                    )}
                   </p>
                 </div>
                 <button
@@ -512,7 +571,7 @@ const Projects: React.FC = () => {
                   <button
                     key={project.id}
                     type="button"
-                    onClick={() => setDetailProject(project)}
+                    onClick={() => openProjectDetail(project)}
                     className="rounded-xl border border-emerald-100 bg-white/85 p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md"
                   >
                     <div className="flex items-center justify-between gap-3">
@@ -711,136 +770,9 @@ const Projects: React.FC = () => {
 
             {/* Visual Tab */}
             {activeTab === "visual" && (
-              <div className="space-y-6">
-                {/* Charts Grid */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* Status Pie Chart */}
-                  <div className="bg-white rounded-xl p-4 md:p-6 shadow-lg hover:shadow-xl transition-shadow">
-                    <h3 className="font-semibold mb-4 text-blue-800 flex items-center gap-2 text-base md:text-lg">
-                      <FaCheckCircle className="text-green-400" /> Projects by
-                      Status
-                    </h3>
-                    <div className="h-64 md:h-80">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                            data={statusPie}
-                            dataKey="value"
-                            nameKey="name"
-                            cx="50%"
-                            cy="50%"
-                            outerRadius="70%"
-                            innerRadius="40%"
-                            labelLine={false}
-                            label={(props: {
-                              name?: string;
-                              percent?: number;
-                            }) =>
-                              props.name
-                                ? `${
-                                    props.name.charAt(0).toUpperCase() +
-                                    props.name.slice(1)
-                                  } ${Math.round((props.percent ?? 0) * 100)}%`
-                                : ""
-                            }
-                            isAnimationActive
-                          >
-                            {statusPie.map((entry, index) => (
-                              <Cell
-                                key={index}
-                                fill={COLORS[entry.name] || "#ccc"}
-                              />
-                            ))}
-                          </Pie>
-                          <Tooltip
-                            formatter={(value: number | string) =>
-                              `${value} projects`
-                            }
-                          />
-                          <Legend verticalAlign="bottom" height={36} />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-
-                  {/* Agency Bar Chart */}
-                  <div className="bg-white rounded-xl p-4 md:p-6 shadow-lg hover:shadow-xl transition-shadow">
-                    <h3 className="font-semibold mb-4 text-blue-800 flex items-center gap-2 text-base md:text-lg">
-                      <FaBuilding className="text-blue-400" /> Projects by
-                      Agency
-                    </h3>
-                    <div className="h-64 md:h-80">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart
-                          data={agencyBar}
-                          layout="vertical"
-                          margin={{ left: 120, right: 10 }}
-                        >
-                          <XAxis type="number" hide />
-                          <YAxis
-                            dataKey="agency"
-                            type="category"
-                            width={110}
-                            tick={{ fontSize: 12 }}
-                          />
-                          <Tooltip />
-                          <Bar
-                            dataKey="value"
-                            fill="#3B82F6"
-                            radius={[0, 8, 8, 0]}
-                            isAnimationActive
-                          >
-                            {agencyBar.map((_, idx) => (
-                              <Cell
-                                key={idx}
-                                fill={`hsl(${200 + idx * 20}, 80%, 60%)`}
-                              />
-                            ))}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Year Chart */}
-                <div className="bg-white rounded-xl p-4 md:p-6 shadow-lg hover:shadow-xl transition-shadow">
-                  <h3 className="font-semibold mb-4 text-blue-800 flex items-center gap-2 text-base md:text-lg">
-                    <FaRegCalendarAlt className="text-orange-400" /> Projects by
-                    Year
-                  </h3>
-                  <div className="h-64 md:h-80">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart
-                        data={yearBar}
-                        layout="vertical"
-                        margin={{ left: 28, right: 12, top: 8, bottom: 8 }}
-                      >
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                        <XAxis type="number" />
-                        <YAxis
-                          type="category"
-                          dataKey="year"
-                          width={56}
-                          tick={{ fontSize: 12 }}
-                        />
-                        <Tooltip
-                          formatter={(value: number | string) => [
-                            `${value}`,
-                            "Projects",
-                          ]}
-                        />
-                        <Bar
-                          dataKey="value"
-                          fill="#F59E0B"
-                          radius={[0, 10, 10, 0]}
-                          isAnimationActive
-                        />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              </div>
+              <React.Suspense fallback={<div className="h-80 animate-pulse rounded-xl bg-slate-100" />}>
+                <PublicProjectCharts statusPie={statusPie} agencyBar={agencyBar} yearBar={yearBar} />
+              </React.Suspense>
             )}
 
             {/* Table Tab */}
@@ -947,7 +879,7 @@ const Projects: React.FC = () => {
                               <button
                                 type="button"
                                 className="text-left hover:underline text-blue-900"
-                                onClick={() => setDetailProject(p)}
+                                onClick={() => openProjectDetail(p)}
                                 title="View project details"
                               >
                                 {p.title}
@@ -1047,7 +979,7 @@ const Projects: React.FC = () => {
                     <button
                       type="button"
                       className="px-3 py-1.5 border rounded-lg text-sm hover:bg-slate-50"
-                      onClick={() => setDetailProject(null)}
+                      onClick={closeProjectDetail}
                     >
                       Close
                     </button>
@@ -1397,13 +1329,15 @@ const Projects: React.FC = () => {
             {/* Map Tab */}
             {activeTab === "map" && (
               <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-                <VoronoiBlobMap
-                  projects={mapProjects}
-                  selectedCity={selectedCity}
-                  selectedStatus={statusFilter === "all" ? "all" : statusFilter}
-                  onCitySelect={(city) => setMunicipalityFilter(city || "all")}
-                  height={600}
-                />
+                <React.Suspense fallback={<div className="h-[600px] animate-pulse bg-slate-100" />}>
+                  <VoronoiBlobMap
+                    projects={mapProjects}
+                    selectedCity={selectedCity}
+                    selectedStatus={statusFilter === "all" ? "all" : statusFilter}
+                    onCitySelect={(city) => setMunicipalityFilter(city || "all")}
+                    height={600}
+                  />
+                </React.Suspense>
               </div>
             )}
           </div>

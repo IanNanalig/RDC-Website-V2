@@ -54,4 +54,5 @@ export type PublicProjectsFilters = {
   limit?: number;
   offset?: number;
   cacheBust?: boolean;
+  view?: "summary";
 };

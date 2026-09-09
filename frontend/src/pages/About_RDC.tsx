@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import cmsApi, { type CMSPageSnapshot } from "../services/cmsApi";
+import { canDownloadDocument, downloadDocument } from "../utils/documentDownload";
 
 const publicDocument = (fileName: string) => `/assets/Documents/${encodeURIComponent(fileName)}`;
 const annexA = publicDocument("Annex_A__20020717-EO-0113-GMA.pdf");
@@ -32,6 +33,11 @@ const asNumber = (value: unknown, fallback?: number) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const isVisible = (value: unknown) => {
+  const row = asRecord(value);
+  return row.isVisible !== false && row.visible !== false;
+};
+
 const getAboutSection = (page: CMSPageSnapshot | null, sectionKey: string) =>
   page?.sections.find((section) => section.sectionKey === sectionKey)?.content ?? null;
 
@@ -39,6 +45,7 @@ const aboutIcon = (value: unknown, fallback: string) => {
   const icons: Record<string, string> = {
     book: "\u{1F4D6}",
     building: "\u{1F3DB}\uFE0F",
+    clipboard: "\u{1F4CB}",
     crown: "\u{1F451}",
     document: "\u{1F4DC}",
     file: "\u{1F4C4}",
@@ -49,7 +56,7 @@ const aboutIcon = (value: unknown, fallback: string) => {
   };
   const key = asString(value).toLowerCase();
   const fallbackKey = asString(fallback).toLowerCase();
-  return icons[key] || asString(value) || icons[fallbackKey] || fallback;
+  return icons[key] || icons[fallbackKey] || icons.document;
 };
 
 const LEGAL_DOCUMENTS: LegalDocument[] = [
@@ -98,12 +105,30 @@ type Committee = {
   description: string;
   icon: string;
   color: string;
+  url?: string;
   content: {
     overview: string;
     functions: string[];
     members: string[];
   };
 };
+
+// Shared with the CMS editor so the fixed chart layout has editable labels.
+// eslint-disable-next-line react-refresh/only-export-components
+export const ORGANIZATION_NODE_DEFAULTS = [
+  { id: "chairperson", label: "Leadership", title: "Chairperson", subtitle: "NEDA Regional Director", items: [] },
+  { id: "vice-chair", label: "Leadership", title: "Vice-Chairperson", subtitle: "Designated Representative", items: [] },
+  { id: "secretariat", label: "Core Office", title: "Secretariat", subtitle: "NCR Regional Office", items: [] },
+  { id: "secretary", label: "Core Office", title: "Secretary", subtitle: "Coordinating Officer", items: [] },
+  { id: "executive-committee", label: "Decision Body", title: "Executive Committee", subtitle: "Core Decision Body", items: [] },
+  { id: "voting-members", label: "Membership", title: "Voting Members", subtitle: "", items: ["17 MM Mayors", "President of MMVML", "President of MMCL"] },
+  { id: "non-voting-members", label: "Membership", title: "Non-Voting Members", subtitle: "", items: ["Secretary/Head of Agency", "Regional Directors (DOF, DOTI, DICT, etc.)", "PSO/NGO Representatives"] },
+  { id: "special-non-voting", label: "Membership", title: "Designation of Special Non-Voting Members (SNVMs)", subtitle: "Members of House of Representatives, NEDA Central Office, Other Agencies", items: [] },
+  { id: "sectoral-committees", label: "Committees", title: "Sectoral Committees", subtitle: "", items: ["Economic & Environment", "Finance & Dev Admin", "Infrastructure", "Social Development"] },
+  { id: "special-committees", label: "Committees", title: "Special Committees", subtitle: "", items: ["Project Monitoring (RPMES)", "Land Use (RLUC)", "Research & Innovation", "Dev Committees"] },
+  { id: "affiliate-committees", label: "Committees", title: "Affiliate Committees", subtitle: "", items: ["Welfare of Children (RCWC)", "SME Development (RSMEDC)", "Statistical Committee (RSC)", "Peace & Order (RPOC)"] },
+  { id: "advisory-committee", label: "Advisory", title: "Advisory Committee", subtitle: "Expert Consultation Body", items: [] },
+] as const;
 
 const COMMITTEES: Committee[] = [
   {
@@ -420,7 +445,9 @@ const DETAILED_COMMITTEES: { [key: string]: DetailedCommittee } = {
 };
 
 // UPDATED RESOLUTION DATA BASED ON ALL IMAGES
-const RESOLUTIONS_BY_YEAR = [
+// Shared with the CMS editor when importing the existing public archive.
+// eslint-disable-next-line react-refresh/only-export-components
+export const RESOLUTIONS_BY_YEAR = [
   {
     year: "Final Year 2025",
     content: [
@@ -795,6 +822,7 @@ export default function AboutRDC() {
     "Final Year 2025",
     "Final Year 2024",
   ]);
+  const [downloadingDocumentId, setDownloadingDocumentId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -819,45 +847,154 @@ export default function AboutRDC() {
 
   const legalDocuments = useMemo(() => {
     const cmsRows = asArray(asRecord(legalContent).documents || asRecord(legalContent).items);
-    const rowById = new Map(
-      cmsRows
-        .map((row) => asRecord(row))
-        .filter((row) => asString(row.id))
-        .map((row) => [asString(row.id), row]),
-    );
-    return LEGAL_DOCUMENTS.map((doc) => {
-      const row = rowById.get(doc.id) || {};
-      return {
-        ...doc,
-        title: asString(row.title, doc.title),
-        description: asString(row.description, doc.description),
-        icon: aboutIcon(row.icon, doc.icon),
-        fileType: asString(row.fileType, doc.fileType),
-        fileSize: asString(row.fileSize, doc.fileSize),
-        pages: asNumber(row.pages, doc.pages),
-        url: asString(row.url, doc.url),
+    const documents = LEGAL_DOCUMENTS.map((doc) => ({ ...doc }));
+
+    cmsRows.map(asRecord).forEach((row, index) => {
+      const rowId = asString(row.id);
+      const matchedIndex = documents.findIndex(
+        (doc) => doc.id === rowId || doc.title === asString(row.title),
+      );
+      if (!isVisible(row)) {
+        if (matchedIndex >= 0) documents.splice(matchedIndex, 1);
+        return;
+      }
+
+      const fallback = matchedIndex >= 0 ? documents[matchedIndex] : undefined;
+      const document: LegalDocument = {
+        id: rowId || `legal-document-${index + 1}`,
+        title: asString(row.title, fallback?.title || `Legal Document ${index + 1}`),
+        description: asString(row.description, fallback?.description || "Legal basis document"),
+        icon: aboutIcon(row.icon, fallback?.icon || "document"),
+        color: asString(row.color, fallback?.color || "from-blue-600 to-cyan-500"),
+        url: asString(row.url || row.link, fallback?.url || "#"),
+        fileType: asString(row.fileType, fallback?.fileType || "Document"),
+        fileSize: asString(row.fileSize, fallback?.fileSize || ""),
+        pages: asNumber(row.pages, fallback?.pages),
       };
+      if (matchedIndex >= 0) documents[matchedIndex] = document;
+      else documents.push(document);
     });
+
+    return documents;
   }, [legalContent]);
 
   const committees = useMemo(() => {
     const cmsRows = asArray(asRecord(committeesContent).items);
-    const rowById = new Map(
-      cmsRows
-        .map((row) => asRecord(row))
-        .filter((row) => asString(row.id))
-        .map((row) => [asString(row.id), row]),
-    );
-    return COMMITTEES.map((committee) => {
-      const row = rowById.get(committee.id) || {};
+    const entries = COMMITTEES.map((committee) => ({
+      ...committee,
+      content: {
+        ...committee.content,
+        functions: [...committee.content.functions],
+        members: [...committee.content.members],
+      },
+    }));
+
+    cmsRows.map(asRecord).forEach((row, index) => {
+      const rowId = asString(row.id);
+      const matchedIndex = entries.findIndex(
+        (committee) => committee.id === rowId || committee.title === asString(row.title),
+      );
+      if (!isVisible(row)) {
+        if (matchedIndex >= 0) entries.splice(matchedIndex, 1);
+        return;
+      }
+
+      const fallback = matchedIndex >= 0 ? entries[matchedIndex] : undefined;
+      const nestedContent = asRecord(row.content);
+      const hasFunctions = Array.isArray(row.functions) || Array.isArray(nestedContent.functions);
+      const hasMembers = Array.isArray(row.members) || Array.isArray(nestedContent.members);
+      const functions = asArray(row.functions || nestedContent.functions)
+        .map((item) => asString(item))
+        .filter(Boolean);
+      const members = asArray(row.members || nestedContent.members)
+        .map((item) => asString(item))
+        .filter(Boolean);
+      const entry: Committee = {
+        id: rowId || `committee-${index + 1}`,
+        title: asString(row.title, fallback?.title || `Committee ${index + 1}`),
+        description: asString(row.description, fallback?.description || "RDC-NCR committee"),
+        icon: aboutIcon(row.icon, fallback?.icon || "building"),
+        color: asString(row.color, fallback?.color || "from-blue-500 to-blue-600"),
+        url: asString(row.url || row.link, fallback?.url || "") || undefined,
+        content: {
+          overview: asString(row.overview || nestedContent.overview, fallback?.content.overview || ""),
+          functions: hasFunctions ? functions : fallback?.content.functions || [],
+          members: hasMembers ? members : fallback?.content.members || [],
+        },
+      };
+      if (matchedIndex >= 0) entries[matchedIndex] = entry;
+      else entries.push(entry);
+    });
+
+    return entries;
+  }, [committeesContent]);
+
+  const organizationNodes = useMemo(() => {
+    const cmsNodes = asArray(asRecord(organizationContent).nodes).map(asRecord);
+    return ORGANIZATION_NODE_DEFAULTS.map((fallback) => {
+      const row = cmsNodes.find((node) => asString(node.id) === fallback.id) || {};
+      const items = asArray(row.items).map((item) => asString(item)).filter(Boolean);
       return {
-        ...committee,
-        title: asString(row.title, committee.title),
-        description: asString(row.description, committee.description),
-        icon: aboutIcon(row.icon, committee.icon),
+        ...fallback,
+        label: asString(row.label, fallback.label),
+        title: asString(row.title, fallback.title),
+        subtitle: asString(row.subtitle, fallback.subtitle),
+        items: Array.isArray(row.items) ? items : [...fallback.items],
       };
     });
-  }, [committeesContent]);
+  }, [organizationContent]);
+
+  const organizationNode = (id: string) =>
+    organizationNodes.find((node) => node.id === id) || ORGANIZATION_NODE_DEFAULTS[0];
+
+  const resolutionYears = useMemo(() => {
+    const years = RESOLUTIONS_BY_YEAR.map((entry) => ({
+      year: entry.year,
+      content: entry.content.map((title) => ({ title, url: "" })),
+    }));
+
+    asArray(asRecord(resolutionsContent).years).map(asRecord).forEach((row, index) => {
+      const year = asString(row.year, `Archive ${index + 1}`);
+      const content = asArray(row.resolutions || row.items || row.content)
+        .map((item) => {
+          if (typeof item === "string") return { title: asString(item), url: "" };
+          const record = asRecord(item);
+          if (!isVisible(record)) return null;
+          return {
+            title: asString(record.title || record.name),
+            url: asString(record.url || record.link),
+          };
+        })
+        .filter((item): item is { title: string; url: string } => Boolean(item?.title));
+      const matchedIndex = years.findIndex((entry) => entry.year === year);
+      if (matchedIndex >= 0 && row.replaceExisting !== true) {
+        const mergedContent = [...years[matchedIndex].content];
+        content.forEach((resolution) => {
+          const resolutionIndex = mergedContent.findIndex((item) => item.title === resolution.title);
+          if (resolutionIndex >= 0) mergedContent[resolutionIndex] = resolution;
+          else mergedContent.push(resolution);
+        });
+        years[matchedIndex] = { year, content: mergedContent };
+      } else if (matchedIndex >= 0) {
+        years[matchedIndex] = { year, content };
+      } else {
+        years.unshift({ year, content });
+      }
+    });
+
+    return years;
+  }, [resolutionsContent]);
+
+  const resolutionDateRange = useMemo(() => {
+    const values = resolutionYears
+      .map((entry) => Number(entry.year.match(/\d{4}/)?.[0]))
+      .filter((value) => Number.isFinite(value))
+      .sort((left, right) => left - right);
+    if (!values.length) return "Archive";
+    return values[0] === values[values.length - 1]
+      ? String(values[0])
+      : `${values[0]}-${values[values.length - 1]}`;
+  }, [resolutionYears]);
 
   const handleView = (doc: LegalDocument, event: React.MouseEvent) => {
     event.preventDefault();
@@ -873,7 +1010,27 @@ export default function AboutRDC() {
     window.open(doc.url, "_blank", "noopener,noreferrer");
   };
 
+  const handleDownload = async (doc: LegalDocument) => {
+    setDownloadingDocumentId(doc.id);
+    try {
+      await downloadDocument({
+        url: doc.url,
+        title: doc.title,
+        fileType: doc.fileType,
+      });
+    } catch (error) {
+      console.error(error);
+      alert(`The file for "${doc.title}" is not available for direct download.`);
+    } finally {
+      setDownloadingDocumentId(null);
+    }
+  };
+
   const handleCommitteeClick = (committee: Committee) => {
+    if (committee.url) {
+      window.open(committee.url, "_blank", "noopener,noreferrer");
+      return;
+    }
     setSelectedCommittee(committee);
 
     if (["sectoral", "special", "affiliate"].includes(committee.id)) {
@@ -1039,19 +1196,30 @@ export default function AboutRDC() {
                       </svg>
                       View
                     </button>
-                    <a
-                      href={doc.url}
-                      download
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      type="button"
+                      onClick={() => handleDownload(doc)}
+                      disabled={
+                        downloadingDocumentId === doc.id ||
+                        !canDownloadDocument(doc.url)
+                      }
                       className={`flex-1 px-4 py-3 text-center font-medium rounded-lg transition ${
-                        doc.url === "#"
-                          ? "bg-slate-200 text-slate-400 cursor-not-allowed pointer-events-none"
+                        downloadingDocumentId === doc.id || !canDownloadDocument(doc.url)
+                          ? "bg-slate-200 text-slate-400 cursor-not-allowed"
                           : "bg-slate-100 hover:bg-slate-200 text-slate-700"
                       }`}
+                      title={
+                        canDownloadDocument(doc.url)
+                          ? `Download ${doc.title}`
+                          : "A direct download file has not been provided"
+                      }
                     >
-                      Download
-                    </a>
+                      {downloadingDocumentId === doc.id
+                        ? "Downloading..."
+                        : canDownloadDocument(doc.url)
+                          ? "Download"
+                          : "Unavailable"}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -1177,9 +1345,9 @@ export default function AboutRDC() {
                     selectedNode === "chairperson" ? "shadow-lg ring-2 ring-blue-500/60" : "hover:shadow-lg"
                   }`}
                 >
-                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Leadership</div>
-                  <div className="mt-2 text-lg font-bold text-slate-900">Chairperson</div>
-                  <div className="text-sm text-slate-500">NEDA Regional Director</div>
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{organizationNode("chairperson").label}</div>
+                  <div className="mt-2 text-lg font-bold text-slate-900">{organizationNode("chairperson").title}</div>
+                  <div className="text-sm text-slate-500">{organizationNode("chairperson").subtitle}</div>
                 </div>
                 <div
                   onClick={() => setSelectedNode("vice-chair")}
@@ -1187,9 +1355,9 @@ export default function AboutRDC() {
                     selectedNode === "vice-chair" ? "shadow-lg ring-2 ring-blue-500/60" : "hover:shadow-lg"
                   }`}
                 >
-                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Leadership</div>
-                  <div className="mt-2 text-lg font-bold text-slate-900">Vice-Chairperson</div>
-                  <div className="text-sm text-slate-500">Designated Representative</div>
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{organizationNode("vice-chair").label}</div>
+                  <div className="mt-2 text-lg font-bold text-slate-900">{organizationNode("vice-chair").title}</div>
+                  <div className="text-sm text-slate-500">{organizationNode("vice-chair").subtitle}</div>
                 </div>
               </div>
 
@@ -1206,14 +1374,14 @@ export default function AboutRDC() {
                     selectedNode === "secretariat" ? "shadow-lg ring-2 ring-blue-500/60" : "hover:shadow-lg"
                   }`}
                 >
-                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Core Office</div>
-                  <div className="mt-2 text-base font-semibold text-slate-900">Secretariat</div>
-                  <div className="text-sm text-slate-500">NCR Regional Office</div>
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{organizationNode("secretariat").label}</div>
+                  <div className="mt-2 text-base font-semibold text-slate-900">{organizationNode("secretariat").title}</div>
+                  <div className="text-sm text-slate-500">{organizationNode("secretariat").subtitle}</div>
                 </div>
                 <div className="rounded-2xl border border-blue-500/40 bg-gradient-to-br from-blue-600 to-blue-700 px-6 py-5 text-white shadow-lg hover:shadow-[0_20px_45px_-22px_rgba(37,99,235,0.65)] transition-shadow">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-white/80">Core Office</div>
-                  <div className="mt-2 text-lg font-bold">Secretary</div>
-                  <div className="text-sm text-white/80">Coordinating Officer</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-white/80">{organizationNode("secretary").label}</div>
+                  <div className="mt-2 text-lg font-bold">{organizationNode("secretary").title}</div>
+                  <div className="text-sm text-white/80">{organizationNode("secretary").subtitle}</div>
                 </div>
                 <div
                   onClick={() => setSelectedNode("executive-committee")}
@@ -1221,9 +1389,9 @@ export default function AboutRDC() {
                     selectedNode === "executive-committee" ? "shadow-lg ring-2 ring-blue-500/60" : "hover:shadow-lg"
                   }`}
                 >
-                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Decision Body</div>
-                  <div className="mt-2 text-base font-semibold text-slate-900">Executive Committee</div>
-                  <div className="text-sm text-slate-500">Core Decision Body</div>
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{organizationNode("executive-committee").label}</div>
+                  <div className="mt-2 text-base font-semibold text-slate-900">{organizationNode("executive-committee").title}</div>
+                  <div className="text-sm text-slate-500">{organizationNode("executive-committee").subtitle}</div>
                 </div>
               </div>
 
@@ -1242,12 +1410,12 @@ export default function AboutRDC() {
                         selectedNode === "voting-members" ? "shadow-lg ring-2 ring-blue-400/60" : ""
                       }`}
                     >
-                      Voting Members
+                      {organizationNode("voting-members").title}
                     </div>
                     <div className="mt-3 space-y-2 text-sm text-slate-600">
-                      <div className="rounded-lg border border-slate-200/70 bg-white px-3 py-2">17 MM Mayors</div>
-                      <div className="rounded-lg border border-slate-200/70 bg-white px-3 py-2">President of MMVML</div>
-                      <div className="rounded-lg border border-slate-200/70 bg-white px-3 py-2">President of MMCL</div>
+                      {organizationNode("voting-members").items.map((item) => (
+                        <div key={item} className="rounded-lg border border-slate-200/70 bg-white px-3 py-2">{item}</div>
+                      ))}
                     </div>
                   </div>
                   <div>
@@ -1257,21 +1425,21 @@ export default function AboutRDC() {
                         selectedNode === "non-voting-members" ? "shadow-lg ring-2 ring-blue-400/60" : ""
                       }`}
                     >
-                      Non-Voting Members
+                      {organizationNode("non-voting-members").title}
                     </div>
                     <div className="mt-3 space-y-2 text-sm text-slate-600">
-                      <div className="rounded-lg border border-slate-200/70 bg-white px-3 py-2">Secretary/Head of Agency</div>
-                      <div className="rounded-lg border border-slate-200/70 bg-white px-3 py-2">Regional Directors (DOF, DOTI, DICT, etc.)</div>
-                      <div className="rounded-lg border border-slate-200/70 bg-white px-3 py-2">PSO/NGO Representatives</div>
+                      {organizationNode("non-voting-members").items.map((item) => (
+                        <div key={item} className="rounded-lg border border-slate-200/70 bg-white px-3 py-2">{item}</div>
+                      ))}
                     </div>
                   </div>
                 </div>
                 <div className="mt-6 border-t border-dashed border-slate-300 pt-4 text-center">
                   <div className="rounded-xl bg-slate-800 text-white px-4 py-3 font-semibold">
-                    Designation of Special Non-Voting Members (SNVMs)
+                    {organizationNode("special-non-voting").title}
                   </div>
                   <div className="mt-2 text-xs text-slate-500">
-                    Members of House of Representatives, NEDA Central Office, Other Agencies
+                    {organizationNode("special-non-voting").subtitle}
                   </div>
                 </div>
               </div>
@@ -1289,13 +1457,12 @@ export default function AboutRDC() {
                     selectedNode === "sectoral-committees" ? "shadow-lg ring-2 ring-amber-400/60" : "hover:shadow-lg"
                   }`}
                 >
-                  <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">Committees</div>
-                  <div className="mt-2 text-base font-semibold text-slate-900">Sectoral Committees</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">{organizationNode("sectoral-committees").label}</div>
+                  <div className="mt-2 text-base font-semibold text-slate-900">{organizationNode("sectoral-committees").title}</div>
                   <div className="mt-3 space-y-2 text-xs text-amber-900/80">
-                    <div className="rounded-lg bg-white/80 px-3 py-2">Economic & Environment</div>
-                    <div className="rounded-lg bg-white/80 px-3 py-2">Finance & Dev Admin</div>
-                    <div className="rounded-lg bg-white/80 px-3 py-2">Infrastructure</div>
-                    <div className="rounded-lg bg-white/80 px-3 py-2">Social Development</div>
+                    {organizationNode("sectoral-committees").items.map((item) => (
+                      <div key={item} className="rounded-lg bg-white/80 px-3 py-2">{item}</div>
+                    ))}
                   </div>
                 </div>
 
@@ -1305,13 +1472,12 @@ export default function AboutRDC() {
                     selectedNode === "special-committees" ? "shadow-lg ring-2 ring-blue-400/60" : "hover:shadow-lg"
                   }`}
                 >
-                  <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">Committees</div>
-                  <div className="mt-2 text-base font-semibold text-slate-900">Special Committees</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">{organizationNode("special-committees").label}</div>
+                  <div className="mt-2 text-base font-semibold text-slate-900">{organizationNode("special-committees").title}</div>
                   <div className="mt-3 space-y-2 text-xs text-blue-900/80">
-                    <div className="rounded-lg bg-white/80 px-3 py-2">Project Monitoring (RPMES)</div>
-                    <div className="rounded-lg bg-white/80 px-3 py-2">Land Use (RLUC)</div>
-                    <div className="rounded-lg bg-white/80 px-3 py-2">Research & Innovation</div>
-                    <div className="rounded-lg bg-white/80 px-3 py-2">Dev Committees</div>
+                    {organizationNode("special-committees").items.map((item) => (
+                      <div key={item} className="rounded-lg bg-white/80 px-3 py-2">{item}</div>
+                    ))}
                   </div>
                 </div>
 
@@ -1321,21 +1487,20 @@ export default function AboutRDC() {
                     selectedNode === "affiliate-committees" ? "shadow-lg ring-2 ring-indigo-400/60" : "hover:shadow-lg"
                   }`}
                 >
-                  <div className="text-xs font-semibold uppercase tracking-wide text-indigo-700">Committees</div>
-                  <div className="mt-2 text-base font-semibold text-slate-900">Affiliate Committees</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-indigo-700">{organizationNode("affiliate-committees").label}</div>
+                  <div className="mt-2 text-base font-semibold text-slate-900">{organizationNode("affiliate-committees").title}</div>
                   <div className="mt-3 space-y-2 text-xs text-indigo-900/80">
-                    <div className="rounded-lg bg-white/80 px-3 py-2">Welfare of Children (RCWC)</div>
-                    <div className="rounded-lg bg-white/80 px-3 py-2">SME Development (RSMEDC)</div>
-                    <div className="rounded-lg bg-white/80 px-3 py-2">Statistical Committee (RSC)</div>
-                    <div className="rounded-lg bg-white/80 px-3 py-2">Peace & Order (RPOC)</div>
+                    {organizationNode("affiliate-committees").items.map((item) => (
+                      <div key={item} className="rounded-lg bg-white/80 px-3 py-2">{item}</div>
+                    ))}
                   </div>
                 </div>
 
                 <div className="rounded-2xl border border-slate-200/70 bg-white/80 backdrop-blur px-5 py-4 shadow-sm hover:shadow-[0_16px_36px_-22px_rgba(15,23,42,0.35)] transition-all">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Advisory</div>
-                  <div className="mt-2 text-base font-semibold text-slate-900">Advisory Committee</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{organizationNode("advisory-committee").label}</div>
+                  <div className="mt-2 text-base font-semibold text-slate-900">{organizationNode("advisory-committee").title}</div>
                   <div className="mt-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
-                    Expert Consultation Body
+                    {organizationNode("advisory-committee").subtitle}
                   </div>
                 </div>
               </div>
@@ -1394,7 +1559,7 @@ export default function AboutRDC() {
 
             {/* Yearly Resolution Accordion */}
             <div className="space-y-4">
-              {RESOLUTIONS_BY_YEAR.map((yearData, index) => (
+              {resolutionYears.map((yearData, index) => (
                 <div
                   key={index}
                   className="border border-slate-200 rounded-2xl overflow-hidden hover:border-blue-300 transition-colors"
@@ -1469,12 +1634,13 @@ export default function AboutRDC() {
                       <div className="p-6 border-t border-slate-200 bg-white animate-fadeIn">
                         <div className="space-y-4">
                           {yearData.content.map((resolution, resIndex) => {
+                            const resolutionTitle = resolution.title;
                             const isAdvisory =
-                              resolution.includes("Advisory") ||
-                              resolution.includes("Ad Referendum");
-                            const isMMDA = resolution.includes("MMDA");
+                              resolutionTitle.includes("Advisory") ||
+                              resolutionTitle.includes("Ad Referendum");
+                            const isMMDA = resolutionTitle.includes("MMDA");
                             const isSectoral =
-                              resolution.includes("Sectoral Committee");
+                              resolutionTitle.includes("Sectoral Committee");
 
                             return (
                               <div
@@ -1514,9 +1680,18 @@ export default function AboutRDC() {
                                     ></div>
                                   </div>
                                   <div className="flex-1">
-                                    <p className="text-slate-800 leading-relaxed">
-                                      {resolution}
-                                    </p>
+                                    {resolution.url ? (
+                                      <a
+                                        href={resolution.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-blue-700 hover:text-blue-900 hover:underline leading-relaxed"
+                                      >
+                                        {resolutionTitle}
+                                      </a>
+                                    ) : (
+                                      <p className="text-slate-800 leading-relaxed">{resolutionTitle}</p>
+                                    )}
                                     <div className="mt-3 flex flex-wrap items-center gap-2">
                                       <span
                                         className={`inline-block px-3 py-1 text-xs font-semibold rounded-full ${
@@ -1540,12 +1715,12 @@ export default function AboutRDC() {
                                       <span className="text-xs text-slate-500">
                                         Year: {extractYear(yearData.year)}
                                       </span>
-                                      {resolution.includes("Endorsing") && (
+                                      {resolutionTitle.includes("Endorsing") && (
                                         <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded">
                                           Endorsement
                                         </span>
                                       )}
-                                      {resolution.includes("Approving") && (
+                                      {resolutionTitle.includes("Approving") && (
                                         <span className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded">
                                           Approval
                                         </span>
@@ -1599,13 +1774,13 @@ export default function AboutRDC() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="text-center">
                   <div className="text-3xl font-bold text-blue-700">
-                    {RESOLUTIONS_BY_YEAR.length}
+                    {resolutionYears.length}
                   </div>
                   <div className="text-sm text-slate-600">Years Covered</div>
                 </div>
                 <div className="text-center">
                   <div className="text-3xl font-bold text-blue-700">
-                    {RESOLUTIONS_BY_YEAR.reduce(
+                    {resolutionYears.reduce(
                       (acc, year) => acc + year.content.length,
                       0,
                     )}
@@ -1617,14 +1792,14 @@ export default function AboutRDC() {
                 <div className="text-center">
                   <div className="text-3xl font-bold text-blue-700">
                     {Math.max(
-                      ...RESOLUTIONS_BY_YEAR.map((y) => y.content.length),
+                      ...resolutionYears.map((y) => y.content.length),
                     )}
                   </div>
                   <div className="text-sm text-slate-600">Most in a Year</div>
                 </div>
                 <div className="text-center">
                   <div className="text-3xl font-bold text-blue-700">
-                    2010-2025
+                    {resolutionDateRange}
                   </div>
                   <div className="text-sm text-slate-600">Date Range</div>
                 </div>

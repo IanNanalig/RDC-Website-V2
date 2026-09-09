@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import PriorityAnalysisPanel from "../../components/portal/PriorityAnalysisPanel";
+import { useProgressUpdateWindow } from "../../hooks/useEncodingWindow";
 
 type FormAction = "save" | "submit";
 type YesNo = "Yes" | "No";
@@ -1178,6 +1180,51 @@ const formatProjectCostRowSummary = (row: ProjectCostRow) =>
 const formatProvincialRowSummary = (row: ProvincialRow) =>
   `${row.province}: ${[...formatFundingEntries(row), `overall=${row.overall}`].join(", ")}`;
 
+const buildDetailedProfileData = (form: ProfileForm, files: File[]) => ({
+  submission_type: "detailed",
+  ...form,
+  otherPdpChapters:
+    form.otherPdpChapters ||
+    (form.otherPdpChaptersList.length ? form.otherPdpChaptersList.join(", ") : ""),
+  pdpOutcomeIndicators:
+    form.pdpOutcomeIndicators ||
+    [form.mainPdpOutcome, form.mainPdpSubOutcome, form.mainPdpIndicator].filter(Boolean).join(" | "),
+  infrastructureSector:
+    [form.mainInfrastructureSector, form.mainInfrastructureSubsector].filter(Boolean).join(" - ") ||
+    form.infrastructureSector,
+  projectReadiness:
+    form.projectReadiness ||
+    (form.projectReadinessItems.length ? form.projectReadinessItems.join(", ") : ""),
+  agendaAndSdg:
+    form.agendaAndSdg ||
+    [
+      form.agendaSelections.length ? `Agenda: ${form.agendaSelections.join(", ")}` : "",
+      form.sdgSelections.length ? `SDG: ${form.sdgSelections.join(", ")}` : "",
+    ]
+      .filter(Boolean)
+      .join(" | "),
+  employmentGeneration:
+    form.employmentGeneration ||
+    `Total=${form.employmentTotal || 0}, Male=${form.employmentMale || 0}, Female=${form.employmentFemale || 0}`,
+  projectCostMatrix:
+    form.projectCostMatrix ||
+    form.projectCostRows.map(formatProjectCostRowSummary).join("\n"),
+  pipBudgetTracker:
+    form.pipBudgetTracker ||
+    form.pipBudgetRows.map((row) => `${row.year}: OSBPS=${row.osbps}, NEP=${row.nep}, GAA=${row.gaa}`).join("\n"),
+  provincialBreakdown:
+    form.provincialBreakdown ||
+    form.provincialRows.map(formatProvincialRowSummary).join("\n"),
+  pdpMuOutcomeIndicators:
+    form.pdpMuOutcomeIndicators ||
+    [form.pdpMuOutcome, form.pdpMuSubOutcome, form.pdpMuIndicator].filter(Boolean).join(" | "),
+  expectedOutputs:
+    form.expectedOutputs ||
+    [form.expectedOutputIndicator, form.expectedOutputValue, form.expectedOutputUnit].filter(Boolean).join(" | "),
+  templateName: "Project Profile 2025v1",
+  uploadedFiles: files.map((file) => file.name),
+});
+
 const parseYear = (value: string): number | null => {
   const n = Number(String(value || "").trim());
   if (!Number.isInteger(n) || n < 1900 || n > 2200) return null;
@@ -1370,8 +1417,14 @@ const ProjectSubmission: React.FC = () => {
   const { id } = useParams();
   const [searchParams] = useSearchParams();
   const isEditMode = Boolean(id);
+  const revisionId = searchParams.get("revision") || "";
+  const isRevisionMode = Boolean(revisionId);
 
-  const [user, setUser] = useState<{ username: string; role: "employee" | "validator" | "admin" } | null>(null);
+  const [user, setUser] = useState<{
+    username: string;
+    role: "employee" | "validator" | "admin";
+    agency?: string;
+  } | null>(null);
   const [form, setForm] = useState<ProfileForm>(initialForm);
   const [files, setFiles] = useState<File[]>([]);
   const [step, setStep] = useState(1);
@@ -1380,10 +1433,13 @@ const ProjectSubmission: React.FC = () => {
   const [canEncode, setCanEncode] = useState(true);
   const [encodeMessage, setEncodeMessage] = useState("");
   const [projectStatus, setProjectStatus] = useState<string>("planning");
+  const [workflowStatus, setWorkflowStatus] = useState<string>("draft");
+  const [revisionState, setRevisionState] = useState<string>("");
   const [formReady, setFormReady] = useState(false);
   const [restoreNotice, setRestoreNotice] = useState("");
   const [lastLocalSaveAt, setLastLocalSaveAt] = useState<string>("");
   const [validatorNotes, setValidatorNotes] = useState("");
+  const [saveError, setSaveError] = useState("");
   const [diffHints, setDiffHints] = useState<Partial<Record<keyof ProfileForm, string>>>({});
   const [diffCount, setDiffCount] = useState(0);
   const [diffEntries, setDiffEntries] = useState<Array<{ field: string; before: string; after: string }>>([]);
@@ -1399,12 +1455,18 @@ const ProjectSubmission: React.FC = () => {
 
   const draftStorageKey = useMemo(() => {
     if (!user?.username) return "";
-    return `project_submission_draft_v2_${user.username}_${id || "new"}`;
-  }, [user?.username, id]);
+    const recordKey = isRevisionMode ? `revision_${revisionId}` : id || "new";
+    return `project_submission_draft_v2_${user.username}_${recordKey}`;
+  }, [user?.username, id, isRevisionMode, revisionId]);
   const isValidator = user?.role === "validator";
   const isAdmin = user?.role === "admin";
   const isEmployee = user?.role === "employee";
+  const progressWindow = useProgressUpdateWindow(isEmployee && isRevisionMode);
+  const canWriteCurrentForm = isRevisionMode ? progressWindow.can_encode : canEncode;
+  const currentWindowMessage = isRevisionMode ? progressWindow.message : encodeMessage;
   const isDiffMode = isAdmin && searchParams.get("mode") === "diff";
+  const canReviseSubmitted =
+    isEmployee && isEditMode && !isRevisionMode && workflowStatus === "needs_revision";
 
   const normalizeIncomingForm = (incomingRaw: Partial<ProfileForm>): ProfileForm => {
     const incoming = { ...initialForm, ...incomingRaw } as ProfileForm;
@@ -1458,9 +1520,34 @@ const ProjectSubmission: React.FC = () => {
         return;
       }
       try {
+        if (isRevisionMode) {
+          const revision = await api.get(`project-revisions/${revisionId}/`);
+          const state = String(revision?.state || "").toLowerCase();
+          const revisionProfile = (revision?.profile_data_snapshot || {}) as Record<string, unknown>;
+          setRevisionState(state);
+          setProjectStatus(state === "draft" ? "planning" : state === "endorsed" ? "completed" : "proposed");
+          setWorkflowStatus(state === "endorsed" ? "validated" : state === "rejected" ? "rejected" : "pending_validation");
+          if (revisionProfile?.submission_type === "simplified") {
+            const query = `?revision=${encodeURIComponent(revisionId)}`;
+            if (isValidator) navigate(`/validator/projects/${id}/review/simplified${query}`, { replace: true });
+            else if (isAdmin) navigate(`/admin/projects/${id}/view/simplified${query}`, { replace: true });
+            else navigate(`/employee/projects/${id}/edit/simplified${query}`, { replace: true });
+            return;
+          }
+          setForm(normalizeIncomingForm(revisionProfile));
+          if (isValidator) {
+            setValidatorNotes(String(revision?.public_note || ""));
+          }
+          setDiffHints({});
+          setDiffCount(0);
+          setDiffEntries([]);
+          return;
+        }
         const base = isValidator ? "validator" : isAdmin ? "admin" : "employee";
         const data = await api.get(`${base}/projects/${id}/`);
         setProjectStatus(data?.status || "planning");
+        setWorkflowStatus(String(data?.workflow_status || ""));
+        setRevisionState("");
         if (data?.profile_data) {
           if (data.profile_data?.submission_type === "simplified") {
             if (isValidator) navigate(`/validator/projects/${id}/review/simplified`, { replace: true });
@@ -1538,7 +1625,7 @@ const ProjectSubmission: React.FC = () => {
       }
     };
     loadExisting();
-  }, [id, isEditMode, navigate, isValidator, isAdmin, isDiffMode]);
+  }, [id, isEditMode, navigate, isValidator, isAdmin, isDiffMode, isRevisionMode, revisionId]);
 
   const budget = useMemo(() => toNumber(form.totalProjectCost), [form.totalProjectCost]);
   const startYearNum = useMemo(() => parseYear(form.startYear), [form.startYear]);
@@ -2009,14 +2096,25 @@ const ProjectSubmission: React.FC = () => {
     setStep((s) => Math.min(stepTitles.length, s + 1));
   };
 
+  const prioritySnapshot = useMemo(
+    () => buildDetailedProfileData(form, files),
+    [form, files],
+  );
+
   const save = async (e: React.FormEvent, action: FormAction) => {
     e.preventDefault();
+    setSaveError("");
     if (isReadOnly) {
-      alert(isAdmin ? "Admin form view is read-only." : encodeMessage || "Encoding is currently closed by admin. Submission is view-only.");
+      alert(isAdmin ? "Admin form view is read-only." : currentWindowMessage || "This form is view-only.");
       return;
     }
     if (isValidator && !id) {
       alert("Validator review requires an existing project.");
+      return;
+    }
+    if (isValidator && action === "save" && !validatorNotes.trim()) {
+      setSaveError("Add validator notes explaining the required revisions before sending the project back to the contributor.");
+      document.getElementById("validator-notes")?.focus();
       return;
     }
     if (!isValidator && action === "submit") {
@@ -2094,72 +2192,51 @@ const ProjectSubmission: React.FC = () => {
     }
     setLoading(true);
     try {
-      const normalizedProfileData = {
-        submission_type: "detailed",
-        ...form,
-        otherPdpChapters:
-          form.otherPdpChapters ||
-          (form.otherPdpChaptersList.length ? form.otherPdpChaptersList.join(", ") : ""),
-        pdpOutcomeIndicators:
-          form.pdpOutcomeIndicators ||
-          [form.mainPdpOutcome, form.mainPdpSubOutcome, form.mainPdpIndicator].filter(Boolean).join(" | "),
-        infrastructureSector:
-          [form.mainInfrastructureSector, form.mainInfrastructureSubsector].filter(Boolean).join(" - ") || form.infrastructureSector,
-        projectReadiness:
-          form.projectReadiness ||
-          (form.projectReadinessItems.length ? form.projectReadinessItems.join(", ") : ""),
-        agendaAndSdg:
-          form.agendaAndSdg ||
-          [
-            form.agendaSelections.length ? `Agenda: ${form.agendaSelections.join(", ")}` : "",
-            form.sdgSelections.length ? `SDG: ${form.sdgSelections.join(", ")}` : "",
-          ]
-            .filter(Boolean)
-            .join(" | "),
-        employmentGeneration:
-          form.employmentGeneration ||
-          `Total=${form.employmentTotal || 0}, Male=${form.employmentMale || 0}, Female=${form.employmentFemale || 0}`,
-        projectCostMatrix:
-          form.projectCostMatrix ||
-          form.projectCostRows.map(formatProjectCostRowSummary).join("\n"),
-        pipBudgetTracker:
-          form.pipBudgetTracker ||
-          form.pipBudgetRows.map((r) => `${r.year}: OSBPS=${r.osbps}, NEP=${r.nep}, GAA=${r.gaa}`).join("\n"),
-        provincialBreakdown:
-          form.provincialBreakdown ||
-          form.provincialRows.map(formatProvincialRowSummary).join("\n"),
-        pdpMuOutcomeIndicators:
-          form.pdpMuOutcomeIndicators ||
-          [form.pdpMuOutcome, form.pdpMuSubOutcome, form.pdpMuIndicator].filter(Boolean).join(" | "),
-        expectedOutputs:
-          form.expectedOutputs ||
-          [form.expectedOutputIndicator, form.expectedOutputValue, form.expectedOutputUnit].filter(Boolean).join(" | "),
-        templateName: "Project Profile 2025v1",
-        uploadedFiles: files.map((f) => f.name),
-      };
+      const normalizedProfileData = prioritySnapshot;
 
       if (isValidator && id) {
-        await api.post(`validator/projects/${id}/validate/`, {
+        await api.post(isRevisionMode && revisionId
+          ? `project-revisions/${revisionId}/review/`
+          : `validator/projects/${id}/validate/`, {
           action: action === "save" ? "save_reviewed" : "validate",
           notes: validatorNotes,
+          public_note: validatorNotes,
           edited_profile_data: normalizedProfileData,
         });
         localStorage.setItem("projects_last_update", Date.now().toString());
-        alert(action === "save" ? "Saved as reviewed." : "Project validated.");
+        alert(action === "save" ? "Revision request sent." : "Project validated.");
         navigate("/validator/projects");
+        return;
+      }
+
+      if (isRevisionMode && revisionId) {
+        await api.put(`project-revisions/${revisionId}/`, {
+          profile_data: normalizedProfileData,
+        });
+        if (action === "submit") {
+          await api.post(`project-revisions/${revisionId}/submit/`, {});
+        }
+        if (draftStorageKey) {
+          localStorage.removeItem(draftStorageKey);
+        }
+        localStorage.setItem("projects_last_update", Date.now().toString());
+        alert(action === "save" ? "Progress update draft saved." : "Progress update sent for validation.");
+        navigate("/employee/projects");
         return;
       }
 
       const payload: Record<string, unknown> = {
         title: form.projectTitle,
         description: form.description || form.objective || "",
-        agency: form.officeUnit,
+        // Keep the contributor's organization stable for project listing and
+        // permissions. The more specific office/unit remains in profile_data.
+        agency: user?.agency?.trim() || form.officeUnit,
         budget: Math.round(budget),
         completion: 0,
         municipality: "NCR",
         profile_data: normalizedProfileData,
       };
-      if (action === "save") {
+      if (action === "save" && !canReviseSubmitted) {
         payload.status = "draft";
       }
       let targetId = id;
@@ -2180,7 +2257,11 @@ const ProjectSubmission: React.FC = () => {
       navigate(isAdmin ? "/admin/projects" : "/employee/projects");
     } catch (error) {
       console.error(error);
-      alert("Failed to save.");
+      setSaveError(
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : "The review could not be saved. Please try again.",
+      );
     } finally {
       setLoading(false);
     }
@@ -2188,8 +2269,15 @@ const ProjectSubmission: React.FC = () => {
 
   const errorOf = (key: keyof ProfileForm) => stepErrors[key] || diffHints[key];
   const isDiffHint = (message?: string) => Boolean(message && message.startsWith("Original:"));
-  const submittedLocked = isEmployee && isEditMode && projectStatus !== "planning";
-  const isReadOnly = isAdmin || (isEmployee && !canEncode) || submittedLocked;
+  const submittedLocked =
+    isEmployee && isEditMode && !isRevisionMode && projectStatus !== "planning" && !canReviseSubmitted;
+  const revisionLocked = isEmployee && isRevisionMode && revisionState !== "draft";
+  const isReadOnly =
+    isAdmin ||
+    (isEmployee && !canWriteCurrentForm && !canReviseSubmitted) ||
+    submittedLocked ||
+    revisionLocked ||
+    (isValidator && isRevisionMode && revisionState === "endorsed");
   const isProgram = form.programOrProject === "Program";
   const isProject = form.programOrProject === "Project";
   const isSubcomponent = form.isSubcomponent === "Yes";
@@ -2248,6 +2336,8 @@ const ProjectSubmission: React.FC = () => {
           ? "Validator Detailed Review Form"
           : isAdmin
           ? "Admin Detailed Form View"
+          : isRevisionMode
+          ? "Project Progress Update Editor"
           : isEditMode
           ? "Project Submission Editor"
           : "New Detailed RDIP Submission"
@@ -2259,6 +2349,8 @@ const ProjectSubmission: React.FC = () => {
           ? isDiffMode
             ? "Read-only validator diff view with original contributor values"
             : "Read-only contributor submission view"
+          : isRevisionMode
+          ? "Update the submitted project through a tracked progress revision"
           : "Template-aligned project profile with strict validation"
       }
       role={user.role}
@@ -2274,14 +2366,21 @@ const ProjectSubmission: React.FC = () => {
       }
     >
       <div className="space-y-4">
-        {!canEncode && (
+        {isEmployee && !canWriteCurrentForm && !canReviseSubmitted && (
           <div className="mb-4 p-3 rounded-lg bg-yellow-50 text-yellow-800 border border-yellow-200">
-            {encodeMessage || "Encoding is closed. You can review this form but cannot save or submit changes."}
+            {currentWindowMessage || "This editing workflow is currently closed by admin."}
           </div>
         )}
-        {submittedLocked && (
+        {isEmployee && isRevisionMode && revisionState !== "draft" && (
           <div className="mb-4 p-3 rounded-lg bg-blue-50 text-blue-800 border border-blue-200">
-            This project is already submitted and is now view-only for contributors.
+            This progress update has already been submitted and is now view-only for contributors.
+          </div>
+        )}
+        {isEmployee && isEditMode && !isRevisionMode && projectStatus !== "planning" && (
+          <div className="mb-4 p-3 rounded-lg bg-blue-50 text-blue-800 border border-blue-200">
+            {canReviseSubmitted
+              ? "This submission needs revision. Update the form and submit it again for validation."
+              : "This project is already submitted and is now view-only for contributors."}
           </div>
         )}
         {(restoreNotice || localSavedLabel) && (
@@ -3101,7 +3200,7 @@ const ProjectSubmission: React.FC = () => {
                 <Field label="Employment Female" value={form.employmentFemale} onChange={(v) => setField("employmentFemale", v)} />
               </div>
               <Field label="Employment Generation (legacy text)" value={form.employmentGeneration} onChange={(v) => setField("employmentGeneration", v)} />
-              {!isValidator && (
+              {isAdmin && (
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-4 space-y-4">
                   <div>
                     <h3 className="font-semibold text-slate-900">Priority Analysis Facts <span className="text-xs font-normal text-slate-500">(optional)</span></h3>
@@ -3151,13 +3250,35 @@ const ProjectSubmission: React.FC = () => {
             <label className="block">
               <span className="text-sm text-slate-700">Validator Notes</span>
               <textarea
+                id="validator-notes"
                 className="mt-1 w-full border rounded p-2"
                 rows={3}
                 value={validatorNotes}
-                onChange={(e) => setValidatorNotes(e.target.value)}
-                placeholder="Optional notes for admin and audit trail"
+                onChange={(e) => {
+                  setValidatorNotes(e.target.value);
+                  if (saveError) setSaveError("");
+                }}
+                placeholder="Required when requesting revisions; optional when validating"
               />
             </label>
+          )}
+
+          {(step === 5 || step === stepTitles.length) && id && (isValidator || isAdmin) && (
+            <PriorityAnalysisPanel
+              projectId={id}
+              role={isAdmin ? "admin" : "validator"}
+              currentSnapshot={prioritySnapshot}
+            />
+          )}
+
+          {saveError && (
+            <div
+              role="alert"
+              className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
+            >
+              <p className="font-semibold">Unable to save this review</p>
+              <p className="mt-1">{saveError}</p>
+            </div>
           )}
 
           <div className="pt-4 border-t flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -3167,7 +3288,7 @@ const ProjectSubmission: React.FC = () => {
             <div className="flex flex-wrap gap-3">
               {!isAdmin && (
                 <button type="button" onClick={(e) => save(e as unknown as React.FormEvent, "save")} className="px-4 py-2 border rounded-lg" disabled={loading || isReadOnly}>
-                  {loading ? "Saving..." : isValidator ? "Save as Reviewed" : "Save Draft"}
+                  {loading ? "Saving..." : isValidator ? "Request Revision" : isRevisionMode ? "Save Progress Draft" : "Save Draft"}
                 </button>
               )}
               {step < stepTitles.length ? (
@@ -3177,7 +3298,7 @@ const ProjectSubmission: React.FC = () => {
               ) : (
                 !isAdmin && (
                   <button type="submit" className="px-4 py-2 bg-green-600 text-white rounded-lg" disabled={loading || isReadOnly}>
-                    {loading ? "Submitting..." : isValidator ? "Validated" : "Submit for Validation"}
+                    {loading ? "Submitting..." : isValidator ? "Validate / Endorse" : isRevisionMode ? "Submit Progress Update" : "Submit for Validation"}
                   </button>
                 )
               )}

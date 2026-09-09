@@ -101,7 +101,7 @@ const ProjectForm: React.FC<Props> = ({ initial, onSave, onCancel }) => {
             <label className="block text-sm font-medium">Status</label>
             <select
               value={form.status}
-              onChange={(e) => update("status", e.target.value)}
+              onChange={(e) => update("status", e.target.value as ProjectPayload["status"])}
               className="w-full border p-2 rounded"
             >
               <option>Planning</option>
