@@ -20,6 +20,7 @@ const ContentManagement = () => {
   const cmsInitialTab = useMemo(() => {
     const path = location.pathname.toLowerCase();
     if (path.includes("/news")) return "news" as const;
+    if (path.includes("/forms")) return "forms" as const;
     if (path.includes("/media")) return "media" as const;
     if (path.includes("/settings")) return "settings" as const;
     if (path.includes("/revisions")) return "revisions" as const;
@@ -36,7 +37,7 @@ const ContentManagement = () => {
   return (
     <PortalLayout
       title="Content Management"
-      subtitle="Draft, review, and publish public website content"
+      subtitle="Draft, review, and publish public content and contributor forms"
       role={role}
       userName={displayName}
     >
@@ -47,7 +48,7 @@ const ContentManagement = () => {
             onClick={() => setActiveTab("cms")}
             className={`portal-btn ${activeTab === "cms" ? "portal-btn-primary" : "portal-btn-ghost"}`}
           >
-            Website CMS
+            Content CMS
           </button>
           <button
             type="button"

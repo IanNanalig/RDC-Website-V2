@@ -52,6 +52,17 @@ class PortalWorkflowTests(APITestCase):
             },
         )
 
+    def _set_progress_window(self, start_at, end_at):
+        SystemSetting.objects.update_or_create(
+            key="portal_progress_update_window",
+            defaults={
+                "value": (
+                    f'{{"enabled": true, "start_at": "{start_at.isoformat()}", '
+                    f'"end_at": "{end_at.isoformat()}"}}'
+                )
+            },
+        )
+
     def test_employee_to_validator_to_admin_flow(self):
         self._as(self.employee)
         create_res = self.client.post(
@@ -97,6 +108,29 @@ class PortalWorkflowTests(APITestCase):
         self.assertEqual(dashboard.status_code, status.HTTP_200_OK)
         self.assertGreaterEqual(dashboard.data.get("approved_projects", 0), 1)
 
+    def test_general_project_create_notifies_for_contributor_draft_or_direct_submission(self):
+        self._as(self.employee)
+        draft = self.client.post(
+            "/api/projects/",
+            {"title": "General API Draft", "agency": "MMDA", "budget": 1, "status": "draft"},
+            format="json",
+        )
+        submitted = self.client.post(
+            "/api/projects/",
+            {"title": "General API Submitted", "agency": "MMDA", "budget": 1, "status": "proposed"},
+            format="json",
+        )
+        self.assertEqual(draft.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(submitted.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Notification.objects.filter(
+            project_id=draft.data["id"], recipient=self.admin,
+            event_type="contributor_project_draft_created",
+        ).count(), 1)
+        self.assertEqual(Notification.objects.filter(
+            project_id=submitted.data["id"], recipient=self.validator,
+            event_type="project_submitted",
+        ).count(), 1)
+
     def test_submit_creates_employee_and_validator_notifications_once(self):
         self._as(self.employee)
         create_res = self.client.post(
@@ -114,6 +148,13 @@ class PortalWorkflowTests(APITestCase):
         self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
         project_id = create_res.data["id"]
 
+        self.assertEqual(
+            Notification.objects.filter(
+                project_id=project_id, recipient=self.admin, event_type="contributor_project_draft_created"
+            ).count(),
+            1,
+        )
+
         first = self.client.post(f"/api/employee/projects/{project_id}/submit/", {}, format="json")
         second = self.client.post(f"/api/employee/projects/{project_id}/submit/", {}, format="json")
         self.assertEqual(first.status_code, status.HTTP_200_OK)
@@ -130,6 +171,14 @@ class PortalWorkflowTests(APITestCase):
         )
 
     def test_validator_draft_and_validation_create_notifications(self):
+        other_admin = User.objects.create_user(
+            username="notification_admin_2", password="password", role="admin",
+            email="notification_admin_2@example.com",
+        )
+        inactive_admin = User.objects.create_user(
+            username="notification_admin_inactive", password="password", role="admin",
+            email="notification_admin_inactive@example.com", is_active=False,
+        )
         project = Project.objects.create(
             name="Validator Notification Project",
             implementing_agency="MMDA",
@@ -158,6 +207,18 @@ class PortalWorkflowTests(APITestCase):
             ).count(),
             1,
         )
+        self.assertEqual(
+            Notification.objects.filter(
+                project=project, recipient=self.admin, event_type="validator_review_draft_saved_admin"
+            ).count(),
+            1,
+        )
+        self.assertEqual(Notification.objects.filter(
+            project=project, recipient=other_admin, event_type="validator_review_draft_saved_admin"
+        ).count(), 1)
+        self.assertFalse(Notification.objects.filter(
+            project=project, recipient=inactive_admin, event_type="validator_review_draft_saved_admin"
+        ).exists())
 
         validated = self.client.post(
             f"/api/validator/projects/{project.id}/validate/",
@@ -171,6 +232,20 @@ class PortalWorkflowTests(APITestCase):
                 recipient=self.validator,
                 event_type="validator_project_validated",
             ).count(),
+            1,
+        )
+        self.assertEqual(
+            Notification.objects.filter(project=project, recipient=self.admin, event_type="project_endorsed_admin").count(),
+            1,
+        )
+        self.assertEqual(Notification.objects.filter(
+            project=project, recipient=other_admin, event_type="project_endorsed_admin"
+        ).count(), 1)
+        self.assertFalse(Notification.objects.filter(
+            project=project, recipient=inactive_admin, event_type="project_endorsed_admin"
+        ).exists())
+        self.assertEqual(
+            Notification.objects.filter(project=project, recipient=self.employee, event_type="project_validated").count(),
             1,
         )
 
@@ -233,6 +308,12 @@ class PortalWorkflowTests(APITestCase):
             draft_notification.link_path,
             f"/validator/projects/{project.id}/review?revision={progress.id}",
         )
+        self.assertEqual(
+            Notification.objects.filter(
+                project=project, recipient=self.admin, event_type="validator_progress_draft_saved_admin"
+            ).count(),
+            1,
+        )
 
         validated = self.client.post(
             f"/api/project-revisions/{progress.id}/review/",
@@ -247,6 +328,127 @@ class PortalWorkflowTests(APITestCase):
                 event_type="validator_progress_validated",
             ).count(),
             1,
+        )
+        self.assertEqual(
+            Notification.objects.filter(
+                project=project, recipient=self.admin, event_type="progress_update_endorsed_admin"
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            Notification.objects.filter(
+                project=project, recipient=self.employee, event_type="progress_update_validated"
+            ).count(),
+            1,
+        )
+
+    def test_progress_revision_request_notifies_only_the_submitting_contributor(self):
+        other_contributor = User.objects.create_user(
+            username="other_mmda_contributor", password="password", role="staff",
+            email="other_mmda_contributor@example.com", agency="MMDA",
+        )
+        project = Project.objects.create(
+            name="Progress Request Notifications",
+            implementing_agency="MMDA",
+            municipality="NCR",
+            status="ongoing",
+            validated=True,
+            cost=100000,
+            latitude=14.5,
+            agency="MMDA",
+            budget=100000,
+            created_by=self.employee,
+            profile_data={
+                "simplified_form": {
+                    "projectActivity": "Progress Request", "startYear": "2026", "endYear": "2027"
+                }
+            },
+        )
+        revision = ProjectRevision.objects.create(
+            project=project,
+            revision_number=2,
+            revision_type="progress_update",
+            state="submitted",
+            profile_data_snapshot=project.profile_data,
+            created_by=self.employee,
+            submitted_by=self.employee,
+        )
+        self._as(self.validator)
+        requested = self.client.post(
+            f"/api/project-revisions/{revision.id}/review/",
+            {"action": "save_reviewed", "notes": "Please verify the accomplishment figures."},
+            format="json",
+        )
+        self.assertEqual(requested.status_code, status.HTTP_200_OK, requested.data)
+        notification = Notification.objects.get(
+            project=project, recipient=self.employee, event_type="progress_update_needs_revision"
+        )
+        self.assertEqual(notification.message, "Please verify the accomplishment figures.")
+        self.assertFalse(Notification.objects.filter(
+            project=project, recipient=other_contributor, event_type="progress_update_needs_revision"
+        ).exists())
+
+    def test_contributor_progress_draft_and_submission_notify_admin_and_validators(self):
+        self._set_progress_window(timezone.now() - timedelta(hours=1), timezone.now() + timedelta(hours=1))
+        self.employee.agency = "MMDA"
+        self.employee.save(update_fields=["agency"])
+        other_validator = User.objects.create_user(
+            username="validator_progress_2", password="password", role="validator",
+            email="validator_progress_2@example.com",
+        )
+        inactive_validator = User.objects.create_user(
+            username="validator_progress_inactive", password="password", role="validator",
+            email="validator_progress_inactive@example.com", is_active=False,
+        )
+        project = Project.objects.create(
+            name="Contributor Progress Notifications",
+            implementing_agency="MMDA",
+            municipality="NCR",
+            status="ongoing",
+            validated=True,
+            cost=100000,
+            latitude=14.5,
+            agency="MMDA",
+            budget=100000,
+            created_by=self.employee,
+            profile_data={"simplified_form": {"projectActivity": "Progress Notifications"}},
+        )
+        self._as(self.employee)
+        started = self.client.post(f"/api/employee/projects/{project.id}/start-update/", {}, format="json")
+        self.assertEqual(started.status_code, status.HTTP_201_CREATED)
+        revision_id = started.data["id"]
+        self.assertEqual(
+            Notification.objects.filter(
+                project=project, recipient=self.admin, event_type="contributor_progress_draft_created"
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            Notification.objects.get(
+                project=project, recipient=self.admin, event_type="contributor_progress_draft_created"
+            ).link_path,
+            f"/admin/projects/{project.id}/view?revision={revision_id}",
+        )
+        reopened = self.client.post(f"/api/employee/projects/{project.id}/start-update/", {}, format="json")
+        self.assertEqual(reopened.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            Notification.objects.filter(project=project, event_type="contributor_progress_draft_created").count(),
+            1,
+        )
+        submitted = self.client.post(f"/api/project-revisions/{revision_id}/submit/", {}, format="json")
+        self.assertEqual(submitted.status_code, status.HTTP_200_OK)
+        for validator in (self.validator, other_validator):
+            notification = Notification.objects.get(
+                project=project, recipient=validator, event_type="progress_update_submitted"
+            )
+            self.assertEqual(
+                notification.link_path,
+                f"/validator/projects/{project.id}/review?revision={revision_id}",
+            )
+        self.assertFalse(
+            Notification.objects.filter(
+                project=project, recipient=inactive_validator, event_type="progress_update_submitted"
+            ).exists()
         )
 
     def test_needs_revision_requires_comment_unlocks_edit_and_notifies(self):
@@ -279,6 +481,17 @@ class PortalWorkflowTests(APITestCase):
         self.assertEqual(
             Notification.objects.filter(project_id=project_id, recipient=self.employee, event_type="project_needs_revision").count(),
             1,
+        )
+
+        repeated_request = self.client.post(
+            f"/api/validator/projects/{project_id}/validate/",
+            {"action": "save_reviewed", "notes": "Please also confirm the proposal details."},
+            format="json",
+        )
+        self.assertEqual(repeated_request.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            Notification.objects.filter(project_id=project_id, recipient=self.employee, event_type="project_needs_revision").count(),
+            2,
         )
 
         self._set_encoding_window(timezone.now(), timezone.now(), enabled=False)

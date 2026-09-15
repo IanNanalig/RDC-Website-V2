@@ -48,7 +48,7 @@ await page.addInitScript((session) => {
 }, login);
 
 await page.goto(`${frontendUrl}/admin/content`, { waitUntil: "networkidle" });
-await page.getByRole("heading", { name: "Website CMS" }).waitFor();
+await page.getByRole("heading", { name: "Content CMS" }).waitFor();
 
 const defaultSourceCheck = {
   sectionJsonPreviewBoxes: await page.locator("pre").count(),

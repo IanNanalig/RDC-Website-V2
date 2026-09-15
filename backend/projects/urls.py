@@ -41,6 +41,7 @@ urlpatterns = [
     path("admin/chat/knowledge-gaps/<int:pk>/approve/", views.AdminChatKnowledgeGapApproveView.as_view(), name="admin-chat-knowledge-gap-approve"),
     path("admin/chat/knowledge-gaps/<int:pk>/reject/", views.AdminChatKnowledgeGapRejectView.as_view(), name="admin-chat-knowledge-gap-reject"),
     path("auth/login/", views.LoginView.as_view(), name="login"),
+    path("auth/logout/", views.LogoutView.as_view(), name="logout"),
     path("auth/setup-password/", views.SetupPasswordView.as_view(), name="setup-password"),
     path("auth/me/", views.MeView.as_view(), name="me"),
 ]

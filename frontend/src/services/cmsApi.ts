@@ -1,5 +1,6 @@
 import { api } from "./api";
 import { API_BASE_URL } from "../config/api";
+import type { ContributorFormPayload, ContributorFormSchema } from "../types/contributorForm";
 
 export type CMSStatus = "draft" | "submitted" | "published" | "rejected" | "archived";
 
@@ -82,7 +83,7 @@ export type CMSMediaAsset = {
 
 export type CMSRevision = {
   id: number;
-  content_type: "page" | "article" | "section" | "media";
+  content_type: "page" | "article" | "section" | "media" | "form";
   object_id: number;
   version_number: number;
   action: string;
@@ -103,11 +104,45 @@ export type CMSSiteSetting = {
   updated_at: string;
 };
 
+export type CMSContributorForm = {
+  id: number;
+  key: string;
+  name: string;
+  description: string;
+  status: CMSStatus;
+  draft_schema_json: ContributorFormSchema;
+  current_published_version?: number | null;
+  current_published_version_number?: number | null;
+  has_unpublished_changes: boolean;
+  updated_by_name?: string;
+  submitted_by_name?: string;
+  reviewed_by_name?: string;
+  review_notes?: string;
+  published_at?: string | null;
+  lock_owner?: number | null;
+  lock_owner_name?: string;
+  lock_acquired_at?: string | null;
+  lock_expires_at?: string | null;
+  is_locked?: boolean;
+  locked_by_me?: boolean;
+  updated_at: string;
+};
+
+export type CMSContributorFormVersion = {
+  id: number;
+  form: number;
+  version_number: number;
+  schema_json: ContributorFormSchema;
+  published_by_name?: string;
+  published_at: string;
+};
+
 export type CMSReviewQueue = {
   pages: CMSPage[];
   sections: CMSSection[];
   news: CMSArticle[];
   events: Array<Record<string, unknown>>;
+  forms: CMSContributorForm[];
 };
 
 export type CMSArticleSnapshot = {
@@ -222,6 +257,36 @@ export const cmsApi = {
   submitArticle: (id: number) => api.post(`admin/cms/articles/${id}/submit/`),
   rejectArticle: (id: number, remarks = "") => api.post(`admin/cms/articles/${id}/reject/`, { remarks }),
   archiveArticle: (id: number) => api.post(`admin/cms/articles/${id}/archive/`),
+
+  listContributorForms: async () =>
+    listFromResponse<CMSContributorForm>(await api.get("admin/cms/forms/")),
+  updateContributorForm: (
+    id: number,
+    payload: {
+      name: string;
+      description: string;
+      draft_schema_json: ContributorFormSchema;
+      expected_updated_at: string;
+      edit_mode: "update" | "change";
+    },
+  ) => api.patch(`admin/cms/forms/${id}/`, payload),
+  lockContributorForm: (id: number) => api.post(`admin/cms/forms/${id}/lock/`),
+  unlockContributorForm: (id: number) => api.post(`admin/cms/forms/${id}/unlock/`),
+  heartbeatContributorForm: (id: number) => api.post(`admin/cms/forms/${id}/heartbeat/`),
+  requestContributorFormAccess: (id: number) => api.post(`admin/cms/forms/${id}/request-access/`),
+  submitContributorForm: (id: number) => api.post(`admin/cms/forms/${id}/submit/`),
+  publishContributorForm: (id: number) => api.post(`admin/cms/forms/${id}/publish/`),
+  rejectContributorForm: (id: number, remarks = "") =>
+    api.post(`admin/cms/forms/${id}/reject/`, { remarks }),
+  listContributorFormVersions: async (id: number) =>
+    listFromResponse<CMSContributorFormVersion>(await api.get(`admin/cms/forms/${id}/versions/`)),
+  restoreContributorFormVersion: (id: number, versionId: number) =>
+    api.post(`admin/cms/forms/${id}/restore-version/`, { version_id: versionId }),
+
+  getContributorForm: (key = "simplified-rdip") =>
+    api.get(`contributor-forms/${key}/current/`) as Promise<ContributorFormPayload>,
+  getContributorFormVersion: (key: string, version: number) =>
+    api.get(`contributor-forms/${key}/versions/${version}/`) as Promise<ContributorFormPayload>,
 
   listMedia: async () =>
     listFromResponse<CMSMediaAsset>(await api.get("admin/cms/media/")).map((asset) => ({

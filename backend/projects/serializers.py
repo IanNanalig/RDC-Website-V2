@@ -1,5 +1,7 @@
 from rest_framework import serializers
 from datetime import datetime
+from copy import deepcopy
+from cms.form_schema import FormSchemaError, validate_simplified_answers
 from .models import (
     AccessRequest,
     Notification,
@@ -23,6 +25,7 @@ SYSTEM_MANAGED_DIFF_ROOTS = {
     "simplified_form_meta",
     "validator_review",
     "contributor_snapshot",
+    "form_schema",
 }
 
 
@@ -378,6 +381,25 @@ class ProjectSerializer(serializers.ModelSerializer):
         simplified = value.get("simplified_form")
         if isinstance(simplified, dict):
             self._validate_simplified_funding(simplified)
+            value = deepcopy(value)
+            if self.instance and isinstance(self.instance.profile_data, dict):
+                existing_marker = self.instance.profile_data.get("form_schema")
+                if isinstance(existing_marker, dict):
+                    value["form_schema"] = deepcopy(existing_marker)
+                else:
+                    value["form_schema"] = {"key": "simplified-rdip", "version": 1, "legacy": True}
+            else:
+                if isinstance(value.get("form_schema"), dict):
+                    # The version number is still selected by the server; the marker only signals
+                    # that this client supports versioned contributor forms.
+                    value["form_schema"] = {"key": "simplified-rdip"}
+                else:
+                    # Old frontends remain pinned to the legacy definition during staggered deploys.
+                    value["form_schema"] = {"key": "simplified-rdip", "version": 1, "legacy": True}
+            try:
+                validate_simplified_answers(value, require_complete=False)
+            except FormSchemaError as exc:
+                raise serializers.ValidationError(str(exc)) from exc
         return value
 
     def to_representation(self, instance):
@@ -1154,7 +1176,7 @@ class AccessRequestSerializer(serializers.ModelSerializer):
 
 
 class UserActivitySerializer(serializers.ModelSerializer):
-    username = serializers.CharField(source="user.username", read_only=True)
+    username = serializers.SerializerMethodField()
     full_name = serializers.SerializerMethodField()
     project_title = serializers.SerializerMethodField()
 
@@ -1168,6 +1190,7 @@ class UserActivitySerializer(serializers.ModelSerializer):
             "event",
             "project",
             "project_title",
+            "project_id_snapshot",
             "ip_address",
             "location_hint",
             "details",
@@ -1175,14 +1198,17 @@ class UserActivitySerializer(serializers.ModelSerializer):
         ]
 
     def get_project_title(self, obj):
-        if not obj.project:
-            return ""
-        return obj.project.title
+        return obj.project_title_snapshot or (obj.project.title if obj.project else "")
+
+    def get_username(self, obj):
+        return obj.actor_username or (obj.user.username if obj.user else "Deleted user")
 
     def get_full_name(self, obj):
         user = getattr(obj, "user", None)
         if not user:
-            return ""
+            return obj.actor_full_name or obj.actor_username or "Deleted user"
+        if obj.actor_full_name:
+            return obj.actor_full_name
         if getattr(user, "full_name", "").strip():
             return user.full_name
         full = user.get_full_name()

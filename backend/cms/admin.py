@@ -1,6 +1,9 @@
 from django.contrib import admin
 
-from cms.models import CMSArticle, CMSMediaAsset, CMSPage, CMSPageSection, CMSRevision, CMSSiteSetting
+from cms.models import (
+    CMSArticle, CMSContributorForm, CMSContributorFormVersion, CMSMediaAsset, CMSPage,
+    CMSPageSection, CMSRevision, CMSSiteSetting,
+)
 
 
 class CMSPageSectionInline(admin.TabularInline):
@@ -44,6 +47,21 @@ class CMSRevisionAdmin(admin.ModelAdmin):
     list_filter = ["content_type", "action"]
     search_fields = ["object_id", "changed_by__username", "changed_by__full_name"]
     readonly_fields = ["snapshot_json", "created_at"]
+
+
+class CMSContributorFormVersionInline(admin.TabularInline):
+    model = CMSContributorFormVersion
+    extra = 0
+    readonly_fields = ["version_number", "schema_json", "published_by", "published_at"]
+    can_delete = False
+
+
+@admin.register(CMSContributorForm)
+class CMSContributorFormAdmin(admin.ModelAdmin):
+    list_display = ["name", "key", "status", "current_published_version", "has_unpublished_changes", "updated_at"]
+    list_filter = ["status", "has_unpublished_changes"]
+    readonly_fields = ["current_published_version", "published_at", "created_at", "updated_at"]
+    inlines = [CMSContributorFormVersionInline]
 
 
 @admin.register(CMSSiteSetting)

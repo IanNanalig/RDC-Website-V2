@@ -207,17 +207,25 @@ const UserManagement = () => {
     if (role === "validator") return "Validator";
     if (role === "admin") return "Admin";
     if (role === "content_editor") return "Content Editor";
+    if (role === "unauthenticated") return "Unauthenticated";
     return role;
   };
 
   const eventLabels: Record<string, string> = {
     login: "Auth Login",
+    login_failed: "Failed Login Attempt",
+    logout: "Auth Logout",
+    auth_password_setup: "Password Setup Completed",
     auth_reset_request: "Auth Reset Request",
     auth_reset_approve: "Auth Reset Approved",
     auth_reset_reject: "Auth Reset Rejected",
     user_create: "User Created",
+    user_update: "User Updated",
+    user_status_changed: "User Activated / Deactivated",
+    user_delete: "User Deleted",
     project_create: "Project Created",
     project_update: "Project Updated",
+    project_delete: "Project Deleted",
     project_submit: "Project Submitted",
     project_approve: "Project Approved",
     project_reject: "Project Rejected",
@@ -239,6 +247,30 @@ const UserManagement = () => {
     cms_event_published: "CMS Event Published",
     cms_event_rejected: "CMS Event Rejected",
     cms_event_archived: "CMS Event Archived",
+    cms_event_unarchived: "CMS Event Unarchived",
+    cms_event_deleted: "CMS Event Deleted",
+    cms_content_created: "CMS Content Created",
+    cms_content_updated: "CMS Content Updated",
+    cms_content_submitted: "CMS Content Submitted",
+    cms_content_published: "CMS Content Published",
+    cms_content_rejected: "CMS Content Rejected",
+    cms_content_archived: "CMS Content Archived",
+    cms_content_restored: "CMS Content Restored",
+    cms_section_lock_acquired: "CMS Section Lock Acquired",
+    cms_section_lock_blocked: "CMS Section Lock Blocked",
+    cms_section_lock_released: "CMS Section Lock Released",
+    cms_section_access_requested: "CMS Section Access Requested",
+    cms_form_lock_acquired: "CMS Form Lock Acquired",
+    cms_form_lock_blocked: "CMS Form Lock Blocked",
+    cms_form_lock_released: "CMS Form Lock Released",
+    cms_form_access_requested: "CMS Form Access Requested",
+    cms_chatbot_sync_failed: "CMS Chatbot Sync Failed",
+    notification_read: "Notification Read",
+    notification_read_all: "All Notifications Read",
+    access_request_approved: "Access Request Approved",
+    access_request_rejected: "Access Request Rejected",
+    api_action: "Other API Action",
+    api_action_failed: "Failed API Action",
     project_revision_created: "Project Revision Created",
     project_revision_updated: "Project Revision Updated",
     project_revision_submitted: "Project Revision Submitted",
@@ -250,8 +282,19 @@ const UserManagement = () => {
     chat_content_updated: "Chat Content Updated",
   };
 
+  const activityEventLabel = (item: ActivityItem) => {
+    const label = eventLabels[item.event] || item.event.replaceAll("_", " ");
+    if (item.event !== "api_action" && item.event !== "api_action_failed") return label;
+    const route = String(item.details?.route || "").replace(/[-_]/g, " ").trim();
+    return route ? `${label}: ${route}` : label;
+  };
+
   const eventSeverity: Record<string, "info" | "warn" | "error"> = {
     login: "info",
+    login_failed: "warn",
+    api_action_failed: "warn",
+    user_delete: "warn",
+    project_delete: "warn",
     auth_reset_request: "warn",
     auth_reset_approve: "info",
     auth_reset_reject: "warn",
@@ -2044,6 +2087,7 @@ const UserManagement = () => {
                   <option value="validator">Validator</option>
                   <option value="staff">Contributor</option>
                   <option value="content_editor">Content Editor</option>
+                  <option value="unauthenticated">Unauthenticated</option>
                 </select>
               </label>
               <label className="block">
@@ -2168,8 +2212,7 @@ const UserManagement = () => {
                         <span
                           className={`inline-flex whitespace-nowrap px-2 py-1 rounded-full text-xs font-semibold ${severityClass(item.event)}`}
                         >
-                          {eventLabels[item.event] ||
-                            item.event.replaceAll("_", " ")}
+                          {activityEventLabel(item)}
                         </span>
                       </td>
                       <td

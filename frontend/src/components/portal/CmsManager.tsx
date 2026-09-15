@@ -10,8 +10,9 @@ import cmsApi, {
 } from "../../services/cmsApi";
 import { ORGANIZATION_NODE_DEFAULTS, RESOLUTIONS_BY_YEAR } from "../../pages/About_RDC";
 import RichTextEditor from "./RichTextEditor";
+import ContributorFormsManager from "./ContributorFormsManager";
 
-type ResourceTab = "pages" | "news" | "media" | "review" | "revisions" | "settings";
+type ResourceTab = "pages" | "news" | "forms" | "media" | "review" | "revisions" | "settings";
 
 type Props = {
   mode: "admin" | "editor";
@@ -492,7 +493,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const [settingDrafts, setSettingDrafts] = useState<Record<number, unknown>>({});
   const [settingSourceDrafts, setSettingSourceDrafts] = useState<Record<number, string>>({});
   const [revisions, setRevisions] = useState<CMSRevision[]>([]);
-  const [reviewQueue, setReviewQueue] = useState<CMSReviewQueue>({ pages: [], sections: [], news: [], events: [] });
+  const [reviewQueue, setReviewQueue] = useState<CMSReviewQueue>({ pages: [], sections: [], news: [], forms: [], events: [] });
   const [selectedPageId, setSelectedPageId] = useState<number | null>(null);
   const [pageForm, setPageForm] = useState<PageForm>(emptyPageForm);
   const [sectionForm, setSectionForm] = useState<SectionForm>(emptySectionForm);
@@ -696,7 +697,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       setSettingDrafts(Object.fromEntries(settingRows.map((row) => [row.id, row.value_json])));
       setSettingSourceDrafts(Object.fromEntries(settingRows.map((row) => [row.id, JSON.stringify(row.value_json, null, 2)])));
       setRevisions(revisionRows);
-      setReviewQueue(queue);
+      setReviewQueue({ ...queue, forms: Array.isArray(queue.forms) ? queue.forms : [] });
       const initialPage = pageRows.find((page) => page.slug === "home") || pageRows[0];
       if (!selectedPageId && initialPage) {
         setSelectedPageId(initialPage.id);
@@ -2136,14 +2137,14 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       <div className="portal-card min-w-0 overflow-hidden">
         <div className="portal-card-body flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h2 className="text-xl font-bold text-slate-900">Website CMS</h2>
+            <h2 className="text-xl font-bold text-slate-900">Content CMS</h2>
             <p className="text-sm text-slate-500">
-              Edit drafts safely. Public pages only change after Admin publishes a snapshot.
+              Manage public content and contributor form drafts. Live content changes only after Admin publishes.
             </p>
             {hasUnsavedChanges && <p className="mt-1 text-xs font-semibold text-amber-700">You have unsaved changes.</p>}
           </div>
           <div className="flex flex-wrap gap-2">
-            {(["pages", "news", "media", "review", "revisions", "settings"] as ResourceTab[]).map((tab) => (
+            {(["pages", "news", "forms", "media", "review", "revisions", "settings"] as ResourceTab[]).map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -2153,6 +2154,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                 {{
                   pages: "Pages",
                   news: "News",
+                  forms: "Contributor Forms",
                   media: "Media Library",
                   review: "Review Queue",
                   revisions: "Revision History",
@@ -2848,6 +2850,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         </div>
       )}
 
+      {activeTab === "forms" && <ContributorFormsManager mode={mode} />}
+
       {activeTab === "review" && (
         <div className="grid min-w-0 gap-4 xl:grid-cols-2">
           <div className="portal-card min-w-0 overflow-hidden">
@@ -2869,13 +2873,19 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
             </div>
           </div>
           <div className="portal-card min-w-0 overflow-hidden">
-            <div className="portal-card-header"><h3 className="font-bold text-slate-900">News and Events Awaiting Review</h3></div>
+            <div className="portal-card-header"><h3 className="font-bold text-slate-900">News, Forms, and Events Awaiting Review</h3></div>
             <div className="portal-card-body space-y-3">
-              {reviewQueue.news.length === 0 && reviewQueue.events.length === 0 && <p className="text-sm text-slate-500">No submitted news or events.</p>}
+              {reviewQueue.news.length === 0 && reviewQueue.forms.length === 0 && reviewQueue.events.length === 0 && <p className="text-sm text-slate-500">No submitted news, contributor forms, or events.</p>}
               {reviewQueue.news.map((article) => (
                 <div key={`article-${article.id}`} className="rounded-xl border border-slate-200 p-3">
                   <strong>{article.title}</strong><p className="text-xs text-slate-500">News article submitted for review</p>
                   {isAdmin && <div className="mt-2 flex gap-3 text-sm"><button className="text-emerald-700" onClick={() => runWorkflowAction("article", article.id, "publish", article.title)}>Publish</button><button className="text-rose-700" onClick={() => runWorkflowAction("article", article.id, "reject", article.title)}>Reject</button></div>}
+                </div>
+              ))}
+              {reviewQueue.forms.map((form) => (
+                <div key={`form-${form.id}`} className="rounded-xl border border-slate-200 p-3">
+                  <strong>{form.name}</strong><p className="text-xs text-slate-500">Contributor form submitted for review</p>
+                  {isAdmin && <button type="button" className="mt-2 text-sm font-semibold text-blue-700" onClick={() => setActiveTab("forms")}>Review changes</button>}
                 </div>
               ))}
               {reviewQueue.events.map((event) => (
@@ -2894,8 +2904,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           <div className="portal-card-body space-y-3">
             {revisions.length === 0 ? <p className="text-sm text-slate-500">No CMS revisions yet.</p> : revisions.map((revision) => (
               <div key={revision.id} className="flex flex-col justify-between gap-3 rounded-xl border border-slate-200 p-3 md:flex-row md:items-center">
-                <div><strong>{revision.content_type === "page" ? "Page" : revision.content_type === "article" ? "News Article" : revision.content_type === "section" ? "Page Section" : "Media File"} · Version {revision.version_number}{revision.is_target_deleted ? " (deleted)" : ""}</strong><p className="text-xs text-slate-500">{statusLabel(revision.action)} by {revision.changed_by_name || "system"} · {formatDate(revision.created_at)}</p></div>
-                {isAdmin && revision.content_type !== "media" && <button type="button" className="portal-btn portal-btn-ghost" onClick={() => restoreRevision(revision)}>Restore</button>}
+                <div><strong>{revision.content_type === "page" ? "Page" : revision.content_type === "article" ? "News Article" : revision.content_type === "section" ? "Page Section" : revision.content_type === "form" ? "Contributor Form" : "Media File"} · Revision {revision.version_number}{revision.is_target_deleted ? " (deleted)" : ""}</strong><p className="text-xs text-slate-500">{statusLabel(revision.action)} by {revision.changed_by_name || "system"} · {formatDate(revision.created_at)}</p></div>
+                {isAdmin && !["media", "form"].includes(revision.content_type) && <button type="button" className="portal-btn portal-btn-ghost" onClick={() => restoreRevision(revision)}>Restore</button>}
               </div>
             ))}
           </div>

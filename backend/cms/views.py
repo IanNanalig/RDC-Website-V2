@@ -11,9 +11,21 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from cms.models import CMSArticle, CMSMediaAsset, CMSPage, CMSPageSection, CMSRevision, CMSSiteSetting
+from cms.form_schema import FormSchemaError, SIMPLIFIED_FORM_KEY, default_simplified_form_schema
+from cms.models import (
+    CMSArticle,
+    CMSContributorForm,
+    CMSContributorFormVersion,
+    CMSMediaAsset,
+    CMSPage,
+    CMSPageSection,
+    CMSRevision,
+    CMSSiteSetting,
+)
 from cms.serializers import (
     CMSArticleSerializer,
+    CMSContributorFormSerializer,
+    CMSContributorFormVersionSerializer,
     CMSMediaAssetSerializer,
     CMSPageSectionSerializer,
     CMSPageSerializer,
@@ -22,15 +34,19 @@ from cms.serializers import (
 )
 from cms.services.chatbot_sync import sync_cms_content
 from cms.services.locking import (
+    acquire_form_lock,
     acquire_section_lock,
+    heartbeat_form_lock,
     heartbeat_section_lock,
     lock_is_active,
+    release_form_lock,
     release_section_lock,
 )
 from cms.services.media_usage import get_media_usages
 from cms.services.media_validation import CMSMediaValidationError, validate_media_upload
 from cms.services.publishing import (
     content_type_for,
+    contributor_form_snapshot,
     create_article_update_revision,
     create_page_update_revision,
     create_revision,
@@ -38,12 +54,14 @@ from cms.services.publishing import (
     mark_article_changed,
     mark_page_changed,
     publish_article,
+    publish_contributor_form,
     publish_page,
     publish_section,
     reorder_page_sections,
     restore_revision,
+    restore_contributor_form_version,
 )
-from projects.models import Notification, PublicEvent, UserActivity
+from projects.models import Notification, PublicEvent, User, UserActivity
 from projects.serializers import PublicEventSerializer
 
 
@@ -77,6 +95,32 @@ def _log_cms_activity(request, event, details=None):
     )
 
 
+def _notify_form_users(users, *, actor, form, event_type, title, message, dedupe_event):
+    for recipient in users:
+        if actor and recipient.pk == actor.pk:
+            continue
+        Notification.objects.update_or_create(
+            dedupe_key=f"cms-form:{form.pk}:{dedupe_event}:user:{recipient.pk}",
+            defaults={
+                "recipient": recipient,
+                "actor": actor,
+                "event_type": event_type,
+                "title": title,
+                "message": message,
+                "link_path": "/employee/cms/forms",
+            },
+        )
+
+
+def _form_editor_recipients(form):
+    recipient_ids = {
+        user_id
+        for user_id in (form.submitted_by_id, form.updated_by_id)
+        if user_id
+    }
+    return User.objects.filter(pk__in=recipient_ids, is_active=True)
+
+
 def _sync_without_blocking(request, obj, operation):
     try:
         sync_cms_content(obj)
@@ -103,6 +147,16 @@ def _with_public_cache(request, payload):
     return response
 
 
+def _with_private_cache(request, payload):
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    etag = f'"{hashlib.sha256(canonical.encode("utf-8")).hexdigest()}"'
+    candidates = [value.strip() for value in request.META.get("HTTP_IF_NONE_MATCH", "").split(",")]
+    response = Response(status=status.HTTP_304_NOT_MODIFIED) if etag in candidates else Response(payload)
+    response["ETag"] = etag
+    response["Cache-Control"] = "private, no-cache, must-revalidate"
+    return response
+
+
 def _published_snapshots(queryset):
     for obj in queryset:
         snapshot = obj.published_snapshot_json or {}
@@ -115,6 +169,8 @@ def _workflow_snapshot(obj):
         return {"title": obj.title, "slug": obj.slug, "status": obj.status}
     if isinstance(obj, CMSArticle):
         return {"title": obj.title, "slug": obj.slug, "status": obj.status}
+    if isinstance(obj, CMSContributorForm):
+        return contributor_form_snapshot(obj)
     return {
         "page": obj.page_id,
         "sectionKey": obj.section_key,
@@ -150,10 +206,22 @@ class CMSWorkflowMixin:
         if isinstance(obj, CMSPageSection):
             release_section_lock(obj.pk, request.user, force=getattr(request.user, "role", "") == "admin")
             mark_page_changed(obj.page, request.user)
-        create_revision(
+        elif isinstance(obj, CMSContributorForm):
+            release_form_lock(obj.pk, request.user, force=getattr(request.user, "role", "") == "admin")
+        revision = create_revision(
             self.content_type_key, obj.pk, CMSRevision.ACTION_SUBMIT, _workflow_snapshot(obj), user=request.user,
             status_before=before, status_after=obj.status,
         )
+        if isinstance(obj, CMSContributorForm):
+            _notify_form_users(
+                User.objects.filter(role="admin", is_active=True),
+                actor=request.user,
+                form=obj,
+                event_type="cms_form_submitted",
+                title="Contributor form awaiting review",
+                message=f"{obj.name} was submitted for administrator review.",
+                dedupe_event=f"submitted:{revision.pk}",
+            )
         _log_cms_activity(request, "cms_content_submitted", {"content_type": self.content_type_key, "id": obj.pk})
         obj.refresh_from_db()
         return Response(self._serialize(obj))
@@ -174,10 +242,22 @@ class CMSWorkflowMixin:
         obj.save(update_fields=fields)
         if isinstance(obj, CMSPageSection):
             release_section_lock(obj.pk, request.user, force=True)
-        create_revision(
+        elif isinstance(obj, CMSContributorForm):
+            release_form_lock(obj.pk, request.user, force=True)
+        revision = create_revision(
             self.content_type_key, obj.pk, CMSRevision.ACTION_REJECT, _workflow_snapshot(obj), user=request.user,
             status_before=before, status_after=obj.status,
         )
+        if isinstance(obj, CMSContributorForm):
+            _notify_form_users(
+                _form_editor_recipients(obj),
+                actor=request.user,
+                form=obj,
+                event_type="cms_form_rejected",
+                title="Contributor form changes requested",
+                message=f"{obj.name} was returned for revision. {obj.review_notes}",
+                dedupe_event=f"rejected:{revision.pk}",
+            )
         _log_cms_activity(request, "cms_content_rejected", {"content_type": self.content_type_key, "id": obj.pk})
         obj.refresh_from_db()
         return Response(self._serialize(obj))
@@ -414,6 +494,207 @@ class AdminCMSArticleViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
         return Response(self._serialize(article))
 
 
+class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
+    serializer_class = CMSContributorFormSerializer
+    permission_classes = [permissions.IsAuthenticated, IsCMSUser]
+    content_type_key = CMSRevision.CONTENT_FORM
+    http_method_names = ["get", "patch", "put", "post", "head", "options"]
+
+    def get_queryset(self):
+        return CMSContributorForm.objects.select_related(
+            "current_published_version", "created_by", "updated_by", "submitted_by", "reviewed_by", "lock_owner"
+        ).order_by("name")
+
+    def create(self, request, *args, **kwargs):
+        return Response({"detail": "Contributor form definitions are provisioned by the system."}, status=405)
+
+    def update(self, request, *args, **kwargs):
+        form = self.get_object()
+        self._form_status_before = form.status
+        if form.status == CMSContributorForm.STATUS_SUBMITTED and getattr(request.user, "role", "") != "admin":
+            raise PermissionDenied("Submitted forms can only be changed by an administrator.")
+        if not lock_is_active(form) or form.lock_owner_id != request.user.id:
+            return Response({"detail": "Acquire the form editing lock before saving."}, status=423)
+        try:
+            return super().update(request, *args, **kwargs)
+        except serializers.ValidationError as exc:
+            if "detail" in getattr(exc, "detail", {}):
+                return Response(exc.detail, status=409)
+            raise
+
+    def perform_update(self, serializer):
+        form = serializer.save(
+            updated_by=self.request.user,
+            has_unpublished_changes=True,
+            status=CMSContributorForm.STATUS_DRAFT,
+            review_notes="",
+            lock_owner=None,
+            lock_acquired_at=None,
+        )
+        create_revision(
+            self.content_type_key,
+            form.pk,
+            CMSRevision.ACTION_UPDATE,
+            contributor_form_snapshot(form),
+            user=self.request.user,
+            status_before=getattr(self, "_form_status_before", ""),
+            status_after=form.status,
+        )
+        _log_cms_activity(self.request, "cms_content_updated", {"content_type": "form", "id": form.pk, "key": form.key})
+
+    def destroy(self, request, *args, **kwargs):
+        return Response({"detail": "Contributor forms cannot be deleted or archived."}, status=405)
+
+    @action(detail=True, methods=["post"])
+    def archive(self, request, pk=None):
+        return Response({"detail": "Contributor forms cannot be archived."}, status=405)
+
+    @action(detail=True, methods=["post"])
+    def lock(self, request, pk=None):
+        form, acquired = acquire_form_lock(pk, request.user)
+        _log_cms_activity(
+            request, "cms_form_lock_acquired" if acquired else "cms_form_lock_blocked",
+            {"form_id": form.pk, "lock_owner": form.lock_owner_id},
+        )
+        return Response(self.get_serializer(form).data, status=200 if acquired else 423)
+
+    @action(detail=True, methods=["post"])
+    def unlock(self, request, pk=None):
+        form, released = release_form_lock(pk, request.user, force=getattr(request.user, "role", "") == "admin")
+        if not released:
+            return Response({"detail": "Only the lock owner or an administrator can release this lock."}, status=423)
+        _log_cms_activity(request, "cms_form_lock_released", {"form_id": form.pk})
+        return Response(self.get_serializer(form).data)
+
+    @action(detail=True, methods=["post"])
+    def heartbeat(self, request, pk=None):
+        form, refreshed = heartbeat_form_lock(pk, request.user)
+        if not refreshed:
+            return Response({"detail": "The form lock is no longer owned by this user."}, status=409)
+        return Response(self.get_serializer(form).data)
+
+    @action(detail=True, methods=["post"], url_path="request-access")
+    def request_access(self, request, pk=None):
+        form = self.get_object()
+        if not lock_is_active(form) or not form.lock_owner_id or form.lock_owner_id == request.user.id:
+            return Response({"detail": "This form is not locked by another editor."}, status=400)
+        Notification.objects.update_or_create(
+            dedupe_key=f"cms-form-access-{form.pk}-{request.user.pk}-{form.lock_owner_id}",
+            defaults={
+                "recipient": form.lock_owner,
+                "actor": request.user,
+                "event_type": "cms_form_access_requested",
+                "title": "Contributor form access requested",
+                "message": f"{request.user.full_name or request.user.username} requested access to {form.name}.",
+                "link_path": "/employee/cms/forms",
+            },
+        )
+        _log_cms_activity(
+            request, "cms_form_access_requested",
+            {"form_id": form.pk, "lock_owner": form.lock_owner_id},
+        )
+        return Response({"detail": "Access request sent to the current editor."})
+
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
+    def publish(self, request, pk=None):
+        target = self.get_object()
+        if not target.has_unpublished_changes:
+            return Response({"detail": "This contributor form has no unpublished changes."}, status=400)
+        editor_recipients = list(_form_editor_recipients(target))
+        try:
+            form = publish_contributor_form(target, user=request.user)
+        except FormSchemaError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        _notify_form_users(
+            editor_recipients,
+            actor=request.user,
+            form=form,
+            event_type="cms_form_published",
+            title="Contributor form published",
+            message=(
+                f"{form.name} version {form.current_published_version.version_number} was published."
+            ),
+            dedupe_event=f"published:{form.current_published_version.version_number}",
+        )
+        _log_cms_activity(request, "cms_content_published", {"content_type": "form", "id": form.pk, "key": form.key})
+        return Response(self._serialize(form))
+
+    @action(detail=True, methods=["get"])
+    def versions(self, request, pk=None):
+        form = self.get_object()
+        return Response(CMSContributorFormVersionSerializer(
+            form.versions.select_related("published_by").all(), many=True
+        ).data)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        permission_classes=[permissions.IsAuthenticated, IsCMSAdmin],
+        url_path="restore-version",
+    )
+    def restore_version(self, request, pk=None):
+        form = self.get_object()
+        try:
+            version_id = int(request.data.get("version_id") or 0)
+        except (TypeError, ValueError):
+            version_id = 0
+        version = form.versions.filter(pk=version_id).first()
+        if version is None:
+            return Response({"detail": "Published form version not found."}, status=404)
+        try:
+            form = restore_contributor_form_version(form, version, user=request.user)
+        except FormSchemaError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        _log_cms_activity(
+            request, "cms_content_restored",
+            {"content_type": "form", "id": form.pk, "restored_from_version": version.version_number},
+        )
+        return Response(self._serialize(form))
+
+
+class ContributorFormCurrentView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, key):
+        form = CMSContributorForm.objects.select_related("current_published_version").filter(key=key).first()
+        if not form or not form.current_published_version:
+            if key != SIMPLIFIED_FORM_KEY:
+                raise Http404("Published contributor form not found.")
+            payload = {"key": key, "name": "Simplified RDIP Contributor Form", "version": 1, "schema": default_simplified_form_schema()}
+        else:
+            version = form.current_published_version
+            payload = {
+                "key": form.key,
+                "name": form.name,
+                "version": version.version_number,
+                "schema": version.schema_json,
+                "published_at": version.published_at,
+            }
+        return _with_private_cache(request, payload)
+
+
+class ContributorFormVersionView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, key, version_number):
+        version = CMSContributorFormVersion.objects.select_related("form").filter(
+            form__key=key, version_number=version_number,
+        ).first()
+        if version is None:
+            if key != SIMPLIFIED_FORM_KEY or version_number != 1:
+                raise Http404("Contributor form version not found.")
+            payload = {"key": key, "name": "Simplified RDIP Contributor Form", "version": 1, "schema": default_simplified_form_schema()}
+        else:
+            payload = {
+                "key": version.form.key,
+                "name": version.form.name,
+                "version": version.version_number,
+                "schema": version.schema_json,
+                "published_at": version.published_at,
+            }
+        return _with_private_cache(request, payload)
+
+
 class AdminCMSMediaAssetViewSet(viewsets.ModelViewSet):
     serializer_class = CMSMediaAssetSerializer
     permission_classes = [permissions.IsAuthenticated, IsCMSUser]
@@ -551,6 +832,13 @@ class AdminCMSReviewQueueView(APIView):
                 ).data,
                 "news": CMSArticleSerializer(
                     CMSArticle.objects.filter(status="submitted").select_related("thumbnail"),
+                    many=True,
+                    context={"request": request},
+                ).data,
+                "forms": CMSContributorFormSerializer(
+                    CMSContributorForm.objects.filter(status="submitted").select_related(
+                        "current_published_version", "created_by", "updated_by", "submitted_by", "reviewed_by", "lock_owner"
+                    ),
                     many=True,
                     context={"request": request},
                 ).data,

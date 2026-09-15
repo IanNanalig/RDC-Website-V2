@@ -210,12 +210,19 @@ class AccessRequest(models.Model):
 class UserActivity(models.Model):
     EVENT_CHOICES = [
         ("login", "Login"),
+        ("login_failed", "Login Failed"),
+        ("logout", "Logout"),
+        ("auth_password_setup", "Password Setup Completed"),
         ("auth_reset_request", "Auth Reset Request"),
         ("auth_reset_approve", "Auth Reset Approve"),
         ("auth_reset_reject", "Auth Reset Reject"),
         ("user_create", "User Create"),
+        ("user_update", "User Update"),
+        ("user_status_changed", "User Status Changed"),
+        ("user_delete", "User Delete"),
         ("project_create", "Project Create"),
         ("project_update", "Project Update"),
+        ("project_delete", "Project Delete"),
         ("project_submit", "Project Submit"),
         ("project_approve", "Project Approve"),
         ("project_reject", "Project Reject"),
@@ -244,6 +251,7 @@ class UserActivity(models.Model):
         ("cms_event_rejected", "CMS Event Rejected"),
         ("cms_event_archived", "CMS Event Archived"),
         ("cms_event_unarchived", "CMS Event Unarchived"),
+        ("cms_event_deleted", "CMS Event Deleted"),
         ("cms_content_created", "CMS Content Created"),
         ("cms_content_updated", "CMS Content Updated"),
         ("cms_content_submitted", "CMS Content Submitted"),
@@ -255,16 +263,32 @@ class UserActivity(models.Model):
         ("cms_section_lock_blocked", "CMS Section Lock Blocked"),
         ("cms_section_lock_released", "CMS Section Lock Released"),
         ("cms_section_access_requested", "CMS Section Access Requested"),
+        ("cms_form_lock_acquired", "CMS Form Lock Acquired"),
+        ("cms_form_lock_blocked", "CMS Form Lock Blocked"),
+        ("cms_form_lock_released", "CMS Form Lock Released"),
+        ("cms_form_access_requested", "CMS Form Access Requested"),
+        ("notification_read", "Notification Read"),
+        ("notification_read_all", "All Notifications Read"),
+        ("access_request_approved", "Access Request Approved"),
+        ("access_request_rejected", "Access Request Rejected"),
+        ("api_action", "API Action"),
+        ("api_action_failed", "API Action Failed"),
         ("cms_chatbot_sync_failed", "CMS Chatbot Sync Failed"),
         ("chat_knowledge_approved", "Chat Knowledge Approved"),
         ("chat_knowledge_rejected", "Chat Knowledge Rejected"),
         ("chat_content_updated", "Chat Content Updated"),
     ]
 
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="activities")
+    user = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="activities"
+    )
+    actor_username = models.CharField(max_length=150, blank=True, default="")
+    actor_full_name = models.CharField(max_length=200, blank=True, default="")
     role = models.CharField(max_length=20, blank=True)
     event = models.CharField(max_length=40, choices=EVENT_CHOICES)
     project = models.ForeignKey(Project, on_delete=models.SET_NULL, null=True, blank=True)
+    project_id_snapshot = models.PositiveIntegerField(null=True, blank=True)
+    project_title_snapshot = models.CharField(max_length=200, blank=True, default="")
     ip_address = models.CharField(max_length=64, blank=True)
     location_hint = models.CharField(max_length=255, blank=True)
     details = models.JSONField(default=dict, blank=True)
@@ -274,7 +298,7 @@ class UserActivity(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"{self.user.username} {self.event} {self.created_at.isoformat()}"
+        return f"{self.actor_username or getattr(self.user, 'username', 'Deleted user')} {self.event} {self.created_at.isoformat()}"
 
 
 class ProjectComment(models.Model):

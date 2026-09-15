@@ -235,16 +235,97 @@ class CMSArticle(models.Model):
         return self.title
 
 
+class CMSContributorForm(models.Model):
+    STATUS_DRAFT = CMS_STATUS_DRAFT
+    STATUS_SUBMITTED = CMS_STATUS_SUBMITTED
+    STATUS_PUBLISHED = CMS_STATUS_PUBLISHED
+    STATUS_REJECTED = CMS_STATUS_REJECTED
+    STATUS_CHOICES = [choice for choice in CMS_STATUS_CHOICES if choice[0] != CMS_STATUS_ARCHIVED]
+
+    key = models.SlugField(max_length=120, unique=True)
+    name = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+    draft_schema_json = models.JSONField(default=dict)
+    current_published_version = models.ForeignKey(
+        "CMSContributorFormVersion",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="active_for_forms",
+    )
+    has_unpublished_changes = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="created_cms_contributor_forms",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="updated_cms_contributor_forms",
+    )
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="submitted_cms_contributor_forms",
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="reviewed_cms_contributor_forms",
+    )
+    review_notes = models.TextField(blank=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    lock_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="locked_cms_contributor_forms",
+    )
+    lock_acquired_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        indexes = [
+            models.Index(fields=["status"], name="cms_form_status_idx"),
+            models.Index(fields=["lock_acquired_at"], name="cms_form_lock_idx"),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class CMSContributorFormVersion(models.Model):
+    form = models.ForeignKey(CMSContributorForm, on_delete=models.PROTECT, related_name="versions")
+    version_number = models.PositiveIntegerField()
+    schema_json = models.JSONField(default=dict)
+    published_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="published_cms_contributor_form_versions",
+    )
+    published_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-version_number"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["form", "version_number"], name="unique_cms_contributor_form_version"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.form.key} v{self.version_number}"
+
+
 class CMSRevision(models.Model):
     CONTENT_PAGE = "page"
     CONTENT_ARTICLE = "article"
     CONTENT_SECTION = "section"
     CONTENT_MEDIA = "media"
+    CONTENT_FORM = "form"
     CONTENT_TYPE_CHOICES = [
         (CONTENT_PAGE, "Page"),
         (CONTENT_ARTICLE, "Article"),
         (CONTENT_SECTION, "Section"),
         (CONTENT_MEDIA, "Media"),
+        (CONTENT_FORM, "Contributor form"),
     ]
 
     ACTION_CREATE = "create"
@@ -307,6 +388,7 @@ class CMSRevision(models.Model):
             "cmsarticle": self.CONTENT_ARTICLE,
             "cmspagesection": self.CONTENT_SECTION,
             "cmsmediaasset": self.CONTENT_MEDIA,
+            "cmscontributorform": self.CONTENT_FORM,
         }.get(self.content_type.model, self.content_type.model)
 
 

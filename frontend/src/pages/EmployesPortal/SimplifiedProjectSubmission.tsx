@@ -4,6 +4,14 @@ import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
 import PriorityAnalysisPanel from "../../components/portal/PriorityAnalysisPanel";
 import { useEncodingWindow, useProgressUpdateWindow } from "../../hooks/useEncodingWindow";
+import cmsApi from "../../services/cmsApi";
+import {
+  cloneContributorFormSchema,
+  contributorFieldApplies,
+  DEFAULT_CONTRIBUTOR_FORM_SCHEMA,
+  type ContributorFormField,
+  type ContributorFormSchema,
+} from "../../types/contributorForm";
 
 type FormAction = "save" | "submit" | "draft" | "reviewed" | "endorsed";
 type YesNo = "Yes" | "No";
@@ -35,6 +43,7 @@ type SimplifiedForm = {
   physicalAccomplishment: string;
   financialAccomplishment: string;
   remarks: string;
+  custom_fields: Record<string, string | string[]>;
   priorityAnalysisFacts: {
     readinessLevel: string;
     readinessNotes: string;
@@ -93,6 +102,7 @@ const initialForm: SimplifiedForm = {
   physicalAccomplishment: "",
   financialAccomplishment: "",
   remarks: "",
+  custom_fields: {},
   priorityAnalysisFacts: {
     readinessLevel: "",
     readinessNotes: "",
@@ -227,7 +237,7 @@ const normalizeSimplifiedDiffPath = (path: string) => {
 
 const isSystemManagedDiffPath = (path: string) => {
   const root = String(path || "").split(".")[0];
-  return ["public_summary", "public_summary_override", "simplified_form_meta", "validator_review", "contributor_snapshot"].includes(root);
+  return ["public_summary", "public_summary_override", "simplified_form_meta", "validator_review", "contributor_snapshot", "form_schema"].includes(root);
 };
 
 const normalizeFundingMap = (
@@ -266,9 +276,11 @@ const TextField: React.FC<{
   value: string;
   onChange: (v: string) => void;
   required?: boolean;
+  placeholder?: string;
+  helpText?: string;
   diffBefore?: string;
   editMeta?: EditMeta;
-}> = ({ label, value, onChange, required, diffBefore, editMeta }) => {
+}> = ({ label, value, onChange, required, placeholder, helpText, diffBefore, editMeta }) => {
   const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
   const metaLabel = hasEditMeta
     ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
@@ -282,7 +294,9 @@ const TextField: React.FC<{
       value={value}
       onChange={(e) => onChange(e.target.value)}
       required={required}
+      placeholder={placeholder}
     />
+    {helpText && <p className="mt-1 text-xs text-slate-500">{helpText}</p>}
     {diffBefore !== undefined && (
       <p className="text-xs text-amber-700 mt-1">Original: {diffBefore || "(empty)"}</p>
     )}
@@ -302,9 +316,11 @@ const TextAreaField: React.FC<{
   onChange: (v: string) => void;
   required?: boolean;
   rows?: number;
+  placeholder?: string;
+  helpText?: string;
   diffBefore?: string;
   editMeta?: EditMeta;
-}> = ({ label, value, onChange, required, rows = 3, diffBefore, editMeta }) => {
+}> = ({ label, value, onChange, required, rows = 3, placeholder, helpText, diffBefore, editMeta }) => {
   const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
   const metaLabel = hasEditMeta
     ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
@@ -319,7 +335,9 @@ const TextAreaField: React.FC<{
       value={value}
       onChange={(e) => onChange(e.target.value)}
       required={required}
+      placeholder={placeholder}
     />
+    {helpText && <p className="mt-1 text-xs text-slate-500">{helpText}</p>}
     {diffBefore !== undefined && (
       <p className="text-xs text-amber-700 mt-1">Original: {diffBefore || "(empty)"}</p>
     )}
@@ -340,9 +358,11 @@ const NumberField: React.FC<{
   required?: boolean;
   disabled?: boolean;
   formatMoney?: boolean;
+  placeholder?: string;
+  helpText?: string;
   diffBefore?: string;
   editMeta?: EditMeta;
-}> = ({ label, value, onChange, required, disabled, formatMoney, diffBefore, editMeta }) => {
+}> = ({ label, value, onChange, required, disabled, formatMoney, placeholder, helpText, diffBefore, editMeta }) => {
   const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
   const metaLabel = hasEditMeta
     ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
@@ -361,7 +381,9 @@ const NumberField: React.FC<{
       onChange={(e) => onChange(formatMoney ? formatMoneyInput(e.target.value) : e.target.value)}
       required={required}
       disabled={disabled}
+      placeholder={placeholder}
     />
+    {helpText && <p className="mt-1 text-xs text-slate-500">{helpText}</p>}
     {diffBefore !== undefined && (
       <p className="text-xs text-amber-700 mt-1">Original: {diffBefore || "(empty)"}</p>
     )}
@@ -377,12 +399,14 @@ const NumberField: React.FC<{
 
 const CheckboxGroup: React.FC<{
   label: string;
-  options: string[];
+  options: Array<string | { value: string; label: string }>;
   values: string[];
   onChange: (values: string[]) => void;
   diffBefore?: string;
   editMeta?: EditMeta;
-}> = ({ label, options, values, onChange, diffBefore, editMeta }) => {
+  required?: boolean;
+  helpText?: string;
+}> = ({ label, options, values, onChange, diffBefore, editMeta, required, helpText }) => {
   const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
   const metaLabel = hasEditMeta
     ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
@@ -390,26 +414,29 @@ const CheckboxGroup: React.FC<{
   const showPrevious = hasEditMeta && editMeta?.before !== undefined;
   return (
   <div>
-    <p className="text-sm text-slate-700 mb-1">{label}</p>
+    <p className="text-sm text-slate-700 mb-1">{label}{required ? " *" : ""}</p>
     <div className={`columns-1 sm:columns-2 lg:columns-3 gap-x-6 border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}>
       {options.map((option) => {
-        const checked = values.includes(option);
+        const optionValue = typeof option === "string" ? option : option.value;
+        const optionLabel = typeof option === "string" ? option : option.label;
+        const checked = values.includes(optionValue);
         return (
-          <label key={option} className="mb-2 flex min-w-0 break-inside-avoid items-start gap-2 text-xs">
+          <label key={optionValue} className="mb-2 flex min-w-0 break-inside-avoid items-start gap-2 text-xs">
             <input
               className="mt-0.5"
               type="checkbox"
               checked={checked}
               onChange={(e) => {
-                if (e.target.checked) onChange([...values, option]);
-                else onChange(values.filter((v) => v !== option));
+                if (e.target.checked) onChange([...values, optionValue]);
+                else onChange(values.filter((v) => v !== optionValue));
               }}
             />
-            <span className="min-w-0 whitespace-normal break-words">{option}</span>
+            <span className="min-w-0 whitespace-normal break-words">{optionLabel}</span>
           </label>
         );
       })}
     </div>
+    {helpText && <p className="mt-1 text-xs text-slate-500">{helpText}</p>}
     {diffBefore !== undefined && (
       <p className="text-xs text-amber-700 mt-1">Original: {diffBefore || "(empty)"}</p>
     )}
@@ -427,11 +454,12 @@ const SelectField: React.FC<{
   label: string;
   value: string;
   onChange: (v: string) => void;
-  options: string[];
+  options: Array<string | { value: string; label: string }>;
   required?: boolean;
   diffBefore?: string;
   editMeta?: EditMeta;
-}> = ({ label, value, onChange, options, required, diffBefore, editMeta }) => {
+  helpText?: string;
+}> = ({ label, value, onChange, options, required, diffBefore, editMeta, helpText }) => {
   const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
   const metaLabel = hasEditMeta
     ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
@@ -447,8 +475,13 @@ const SelectField: React.FC<{
       required={required}
     >
       <option value="">Choose</option>
-      {options.map((o) => <option key={o} value={o}>{o}</option>)}
+      {options.map((option) => {
+        const optionValue = typeof option === "string" ? option : option.value;
+        const optionLabel = typeof option === "string" ? option : option.label;
+        return <option key={optionValue} value={optionValue}>{optionLabel}</option>;
+      })}
     </select>
+    {helpText && <p className="mt-1 text-xs text-slate-500">{helpText}</p>}
     {diffBefore !== undefined && (
       <p className="text-xs text-amber-700 mt-1">Original: {diffBefore || "(empty)"}</p>
     )}
@@ -473,6 +506,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const userRaw = localStorage.getItem("user");
   const user = userRaw ? JSON.parse(userRaw) : null;
   const [form, setForm] = useState<SimplifiedForm>(initialForm);
+  const [formSchema, setFormSchema] = useState<ContributorFormSchema>(() => cloneContributorFormSchema(DEFAULT_CONTRIBUTOR_FORM_SCHEMA));
+  const [formSchemaKey, setFormSchemaKey] = useState("simplified-rdip");
+  const [formSchemaVersion, setFormSchemaVersion] = useState(1);
   const [loading, setLoading] = useState(false);
   const [projectStatus, setProjectStatus] = useState<string>("planning");
   const [workflowStatus, setWorkflowStatus] = useState<string>("draft");
@@ -544,6 +580,20 @@ const SimplifiedProjectSubmission: React.FC = () => {
   }, [navigate, user]);
 
   useEffect(() => {
+    if (isEditMode) return;
+    let active = true;
+    cmsApi.getContributorForm("simplified-rdip")
+      .then((payload) => {
+        if (!active) return;
+        setFormSchema(cloneContributorFormSchema(payload.schema));
+        setFormSchemaKey(payload.key);
+        setFormSchemaVersion(payload.version);
+      })
+      .catch((error) => console.warn("Using the built-in contributor form definition:", error));
+    return () => { active = false; };
+  }, [isEditMode]);
+
+  useEffect(() => {
     const loadExisting = async () => {
       if (!isEditMode || !id) {
         setFormReady(true);
@@ -578,6 +628,22 @@ const SimplifiedProjectSubmission: React.FC = () => {
             setServerUpdatedAt(String(data.updated_at));
           }
           pd = (data?.profile_data || {}) as Record<string, unknown>;
+        }
+        const formMarker = pd?.form_schema && typeof pd.form_schema === "object"
+          ? pd.form_schema as Record<string, unknown>
+          : null;
+        const pinnedKey = String(formMarker?.key || "simplified-rdip");
+        const pinnedVersion = Number(formMarker?.version || 1);
+        try {
+          const payload = await cmsApi.getContributorFormVersion(pinnedKey, pinnedVersion);
+          setFormSchema(cloneContributorFormSchema(payload.schema));
+          setFormSchemaKey(payload.key);
+          setFormSchemaVersion(payload.version);
+        } catch (error) {
+          console.warn("Using the built-in legacy contributor form definition:", error);
+          setFormSchema(cloneContributorFormSchema(DEFAULT_CONTRIBUTOR_FORM_SCHEMA));
+          setFormSchemaKey("simplified-rdip");
+          setFormSchemaVersion(1);
         }
         const metaRaw = pd?.simplified_form_meta;
         const editsRaw =
@@ -623,6 +689,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
           },
           fundingRequirementByYear,
           actualFundingByYear,
+          custom_fields:
+            simplified.custom_fields && typeof simplified.custom_fields === "object" && !Array.isArray(simplified.custom_fields)
+              ? simplified.custom_fields as Record<string, string | string[]>
+              : {},
           agencyName: String(simplified.agencyName || data?.agency || ""),
           projectActivity: String(simplified.projectActivity || data?.title || data?.name || ""),
         });
@@ -886,13 +956,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
     () => ({
       submission_type: "simplified",
       templateName: "RDIP 2023-2028 Simplified",
+      form_schema: { key: formSchemaKey, version: formSchemaVersion },
       simplified_form: {
         ...form,
         fundingRequirementTotal: frTotal,
         actualApprovedTotal: aaTotal,
       },
     }),
-    [form, frTotal, aaTotal],
+    [form, frTotal, aaTotal, formSchemaKey, formSchemaVersion],
   );
 
   const isReadOnly =
@@ -928,33 +999,23 @@ const SimplifiedProjectSubmission: React.FC = () => {
       alert("Year range is too large. Please keep the span within 15 years.");
       return;
     }
-    const required: Array<keyof SimplifiedForm> = [
-      "agencyName",
-      "program",
-      "projectActivity",
-      "location",
-      "description",
-      "objective",
-      "startYear",
-      "endYear",
-      "fundingSource",
-      "rdcEndorsed",
-      "pipIncluded",
-      "arnipapIncluded",
-      "ludipIncluded",
-      "ifpsIncluded",
-      "pcbIncluded",
-      "developmentSector",
-      "rdpMainChapter",
-      "status",
-    ];
-    if (form.status !== "New") {
-      required.push("physicalAccomplishment", "financialAccomplishment");
-    }
     if (!isValidator && action === "submit") {
-      const missing = required.filter((k) => !String(form[k] || "").trim());
+      const formValues = form as unknown as Record<string, unknown>;
+      const missing = formSchema.sections
+        .filter((section) => section.visible !== false && (!section.admin_only || isAdmin))
+        .flatMap((section) => section.fields)
+        .filter((field) => field.visible !== false && contributorFieldApplies(field, formValues))
+        .filter((field) => field.required || field.condition_required)
+        .filter((field) => {
+          const value = field.key.startsWith("custom_")
+            ? form.custom_fields[field.key]
+            : field.key.startsWith("priorityAnalysisFacts.")
+            ? form.priorityAnalysisFacts[field.key.split(".")[1] as keyof SimplifiedForm["priorityAnalysisFacts"]]
+            : formValues[field.key];
+          return value === undefined || value === null || value === "" || Array.isArray(value) && value.length === 0;
+        });
       if (missing.length > 0) {
-        alert("Please complete all required fields before submit.");
+        alert(`Please complete all required fields before submit: ${missing.map((field) => field.label).join(", ")}.`);
         return;
       }
       if (parseYear(form.startYear) === null || parseYear(form.endYear) === null) {
@@ -1079,6 +1140,110 @@ const SimplifiedProjectSubmission: React.FC = () => {
     }
   };
 
+  const configuredFieldValue = (field: ContributorFormField): string | string[] => {
+    if (field.key.startsWith("custom_")) return form.custom_fields[field.key] ?? (field.type === "multiselect" ? [] : "");
+    if (field.key.startsWith("priorityAnalysisFacts.")) {
+      const key = field.key.split(".")[1] as keyof SimplifiedForm["priorityAnalysisFacts"];
+      return form.priorityAnalysisFacts[key] || "";
+    }
+    const value = (form as unknown as Record<string, unknown>)[field.key];
+    return Array.isArray(value) ? value.map(String) : String(value ?? "");
+  };
+
+  const setConfiguredFieldValue = (field: ContributorFormField, value: string | string[]) => {
+    if (field.key.startsWith("custom_")) {
+      updateFormWithLocalDraft((previous) => ({
+        ...previous,
+        custom_fields: { ...previous.custom_fields, [field.key]: value },
+      }));
+      return;
+    }
+    if (field.key.startsWith("priorityAnalysisFacts.")) {
+      setPriorityFact(field.key.split(".")[1] as keyof SimplifiedForm["priorityAnalysisFacts"], String(value));
+      return;
+    }
+    if (field.key === "pcbIncluded") {
+      updateFormWithLocalDraft((previous) => ({
+        ...previous,
+        pcbIncluded: String(value) as YesNo,
+        ...(value === "No" ? { pcbProgram: "" } : {}),
+      }));
+      return;
+    }
+    setField(field.key as keyof SimplifiedForm, value as never);
+  };
+
+  const renderConfiguredField = (field: ContributorFormField) => {
+    const required = Boolean(field.required || field.condition_required);
+    const trackingKey = field.key.startsWith("custom_") ? `custom_fields.${field.key}` : field.key;
+    const diffBefore = diffOf(trackingKey)?.before;
+    const editMeta = editMetaOf(trackingKey);
+    const rawValue = configuredFieldValue(field);
+    const value = Array.isArray(rawValue) ? rawValue : String(rawValue);
+    const common = {
+      label: field.label,
+      required,
+      helpText: field.help_text,
+      diffBefore,
+      editMeta,
+    };
+
+    if (field.type === "currency_by_year") {
+      const mapKey = field.key as "fundingRequirementByYear" | "actualFundingByYear";
+      const values = form[mapKey] || {};
+      const total = mapKey === "fundingRequirementByYear" ? frTotal : aaTotal;
+      return (
+        <div>
+          <h4 className="text-sm font-semibold text-slate-800">{field.label}{required ? " *" : ""}</h4>
+          {yearKeys.length === 0 ? (
+            <p className="mt-2 text-sm text-slate-500">Enter Start Year and End Year to generate fields.</p>
+          ) : (
+            <div className="mt-2 grid gap-2 sm:grid-cols-3">
+              {yearKeys.map((key) => (
+                <NumberField
+                  key={`${field.key}-${key}`}
+                  label={key === "2022_prior" ? "2022 & Prior" : key}
+                  value={values[key] || ""}
+                  onChange={(next) => updateFormWithLocalDraft((previous) => ({
+                    ...previous,
+                    [mapKey]: { ...previous[mapKey], [key]: next },
+                  }))}
+                  diffBefore={diffOf(`${field.key}.${key}`)?.before}
+                  editMeta={editMetaOf(`${field.key}.${key}`)}
+                  formatMoney
+                />
+              ))}
+            </div>
+          )}
+          <p className="mt-2 text-sm text-slate-600">Total: <strong>{fmtNumber(total)}</strong></p>
+          {field.help_text && <p className="mt-1 text-xs text-slate-500">{field.help_text}</p>}
+        </div>
+      );
+    }
+    if (field.type === "textarea") {
+      return <TextAreaField {...common} value={String(value)} rows={4} placeholder={field.placeholder} onChange={(next) => setConfiguredFieldValue(field, next)} />;
+    }
+    if (field.type === "select") {
+      return <SelectField {...common} value={String(value)} options={field.options || []} onChange={(next) => setConfiguredFieldValue(field, next)} />;
+    }
+    if (field.type === "multiselect") {
+      return <CheckboxGroup {...common} values={Array.isArray(value) ? value : []} options={field.options || []} onChange={(next) => setConfiguredFieldValue(field, next)} />;
+    }
+    if (field.type === "number" || field.type === "year") {
+      return <NumberField {...common} value={String(value)} placeholder={field.placeholder} onChange={(next) => setConfiguredFieldValue(field, next)} />;
+    }
+    if (field.type === "date") {
+      return (
+        <label className="block">
+          <span className="text-sm text-slate-700">{field.label}{required ? " *" : ""}</span>
+          <input type="date" className="mt-1 w-full rounded border p-2" value={String(value)} required={required} onChange={(event) => setConfiguredFieldValue(field, event.target.value)} />
+          {field.help_text && <p className="mt-1 text-xs text-slate-500">{field.help_text}</p>}
+        </label>
+      );
+    }
+    return <TextField {...common} value={String(value)} placeholder={field.placeholder} onChange={(next) => setConfiguredFieldValue(field, next)} />;
+  };
+
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   const localSavedLabel = lastLocalSaveAt ? new Date(lastLocalSaveAt).toLocaleString() : "";
   const displayName = user?.full_name || user?.username || "User";
@@ -1196,6 +1361,32 @@ const SimplifiedProjectSubmission: React.FC = () => {
       )}
       <form onSubmit={(e) => save(e, "submit")} className="portal-card p-3 sm:p-4 lg:p-6 space-y-6">
         <fieldset disabled={isReadOnly} className="space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+            <div><h2 className="text-lg font-bold text-slate-900">{formSchema.title}</h2>{formSchema.description && <p className="text-sm text-slate-500">{formSchema.description}</p>}</div>
+          </div>
+          {formSchema.sections
+            .filter((section) => section.visible !== false && (!section.admin_only || isAdmin))
+            .map((section) => {
+              const fields = section.fields.filter((field) =>
+                field.visible !== false && contributorFieldApplies(field, form as unknown as Record<string, unknown>),
+              );
+              if (!fields.length) return null;
+              return (
+                <section key={section.key} className={`rounded-lg border p-4 ${section.admin_only ? "border-emerald-200 bg-emerald-50/40" : "border-slate-200"}`}>
+                  <div className="mb-4"><h3 className="font-semibold text-slate-900">{section.title}</h3>{section.description && <p className="mt-1 text-xs text-slate-600">{section.description}</p>}</div>
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    {fields.map((field) => (
+                      <div key={field.key} className={["textarea", "multiselect", "currency_by_year"].includes(field.type) ? "xl:col-span-2" : ""}>
+                        {renderConfiguredField(field)}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
+          {rangeTooLarge && <p className="text-xs text-rose-600">Year range is too large. Please keep the span within 15 years.</p>}
+
+          {formSchema.sections.length === 0 && (<>
           <div className="rounded-lg border border-slate-200 p-4 space-y-4">
             <TextField label="Agency Name" value={form.agencyName} onChange={(v) => setField("agencyName", v)} required diffBefore={diffOf("agencyName")?.before} editMeta={editMetaOf("agencyName")} />
             <TextField label="Program" value={form.program} onChange={(v) => setField("program", v)} required diffBefore={diffOf("program")?.before} editMeta={editMetaOf("program")} />
@@ -1373,6 +1564,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
               <TextAreaField label="Readiness Evidence Notes" value={form.priorityAnalysisFacts.readinessNotes} onChange={(v) => setPriorityFact("readinessNotes", v)} rows={2} />
             </div>
           )}
+          </>)}
 
           {isValidator && (
             <div className="rounded-lg border border-slate-200 p-4 space-y-2">

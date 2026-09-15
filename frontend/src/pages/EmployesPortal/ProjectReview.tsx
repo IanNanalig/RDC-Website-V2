@@ -3,6 +3,14 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
 import PrintAppendix from "./PrintAppendix";
+import cmsApi from "../../services/cmsApi";
+import {
+  cloneContributorFormSchema,
+  contributorFieldApplies,
+  DEFAULT_CONTRIBUTOR_FORM_SCHEMA,
+  type ContributorFormField,
+  type ContributorFormSchema,
+} from "../../types/contributorForm";
 
 type ApiProject = {
   id: number;
@@ -70,6 +78,8 @@ const ProjectReview: React.FC = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const [project, setProject] = useState<ApiProject | null>(null);
+  const [formSchema, setFormSchema] = useState<ContributorFormSchema>(() => cloneContributorFormSchema(DEFAULT_CONTRIBUTOR_FORM_SCHEMA));
+  const [formSchemaVersion, setFormSchemaVersion] = useState(1);
   const [loading, setLoading] = useState(true);
   const [includeAppendix, setIncludeAppendix] = useState(false);
   const [publicSummaryOverrideText, setPublicSummaryOverrideText] = useState("");
@@ -99,6 +109,18 @@ const ProjectReview: React.FC = () => {
           : "employee";
       const data = await api.get(`${base}/projects/${id}/`);
       setProject(data);
+      const marker = data?.profile_data?.form_schema;
+      const key = String(marker?.key || "simplified-rdip");
+      const version = Number(marker?.version || 1);
+      try {
+        const payload = await cmsApi.getContributorFormVersion(key, version);
+        setFormSchema(cloneContributorFormSchema(payload.schema));
+        setFormSchemaVersion(payload.version);
+      } catch (schemaError) {
+        console.warn("Using built-in legacy contributor form definition:", schemaError);
+        setFormSchema(cloneContributorFormSchema(DEFAULT_CONTRIBUTOR_FORM_SCHEMA));
+        setFormSchemaVersion(1);
+      }
       setPublicSummaryOverrideText(
         String(data?.profile_data?.public_summary_override?.text || "").trim(),
       );
@@ -139,6 +161,25 @@ const ProjectReview: React.FC = () => {
   const publicSummaryOverrideObj = project.profile_data?.public_summary_override as Record<string, any> | undefined;
   const effectivePublicSummaryText = String(publicSummaryOverrideObj?.text || publicSummary?.text || "").trim();
   const publicSummaryBullets = Array.isArray(publicSummary?.bullets) ? (publicSummary?.bullets as any[]) : [];
+
+  const configuredValue = (field: ContributorFormField): unknown => {
+    if (!simplified) return "";
+    if (field.key.startsWith("custom_")) {
+      const custom = simplified.custom_fields;
+      return custom && typeof custom === "object" ? custom[field.key] : "";
+    }
+    if (field.key.startsWith("priorityAnalysisFacts.")) {
+      const facts = simplified.priorityAnalysisFacts;
+      return facts && typeof facts === "object" ? facts[field.key.split(".")[1]] : "";
+    }
+    return simplified[field.key];
+  };
+
+  const printableValue = (value: unknown) => {
+    if (Array.isArray(value)) return value.length ? value.join(", ") : "-";
+    if (value && typeof value === "object") return Object.entries(value as Record<string, unknown>).map(([key, item]) => `${key === "2022_prior" ? "2022 & Prior" : key}: ${String(item || "0")}`).join("; ") || "-";
+    return String(value ?? "").trim() || "-";
+  };
 
   const onSavePublicSummary = async () => {
     if (!id || !(isAdmin || isValidator)) return;
@@ -206,7 +247,7 @@ const ProjectReview: React.FC = () => {
           )}
           <div>
             <p className="text-xs text-gray-500">Form Type</p>
-            <p>Simplified (RDIP)</p>
+            <p>Simplified (RDIP) · Version {formSchemaVersion}</p>
           </div>
           {(isAdmin || isValidator) && (
             <div className="md:col-span-2">
@@ -294,6 +335,29 @@ const ProjectReview: React.FC = () => {
               </div>
             ) : (
               <>
+                {formSchema.sections
+                  .filter((section) => section.visible !== false && (!section.admin_only || isAdmin))
+                  .map((section) => {
+                    const fields = section.fields.filter((field) =>
+                      field.visible !== false && contributorFieldApplies(field, simplified),
+                    );
+                    if (!fields.length) return null;
+                    return (
+                      <section key={section.key} className="break-inside-avoid rounded border border-slate-300 p-3">
+                        <h4 className="font-semibold text-slate-900">{section.title}</h4>
+                        {section.description && <p className="mt-1 text-xs text-slate-500">{section.description}</p>}
+                        <div className="mt-3 grid gap-3 md:grid-cols-2">
+                          {fields.map((field) => (
+                            <div key={field.key} className={`rounded border border-slate-200 p-3 ${field.type === "textarea" || field.type === "multiselect" || field.type === "currency_by_year" ? "md:col-span-2" : ""}`}>
+                              <p className="text-xs text-slate-500">{field.label}</p>
+                              <p className="whitespace-pre-wrap text-slate-800">{printableValue(configuredValue(field))}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    );
+                  })}
+                {formSchema.sections.length === 0 && (<>
                 <div className="grid md:grid-cols-2 gap-3">
                   <div className="border rounded p-3"><p className="text-xs text-slate-500">Responsible Agency/LGU</p><p>{simplified?.agencyName || project.agency || "-"}</p></div>
                   <div className="border rounded p-3"><p className="text-xs text-slate-500">Program</p><p>{simplified?.program || "-"}</p></div>
@@ -349,6 +413,7 @@ const ProjectReview: React.FC = () => {
                   <p className="font-medium mb-1">Remarks</p>
                   <p>{simplified?.remarks || "-"}</p>
                 </div>
+                </>)}
               </>
             )}
           </div>

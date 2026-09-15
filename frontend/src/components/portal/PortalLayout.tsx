@@ -199,14 +199,21 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
     return () => media.removeEventListener("change", onChange);
   }, []);
 
-  const logout = () => {
-    localStorage.removeItem("user");
-    localStorage.removeItem("isLoggedIn");
-    localStorage.removeItem("username");
-    localStorage.removeItem("token");
-    localStorage.removeItem("accessToken");
-    localStorage.removeItem("refreshToken");
-    navigate("/login");
+  const logout = async () => {
+    try {
+      // Older deployments may not have the audit endpoint yet.
+      await api.post("auth/logout/", {});
+    } catch {
+      // Local sign-out must still work if the backend is temporarily unavailable.
+    } finally {
+      localStorage.removeItem("user");
+      localStorage.removeItem("isLoggedIn");
+      localStorage.removeItem("username");
+      localStorage.removeItem("token");
+      localStorage.removeItem("accessToken");
+      localStorage.removeItem("refreshToken");
+      navigate("/login");
+    }
   };
 
   const markRead = async (notification: PortalNotification) => {

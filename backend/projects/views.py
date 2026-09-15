@@ -23,6 +23,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from cms.form_schema import FormSchemaError, validate_simplified_answers
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import (
     AccessRequest,
@@ -599,6 +600,22 @@ def _log_activity(request, event: str, project=None, details=None):
         ip_address=_client_ip(request),
         location_hint=_location_hint(request),
         details=details or {},
+    )
+
+
+def _log_unauthenticated_activity(request, event: str, details=None):
+    """Capture security attempts without claiming that the target account acted."""
+    safe_details = dict(details or {})
+    if "attempted_email" in safe_details:
+        safe_details["attempted_email"] = str(safe_details["attempted_email"])[:254]
+    UserActivity.objects.create(
+        actor_username="Unauthenticated",
+        actor_full_name="Unauthenticated",
+        role="unauthenticated",
+        event=event,
+        ip_address=_client_ip(request)[:64],
+        location_hint=_location_hint(request)[:255],
+        details=safe_details,
     )
 
 
@@ -1855,6 +1872,14 @@ class AdminEventViewSet(viewsets.ModelViewSet):
         _log_activity(request, "cms_event_unarchived", details={"event_id": event.id, "title": event.title})
         return Response(PublicEventSerializer(event).data)
 
+    def destroy(self, request, *args, **kwargs):
+        event = self.get_object()
+        _log_activity(
+            request, "cms_event_deleted",
+            details={"event_id": event.id, "title": event.title, "status": event.status},
+        )
+        return super().destroy(request, *args, **kwargs)
+
 
 def _validate_password_policy(password: str):
     if len(password) < 12:
@@ -1923,7 +1948,7 @@ def _json_diff(before, after, path=""):
     if isinstance(before, dict) and isinstance(after, dict):
         keys = sorted(set(before.keys()) | set(after.keys()))
         for key in keys:
-            if not path and key in SYSTEM_MANAGED_PROFILE_KEYS:
+            if not path and (key in SYSTEM_MANAGED_PROFILE_KEYS or key == "form_schema"):
                 continue
             before_has = key in before
             after_has = key in after
@@ -2058,7 +2083,7 @@ def _collect_simplified_field_paths(simplified):
     for key, value in simplified.items():
         if key in ("fundingRequirementTotal", "actualApprovedTotal"):
             continue
-        if key in ("fundingRequirementByYear", "actualFundingByYear") and isinstance(value, dict):
+        if key in ("fundingRequirementByYear", "actualFundingByYear", "custom_fields") and isinstance(value, dict):
             for sub_key in value.keys():
                 paths.add(f"{key}.{sub_key}")
         else:
@@ -2390,12 +2415,18 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
         if not notification.read_at:
             notification.read_at = timezone.now()
             notification.save(update_fields=["read_at"])
+            _log_activity(
+                request, "notification_read", notification.project,
+                {"notification_id": notification.id, "event_type": notification.event_type},
+            )
         return Response(NotificationSerializer(notification).data)
 
     @action(detail=False, methods=["post"], url_path="mark-all-read")
     def mark_all_read(self, request):
         now = timezone.now()
         updated = Notification.objects.filter(recipient=request.user, read_at__isnull=True).update(read_at=now)
+        if updated:
+            _log_activity(request, "notification_read_all", details={"updated": updated})
         return Response({"updated": updated, "read_at": now})
 
 
@@ -2415,6 +2446,35 @@ def _project_queryset_with_related(qs, *, prefetch_priority=True):
 class BaseProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated, ProjectPermission]
+
+    def perform_create(self, serializer):
+        super().perform_create(serializer)
+        project = serializer.instance
+        if getattr(self.request.user, "role", "") not in ("staff", "employee"):
+            return
+        if project.status == "planning":
+            _notify_many(
+                _admins(),
+                event_type="contributor_project_draft_created",
+                title="Contributor project draft created",
+                message=(
+                    f"{self.request.user.full_name or self.request.user.username} "
+                    f"created a draft: {_project_title(project)}"
+                ),
+                project=project,
+                actor=self.request.user,
+                dedupe_key=f"project:{project.id}:contributor-draft:admins",
+            )
+        elif project.status == "proposed":
+            _notify_many(
+                _active_validators(),
+                event_type="project_submitted",
+                title="New project submitted",
+                message=f"New project submitted for validation: {_project_title(project)}",
+                project=project,
+                actor=self.request.user,
+                dedupe_key=f"project:{project.id}:submitted:validators",
+            )
 
     def get_serializer_class(self):
         if getattr(self, "action", "") == "list" and self.request.query_params.get("view") == "summary":
@@ -2444,6 +2504,18 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         )
         if project.created_by_id != request.user.id and request.user.role != "admin" and not same_agency_staff:
             raise PermissionDenied("Only owner or admin can submit")
+        project_form_marker = project.profile_data.get("form_schema") if isinstance(project.profile_data, dict) else None
+        versioned_form = isinstance(project_form_marker, dict) and project_form_marker.get("legacy") is not True
+        if (
+            isinstance(project.profile_data, dict)
+            and isinstance(project.profile_data.get("simplified_form"), dict)
+            and not isinstance(project.profile_data.get("form_schema"), dict)
+        ):
+            project.profile_data["form_schema"] = {"key": "simplified-rdip", "version": 1, "legacy": True}
+        try:
+            validate_simplified_answers(project.profile_data, require_complete=versioned_form)
+        except FormSchemaError as exc:
+            return Response({"detail": str(exc)}, status=400)
         was_needs_revision = _project_needs_revision(project)
         if project.status == "planning":
             project.status = "proposed"
@@ -2535,6 +2607,26 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 return Response({"detail": "edited_profile_data must be a JSON object"}, status=400)
             edited_profile = incoming_edited
 
+        edited_marker = edited_profile.get("form_schema")
+        contributor_marker = contributor_snapshot.get("form_schema")
+        versioned_form = (
+            isinstance(edited_marker, dict) and edited_marker.get("legacy") is not True
+        ) or (
+            isinstance(contributor_marker, dict) and contributor_marker.get("legacy") is not True
+        )
+        if not isinstance(edited_profile.get("form_schema"), dict):
+            marker = contributor_snapshot.get("form_schema")
+            edited_profile["form_schema"] = deepcopy(marker) if isinstance(marker, dict) else {
+                "key": "simplified-rdip", "version": 1, "legacy": True,
+            }
+        try:
+            validate_simplified_answers(
+                edited_profile,
+                require_complete=versioned_form and action_value in ("endorse", "approve", "validate"),
+            )
+        except FormSchemaError as exc:
+            return Response({"detail": str(exc)}, status=400)
+
         funding_error = _validate_simplified_funding(edited_profile)
         if funding_error:
             return Response({"detail": funding_error}, status=400)
@@ -2622,6 +2714,15 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 project=project,
                 actor=request.user,
             )
+            _notify_many(
+                _admins(),
+                event_type="validator_review_draft_saved_admin",
+                title="Validator review draft saved",
+                message=f"{request.user.full_name or request.user.username} saved a review draft for {_project_title(project)}.",
+                project=project,
+                actor=request.user,
+                dedupe_key=f"project:{project.id}:validator-review-draft:{reviewed_at}",
+            )
         elif role == "validator" and review_state == "endorsed":
             _notify_user(
                 request.user,
@@ -2632,7 +2733,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 actor=request.user,
                 dedupe_key=f"project:{project.id}:validator:{request.user.id}:validated",
             )
-        if review_state == "reviewed" and existing_status != "reviewed":
+        if review_state == "reviewed":
             _notify_many(
                 _project_employee_recipients(project),
                 event_type="project_needs_revision",
@@ -2640,17 +2741,23 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 message=review_notes or "Your project submission requires additional information.",
                 project=project,
                 actor=request.user,
-                dedupe_key=(
-                    f"project:{project.id}:needs-revision:"
-                    f"{Notification.objects.filter(project=project, event_type='project_needs_revision').count() + 1}"
-                ),
+                dedupe_key=f"project:{project.id}:needs-revision:{reviewed_at}",
             )
         elif review_state == "endorsed" and existing_status not in ("endorsed", "validated"):
             _notify_many(
+                _admins(),
+                event_type="project_endorsed_admin",
+                title="Project validated and endorsed",
+                message=f"{request.user.full_name or request.user.username} validated and endorsed {_project_title(project)}.",
+                project=project,
+                actor=request.user,
+                dedupe_key=f"project:{project.id}:endorsed:admins",
+            )
+            _notify_many(
                 _project_employee_recipients(project),
                 event_type="project_validated",
-                title="Project validated",
-                message=f"Your project submission has been validated: {_project_title(project)}",
+                title="Project validated and endorsed",
+                message=f"Your project submission has been validated and endorsed: {_project_title(project)}",
                 project=project,
                 actor=request.user,
                 dedupe_key=f"project:{project.id}:validated",
@@ -2911,11 +3018,24 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         if getattr(request.user, "role", "") != "admin":
             raise PermissionDenied("Only admin can delete projects")
+        project = self.get_object()
+        _log_activity(
+            request, "project_delete", project,
+            {"project_id": project.id, "project_title": _project_title(project)},
+        )
         return super().destroy(request, *args, **kwargs)
 
 
 class ProjectViewSet(BaseProjectViewSet):
     queryset = Project.objects.all()
+
+    def perform_create(self, serializer):
+        super().perform_create(serializer)
+        _log_activity(self.request, "project_create", serializer.instance, {"source": "general_api"})
+
+    def perform_update(self, serializer):
+        super().perform_update(serializer)
+        _log_activity(self.request, "project_update", serializer.instance, {"source": "general_api"})
 
 
 class EmployeeProjectViewSet(BaseProjectViewSet):
@@ -3133,6 +3253,19 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             project,
             {"revision_id": revision.id, "revision_number": revision.revision_number, "revision_type": "progress_update"},
         )
+        _notify_many(
+            _admins(),
+            event_type="contributor_progress_draft_created",
+            title="Contributor progress draft created",
+            message=(
+                f"{request.user.full_name or request.user.username} created progress update "
+                f"v{revision.revision_number} for {_project_title(project)}."
+            ),
+            project=project,
+            actor=request.user,
+            dedupe_key=f"project:{project.id}:revision:{revision.id}:contributor-draft:admins",
+            link_path=f"/admin/projects/{project.id}/view?revision={revision.id}",
+        )
         return Response(ProjectRevisionSerializer(revision).data, status=201)
 
 
@@ -3243,6 +3376,24 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
     def submit(self, request, pk=None):
         revision = self.get_object()
         self._ensure_contributor_editable(revision)
+        revision_form_marker = (
+            revision.profile_data_snapshot.get("form_schema")
+            if isinstance(revision.profile_data_snapshot, dict)
+            else None
+        )
+        versioned_form = isinstance(revision_form_marker, dict) and revision_form_marker.get("legacy") is not True
+        if (
+            isinstance(revision.profile_data_snapshot, dict)
+            and isinstance(revision.profile_data_snapshot.get("simplified_form"), dict)
+            and not isinstance(revision.profile_data_snapshot.get("form_schema"), dict)
+        ):
+            revision.profile_data_snapshot["form_schema"] = {
+                "key": "simplified-rdip", "version": 1, "legacy": True,
+            }
+        try:
+            validate_simplified_answers(revision.profile_data_snapshot, require_complete=versioned_form)
+        except FormSchemaError as exc:
+            return Response({"detail": str(exc)}, status=400)
         if not revision.changed_fields:
             current = _ensure_public_revision(revision.project, request.user)
             base_profile = current.profile_data_snapshot if current else revision.project.profile_data
@@ -3256,6 +3407,19 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
             "project_revision_submitted",
             revision.project,
             {"revision_id": revision.id, "revision_number": revision.revision_number, "changed_fields_count": len(revision.changed_fields or [])},
+        )
+        _notify_many(
+            _active_validators(),
+            event_type="progress_update_submitted",
+            title="Progress update submitted",
+            message=(
+                f"{request.user.full_name or request.user.username} submitted progress update "
+                f"v{revision.revision_number} for {_project_title(revision.project)}."
+            ),
+            project=revision.project,
+            actor=request.user,
+            dedupe_key=f"project:{revision.project_id}:revision:{revision.id}:submitted:validators",
+            link_path=f"/validator/projects/{revision.project_id}/review?revision={revision.id}",
         )
         return Response(ProjectRevisionSerializer(revision).data)
 
@@ -3275,6 +3439,24 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
             edited_profile = revision.profile_data_snapshot
         if not isinstance(edited_profile, dict):
             return Response({"detail": "edited_profile_data must be a JSON object."}, status=400)
+        base_marker = revision.profile_data_snapshot.get("form_schema") if isinstance(revision.profile_data_snapshot, dict) else None
+        edited_marker = edited_profile.get("form_schema")
+        versioned_form = (
+            isinstance(edited_marker, dict) and edited_marker.get("legacy") is not True
+        ) or (
+            isinstance(base_marker, dict) and base_marker.get("legacy") is not True
+        )
+        if not isinstance(edited_profile.get("form_schema"), dict):
+            edited_profile["form_schema"] = deepcopy(base_marker) if isinstance(base_marker, dict) else {
+                "key": "simplified-rdip", "version": 1, "legacy": True,
+            }
+        try:
+            validate_simplified_answers(
+                edited_profile,
+                require_complete=versioned_form and action_value in ("endorse", "validate", "approve"),
+            )
+        except FormSchemaError as exc:
+            return Response({"detail": str(exc)}, status=400)
         funding_error = _validate_simplified_funding(edited_profile)
         if funding_error:
             return Response({"detail": funding_error}, status=400)
@@ -3340,6 +3522,22 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                 actor=request.user,
                 link_path=f"/validator/projects/{revision.project_id}/review?revision={revision.id}",
             )
+            _notify_many(
+                _admins(),
+                event_type="validator_progress_draft_saved_admin",
+                title="Validator progress review draft saved",
+                message=(
+                    f"{request.user.full_name or request.user.username} saved a review draft for "
+                    f"progress update v{revision.revision_number}: {_project_title(revision.project)}"
+                ),
+                project=revision.project,
+                actor=request.user,
+                dedupe_key=(
+                    f"project:{revision.project_id}:revision:{revision.id}:"
+                    f"validator-draft:{revision.reviewed_at.isoformat()}"
+                ),
+                link_path=f"/admin/projects/{revision.project_id}/view?revision={revision.id}",
+            )
         elif getattr(request.user, "role", "") == "validator" and revision.state == "endorsed":
             _notify_user(
                 request.user,
@@ -3356,6 +3554,45 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                     f"validator:{request.user.id}:validated"
                 ),
                 link_path=f"/validator/projects/{revision.project_id}/review?revision={revision.id}",
+            )
+        if revision.state == "reviewed":
+            _notify_many(
+                _project_employee_recipients(revision.project),
+                event_type="progress_update_needs_revision",
+                title="Progress update needs revision",
+                message=revision.public_note or "Your progress update requires additional information.",
+                project=revision.project,
+                actor=request.user,
+                dedupe_key=(
+                    f"project:{revision.project_id}:revision:{revision.id}:"
+                    f"needs-revision:{revision.reviewed_at.isoformat()}"
+                ),
+            )
+        if revision.state == "endorsed":
+            _notify_many(
+                _admins(),
+                event_type="progress_update_endorsed_admin",
+                title="Progress update validated and endorsed",
+                message=(
+                    f"{request.user.full_name or request.user.username} validated and endorsed "
+                    f"progress update v{revision.revision_number}: {_project_title(revision.project)}"
+                ),
+                project=revision.project,
+                actor=request.user,
+                dedupe_key=f"project:{revision.project_id}:revision:{revision.id}:endorsed:admins",
+                link_path=f"/admin/projects/{revision.project_id}/view?revision={revision.id}",
+            )
+            _notify_many(
+                _project_employee_recipients(revision.project),
+                event_type="progress_update_validated",
+                title="Progress update validated and endorsed",
+                message=(
+                    f"Your progress update v{revision.revision_number} was validated and endorsed: "
+                    f"{_project_title(revision.project)}"
+                ),
+                project=revision.project,
+                actor=request.user,
+                dedupe_key=f"project:{revision.project_id}:revision:{revision.id}:validated:contributor",
             )
         return Response(ProjectRevisionSerializer(revision).data)
 
@@ -3439,6 +3676,14 @@ class AdminProjectViewSet(BaseProjectViewSet):
     queryset = Project.objects.all()
     permission_classes = [IsAuthenticated, AdminOnlyPermission, ProjectPermission]
 
+    def perform_create(self, serializer):
+        super().perform_create(serializer)
+        _log_activity(self.request, "project_create", serializer.instance, {"source": "admin_api"})
+
+    def perform_update(self, serializer):
+        super().perform_update(serializer)
+        _log_activity(self.request, "project_update", serializer.instance, {"source": "admin_api"})
+
     def get_queryset(self):
         qs = Project.objects.all().order_by("-created_at")
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
@@ -3453,6 +3698,25 @@ class AdminUserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated, AdminOnlyPermission]
 
+    def perform_update(self, serializer):
+        before = {"role": serializer.instance.role, "is_active": serializer.instance.is_active}
+        password_changed = "password" in serializer.validated_data
+        user = serializer.save()
+        _log_activity(
+            self.request, "user_update",
+            details={"target_user_id": user.id, "email": user.email, "before": before,
+                     "after": {"role": user.role, "is_active": user.is_active},
+                     "password_changed": password_changed},
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        user = self.get_object()
+        _log_activity(
+            request, "user_delete",
+            details={"target_user_id": user.id, "email": user.email, "role": user.role},
+        )
+        return super().destroy(request, *args, **kwargs)
+
     @action(detail=True, methods=["post"])
     def set_active(self, request, pk=None):
         user = self.get_object()
@@ -3461,6 +3725,10 @@ class AdminUserViewSet(viewsets.ModelViewSet):
             return Response({"detail": "You cannot deactivate your own account."}, status=400)
         user.is_active = active
         user.save(update_fields=["is_active"])
+        _log_activity(
+            request, "user_status_changed",
+            details={"target_user_id": user.id, "email": user.email, "is_active": active},
+        )
         return Response({"id": user.id, "is_active": user.is_active})
 
     @action(detail=True, methods=["post"])
@@ -3568,6 +3836,12 @@ class AccessRequestViewSet(viewsets.ModelViewSet):
         )
         _send_setup_email(user, token, purpose="reset")
 
+        _log_activity(
+            request, "access_request_approved",
+            details={"request_id": access_request.id, "email": access_request.email,
+                     "created_user_id": user.id, "role": user.role},
+        )
+
         return Response(
             {
                 "status": "approved",
@@ -3591,6 +3865,10 @@ class AccessRequestViewSet(viewsets.ModelViewSet):
         access_request.reviewed_at = timezone.now()
         access_request.review_notes = request.data.get("review_notes", "")
         access_request.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_notes"])
+        _log_activity(
+            request, "access_request_rejected",
+            details={"request_id": access_request.id, "email": access_request.email},
+        )
         return Response({"status": "rejected"})
 
 
@@ -3627,7 +3905,10 @@ class PasswordResetRequestViewSet(viewsets.ModelViewSet):
                 requested_ip=ip,
                 requested_user_agent=request.META.get("HTTP_USER_AGENT", "")[:255],
             )
+        if getattr(request.user, "is_authenticated", False):
             _log_activity(request, "auth_reset_request", details={"email": email})
+        else:
+            _log_unauthenticated_activity(request, "auth_reset_request", {"attempted_email": email})
 
         return Response(
             {"detail": "If this email is registered, your request has been sent to the administrator."},
@@ -3991,10 +4272,19 @@ class LoginView(APIView):
             return Response({"detail": "Email is required."}, status=400)
         user = User.objects.filter(email__iexact=email).first()
         if not user or not user.check_password(password):
+            _log_unauthenticated_activity(
+                request, "login_failed", {"attempted_email": email, "reason": "invalid_credentials"}
+            )
             return Response({"detail": "Invalid credentials"}, status=401)
         if user.must_change_password:
+            _log_unauthenticated_activity(
+                request, "login_failed", {"attempted_email": email, "reason": "password_setup_required"}
+            )
             return Response({"detail": "Password setup required. Check your email for the setup link."}, status=403)
         if not user.is_active:
+            _log_unauthenticated_activity(
+                request, "login_failed", {"attempted_email": email, "reason": "account_deactivated"}
+            )
             return Response({"detail": "Account is deactivated. Contact admin."}, status=403)
 
         with transaction.atomic():
@@ -4034,6 +4324,15 @@ class LoginView(APIView):
                 },
             }
         )
+
+
+class LogoutView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        _log_activity(request, "logout", details={"session_version": request.user.session_version})
+        _advance_user_session(request.user, request)
+        return Response({"status": "ok"})
 
 
 class SetupPasswordView(APIView):
@@ -4117,6 +4416,14 @@ class SetupPasswordView(APIView):
         _advance_user_session(user)
         token.used_at = timezone.now()
         token.save(update_fields=["used_at"])
+        UserActivity.objects.create(
+            user=user,
+            role=user.role,
+            event="auth_password_setup",
+            ip_address=_client_ip(request)[:64],
+            location_hint=_location_hint(request)[:255],
+            details={"source": "setup_token"},
+        )
         return Response({"status": "ok"})
 
 
@@ -4142,6 +4449,9 @@ class AdminActivityView(APIView):
                 Q(user__username__icontains=user_filter)
                 | Q(user__full_name__icontains=user_filter)
                 | Q(user__email__icontains=user_filter)
+                | Q(actor_username__icontains=user_filter)
+                | Q(actor_full_name__icontains=user_filter)
+                | Q(details__attempted_email__icontains=user_filter)
             )
         if date_from_raw:
             try:

@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import date
 
 from django.contrib.contenttypes.models import ContentType
@@ -6,7 +7,16 @@ from django.db.models import Max
 from django.utils import timezone
 from rest_framework import serializers
 
-from cms.models import CMSArticle, CMSMediaAsset, CMSPage, CMSPageSection, CMSRevision
+from cms.models import (
+    CMSArticle,
+    CMSContributorForm,
+    CMSContributorFormVersion,
+    CMSMediaAsset,
+    CMSPage,
+    CMSPageSection,
+    CMSRevision,
+)
+from cms.form_schema import normalize_system_managed_sections, validate_form_schema
 from cms.services.snapshots import (
     build_article_draft_snapshot,
     build_article_snapshot,
@@ -20,6 +30,7 @@ MODEL_BY_CONTENT_KEY = {
     CMSRevision.CONTENT_ARTICLE: CMSArticle,
     CMSRevision.CONTENT_SECTION: CMSPageSection,
     CMSRevision.CONTENT_MEDIA: CMSMediaAsset,
+    CMSRevision.CONTENT_FORM: CMSContributorForm,
 }
 
 
@@ -156,6 +167,132 @@ def publish_article(article, user=None):
             status_after=locked_article.status,
         )
         return locked_article
+
+
+def contributor_form_snapshot(form):
+    return {
+        "key": form.key,
+        "name": form.name,
+        "description": form.description,
+        "status": form.status,
+        "schema": form.draft_schema_json or {},
+        "published_version": (
+            form.current_published_version.version_number if form.current_published_version_id else None
+        ),
+    }
+
+
+def publish_contributor_form(form, user=None):
+    form_id = form.pk if isinstance(form, CMSContributorForm) else form
+    with transaction.atomic():
+        locked_form = CMSContributorForm.objects.select_for_update().get(pk=form_id)
+        status_before = locked_form.status
+        published_schema = (
+            locked_form.current_published_version.schema_json
+            if locked_form.current_published_version_id
+            else None
+        )
+        schema = validate_form_schema(locked_form.draft_schema_json, published_schema=published_schema)
+        next_number = (
+            locked_form.versions.aggregate(max_version=Max("version_number"))["max_version"] or 0
+        ) + 1
+        version = CMSContributorFormVersion.objects.create(
+            form=locked_form,
+            version_number=next_number,
+            schema_json=schema,
+            published_by=user if getattr(user, "is_authenticated", False) else None,
+        )
+        locked_form.status = CMSContributorForm.STATUS_PUBLISHED
+        locked_form.current_published_version = version
+        locked_form.has_unpublished_changes = False
+        locked_form.review_notes = ""
+        locked_form.reviewed_by = user if getattr(user, "is_authenticated", False) else locked_form.reviewed_by
+        locked_form.updated_by = user if getattr(user, "is_authenticated", False) else locked_form.updated_by
+        locked_form.published_at = version.published_at
+        locked_form.lock_owner = None
+        locked_form.lock_acquired_at = None
+        locked_form.save(update_fields=[
+            "status", "current_published_version", "has_unpublished_changes", "review_notes", "reviewed_by",
+            "updated_by", "published_at", "lock_owner", "lock_acquired_at", "updated_at",
+        ])
+        create_revision(
+            CMSRevision.CONTENT_FORM,
+            locked_form.pk,
+            CMSRevision.ACTION_PUBLISH,
+            contributor_form_snapshot(locked_form),
+            user=user,
+            status_before=status_before,
+            status_after=locked_form.status,
+        )
+        return locked_form
+
+
+def restore_contributor_form_version(form, version, user=None):
+    form_id = form.pk if isinstance(form, CMSContributorForm) else form
+    version_id = version.pk if isinstance(version, CMSContributorFormVersion) else version
+    with transaction.atomic():
+        locked_form = CMSContributorForm.objects.select_for_update().get(pk=form_id)
+        selected = CMSContributorFormVersion.objects.get(pk=version_id, form=locked_form)
+        reset_to_live = selected.pk == locked_form.current_published_version_id
+        restored_schema = deepcopy(selected.schema_json)
+        published_schema = (
+            locked_form.current_published_version.schema_json
+            if locked_form.current_published_version_id
+            else None
+        )
+        if isinstance(published_schema, dict):
+            restored_keys = {
+                field.get("key")
+                for section in restored_schema.get("sections", [])
+                if isinstance(section, dict)
+                for field in section.get("fields", [])
+                if isinstance(field, dict)
+            }
+            retired_fields = [
+                {**deepcopy(field), "visible": False, "required": False}
+                for section in published_schema.get("sections", [])
+                if isinstance(section, dict)
+                for field in section.get("fields", [])
+                if isinstance(field, dict) and field.get("key") not in restored_keys and str(field.get("key") or "").startswith("custom_")
+            ]
+            if retired_fields:
+                restored_schema.setdefault("sections", []).append({
+                    "key": "retired_fields",
+                    "title": "Retired fields",
+                    "description": "Preserved for historical compatibility.",
+                    "visible": False,
+                    "fields": retired_fields,
+                })
+            restored_schema = normalize_system_managed_sections(restored_schema, published_schema)
+        validate_form_schema(restored_schema, published_schema=published_schema)
+        status_before = locked_form.status
+        locked_form.draft_schema_json = restored_schema
+        locked_form.name = str(restored_schema.get("title") or locked_form.name)
+        locked_form.description = str(restored_schema.get("description") or locked_form.description)
+        locked_form.status = (
+            CMSContributorForm.STATUS_PUBLISHED if reset_to_live else CMSContributorForm.STATUS_DRAFT
+        )
+        locked_form.has_unpublished_changes = not reset_to_live
+        locked_form.review_notes = ""
+        locked_form.updated_by = user if getattr(user, "is_authenticated", False) else locked_form.updated_by
+        locked_form.lock_owner = None
+        locked_form.lock_acquired_at = None
+        locked_form.save(update_fields=[
+            "draft_schema_json", "name", "description", "status", "has_unpublished_changes", "review_notes",
+            "updated_by", "lock_owner", "lock_acquired_at", "updated_at",
+        ])
+        snapshot = contributor_form_snapshot(locked_form)
+        snapshot["restored_from_version"] = selected.version_number
+        create_revision(
+            CMSRevision.CONTENT_FORM,
+            locked_form.pk,
+            CMSRevision.ACTION_RESTORE,
+            snapshot,
+            user=user,
+            status_before=status_before,
+            status_after=locked_form.status,
+        )
+        return locked_form
 
 
 def mark_page_changed(page, user=None):
