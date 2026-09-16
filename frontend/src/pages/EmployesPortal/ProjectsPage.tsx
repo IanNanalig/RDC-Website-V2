@@ -286,11 +286,21 @@ const ProjectsPage: React.FC = () => {
     !p.is_revision &&
     ((canEncode && p.status === "planning") || p.workflow_status === "needs_revision");
 
-  const editPath = (p: ApiProject) => {
+  const isSimplifiedProject = (p: ApiProject) => {
     const pd = p.profile_data as Record<string, any> | undefined;
-    return p.submission_type === "simplified" || pd?.simplified_form
+    return p.submission_type === "simplified" || pd?.submission_type === "simplified" || Boolean(pd?.simplified_form);
+  };
+
+  const editPath = (p: ApiProject) =>
+    isSimplifiedProject(p)
       ? `/employee/projects/${p.id}/edit/simplified`
       : `/employee/projects/${p.id}/edit`;
+
+  const validatorReviewPath = (p: ApiProject) => {
+    const path = `/validator/projects/${p.id}/review${isSimplifiedProject(p) ? "/simplified" : ""}`;
+    return p.is_revision && p.revision_id
+      ? `${path}?revision=${encodeURIComponent(p.revision_id)}`
+      : path;
   };
 
   const setWorkflowFilter = (value: WorkflowFilter) => {
@@ -458,13 +468,7 @@ const ProjectsPage: React.FC = () => {
                     {role === "validator" && (
                       <>
                         <button
-                          onClick={() =>
-                            navigate(
-                              p.is_revision && p.revision_id
-                                ? `/validator/projects/${p.id}/review?revision=${p.revision_id}`
-                                : `/validator/projects/${p.id}/review`,
-                            )
-                          }
+                          onClick={() => navigate(validatorReviewPath(p))}
                           className="text-blue-600 hover:underline whitespace-nowrap"
                         >
                           Review

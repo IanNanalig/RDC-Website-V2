@@ -25,10 +25,20 @@ type PortalNotification = {
   title: string;
   message: string;
   link_path?: string;
+  submission_type?: string;
   read_at?: string | null;
   is_read?: boolean;
   created_at?: string;
   project_title?: string;
+};
+
+const notificationPath = (notification: PortalNotification) => {
+  const path = notification.link_path || "";
+  if (notification.submission_type !== "simplified") return path;
+  return path.replace(
+    /^(\/(?:validator\/projects\/\d+\/review|admin\/projects\/\d+\/view))(?=\?|$)/,
+    "$1/simplified",
+  );
 };
 
 const roleLabel: Record<Role, string> = {
@@ -377,7 +387,7 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
                             return notification.link_path ? (
                               <Link
                                 key={notification.id}
-                                to={notification.link_path}
+                                to={notificationPath(notification)}
                                 onClick={() => markRead(notification)}
                                 className="block hover:bg-slate-50"
                               >

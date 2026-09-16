@@ -15,7 +15,15 @@ type ApiProject = {
   submitted_by?: {
     username?: string;
   };
+  submission_type?: string;
   profile_data?: Record<string, unknown>;
+};
+
+const reviewPath = (project: ApiProject) => {
+  const profile = project.profile_data;
+  const simplified = project.submission_type === "simplified" ||
+    profile?.submission_type === "simplified" || Boolean(profile?.simplified_form);
+  return `/validator/projects/${project.id}/review${simplified ? "/simplified" : ""}`;
 };
 
 const statusLabel = (status?: string) => {
@@ -182,7 +190,7 @@ const ValidatorReviewHistory: React.FC = () => {
                   <td className="hidden 2xl:table-cell">{p.updated_at ? new Date(p.updated_at).toLocaleString() : "-"}</td>
                   <td>
                     <button
-                      onClick={() => navigate(`/validator/projects/${p.id}/review`)}
+                      onClick={() => navigate(reviewPath(p))}
                       className="text-blue-600 hover:underline whitespace-nowrap"
                     >
                       View

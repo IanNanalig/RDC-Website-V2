@@ -425,7 +425,7 @@ const ProjectReview: React.FC = () => {
           </label>
           {isValidator && (
             <button
-              onClick={() => navigate(`/validator/projects/${project.id}/review`)}
+              onClick={() => navigate(`/validator/projects/${project.id}/review${simplified ? "/simplified" : ""}`)}
               className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
             >
               Open Editable Review Form

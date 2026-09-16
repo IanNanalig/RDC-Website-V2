@@ -636,13 +636,32 @@ def _project_needs_revision(project):
     return getattr(project, "status", "") == "proposed" and _project_review_status(project) == "reviewed"
 
 
+def _is_simplified_profile(profile_data):
+    if not isinstance(profile_data, dict):
+        return False
+    return str(profile_data.get("submission_type") or "").strip().lower() == "simplified" or isinstance(
+        profile_data.get("simplified_form"), dict
+    )
+
+
 def _project_link(project, recipient):
     role = getattr(recipient, "role", "")
+    suffix = "/simplified" if _is_simplified_profile(project.profile_data) else ""
     if role == "admin":
-        return f"/admin/projects/{project.id}/view"
+        return f"/admin/projects/{project.id}/view{suffix}"
     if role == "validator":
-        return f"/validator/projects/{project.id}/review"
+        return f"/validator/projects/{project.id}/review{suffix}"
     return f"/employee/projects/{project.id}/view"
+
+
+def _revision_review_link(revision, role):
+    suffix = "/simplified" if _is_simplified_profile(revision.profile_data_snapshot) else ""
+    base = (
+        f"/validator/projects/{revision.project_id}/review"
+        if role == "validator"
+        else f"/admin/projects/{revision.project_id}/view"
+    )
+    return f"{base}{suffix}?revision={revision.id}"
 
 
 def _active_validators():
@@ -3264,7 +3283,7 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             project=project,
             actor=request.user,
             dedupe_key=f"project:{project.id}:revision:{revision.id}:contributor-draft:admins",
-            link_path=f"/admin/projects/{project.id}/view?revision={revision.id}",
+            link_path=_revision_review_link(revision, "admin"),
         )
         return Response(ProjectRevisionSerializer(revision).data, status=201)
 
@@ -3419,7 +3438,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
             project=revision.project,
             actor=request.user,
             dedupe_key=f"project:{revision.project_id}:revision:{revision.id}:submitted:validators",
-            link_path=f"/validator/projects/{revision.project_id}/review?revision={revision.id}",
+            link_path=_revision_review_link(revision, "validator"),
         )
         return Response(ProjectRevisionSerializer(revision).data)
 
@@ -3520,7 +3539,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                 ),
                 project=revision.project,
                 actor=request.user,
-                link_path=f"/validator/projects/{revision.project_id}/review?revision={revision.id}",
+                link_path=_revision_review_link(revision, "validator"),
             )
             _notify_many(
                 _admins(),
@@ -3536,7 +3555,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                     f"project:{revision.project_id}:revision:{revision.id}:"
                     f"validator-draft:{revision.reviewed_at.isoformat()}"
                 ),
-                link_path=f"/admin/projects/{revision.project_id}/view?revision={revision.id}",
+                link_path=_revision_review_link(revision, "admin"),
             )
         elif getattr(request.user, "role", "") == "validator" and revision.state == "endorsed":
             _notify_user(
@@ -3553,7 +3572,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                     f"project:{revision.project_id}:revision:{revision.id}:"
                     f"validator:{request.user.id}:validated"
                 ),
-                link_path=f"/validator/projects/{revision.project_id}/review?revision={revision.id}",
+                link_path=_revision_review_link(revision, "validator"),
             )
         if revision.state == "reviewed":
             _notify_many(
@@ -3580,7 +3599,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                 project=revision.project,
                 actor=request.user,
                 dedupe_key=f"project:{revision.project_id}:revision:{revision.id}:endorsed:admins",
-                link_path=f"/admin/projects/{revision.project_id}/view?revision={revision.id}",
+                link_path=_revision_review_link(revision, "admin"),
             )
             _notify_many(
                 _project_employee_recipients(revision.project),

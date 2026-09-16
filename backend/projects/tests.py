@@ -170,6 +170,48 @@ class PortalWorkflowTests(APITestCase):
             1,
         )
 
+    def test_project_notification_links_use_the_saved_form_type(self):
+        from .views import _project_link
+
+        project = Project.objects.create(
+            name="Form Type Notification Project",
+            implementing_agency="MMDA",
+            municipality="NCR",
+            status="proposed",
+            cost=0,
+            latitude=14.5,
+            agency="MMDA",
+            created_by=self.employee,
+            profile_data={"simplified_form": {"projectActivity": "Form Type Notification Project"}},
+        )
+        self.assertEqual(
+            _project_link(project, self.validator),
+            f"/validator/projects/{project.id}/review/simplified",
+        )
+        self.assertEqual(
+            _project_link(project, self.admin),
+            f"/admin/projects/{project.id}/view/simplified",
+        )
+        legacy_notification = Notification.objects.create(
+            recipient=self.validator,
+            project=project,
+            event_type="legacy_form_link",
+            title="Legacy review link",
+            link_path=f"/validator/projects/{project.id}/review",
+        )
+        self._as(self.validator)
+        notifications = self.client.get("/api/notifications/?limit=10")
+        self.assertEqual(notifications.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            next(item for item in notifications.data if item["id"] == legacy_notification.id)["submission_type"],
+            "simplified",
+        )
+        project.profile_data = {"submission_type": "detailed"}
+        self.assertEqual(
+            _project_link(project, self.validator),
+            f"/validator/projects/{project.id}/review",
+        )
+
     def test_validator_draft_and_validation_create_notifications(self):
         other_admin = User.objects.create_user(
             username="notification_admin_2", password="password", role="admin",
@@ -306,7 +348,7 @@ class PortalWorkflowTests(APITestCase):
         )
         self.assertEqual(
             draft_notification.link_path,
-            f"/validator/projects/{project.id}/review?revision={progress.id}",
+            f"/validator/projects/{project.id}/review/simplified?revision={progress.id}",
         )
         self.assertEqual(
             Notification.objects.filter(
@@ -427,7 +469,7 @@ class PortalWorkflowTests(APITestCase):
             Notification.objects.get(
                 project=project, recipient=self.admin, event_type="contributor_progress_draft_created"
             ).link_path,
-            f"/admin/projects/{project.id}/view?revision={revision_id}",
+            f"/admin/projects/{project.id}/view/simplified?revision={revision_id}",
         )
         reopened = self.client.post(f"/api/employee/projects/{project.id}/start-update/", {}, format="json")
         self.assertEqual(reopened.status_code, status.HTTP_200_OK)
@@ -443,7 +485,7 @@ class PortalWorkflowTests(APITestCase):
             )
             self.assertEqual(
                 notification.link_path,
-                f"/validator/projects/{project.id}/review?revision={revision_id}",
+                f"/validator/projects/{project.id}/review/simplified?revision={revision_id}",
             )
         self.assertFalse(
             Notification.objects.filter(

@@ -1238,6 +1238,7 @@ class ProjectCommentSerializer(serializers.ModelSerializer):
 class NotificationSerializer(serializers.ModelSerializer):
     actor_name = serializers.SerializerMethodField()
     project_title = serializers.SerializerMethodField()
+    submission_type = serializers.SerializerMethodField()
     is_read = serializers.SerializerMethodField()
 
     class Meta:
@@ -1249,6 +1250,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             "actor_name",
             "project",
             "project_title",
+            "submission_type",
             "comment",
             "event_type",
             "title",
@@ -1269,6 +1271,13 @@ class NotificationSerializer(serializers.ModelSerializer):
         if not obj.project:
             return ""
         return obj.project.title
+
+    def get_submission_type(self, obj):
+        if not obj.project:
+            return ""
+        profile = obj.project.profile_data if isinstance(obj.project.profile_data, dict) else {}
+        value = str(profile.get("submission_type") or "").strip().lower()
+        return "simplified" if value == "simplified" or isinstance(profile.get("simplified_form"), dict) else (value or "detailed")
 
     def get_is_read(self, obj):
         return bool(obj.read_at)
