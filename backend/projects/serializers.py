@@ -24,9 +24,62 @@ SYSTEM_MANAGED_DIFF_ROOTS = {
     "public_summary_override",
     "simplified_form_meta",
     "validator_review",
+    "validator_revision_access",
     "contributor_snapshot",
     "form_schema",
 }
+
+
+class ContributorFormVersionStatusMixin:
+    """Expose whether a saved simplified project predates the live CMS form."""
+
+    def _form_profile(self, obj):
+        return obj.profile_data if isinstance(obj.profile_data, dict) else {}
+
+    def _saved_form_marker(self, obj):
+        profile = self._form_profile(obj)
+        simplified = isinstance(profile.get("simplified_form"), dict)
+        submission_type = str(profile.get("submission_type") or "").strip().lower()
+        if not simplified and submission_type != "simplified":
+            return None
+        marker = profile.get("form_schema")
+        return marker if isinstance(marker, dict) else {"key": "simplified-rdip", "version": 1}
+
+    def _saved_form_version(self, obj):
+        marker = self._saved_form_marker(obj)
+        if marker is None:
+            return None
+        try:
+            version = int(marker.get("version") or 1)
+        except (TypeError, ValueError):
+            version = 1
+        return max(version, 1)
+
+    def _live_form_version(self, obj):
+        marker = self._saved_form_marker(obj)
+        if marker is None:
+            return None
+        key = str(marker.get("key") or "simplified-rdip").strip() or "simplified-rdip"
+        cache = self.context.setdefault("_contributor_form_live_versions", {})
+        if key not in cache:
+            # Imported lazily to keep the projects/cms serializer dependency one-way.
+            from cms.models import CMSContributorForm
+
+            cache[key] = CMSContributorForm.objects.filter(key=key).values_list(
+                "current_published_version__version_number", flat=True
+            ).first()
+        return cache[key]
+
+    def get_form_version(self, obj):
+        return self._saved_form_version(obj)
+
+    def get_current_form_version(self, obj):
+        return self._live_form_version(obj)
+
+    def get_uses_outdated_form(self, obj):
+        saved = self._saved_form_version(obj)
+        current = self._live_form_version(obj)
+        return bool(saved is not None and current is not None and saved < current)
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -203,7 +256,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class ProjectSerializer(serializers.ModelSerializer):
+class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSerializer):
     # Frontend compatibility: accepts and returns title while storing as name.
     title = serializers.CharField(source="name", required=False)
     status = serializers.CharField(required=False)
@@ -216,6 +269,10 @@ class ProjectSerializer(serializers.ModelSerializer):
     official_priority = serializers.SerializerMethodField()
     official_priority_label = serializers.SerializerMethodField()
     validation_comment = serializers.SerializerMethodField()
+
+    form_version = serializers.SerializerMethodField()
+    current_form_version = serializers.SerializerMethodField()
+    uses_outdated_form = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
@@ -249,6 +306,9 @@ class ProjectSerializer(serializers.ModelSerializer):
             "official_priority",
             "official_priority_label",
             "validation_comment",
+            "form_version",
+            "current_form_version",
+            "uses_outdated_form",
         ]
         read_only_fields = [
             "id",
@@ -540,7 +600,7 @@ class ProjectSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class ProjectSummarySerializer(serializers.ModelSerializer):
+class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.ModelSerializer):
     """Compact, additive projection used only when list callers request view=summary."""
 
     title = serializers.CharField(source="name", read_only=True)
@@ -556,6 +616,9 @@ class ProjectSummarySerializer(serializers.ModelSerializer):
     reviewed_by_username = serializers.SerializerMethodField()
     validator_edited = serializers.SerializerMethodField()
     validator_edited_fields_count = serializers.SerializerMethodField()
+    form_version = serializers.SerializerMethodField()
+    current_form_version = serializers.SerializerMethodField()
+    uses_outdated_form = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
@@ -581,6 +644,9 @@ class ProjectSummarySerializer(serializers.ModelSerializer):
             "reviewed_by_username",
             "validator_edited",
             "validator_edited_fields_count",
+            "form_version",
+            "current_form_version",
+            "uses_outdated_form",
         ]
         read_only_fields = fields
 
@@ -680,6 +746,7 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
     algorithm_version = serializers.CharField(source="rule_set.algorithm_version", read_only=True)
     confirmations = ProjectPriorityConfirmationSerializer(many=True, read_only=True)
     latest_confirmation = serializers.SerializerMethodField()
+    learning_result = serializers.SerializerMethodField()
 
     class Meta:
         model = ProjectPriorityAnalysis
@@ -700,6 +767,7 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
             "base_score",
             "confirmations",
             "latest_confirmation",
+            "learning_result",
             "created_at",
         ]
         read_only_fields = fields
@@ -715,14 +783,28 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
             return None
         return ProjectPriorityConfirmationSerializer(confirmation).data
 
+    def get_learning_result(self, obj):
+        from ai_engine.serializers import serialize_learning_assessment
 
-class ProjectRevisionSerializer(serializers.ModelSerializer):
+        assessment = getattr(obj, "_current_learning_assessment", None)
+        if assessment is None:
+            assessment = obj.learning_assessments.select_related("model_version").prefetch_related(
+                "similar_projects__training_record__project",
+                "similar_projects__training_record__confirmation__validator",
+            ).first()
+        return serialize_learning_assessment(assessment)
+
+
+class ProjectRevisionSerializer(ContributorFormVersionStatusMixin, serializers.ModelSerializer):
     project_title = serializers.CharField(source="project.title", read_only=True)
     project_agency = serializers.CharField(source="project.agency", read_only=True)
     created_by_name = serializers.SerializerMethodField()
     submitted_by_name = serializers.SerializerMethodField()
     reviewed_by_name = serializers.SerializerMethodField()
     endorsed_by_name = serializers.SerializerMethodField()
+    form_version = serializers.SerializerMethodField()
+    current_form_version = serializers.SerializerMethodField()
+    uses_outdated_form = serializers.SerializerMethodField()
 
     class Meta:
         model = ProjectRevision
@@ -748,8 +830,14 @@ class ProjectRevisionSerializer(serializers.ModelSerializer):
             "submitted_at",
             "reviewed_at",
             "endorsed_at",
+            "form_version",
+            "current_form_version",
+            "uses_outdated_form",
         ]
         read_only_fields = fields
+
+    def _form_profile(self, obj):
+        return obj.profile_data_snapshot if isinstance(obj.profile_data_snapshot, dict) else {}
 
     def _name(self, user):
         if not user:
@@ -787,6 +875,9 @@ class ProjectRevisionSummarySerializer(ProjectRevisionSerializer):
             "created_by_name",
             "submitted_by_name",
             "updated_at",
+            "form_version",
+            "current_form_version",
+            "uses_outdated_form",
         ]
         read_only_fields = fields
 

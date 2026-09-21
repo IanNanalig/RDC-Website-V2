@@ -1,15 +1,24 @@
 import hashlib
 import json
+import math
 
 from django.conf import settings
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
+from django.db.models import Count, Q
+from django.db.models.fields.json import KeyTextTransform
 from django.http import Http404
 from django.utils import timezone
 from rest_framework import permissions, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from ai_engine.models import AIModelVersion
+from ai_engine.serializers import AIModelVersionSerializer
+from ai_engine.services import get_active_model, sync_training_record, training_dataset_summary
 
 from cms.form_schema import FormSchemaError, SIMPLIFIED_FORM_KEY, default_simplified_form_schema
 from cms.models import (
@@ -23,13 +32,21 @@ from cms.models import (
     CMSSiteSetting,
 )
 from cms.serializers import (
+    CMSArticleEditorSerializer,
     CMSArticleSerializer,
+    CMSArticleSummarySerializer,
     CMSContributorFormSerializer,
+    CMSContributorFormSummarySerializer,
     CMSContributorFormVersionSerializer,
     CMSMediaAssetSerializer,
+    CMSMediaAssetSummarySerializer,
+    CMSPageEditorSerializer,
     CMSPageSectionSerializer,
+    CMSPageSectionSummarySerializer,
     CMSPageSerializer,
+    CMSPageSummarySerializer,
     CMSRevisionSerializer,
+    CMSRevisionSummarySerializer,
     CMSSiteSettingSerializer,
 )
 from cms.services.chatbot_sync import sync_cms_content
@@ -61,7 +78,19 @@ from cms.services.publishing import (
     restore_revision,
     restore_contributor_form_version,
 )
-from projects.models import Notification, PublicEvent, User, UserActivity
+from projects.models import (
+    Notification,
+    PriorityRuleSet,
+    ProjectPriorityConfirmation,
+    PublicEvent,
+    User,
+    UserActivity,
+)
+from projects.priority_scoring import (
+    get_active_priority_rule_set,
+    priority_rule_config,
+    validate_priority_rule_config,
+)
 from projects.serializers import PublicEventSerializer
 
 
@@ -75,6 +104,46 @@ class IsCMSAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
         user = request.user
         return bool(user and user.is_authenticated and getattr(user, "role", "") == "admin")
+
+
+class CMSSummaryPagination(PageNumberPagination):
+    page_size = 30
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+    def get_paginated_response(self, data):
+        page_size = self.get_page_size(self.request) or self.page_size
+        return Response(
+            {
+                "count": self.page.paginator.count,
+                "next": self.get_next_link(),
+                "previous": self.get_previous_link(),
+                "page": self.page.number,
+                "page_size": page_size,
+                "total_pages": math.ceil(self.page.paginator.count / page_size) if page_size else 1,
+                "results": data,
+            }
+        )
+
+
+class CMSSummaryListMixin:
+    """Enable the additive `?view=summary` contract without changing legacy lists."""
+
+    summary_serializer_class = None
+    pagination_class = CMSSummaryPagination
+
+    def _summary_requested(self):
+        return self.action == "list" and self.request.query_params.get("view") == "summary"
+
+    def get_serializer_class(self):
+        if self._summary_requested() and self.summary_serializer_class:
+            return self.summary_serializer_class
+        return super().get_serializer_class()
+
+    def paginate_queryset(self, queryset):
+        if not self._summary_requested():
+            return None
+        return super().paginate_queryset(queryset)
 
 
 def _client_ip(request):
@@ -297,17 +366,39 @@ def _page_snapshot(page):
     return build_page_snapshot(page)
 
 
-class AdminCMSPageViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
+class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelViewSet):
     serializer_class = CMSPageSerializer
+    summary_serializer_class = CMSPageSummarySerializer
     permission_classes = [permissions.IsAuthenticated, IsCMSUser]
     content_type_key = CMSRevision.CONTENT_PAGE
 
+    def get_serializer_class(self):
+        if self.action == "retrieve" and self.request.query_params.get("view") == "editor":
+            return CMSPageEditorSerializer
+        return super().get_serializer_class()
+
     def get_queryset(self):
-        queryset = CMSPage.objects.prefetch_related("sections").select_related(
-            "created_by", "updated_by", "submitted_by", "reviewed_by"
-        )
+        if self._summary_requested():
+            queryset = CMSPage.objects.annotate(
+                section_count=Count("sections", distinct=True),
+                published_slug=KeyTextTransform("slug", "published_snapshot_json"),
+            ).only(
+                "id", "title", "slug", "status", "has_unpublished_changes", "review_notes",
+                "published_at", "archived_at", "updated_at",
+            )
+        else:
+            queryset = CMSPage.objects.prefetch_related("sections").select_related(
+                "created_by", "updated_by", "submitted_by", "reviewed_by"
+            )
+            if self.action == "retrieve" and self.request.query_params.get("view") == "editor":
+                queryset = queryset.defer("published_snapshot_json")
         status_filter = self.request.query_params.get("status")
-        return queryset.filter(status=status_filter).order_by("slug") if status_filter else queryset.order_by("slug")
+        search = str(self.request.query_params.get("q") or "").strip()
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        if search:
+            queryset = queryset.filter(Q(title__icontains=search) | Q(slug__icontains=search))
+        return queryset.order_by("slug")
 
     def perform_create(self, serializer):
         page = serializer.save(created_by=self.request.user, updated_by=self.request.user, has_unpublished_changes=True)
@@ -451,19 +542,45 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
         return Response(self._serialize(section))
 
 
-class AdminCMSArticleViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
+class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelViewSet):
     serializer_class = CMSArticleSerializer
+    summary_serializer_class = CMSArticleSummarySerializer
     permission_classes = [permissions.IsAuthenticated, IsCMSUser]
     content_type_key = CMSRevision.CONTENT_ARTICLE
 
+    def get_serializer_class(self):
+        if self.action == "retrieve" and self.request.query_params.get("view") == "editor":
+            return CMSArticleEditorSerializer
+        return super().get_serializer_class()
+
     def get_queryset(self):
-        queryset = CMSArticle.objects.select_related(
-            "thumbnail", "created_by", "updated_by", "submitted_by", "reviewed_by"
-        )
+        if self._summary_requested():
+            queryset = CMSArticle.objects.select_related("thumbnail").annotate(
+                published_slug=KeyTextTransform("slug", "published_snapshot_json"),
+            ).only(
+                "id", "title", "slug", "category", "summary", "thumbnail", "author",
+                "publication_date", "featured", "status", "has_unpublished_changes", "review_notes",
+                "published_at", "archived_at", "updated_at", "thumbnail__is_archived",
+                "thumbnail__public_url", "thumbnail__file",
+            )
+        else:
+            queryset = CMSArticle.objects.select_related(
+                "thumbnail", "created_by", "updated_by", "submitted_by", "reviewed_by"
+            )
+            if self.action == "retrieve" and self.request.query_params.get("view") == "editor":
+                queryset = queryset.defer("published_snapshot_json")
         for key, lookup in (("status", "status"), ("category", "category__iexact")):
             value = self.request.query_params.get(key)
             if value:
                 queryset = queryset.filter(**{lookup: value})
+        search = str(self.request.query_params.get("q") or "").strip()
+        if search:
+            queryset = queryset.filter(
+                Q(title__icontains=search)
+                | Q(slug__icontains=search)
+                | Q(summary__icontains=search)
+                | Q(author__icontains=search)
+            )
         return queryset.order_by("-updated_at")
 
     def perform_create(self, serializer):
@@ -695,8 +812,150 @@ class ContributorFormVersionView(APIView):
         return _with_private_cache(request, payload)
 
 
-class AdminCMSMediaAssetViewSet(viewsets.ModelViewSet):
+def _priority_reference_payload(limit=200):
+    active = get_active_priority_rule_set()
+    active_model = get_active_model()
+    history = PriorityRuleSet.objects.annotate(analysis_count=Count("analyses")).order_by("-created_at")[:20]
+    confirmations = ProjectPriorityConfirmation.objects.select_related(
+        "analysis__project",
+        "analysis__rule_set",
+        "validator",
+        "ai_training_record",
+    ).order_by("-created_at")[:limit]
+    historical_projects = []
+    for confirmation in confirmations:
+        analysis = confirmation.analysis
+        project = analysis.project
+        try:
+            training_record = confirmation.ai_training_record
+        except ObjectDoesNotExist:
+            # Older/imported confirmations may predate automatic record creation.
+            # Repair only the missing row being displayed instead of rescanning the dataset.
+            training_record = sync_training_record(confirmation)
+        snapshot = analysis.input_snapshot if isinstance(analysis.input_snapshot, dict) else {}
+        form = snapshot.get("simplified_form")
+        if not isinstance(form, dict):
+            form = snapshot
+        historical_projects.append(
+            {
+                "confirmation_id": confirmation.pk,
+                "project_id": project.pk,
+                "project_title": project.name,
+                "agency": project.agency or project.implementing_agency,
+                "sector": str(form.get("developmentSector") or form.get("mainInfrastructureSector") or ""),
+                "submission_type": str(snapshot.get("submission_type") or ("simplified" if "simplified_form" in snapshot else "detailed")),
+                "project_status": project.status,
+                "suggested_priority": analysis.suggested_priority,
+                "final_priority": confirmation.final_priority,
+                "base_score": float(analysis.base_score),
+                "rule_version": analysis.rule_set.version,
+                "validator_name": (
+                    confirmation.validator.full_name.strip()
+                    or confirmation.validator.get_full_name().strip()
+                    or confirmation.validator.username
+                ) if confirmation.validator else "",
+                "override_rationale": confirmation.override_rationale,
+                "confirmed_at": confirmation.created_at,
+                "training_record_id": training_record.pk if training_record else None,
+                "training_eligible": training_record.is_eligible if training_record else False,
+                "exclusion_reason": training_record.exclusion_reason if training_record else "Pending dataset synchronization.",
+            }
+        )
+    return {
+        "system_type": "hybrid_rules_similarity_ml",
+        "learns_from_historical_projects": True,
+        "learning_explanation": (
+            "The engine applies the active versioned rules first, then an administrator can train a separate, "
+            "versioned model using only validator-confirmed project outcomes. It also compares each project with "
+            "confirmed historical projects. The learned prediction remains advisory and never changes a validator's final decision."
+        ),
+        "active_rule_set": {
+            "id": active.pk,
+            "version": active.version,
+            "algorithm_version": active.algorithm_version,
+            "created_at": active.created_at,
+            "config": priority_rule_config(active),
+        },
+        "rule_versions": [
+            {
+                "id": rule.pk,
+                "version": rule.version,
+                "algorithm_version": rule.algorithm_version,
+                "is_active": rule.is_active,
+                "analysis_count": rule.analysis_count,
+                "created_at": rule.created_at,
+            }
+            for rule in history
+        ],
+        "historical_projects": historical_projects,
+        "historical_count": ProjectPriorityConfirmation.objects.count(),
+        "training_dataset": training_dataset_summary(),
+        "active_model": AIModelVersionSerializer(active_model).data if active_model else None,
+        "model_versions": AIModelVersionSerializer(
+            AIModelVersion.objects.select_related("trained_by").all()[:20], many=True
+        ).data,
+    }
+
+
+class AdminAIPriorityCMSView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsCMSUser]
+
+    def get(self, request):
+        try:
+            limit = min(500, max(1, int(request.query_params.get("limit", 200))))
+        except (TypeError, ValueError):
+            limit = 200
+        return Response(_priority_reference_payload(limit))
+
+    def post(self, request):
+        if getattr(request.user, "role", "") != "admin":
+            raise PermissionDenied("Only administrators can activate new AI scoring rules.")
+        try:
+            config = validate_priority_rule_config(request.data.get("config"))
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        change_note = str(request.data.get("change_note") or "").strip()[:500]
+        timestamp = timezone.now().strftime("%Y%m%d-%H%M%S")
+        version_base = f"rdc-priority-{timestamp}"
+        version = version_base
+        suffix = 2
+        while PriorityRuleSet.objects.filter(version=version).exists():
+            version = f"{version_base}-{suffix}"
+            suffix += 1
+
+        with transaction.atomic():
+            PriorityRuleSet.objects.select_for_update().filter(is_active=True).update(is_active=False)
+            active = PriorityRuleSet.objects.create(
+                version=version,
+                algorithm_version="expert-v2-cms",
+                is_active=True,
+                thresholds=config["thresholds"],
+                sector_criteria=config["sector_criteria"],
+                keyword_dictionaries=config["keyword_dictionaries"],
+            )
+        _log_cms_activity(
+            request,
+            "cms_content_updated",
+            {
+                "content_type": "ai_priority_rules",
+                "rule_set_id": active.pk,
+                "version": active.version,
+                "change_note": change_note,
+            },
+        )
+        return Response(
+            {
+                "detail": "A new AI scoring rule version is active. Existing analyses remain unchanged; pending projects require a new analysis under this version.",
+                **_priority_reference_payload(),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class AdminCMSMediaAssetViewSet(CMSSummaryListMixin, viewsets.ModelViewSet):
     serializer_class = CMSMediaAssetSerializer
+    summary_serializer_class = CMSMediaAssetSummarySerializer
     permission_classes = [permissions.IsAuthenticated, IsCMSUser]
 
     def get_queryset(self):
@@ -704,7 +963,14 @@ class AdminCMSMediaAssetViewSet(viewsets.ModelViewSet):
         if self.request.query_params.get("include_archived") not in {"1", "true", "yes"}:
             queryset = queryset.filter(is_archived=False)
         file_type = self.request.query_params.get("file_type")
-        return queryset.filter(file_type=file_type).order_by("-created_at") if file_type else queryset.order_by("-created_at")
+        if file_type:
+            queryset = queryset.filter(file_type=file_type)
+        search = str(self.request.query_params.get("q") or "").strip()
+        if search:
+            queryset = queryset.filter(
+                Q(file__icontains=search) | Q(alt_text__icontains=search) | Q(caption__icontains=search)
+            )
+        return queryset.order_by("-created_at")
 
     def create(self, request, *args, **kwargs):
         try:
@@ -754,6 +1020,7 @@ class AdminCMSMediaAssetViewSet(viewsets.ModelViewSet):
                 {"detail": "This media file is still used by CMS content. Remove or replace it before archiving.", "used_by": usages},
                 status=400,
             )
+        media._cms_usage_cache = usages
         media.is_archived = True
         media.save(update_fields=["is_archived"])
         create_revision(CMSRevision.CONTENT_MEDIA, media.pk, CMSRevision.ACTION_ARCHIVE, {"file": media.file.name}, user=request.user)
@@ -784,8 +1051,9 @@ class AdminCMSSiteSettingViewSet(viewsets.ModelViewSet):
         return Response({"detail": "CMS settings cannot be deleted; update their value instead."}, status=405)
 
 
-class AdminCMSRevisionViewSet(viewsets.ReadOnlyModelViewSet):
+class AdminCMSRevisionViewSet(CMSSummaryListMixin, viewsets.ReadOnlyModelViewSet):
     serializer_class = CMSRevisionSerializer
+    summary_serializer_class = CMSRevisionSummarySerializer
     permission_classes = [permissions.IsAuthenticated, IsCMSUser]
 
     def get_queryset(self):
@@ -799,6 +1067,15 @@ class AdminCMSRevisionViewSet(viewsets.ReadOnlyModelViewSet):
                 return queryset.none()
         if object_id:
             queryset = queryset.filter(object_id=object_id)
+        search = str(self.request.query_params.get("q") or "").strip()
+        if search:
+            queryset = queryset.filter(
+                Q(action__icontains=search)
+                | Q(status_before__icontains=search)
+                | Q(status_after__icontains=search)
+                | Q(changed_by__full_name__icontains=search)
+                | Q(changed_by__username__icontains=search)
+            )
         return queryset.order_by("-created_at", "-version_number")
 
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin], url_path="restore-revision")
@@ -822,20 +1099,36 @@ class AdminCMSReviewQueueView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsCMSUser]
 
     def get(self, request):
+        summary = request.query_params.get("view") == "summary"
+        page_serializer = CMSPageSummarySerializer if summary else CMSPageSerializer
+        section_serializer = CMSPageSectionSummarySerializer if summary else CMSPageSectionSerializer
+        article_serializer = CMSArticleSummarySerializer if summary else CMSArticleSerializer
+        form_serializer = CMSContributorFormSummarySerializer if summary else CMSContributorFormSerializer
+
+        pages = CMSPage.objects.filter(status="submitted")
+        articles = CMSArticle.objects.filter(status="submitted").select_related("thumbnail")
+        if summary:
+            pages = pages.annotate(
+                section_count=Count("sections", distinct=True),
+                published_slug=KeyTextTransform("slug", "published_snapshot_json"),
+            )
+            articles = articles.annotate(published_slug=KeyTextTransform("slug", "published_snapshot_json"))
+        else:
+            pages = pages.prefetch_related("sections").select_related(
+                "created_by", "updated_by", "submitted_by", "reviewed_by"
+            )
+            articles = articles.select_related("created_by", "updated_by", "submitted_by", "reviewed_by")
+
         return Response(
             {
-                "pages": CMSPageSerializer(CMSPage.objects.filter(status="submitted"), many=True, context={"request": request}).data,
-                "sections": CMSPageSectionSerializer(
+                "pages": page_serializer(pages, many=True, context={"request": request}).data,
+                "sections": section_serializer(
                     CMSPageSection.objects.filter(status="submitted").select_related("page", "lock_owner"),
                     many=True,
                     context={"request": request},
                 ).data,
-                "news": CMSArticleSerializer(
-                    CMSArticle.objects.filter(status="submitted").select_related("thumbnail"),
-                    many=True,
-                    context={"request": request},
-                ).data,
-                "forms": CMSContributorFormSerializer(
+                "news": article_serializer(articles, many=True, context={"request": request}).data,
+                "forms": form_serializer(
                     CMSContributorForm.objects.filter(status="submitted").select_related(
                         "current_published_version", "created_by", "updated_by", "submitted_by", "reviewed_by", "lock_owner"
                     ),

@@ -103,7 +103,7 @@ Language: Python 3
 Branch: main
 Root Directory: backend
 Build Command: pip install -r requirements.txt && python manage.py collectstatic --noinput
-Start Command: gunicorn rdc_site.wsgi:application --bind 0.0.0.0:$PORT
+Start Command: gunicorn --config gunicorn.conf.py rdc_site.wsgi:application --bind 0.0.0.0:$PORT
 ```
 
 5. Add Render environment variables:

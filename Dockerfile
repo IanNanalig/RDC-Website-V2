@@ -39,4 +39,4 @@ RUN python manage.py collectstatic --noinput
 
 EXPOSE 8000
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["gunicorn", "rdc_site.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
+CMD ["gunicorn", "--config", "gunicorn.conf.py", "rdc_site.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]

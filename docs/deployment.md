@@ -165,7 +165,7 @@ python manage.py collectstatic --noinput
 Start command:
 
 ```bash
-gunicorn rdc_site.wsgi:application --bind 0.0.0.0:$PORT
+gunicorn --config gunicorn.conf.py rdc_site.wsgi:application --bind 0.0.0.0:$PORT
 ```
 
 After deploy, run:

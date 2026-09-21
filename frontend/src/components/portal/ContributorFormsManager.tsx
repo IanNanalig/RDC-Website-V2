@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import cmsApi, {
   type CMSContributorForm,
   type CMSContributorFormVersion,
@@ -231,6 +231,10 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
   const [readOnly, setReadOnly] = useState(false);
+  const selectedKeyRef = useRef("");
+  const editModeRef = useRef<EditMode | null>(null);
+  selectedKeyRef.current = selected?.key || "";
+  editModeRef.current = editMode;
 
   const dirty = Boolean(schema && baseline && JSON.stringify(schema) !== baseline);
   const baselineFieldKeys = useMemo(() => {
@@ -268,15 +272,15 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     return dependencies;
   }, [schema]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (resetEditor = false) => {
     setLoading(true);
     try {
       const rows = await cmsApi.listContributorForms();
-      const next = rows.find((row) => row.key === selected?.key) || rows[0] || null;
+      const next = rows.find((row) => row.key === selectedKeyRef.current) || rows[0] || null;
       setSelected(next);
       if (next) {
         setVersions(await cmsApi.listContributorFormVersions(next.id));
-        if (!editMode) {
+        if (resetEditor || !editModeRef.current) {
           const nextSchema = normalizeContributorSchema(next.draft_schema_json);
           setSchema(nextSchema);
           setBaseline(JSON.stringify(nextSchema));
@@ -287,7 +291,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     } finally {
       setLoading(false);
     }
-  }, [editMode, selected?.key]);
+  }, []);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -352,7 +356,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     setEditMode(null);
     setReadOnly(false);
     setPreview(false);
-    await load();
+    await load(true);
   };
 
   const updateSection = (sectionIndex: number, updater: (section: ContributorFormSection) => ContributorFormSection) => {
@@ -445,7 +449,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
       setBaseline(JSON.stringify(savedSchema));
       setSchema(savedSchema);
       setNotice("Contributor form draft saved. Contributors still use the published version.");
-      await load();
+      await load(true);
     } catch (error) {
       setNotice(errorDetail(error, "Failed to save the contributor form draft."));
     } finally {

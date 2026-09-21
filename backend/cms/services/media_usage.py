@@ -1,37 +1,59 @@
+from django.db.models import Prefetch
+
 from cms.models import CMSArticle, CMSMediaAsset, CMSPage, CMSPageSection
 
 
 def get_media_usages(media: CMSMediaAsset):
-    media_id = str(media.pk)
-    references = _media_references(media)
-    usages = []
+    return get_media_usage_map([media]).get(media.pk, [])
 
-    for page in CMSPage.objects.prefetch_related("sections").all():
-        if _json_references_media(page.published_snapshot_json, media_id, references):
-            usages.append(
+
+def get_media_usage_map(media_assets):
+    """Resolve CMS usages for many assets while scanning CMS content only once."""
+    assets = [media for media in media_assets if media.pk is not None]
+    usage_map = {media.pk: [] for media in assets}
+    if not assets:
+        return usage_map
+
+    media_ids = {str(media.pk): media.pk for media in assets}
+    reference_index = {}
+    for media in assets:
+        for reference in _media_references(media):
+            reference_index.setdefault(reference, set()).add(media.pk)
+
+    sections = CMSPageSection.objects.only("id", "page_id", "section_key", "content_json")
+    pages = CMSPage.objects.only("id", "title", "slug", "published_snapshot_json").prefetch_related(
+        Prefetch("sections", queryset=sections)
+    )
+    for page in pages:
+        _append_usage(
+            usage_map,
+            _json_media_ids(page.published_snapshot_json, media_ids, reference_index),
+            {
+                "type": "page",
+                "title": page.title,
+                "slug": page.slug,
+                "location": "Published page snapshot",
+                "is_public": True,
+            },
+        )
+        for section in page.sections.all():
+            _append_usage(
+                usage_map,
+                _json_media_ids(section.content_json, media_ids, reference_index),
                 {
-                    "type": "page",
+                    "type": "section",
                     "title": page.title,
                     "slug": page.slug,
-                    "location": "Published page snapshot",
-                    "is_public": True,
-                }
+                    "location": f"Draft section: {section.section_key}",
+                    "is_public": False,
+                },
             )
-        for section in page.sections.all():
-            if _json_references_media(section.content_json, media_id, references):
-                usages.append(
-                    {
-                        "type": "section",
-                        "title": page.title,
-                        "slug": page.slug,
-                        "location": f"Draft section: {section.section_key}",
-                        "is_public": False,
-                    }
-                )
 
-    for article in CMSArticle.objects.select_related("thumbnail").all():
-        if article.thumbnail_id == media.pk:
-            usages.append(
+    for article in CMSArticle.objects.only(
+        "id", "title", "slug", "thumbnail_id", "published_snapshot_json"
+    ):
+        if article.thumbnail_id in usage_map:
+            usage_map[article.thumbnail_id].append(
                 {
                     "type": "article",
                     "title": article.title,
@@ -40,18 +62,19 @@ def get_media_usages(media: CMSMediaAsset):
                     "is_public": False,
                 }
             )
-        if _json_references_media(article.published_snapshot_json, media_id, references):
-            usages.append(
-                {
-                    "type": "article",
-                    "title": article.title,
-                    "slug": article.slug,
-                    "location": "Published news snapshot",
-                    "is_public": True,
-                }
-            )
+        _append_usage(
+            usage_map,
+            _json_media_ids(article.published_snapshot_json, media_ids, reference_index),
+            {
+                "type": "article",
+                "title": article.title,
+                "slug": article.slug,
+                "location": "Published news snapshot",
+                "is_public": True,
+            },
+        )
 
-    return usages
+    return usage_map
 
 
 def media_is_used(media: CMSMediaAsset) -> bool:
@@ -66,21 +89,34 @@ def _media_references(media: CMSMediaAsset):
     return {reference for reference in references if reference}
 
 
-def _json_references_media(value, media_id: str, references: set[str]) -> bool:
+def _append_usage(usage_map, media_ids, usage):
+    for media_id in media_ids:
+        usage_map[media_id].append(dict(usage))
+
+
+def _json_media_ids(value, media_ids, reference_index):
+    matches = set()
+    _collect_json_media_ids(value, media_ids, reference_index, matches)
+    return matches
+
+
+def _collect_json_media_ids(value, media_ids, reference_index, matches):
     if isinstance(value, dict):
         for key, child in value.items():
             normalized_key = str(key).lower()
             if normalized_key in {"mediaassetid", "coverassetid", "thumbnail", "thumbnailid"}:
-                if str(child) == media_id:
-                    return True
-            if _json_references_media(child, media_id, references):
-                return True
-        return False
+                media_pk = media_ids.get(str(child))
+                if media_pk is not None:
+                    matches.add(media_pk)
+            _collect_json_media_ids(child, media_ids, reference_index, matches)
+        return
 
     if isinstance(value, list):
-        return any(_json_references_media(item, media_id, references) for item in value)
+        for child in value:
+            _collect_json_media_ids(child, media_ids, reference_index, matches)
+        return
 
     if isinstance(value, str):
-        return any(reference in value for reference in references)
-
-    return False
+        for reference, referenced_ids in reference_index.items():
+            if reference in value:
+                matches.update(referenced_ids)

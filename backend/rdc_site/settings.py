@@ -82,6 +82,7 @@ INSTALLED_APPS = [
     'django_filters',
     'cms',
     'projects',  # Your app
+    'ai_engine',
 ]
 
 REST_FRAMEWORK = {
@@ -175,10 +176,13 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'rdc_site.middleware.CMSRequestTimingMiddleware',
     'projects.audit.AuditActionMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+CMS_SLOW_REQUEST_MS = env_int('CMS_SLOW_REQUEST_MS', 1000)
 
 CORS_PREFLIGHT_MAX_AGE = 86400
 

@@ -1109,6 +1109,38 @@ const fieldLabels: Record<keyof ProfileForm, string> = {
   totalProjectCost: "Total Project Cost",
 };
 
+const revisionFieldKeys = (Object.keys(fieldLabels) as Array<keyof ProfileForm>).filter(
+  (key) => key !== "priorityAnalysisFacts" && key !== "mainFundingSources",
+);
+
+const normalizeRevisionLabel = (value: string) =>
+  value
+    .replace(/\[[^\]]*\]/g, "")
+    .replace(/\//g, " or ")
+    .replace(/\([^)]*\)/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .trim()
+    .toLowerCase();
+
+const resolveRevisionFieldKey = (label: string): keyof ProfileForm | null => {
+  const normalized = normalizeRevisionLabel(label);
+  const candidates = revisionFieldKeys
+    .map((key) => ({ key, label: normalizeRevisionLabel(fieldLabels[key]) }))
+    .filter(({ label: candidate }) =>
+      candidate === normalized || normalized.startsWith(candidate) || candidate.startsWith(normalized),
+    )
+    .sort((a, b) => b.label.length - a.label.length);
+  return candidates[0]?.key || null;
+};
+
+const DetailedRevisionLockContext = React.createContext<ReadonlySet<string> | null>(null);
+
+const useDetailedRevisionLocked = (label: string) => {
+  const lockedFields = React.useContext(DetailedRevisionLockContext);
+  const key = resolveRevisionFieldKey(label);
+  return Boolean(lockedFields && key && lockedFields.has(key));
+};
+
 const toNumber = (raw: string) => {
   const n = Number((raw || "").replace(/[^0-9.-]/g, ""));
   return Number.isFinite(n) ? Math.max(0, n) : 0;
@@ -1304,23 +1336,28 @@ const Field: React.FC<{
   onChange: (v: string) => void;
   required?: boolean;
   error?: string;
-}> = ({ label, value, onChange, required, error }) => (
+}> = ({ label, value, onChange, required, error }) => {
+  const revisionLocked = useDetailedRevisionLocked(label);
+  return (
   <label className="block">
     <span className="text-sm text-gray-700">{label}{required ? " *" : ""}</span>
     {(() => {
       const isDiffHint = Boolean(error && error.startsWith("Original:"));
       return (
     <input
-      className={`mt-1 w-full max-w-full box-border border rounded p-2 ${error ? (isDiffHint ? "border-amber-500 bg-amber-50" : "border-red-500 bg-red-50") : ""}`}
+      className={`mt-1 w-full max-w-full box-border border rounded p-2 ${revisionLocked ? "bg-slate-100 text-slate-500" : ""} ${error ? (isDiffHint ? "border-amber-500 bg-amber-50" : "border-red-500 bg-red-50") : ""}`}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       required={required}
+      disabled={revisionLocked}
     />
       );
     })()}
     {error && <p className={`text-xs mt-1 ${error.startsWith("Original:") ? "text-amber-700" : "text-red-600"}`}>{error}</p>}
+    {revisionLocked && <p className="mt-1 text-xs font-medium text-slate-500">Locked by validator</p>}
   </label>
-);
+  );
+};
 
 const Area: React.FC<{
   label: string;
@@ -1329,23 +1366,28 @@ const Area: React.FC<{
   rows?: number;
   required?: boolean;
   error?: string;
-}> = ({ label, value, onChange, rows = 3, required, error }) => (
+}> = ({ label, value, onChange, rows = 3, required, error }) => {
+  const revisionLocked = useDetailedRevisionLocked(label);
+  return (
   <label className="block">
     <span className="text-sm text-gray-700">{label}{required ? " *" : ""}</span>
     {(() => {
       const isDiffHint = Boolean(error && error.startsWith("Original:"));
       return (
     <textarea
-      className={`mt-1 w-full max-w-full box-border border rounded p-2 ${error ? (isDiffHint ? "border-amber-500 bg-amber-50" : "border-red-500 bg-red-50") : ""}`}
+      className={`mt-1 w-full max-w-full box-border border rounded p-2 ${revisionLocked ? "bg-slate-100 text-slate-500" : ""} ${error ? (isDiffHint ? "border-amber-500 bg-amber-50" : "border-red-500 bg-red-50") : ""}`}
       rows={rows}
       value={value}
       onChange={(e) => onChange(e.target.value)}
+      disabled={revisionLocked}
     />
       );
     })()}
     {error && <p className={`text-xs mt-1 ${error.startsWith("Original:") ? "text-amber-700" : "text-red-600"}`}>{error}</p>}
+    {revisionLocked && <p className="mt-1 text-xs font-medium text-slate-500">Locked by validator</p>}
   </label>
-);
+  );
+};
 
 const SelectField: React.FC<{
   label: string;
@@ -1355,17 +1397,20 @@ const SelectField: React.FC<{
   required?: boolean;
   error?: string;
   placeholder?: string;
-}> = ({ label, value, onChange, options, required, error, placeholder = "Choose" }) => (
+}> = ({ label, value, onChange, options, required, error, placeholder = "Choose" }) => {
+  const revisionLocked = useDetailedRevisionLocked(label);
+  return (
   <label className="block">
     <span className="text-sm text-gray-700">{label}{required ? " *" : ""}</span>
     {(() => {
       const isDiffHint = Boolean(error && error.startsWith("Original:"));
       return (
     <select
-      className={`mt-1 w-full max-w-full box-border border rounded p-2 ${error ? (isDiffHint ? "border-amber-500 bg-amber-50" : "border-red-500 bg-red-50") : ""}`}
+      className={`mt-1 w-full max-w-full box-border border rounded p-2 ${revisionLocked ? "bg-slate-100 text-slate-500" : ""} ${error ? (isDiffHint ? "border-amber-500 bg-amber-50" : "border-red-500 bg-red-50") : ""}`}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       required={required}
+      disabled={revisionLocked}
     >
       <option value="">{placeholder}</option>
       {options.map((option) => (
@@ -1377,8 +1422,10 @@ const SelectField: React.FC<{
       );
     })()}
     {error && <p className={`text-xs mt-1 ${error.startsWith("Original:") ? "text-amber-700" : "text-red-600"}`}>{error}</p>}
+    {revisionLocked && <p className="mt-1 text-xs font-medium text-slate-500">Locked by validator</p>}
   </label>
-);
+  );
+};
 
 const CheckboxGroup: React.FC<{
   label: string;
@@ -1386,10 +1433,12 @@ const CheckboxGroup: React.FC<{
   values: string[];
   onChange: (values: string[]) => void;
   error?: string;
-}> = ({ label, options, values, onChange, error }) => (
+}> = ({ label, options, values, onChange, error }) => {
+  const revisionLocked = useDetailedRevisionLocked(label);
+  return (
   <div>
     <p className="text-sm text-gray-700 mb-1">{label}</p>
-    <div className={`columns-1 xl:columns-2 gap-6 border rounded p-2 ${error ? (error.startsWith("Original:") ? "border-amber-500 bg-amber-50" : "border-red-500 bg-red-50") : ""}`}>
+    <div className={`columns-1 xl:columns-2 gap-6 border rounded p-2 ${revisionLocked ? "bg-slate-100 text-slate-500" : ""} ${error ? (error.startsWith("Original:") ? "border-amber-500 bg-amber-50" : "border-red-500 bg-red-50") : ""}`}>
       {options.map((option) => {
         const checked = values.includes(option);
         return (
@@ -1398,6 +1447,7 @@ const CheckboxGroup: React.FC<{
               className="mt-0.5 shrink-0"
               type="checkbox"
               checked={checked}
+              disabled={revisionLocked}
               onChange={(e) => {
                 if (e.target.checked) onChange([...values, option]);
                 else onChange(values.filter((v) => v !== option));
@@ -1409,8 +1459,10 @@ const CheckboxGroup: React.FC<{
       })}
     </div>
     {error && <p className={`text-xs mt-1 ${error.startsWith("Original:") ? "text-amber-700" : "text-red-600"}`}>{error}</p>}
+    {revisionLocked && <p className="mt-1 text-xs font-medium text-slate-500">Locked by validator</p>}
   </div>
-);
+  );
+};
 
 const ProjectSubmission: React.FC = () => {
   const navigate = useNavigate();
@@ -1439,6 +1491,7 @@ const ProjectSubmission: React.FC = () => {
   const [restoreNotice, setRestoreNotice] = useState("");
   const [lastLocalSaveAt, setLastLocalSaveAt] = useState<string>("");
   const [validatorNotes, setValidatorNotes] = useState("");
+  const [editableFields, setEditableFields] = useState<string[]>([]);
   const [saveError, setSaveError] = useState("");
   const [diffHints, setDiffHints] = useState<Partial<Record<keyof ProfileForm, string>>>({});
   const [diffCount, setDiffCount] = useState(0);
@@ -1467,6 +1520,8 @@ const ProjectSubmission: React.FC = () => {
   const isDiffMode = isAdmin && searchParams.get("mode") === "diff";
   const canReviseSubmitted =
     isEmployee && isEditMode && !isRevisionMode && workflowStatus === "needs_revision";
+  const canReviseProgress =
+    isEmployee && isRevisionMode && revisionState === "reviewed" && editableFields.length > 0;
 
   const normalizeIncomingForm = (incomingRaw: Partial<ProfileForm>): ProfileForm => {
     const incoming = { ...initialForm, ...incomingRaw } as ProfileForm;
@@ -1524,6 +1579,12 @@ const ProjectSubmission: React.FC = () => {
           const revision = await api.get(`project-revisions/${revisionId}/`);
           const state = String(revision?.state || "").toLowerCase();
           const revisionProfile = (revision?.profile_data_snapshot || {}) as Record<string, unknown>;
+          const revisionAccess = revisionProfile?.validator_revision_access as Record<string, unknown> | undefined;
+          setEditableFields(
+            Array.isArray(revisionAccess?.editable_fields)
+              ? revisionAccess.editable_fields.map((field) => String(field))
+              : [],
+          );
           setRevisionState(state);
           setProjectStatus(state === "draft" ? "planning" : state === "endorsed" ? "completed" : "proposed");
           setWorkflowStatus(state === "endorsed" ? "validated" : state === "rejected" ? "rejected" : "pending_validation");
@@ -1557,6 +1618,11 @@ const ProjectSubmission: React.FC = () => {
           }
           const rawProfile = data.profile_data as Record<string, unknown>;
           const validatorReview = rawProfile?.validator_review as Record<string, unknown> | undefined;
+          setEditableFields(
+            Array.isArray(validatorReview?.editable_fields)
+              ? validatorReview.editable_fields.map((field) => String(field))
+              : [],
+          );
           const contributorSnapshot =
             rawProfile?.contributor_snapshot && typeof rawProfile.contributor_snapshot === "object"
               ? (rawProfile.contributor_snapshot as Record<string, unknown>)
@@ -1645,7 +1711,21 @@ const ProjectSubmission: React.FC = () => {
       if (!raw) return;
       const parsed = JSON.parse(raw) as { form?: Partial<ProfileForm>; step?: number; savedAt?: string };
       if (!parsed?.form || typeof parsed.form !== "object") return;
-      setForm(normalizeIncomingForm(parsed.form));
+      if (canReviseSubmitted || canReviseProgress) {
+        setForm((previous) => {
+          const recovered = normalizeIncomingForm(parsed.form || {});
+          const next = { ...previous };
+          editableFields.forEach((field) => {
+            if (Object.prototype.hasOwnProperty.call(recovered, field)) {
+              (next as unknown as Record<string, unknown>)[field] =
+                (recovered as unknown as Record<string, unknown>)[field];
+            }
+          });
+          return next;
+        });
+      } else {
+        setForm(normalizeIncomingForm(parsed.form));
+      }
       if (parsed.step && parsed.step >= 1 && parsed.step <= stepTitles.length) {
         setStep(parsed.step);
       }
@@ -1656,7 +1736,7 @@ const ProjectSubmission: React.FC = () => {
     } catch (error) {
       console.error("Failed to restore local draft:", error);
     }
-  }, [isEmployee, formReady, draftStorageKey]);
+  }, [isEmployee, formReady, draftStorageKey, canReviseSubmitted, canReviseProgress, editableFields]);
 
   useEffect(() => {
     if (!isEmployee || !formReady || !draftStorageKey) return;
@@ -1700,6 +1780,7 @@ const ProjectSubmission: React.FC = () => {
   }, [isEmployee, form, step, draftStorageKey, formReady]);
 
   const setField = <K extends keyof ProfileForm>(key: K, value: ProfileForm[K]) => {
+    if ((canReviseSubmitted || canReviseProgress) && !editableFields.includes(String(key))) return;
     setForm((prev) => ({ ...prev, [key]: value }));
     setStepErrors((prev) => {
       const next = { ...prev };
@@ -1719,6 +1800,7 @@ const ProjectSubmission: React.FC = () => {
   };
 
   const updateProjectCostRow = (index: number, key: keyof ProjectCostRow, value: string) => {
+    if ((canReviseSubmitted || canReviseProgress) && !editableFields.includes("projectCostRows")) return;
     setForm((prev) => ({
       ...prev,
       projectCostRows: prev.projectCostRows.map((row, i) => {
@@ -1736,6 +1818,7 @@ const ProjectSubmission: React.FC = () => {
   };
 
   const updateProjectCostYearValue = (index: number, column: FundingColumn, value: string) => {
+    if ((canReviseSubmitted || canReviseProgress) && !editableFields.includes("projectCostRows")) return;
     if (column.fixedKey) {
       updateProjectCostRow(index, column.fixedKey, value);
       return;
@@ -1759,6 +1842,7 @@ const ProjectSubmission: React.FC = () => {
   };
 
   const updatePipBudgetRow = (index: number, key: keyof PipBudgetRow, value: string) => {
+    if ((canReviseSubmitted || canReviseProgress) && !editableFields.includes("pipBudgetRows")) return;
     setForm((prev) => ({
       ...prev,
       pipBudgetRows: prev.pipBudgetRows.map((row, i) => (i === index ? { ...row, [key]: value } : row)),
@@ -1771,6 +1855,7 @@ const ProjectSubmission: React.FC = () => {
   };
 
   const updateProvincialRow = (index: number, key: keyof ProvincialRow, value: string) => {
+    if ((canReviseSubmitted || canReviseProgress) && !editableFields.includes("provincialRows")) return;
     setForm((prev) => ({
       ...prev,
       provincialRows: prev.provincialRows.map((row, i) => {
@@ -1788,6 +1873,7 @@ const ProjectSubmission: React.FC = () => {
   };
 
   const updateProvincialYearValue = (index: number, column: FundingColumn, value: string) => {
+    if ((canReviseSubmitted || canReviseProgress) && !editableFields.includes("provincialRows")) return;
     if (column.fixedKey) {
       updateProvincialRow(index, column.fixedKey, value);
       return;
@@ -1927,13 +2013,17 @@ const ProjectSubmission: React.FC = () => {
 
   useEffect(() => {
     if (!fundingRange) return;
+    const restrictedRevision = canReviseSubmitted || canReviseProgress;
+    const canChangeProjectRows = !restrictedRevision || editableFields.includes("projectCostRows");
+    const canChangeProvincialRows = !restrictedRevision || editableFields.includes("provincialRows");
+    const canChangePipRows = !restrictedRevision || editableFields.includes("pipBudgetRows");
     const inRange = (year: number) => year >= fundingRange.minYear && year <= fundingRange.maxYear;
     const activeDynamicYearKeys = new Set(
       activeFundingYearColumns.filter((column) => !column.fixedKey).map((column) => column.key),
     );
     setForm((prev) => {
       let changed = false;
-      const nextProjectRows = prev.projectCostRows.map((row) => {
+      const nextProjectRows = canChangeProjectRows ? prev.projectCostRows.map((row) => {
         const next = { ...row };
         (Object.entries(fundingYearKeyToCalendarYear) as Array<[keyof typeof fundingYearKeyToCalendarYear, number]>).forEach(([key, year]) => {
           if (!inRange(year) && next[key]) {
@@ -1962,9 +2052,9 @@ const ProjectSubmission: React.FC = () => {
           changed = true;
         }
         return next;
-      });
+      }) : prev.projectCostRows;
 
-      const nextProvincialRows = prev.provincialRows.map((row) => {
+      const nextProvincialRows = canChangeProvincialRows ? prev.provincialRows.map((row) => {
         const next = { ...row };
         (Object.entries(fundingYearKeyToCalendarYear) as Array<[keyof typeof fundingYearKeyToCalendarYear, number]>).forEach(([key, year]) => {
           if (!inRange(year) && next[key]) {
@@ -1993,13 +2083,13 @@ const ProjectSubmission: React.FC = () => {
           changed = true;
         }
         return next;
-      });
+      }) : prev.provincialRows;
 
-      const nextPipRows = prev.pipBudgetRows.map((row) => {
+      const nextPipRows = canChangePipRows ? prev.pipBudgetRows.map((row) => {
         if (!row.year || pipTrackerYearOptions.includes(row.year)) return row;
         changed = true;
         return { year: "", osbps: "", nep: "", gaa: "" };
-      });
+      }) : prev.pipBudgetRows;
 
       if (!changed) return prev;
       return {
@@ -2009,7 +2099,7 @@ const ProjectSubmission: React.FC = () => {
         pipBudgetRows: nextPipRows,
       };
     });
-  }, [activeFundingYearColumns, fundingRange, pipTrackerYearOptions]);
+  }, [activeFundingYearColumns, canReviseProgress, canReviseSubmitted, editableFields, fundingRange, pipTrackerYearOptions]);
 
   const validateCurrentStep = () => {
     const required = stepRequiredFields[step] || [];
@@ -2195,6 +2285,10 @@ const ProjectSubmission: React.FC = () => {
       const normalizedProfileData = prioritySnapshot;
 
       if (isValidator && id) {
+        if (action === "save" && editableFields.length === 0) {
+          setSaveError("Select at least one field the contributor may revise.");
+          return;
+        }
         await api.post(isRevisionMode && revisionId
           ? `project-revisions/${revisionId}/review/`
           : `validator/projects/${id}/validate/`, {
@@ -2202,6 +2296,7 @@ const ProjectSubmission: React.FC = () => {
           notes: validatorNotes,
           public_note: validatorNotes,
           edited_profile_data: normalizedProfileData,
+          editable_fields: editableFields,
         });
         localStorage.setItem("projects_last_update", Date.now().toString());
         alert(action === "save" ? "Revision request sent." : "Project validated.");
@@ -2274,10 +2369,26 @@ const ProjectSubmission: React.FC = () => {
   const revisionLocked = isEmployee && isRevisionMode && revisionState !== "draft";
   const isReadOnly =
     isAdmin ||
-    (isEmployee && !canWriteCurrentForm && !canReviseSubmitted) ||
+    (isEmployee && !canWriteCurrentForm && !canReviseSubmitted && !canReviseProgress) ||
     submittedLocked ||
-    revisionLocked ||
+    (revisionLocked && !canReviseProgress) ||
     (isValidator && isRevisionMode && revisionState === "endorsed");
+  const lockedRevisionFields = useMemo(
+    () =>
+      canReviseSubmitted || canReviseProgress
+        ? new Set(revisionFieldKeys.filter((key) => !editableFields.includes(String(key))).map(String))
+        : null,
+    [canReviseProgress, canReviseSubmitted, editableFields],
+  );
+  const isRevisionFieldLocked = (field: keyof ProfileForm) =>
+    Boolean(lockedRevisionFields?.has(String(field)));
+  const toggleEditableField = (field: keyof ProfileForm) => {
+    setEditableFields((current) =>
+      current.includes(String(field))
+        ? current.filter((item) => item !== String(field))
+        : [...current, String(field)],
+    );
+  };
   const isProgram = form.programOrProject === "Program";
   const isProject = form.programOrProject === "Project";
   const isSubcomponent = form.isSubcomponent === "Yes";
@@ -2366,12 +2477,12 @@ const ProjectSubmission: React.FC = () => {
       }
     >
       <div className="space-y-4">
-        {isEmployee && !canWriteCurrentForm && !canReviseSubmitted && (
+        {isEmployee && !canWriteCurrentForm && !canReviseSubmitted && !canReviseProgress && (
           <div className="mb-4 p-3 rounded-lg bg-yellow-50 text-yellow-800 border border-yellow-200">
             {currentWindowMessage || "This editing workflow is currently closed by admin."}
           </div>
         )}
-        {isEmployee && isRevisionMode && revisionState !== "draft" && (
+        {isEmployee && isRevisionMode && revisionState !== "draft" && !canReviseProgress && (
           <div className="mb-4 p-3 rounded-lg bg-blue-50 text-blue-800 border border-blue-200">
             This progress update has already been submitted and is now view-only for contributors.
           </div>
@@ -2381,6 +2492,11 @@ const ProjectSubmission: React.FC = () => {
             {canReviseSubmitted
               ? "This submission needs revision. Update the form and submit it again for validation."
               : "This project is already submitted and is now view-only for contributors."}
+          </div>
+        )}
+        {isEmployee && (canReviseSubmitted || canReviseProgress) && (
+          <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-900">
+            Only the fields selected by the validator are editable. All other fields are locked.
           </div>
         )}
         {(restoreNotice || localSavedLabel) && (
@@ -2448,10 +2564,35 @@ const ProjectSubmission: React.FC = () => {
         </div>
 
         <div className={step === 4 ? "max-w-full min-w-0 pb-1" : "min-w-0"}>
+        <DetailedRevisionLockContext.Provider value={lockedRevisionFields}>
         <form
           onSubmit={(e) => save(e, "submit")}
           className="portal-card p-3 sm:p-4 lg:p-6 space-y-8 w-full min-w-0 overflow-x-hidden"
         >
+          {isValidator && (
+            <details open className="rounded-lg border border-indigo-200 bg-indigo-50/60 p-4">
+              <summary className="cursor-pointer font-semibold text-indigo-950">
+                Contributor Revision Access ({editableFields.length} selected)
+              </summary>
+              <p className="mt-2 text-sm text-indigo-800">
+                Check only the fields the contributor may change. Every unchecked field will be locked.
+              </p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {revisionFieldKeys.map((field) => (
+                  <label key={field} className="flex items-start gap-2 rounded border border-indigo-100 bg-white px-3 py-2 text-sm text-slate-800">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={editableFields.includes(String(field))}
+                      disabled={isReadOnly}
+                      onChange={() => toggleEditableField(field)}
+                    />
+                    <span>{fieldLabels[field]}</span>
+                  </label>
+                ))}
+              </div>
+            </details>
+          )}
           <fieldset disabled={isReadOnly} className="space-y-8">
           {step === 1 && (
             <Section title="Program/Project Identity">
@@ -2648,6 +2789,7 @@ const ProjectSubmission: React.FC = () => {
                           className="mt-0.5 shrink-0"
                           type="checkbox"
                           checked={checked}
+                          disabled={isRevisionFieldLocked("fundingSources")}
                           onChange={(e) => {
                             if (e.target.checked) setField("fundingSources", [...form.fundingSources, option]);
                             else setField("fundingSources", form.fundingSources.filter((v) => v !== option));
@@ -2696,6 +2838,7 @@ const ProjectSubmission: React.FC = () => {
                           className="mt-0.5 shrink-0"
                           type="checkbox"
                           checked={checked}
+                          disabled={isRevisionFieldLocked("implementationModes")}
                           onChange={(e) => {
                             if (e.target.checked) setField("implementationModes", [...form.implementationModes, option]);
                             else setField("implementationModes", form.implementationModes.filter((v) => v !== option));
@@ -2717,7 +2860,7 @@ const ProjectSubmission: React.FC = () => {
                     type="button"
                     className="px-2 py-1 border rounded"
                     onClick={() => setField("totalProjectCost", fmtNumber(projectCostTotals.overall))}
-                    disabled={projectCostTotals.overall <= 0}
+                    disabled={projectCostTotals.overall <= 0 || isRevisionFieldLocked("totalProjectCost")}
                   >
                     Use Matrix Total
                   </button>
@@ -2743,6 +2886,7 @@ const ProjectSubmission: React.FC = () => {
                       }))
                     }
                     className="px-2 py-1 text-sm border rounded"
+                    disabled={isRevisionFieldLocked("projectCostRows")}
                   >
                     + Add Row
                   </button>
@@ -2760,8 +2904,8 @@ const ProjectSubmission: React.FC = () => {
                               projectCostRows: prev.projectCostRows.length > 1 ? prev.projectCostRows.filter((_, i) => i !== index) : prev.projectCostRows,
                             }))
                           }
-                          className={`text-sm ${form.projectCostRows.length > 1 ? "text-red-600 hover:underline" : "text-slate-300 cursor-not-allowed"}`}
-                          disabled={form.projectCostRows.length <= 1}
+                          className={`text-sm ${form.projectCostRows.length > 1 && !isRevisionFieldLocked("projectCostRows") ? "text-red-600 hover:underline" : "text-slate-300 cursor-not-allowed"}`}
+                          disabled={form.projectCostRows.length <= 1 || isRevisionFieldLocked("projectCostRows")}
                         >
                           Remove
                         </button>
@@ -2769,7 +2913,7 @@ const ProjectSubmission: React.FC = () => {
                       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-6">
                         <label className="block">
                           <span className="text-xs text-slate-600">Source</span>
-                          <select className="mt-1 w-full border rounded px-2 py-1" value={row.source} onChange={(e) => updateProjectCostRow(index, "source", e.target.value)}>
+                          <select className="mt-1 w-full border rounded px-2 py-1" value={row.source} disabled={isRevisionFieldLocked("projectCostRows")} onChange={(e) => updateProjectCostRow(index, "source", e.target.value)}>
                             <option value="">Choose source</option>
                             {fundingOptions.map((option) => (
                               <option key={option} value={option}>{option}</option>
@@ -2782,6 +2926,7 @@ const ProjectSubmission: React.FC = () => {
                             <input
                               className="mt-1 w-full border rounded px-2 py-1"
                               value={getFundingValue(row, column)}
+                              disabled={isRevisionFieldLocked("projectCostRows")}
                               onChange={(e) => updateProjectCostYearValue(index, column, e.target.value)}
                             />
                           </label>
@@ -2816,6 +2961,7 @@ const ProjectSubmission: React.FC = () => {
                     type="button"
                     onClick={() => setForm((prev) => ({ ...prev, pipBudgetRows: [...prev.pipBudgetRows, { year: "", osbps: "", nep: "", gaa: "" }] }))}
                     className="px-2 py-1 text-sm border rounded"
+                    disabled={isRevisionFieldLocked("pipBudgetRows")}
                   >
                     + Add Row
                   </button>
@@ -2833,8 +2979,8 @@ const ProjectSubmission: React.FC = () => {
                               pipBudgetRows: prev.pipBudgetRows.length > 1 ? prev.pipBudgetRows.filter((_, i) => i !== index) : prev.pipBudgetRows,
                             }))
                           }
-                          className={`text-sm ${form.pipBudgetRows.length > 1 ? "text-red-600 hover:underline" : "text-slate-300 cursor-not-allowed"}`}
-                          disabled={form.pipBudgetRows.length <= 1}
+                          className={`text-sm ${form.pipBudgetRows.length > 1 && !isRevisionFieldLocked("pipBudgetRows") ? "text-red-600 hover:underline" : "text-slate-300 cursor-not-allowed"}`}
+                          disabled={form.pipBudgetRows.length <= 1 || isRevisionFieldLocked("pipBudgetRows")}
                         >
                           Remove
                         </button>
@@ -2842,16 +2988,16 @@ const ProjectSubmission: React.FC = () => {
                       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                         <label className="block">
                           <span className="text-xs text-slate-600">Year</span>
-                          <select className="mt-1 w-full border rounded px-2 py-1" value={row.year} onChange={(e) => updatePipBudgetRow(index, "year", e.target.value)}>
+                          <select className="mt-1 w-full border rounded px-2 py-1" value={row.year} disabled={isRevisionFieldLocked("pipBudgetRows")} onChange={(e) => updatePipBudgetRow(index, "year", e.target.value)}>
                             <option value="">Year</option>
                             {pipTrackerYearOptions.map((year) => (
                               <option key={year} value={year}>{year}</option>
                             ))}
                           </select>
                         </label>
-                        <label className="block"><span className="text-xs text-slate-600">OSBPS</span><input className="mt-1 w-full border rounded px-2 py-1" value={row.osbps} onChange={(e) => updatePipBudgetRow(index, "osbps", e.target.value)} /></label>
-                        <label className="block"><span className="text-xs text-slate-600">NEP</span><input className="mt-1 w-full border rounded px-2 py-1" value={row.nep} onChange={(e) => updatePipBudgetRow(index, "nep", e.target.value)} /></label>
-                        <label className="block"><span className="text-xs text-slate-600">GAA</span><input className="mt-1 w-full border rounded px-2 py-1" value={row.gaa} onChange={(e) => updatePipBudgetRow(index, "gaa", e.target.value)} /></label>
+                        <label className="block"><span className="text-xs text-slate-600">OSBPS</span><input className="mt-1 w-full border rounded px-2 py-1" value={row.osbps} disabled={isRevisionFieldLocked("pipBudgetRows")} onChange={(e) => updatePipBudgetRow(index, "osbps", e.target.value)} /></label>
+                        <label className="block"><span className="text-xs text-slate-600">NEP</span><input className="mt-1 w-full border rounded px-2 py-1" value={row.nep} disabled={isRevisionFieldLocked("pipBudgetRows")} onChange={(e) => updatePipBudgetRow(index, "nep", e.target.value)} /></label>
+                        <label className="block"><span className="text-xs text-slate-600">GAA</span><input className="mt-1 w-full border rounded px-2 py-1" value={row.gaa} disabled={isRevisionFieldLocked("pipBudgetRows")} onChange={(e) => updatePipBudgetRow(index, "gaa", e.target.value)} /></label>
                       </div>
                     </div>
                   ))}
@@ -2902,6 +3048,7 @@ const ProjectSubmission: React.FC = () => {
                           }))
                         }
                         className="px-2 py-1 text-sm border rounded"
+                        disabled={isRevisionFieldLocked("provincialRows")}
                       >
                         + Add Row
                       </button>
@@ -2919,8 +3066,8 @@ const ProjectSubmission: React.FC = () => {
                                   provincialRows: prev.provincialRows.length > 1 ? prev.provincialRows.filter((_, i) => i !== index) : prev.provincialRows,
                                 }))
                               }
-                              className={`text-sm ${form.provincialRows.length > 1 ? "text-red-600 hover:underline" : "text-slate-300 cursor-not-allowed"}`}
-                              disabled={form.provincialRows.length <= 1}
+                              className={`text-sm ${form.provincialRows.length > 1 && !isRevisionFieldLocked("provincialRows") ? "text-red-600 hover:underline" : "text-slate-300 cursor-not-allowed"}`}
+                              disabled={form.provincialRows.length <= 1 || isRevisionFieldLocked("provincialRows")}
                             >
                               Remove
                             </button>
@@ -2928,7 +3075,7 @@ const ProjectSubmission: React.FC = () => {
                           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-6">
                             <label className="block">
                               <span className="text-xs text-slate-600">Province/District</span>
-                              <select className="mt-1 w-full border rounded px-2 py-1" value={row.province} onChange={(e) => updateProvincialRow(index, "province", e.target.value)}>
+                              <select className="mt-1 w-full border rounded px-2 py-1" value={row.province} disabled={isRevisionFieldLocked("provincialRows")} onChange={(e) => updateProvincialRow(index, "province", e.target.value)}>
                                 <option value="">Choose province/district</option>
                                 {ncrProvinceDistrictOptions.map((option) => (
                                   <option key={option} value={option}>{option}</option>
@@ -2941,6 +3088,7 @@ const ProjectSubmission: React.FC = () => {
                                 <input
                                   className="mt-1 w-full border rounded px-2 py-1"
                                   value={getFundingValue(row, column)}
+                                  disabled={isRevisionFieldLocked("provincialRows")}
                                   onChange={(e) => updateProvincialYearValue(index, column, e.target.value)}
                                 />
                               </label>
@@ -3236,7 +3384,16 @@ const ProjectSubmission: React.FC = () => {
               <Area label="Contact Details (address/contact/email)" value={form.contactDetails} onChange={(v) => setField("contactDetails", v)} required error={errorOf("contactDetails")} />
               <label className="block">
                 <span className="text-sm text-gray-700">Attachments</span>
-                <input className="mt-1 block" type="file" multiple onChange={(e) => setFiles(Array.from(e.target.files || []))} />
+                <input
+                  className="mt-1 block"
+                  type="file"
+                  multiple
+                  disabled={canReviseSubmitted || canReviseProgress}
+                  onChange={(e) => setFiles(Array.from(e.target.files || []))}
+                />
+                {(canReviseSubmitted || canReviseProgress) && (
+                  <p className="mt-1 text-xs font-medium text-slate-500">Attachments are preserved during restricted revisions.</p>
+                )}
               </label>
               {files.length > 0 && (
                 <ul className="text-sm text-gray-600">
@@ -3306,6 +3463,7 @@ const ProjectSubmission: React.FC = () => {
           </div>
           </fieldset>
         </form>
+        </DetailedRevisionLockContext.Provider>
         </div>
       </div>
     </PortalLayout>

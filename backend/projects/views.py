@@ -62,7 +62,7 @@ from .serializers import (
     ProjectPriorityAnalysisSerializer,
 )
 from .public_summary import build_public_summary
-from .priority_scoring import analyze_project, confirm_analysis, has_matching_confirmation
+from .priority_scoring import analyze_project, confirm_analysis, ensure_analysis_guidance, has_matching_confirmation
 from .utils import derive_ncr_lgus
 
 
@@ -72,6 +72,42 @@ PASSWORD_SETUP_TTL_HOURS = 24
 PASSWORD_RESET_WINDOW_SECONDS = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_WINDOW", 3600))
 PASSWORD_RESET_LIMIT_EMAIL = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_EMAIL", 2))
 PASSWORD_RESET_LIMIT_IP = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_IP", 5))
+ACCOUNT_AGENCIES = {
+    "DPWH": "Department of Public Works and Highways",
+    "DENR": "Department of Environment and Natural Resources",
+    "RDC-NCR": "Regional Development Council National Capital Region",
+    "DILG": "Department of the Interior and Local Government",
+    "DEPDev": "Department of Economy, Planning, and Development",
+    "DBM": "Department of Budget and Management",
+    "DA": "Department of Agriculture",
+    "DAR": "Department of Agrarian Reform",
+    "DepEd": "Department of Education",
+    "DOH": "Department of Health",
+    "DHSUD": "Department of Human Settlements and Urban Development",
+    "DICT": "Department of Information and Communications Technology",
+    "DOLE": "Department of Labor and Employment",
+    "DOST": "Department of Science and Technology",
+    "DSWD": "Department of Social Welfare and Development",
+    "DOT": "Department of Tourism",
+    "DTI": "Department of Trade and Industry",
+    "DOTr": "Department of Transportation",
+    "TESDA": "Technical Education and Skills Development Authority",
+    "CHED": "Commission on Higher Education",
+    "PSA": "Philippine Statistics Authority",
+}
+
+
+def _normalize_account_agency(value):
+    normalized = " ".join(str(value or "").strip().split())
+    normalized_value = normalized.casefold()
+    return next(
+        (
+            code
+            for code, full_name in ACCOUNT_AGENCIES.items()
+            if code.casefold() == normalized_value or full_name.casefold() == normalized_value
+        ),
+        "",
+    )
 
 PUBLIC_CHAT_MAX_SUGGESTIONS = 6
 PUBLIC_CHAT_MIN_SCORE = 1.0
@@ -1916,11 +1952,131 @@ def _validate_password_policy(password: str):
 
 SYSTEM_MANAGED_PROFILE_KEYS = {
     "validator_review",
+    "validator_revision_access",
     "contributor_snapshot",
     "public_summary",
     "public_summary_override",
     "simplified_form_meta",
 }
+
+DETAILED_DERIVED_PROFILE_FIELDS = {
+    "submission_type",
+    "templateName",
+    "uploadedFiles",
+    "priorityAnalysisFacts",
+    "mainFundingSources",
+}
+
+
+def _revision_field_key(profile_data, path):
+    path = str(path or "").strip()
+    if not path or path == "(root)":
+        return ""
+    simplified = (
+        profile_data.get("simplified_form")
+        if isinstance(profile_data, dict)
+        else None
+    )
+    if isinstance(simplified, dict):
+        if not path.startswith("simplified_form."):
+            return ""
+        parts = path.split(".")[1:]
+        if not parts:
+            return ""
+        root = parts[0]
+        if root in ("fundingRequirementTotal", "actualApprovedTotal", "priorityAnalysisFacts"):
+            return ""
+        if root == "custom_fields":
+            return parts[1] if len(parts) > 1 else ""
+        return root
+    root = path.split(".")[0]
+    if root in SYSTEM_MANAGED_PROFILE_KEYS or root in DETAILED_DERIVED_PROFILE_FIELDS:
+        return ""
+    return root
+
+
+def _available_revision_fields(profile_data):
+    if not isinstance(profile_data, dict):
+        return set()
+    simplified = profile_data.get("simplified_form")
+    if isinstance(simplified, dict):
+        fields = {
+            str(key)
+            for key in simplified.keys()
+            if str(key) not in ("fundingRequirementTotal", "actualApprovedTotal", "priorityAnalysisFacts", "custom_fields")
+        }
+        custom = simplified.get("custom_fields")
+        if isinstance(custom, dict):
+            fields.update(str(key) for key in custom.keys())
+        return fields
+    return {
+        str(key)
+        for key in profile_data.keys()
+        if str(key) not in SYSTEM_MANAGED_PROFILE_KEYS
+        and str(key) not in DETAILED_DERIVED_PROFILE_FIELDS
+        and str(key) != "form_schema"
+    }
+
+
+def _clean_revision_editable_fields(raw_fields, profile_data):
+    if not isinstance(raw_fields, list):
+        return None
+    available = _available_revision_fields(profile_data)
+    cleaned = []
+    for raw in raw_fields:
+        field = str(raw or "").strip()
+        if not field or field not in available or field in cleaned:
+            continue
+        cleaned.append(field)
+    return cleaned[:300]
+
+
+def _restricted_revision_changes(before_profile, after_profile, editable_fields):
+    if editable_fields is None:
+        return []
+    allowed = {str(field) for field in editable_fields}
+    blocked = []
+    reference = before_profile if isinstance(before_profile, dict) else after_profile
+    for change in _json_diff(before_profile or {}, after_profile or {}):
+        field = _revision_field_key(reference, change.get("field"))
+        if field and field not in allowed and field not in blocked:
+            blocked.append(field)
+    return blocked
+
+
+def _restricted_project_display_changes(project, request_data, editable_fields, profile_data):
+    if editable_fields is None:
+        return []
+    simplified = isinstance((profile_data or {}).get("simplified_form"), dict)
+    mappings = {
+        "title": "projectActivity" if simplified else "projectTitle",
+        "description": "description",
+        "agency": "agencyName" if simplified else "officeUnit",
+        "budget": "fundingRequirementByYear" if simplified else "totalProjectCost",
+    }
+    current = {
+        "title": project.name,
+        "description": project.description,
+        "agency": project.agency,
+        "budget": project.budget,
+    }
+    allowed = {str(field) for field in editable_fields}
+    blocked = []
+    for request_key, permission_key in mappings.items():
+        if request_key not in request_data or permission_key in allowed:
+            continue
+        incoming = request_data.get(request_key)
+        existing = current.get(request_key)
+        if request_key == "budget":
+            try:
+                changed = int(incoming or 0) != int(existing or 0)
+            except (TypeError, ValueError):
+                changed = True
+        else:
+            changed = str(incoming or "").strip() != str(existing or "").strip()
+        if changed:
+            blocked.append(permission_key)
+    return blocked
 
 
 def _strip_validator_meta(profile_data):
@@ -2650,6 +2806,22 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if funding_error:
             return Response({"detail": funding_error}, status=400)
 
+        if "editable_fields" in request.data:
+            editable_fields = _clean_revision_editable_fields(
+                request.data.get("editable_fields"),
+                contributor_snapshot,
+            )
+            if editable_fields is None:
+                return Response({"detail": "editable_fields must be a list."}, status=400)
+        elif isinstance(existing_review, dict) and isinstance(existing_review.get("editable_fields"), list):
+            editable_fields = _clean_revision_editable_fields(
+                existing_review.get("editable_fields"),
+                contributor_snapshot,
+            )
+        else:
+            # Compatibility for an older frontend during a staggered deployment.
+            editable_fields = None
+
         edited_fields = _validator_edited_fields(contributor_snapshot, edited_profile)
         review_notes = str(request.data.get("comment") or request.data.get("notes") or "").strip()
         reviewed_at = timezone.now().isoformat()
@@ -2663,6 +2835,11 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             project.validated = False
             event = "validator_draft"
         elif action_value in ("save_reviewed", "reviewed", "review", "save"):
+            if editable_fields == []:
+                return Response(
+                    {"detail": "Select at least one field the contributor may revise."},
+                    status=400,
+                )
             review_state = "reviewed"
             project.validated = False
             event = "validator_reviewed"
@@ -2693,7 +2870,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         else:
             return Response({"detail": "action must be save_draft/save_reviewed/endorse/reject"}, status=400)
 
-        profile_data["validator_review"] = {
+        next_review = {
             "review_status": review_state,
             "reviewed_by_id": request.user.id,
             "reviewed_by_username": request.user.username,
@@ -2704,6 +2881,9 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             "edited_fields": edited_fields[:300],
             "working_copy": edited_profile,
         }
+        if editable_fields is not None:
+            next_review["editable_fields"] = editable_fields
+        profile_data["validator_review"] = next_review
         # Refresh deterministic public summary from the contributor-visible simplified form.
         try:
             sf = profile_data.get("simplified_form")
@@ -2720,6 +2900,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             "review_status": review_state,
             "edited": len(edited_fields) > 0,
             "edited_fields_count": len(edited_fields),
+            "editable_fields_count": len(editable_fields or []),
         }
         if warning:
             details["warning"] = warning
@@ -2797,6 +2978,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 "review_status": review_state,
                 "edited": len(edited_fields) > 0,
                 "edited_fields_count": len(edited_fields),
+                "editable_fields": editable_fields or [],
                 "reviewed_at": reviewed_at,
                 "warning": warning,
             }
@@ -2808,9 +2990,16 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         role = getattr(request.user, "role", "")
         if role not in ("validator", "admin"):
             raise PermissionDenied("Only validator/admin can view priority analysis.")
-        analyses = project.priority_analyses.select_related("validator", "rule_set").prefetch_related(
-            "confirmations__validator"
+        analyses = list(
+            project.priority_analyses.select_related("validator", "rule_set").prefetch_related(
+                "confirmations__validator"
+            )
         )
+        for index, analysis in enumerate(analyses):
+            ensure_analysis_guidance(analysis)
+            if index == 0:
+                from ai_engine.services import ensure_learning_assessment
+                analysis._current_learning_assessment = ensure_learning_assessment(analysis)
         serializer = ProjectPriorityAnalysisSerializer(analyses, many=True)
         return Response(
             {
@@ -3096,6 +3285,34 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             return
         raise PermissionDenied("Submitted/validated projects are view-only for contributors.")
 
+    def _revision_access_violation(self, project, data, incoming_profile):
+        if not _project_needs_revision(project):
+            return []
+        existing_profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+        review = existing_profile.get("validator_review")
+        if not isinstance(review, dict) or "editable_fields" not in review:
+            return []
+        editable_fields = review.get("editable_fields")
+        if not isinstance(editable_fields, list):
+            editable_fields = []
+        contributor_snapshot = existing_profile.get("contributor_snapshot")
+        if not isinstance(contributor_snapshot, dict):
+            contributor_snapshot = _strip_validator_meta(existing_profile)
+        blocked = _restricted_revision_changes(
+            contributor_snapshot,
+            incoming_profile if isinstance(incoming_profile, dict) else contributor_snapshot,
+            editable_fields,
+        )
+        blocked.extend(
+            _restricted_project_display_changes(
+                project,
+                data,
+                editable_fields,
+                contributor_snapshot,
+            )
+        )
+        return list(dict.fromkeys(blocked))
+
     def create(self, request, *args, **kwargs):
         self._ensure_encoding_open()
         data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
@@ -3151,6 +3368,15 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
                 profile_data = json.loads(profile_data)
             except Exception:
                 profile_data = None
+        blocked_fields = self._revision_access_violation(project, data, profile_data)
+        if blocked_fields:
+            return Response(
+                {
+                    "detail": "Only fields selected by the validator can be changed.",
+                    "restricted_fields": blocked_fields,
+                },
+                status=400,
+            )
         if isinstance(profile_data, dict):
             updated_profile, changed_fields, changes = _apply_simplified_meta(
                 profile_data, project.profile_data or {}, request.user
@@ -3194,6 +3420,15 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
                 profile_data = json.loads(profile_data)
             except Exception:
                 profile_data = None
+        blocked_fields = self._revision_access_violation(project, data, profile_data)
+        if blocked_fields:
+            return Response(
+                {
+                    "detail": "Only fields selected by the validator can be changed.",
+                    "restricted_fields": blocked_fields,
+                },
+                status=400,
+            )
         if isinstance(profile_data, dict):
             updated_profile, changed_fields, changes = _apply_simplified_meta(
                 profile_data, project.profile_data or {}, request.user
@@ -3342,8 +3577,18 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
     def _ensure_contributor_editable(self, revision):
         if getattr(self.request.user, "role", "") not in ("staff", "employee"):
             raise PermissionDenied("Only contributors can edit progress update drafts.")
-        if revision.revision_type != "progress_update" or revision.state != "draft":
-            raise PermissionDenied("Only draft progress updates can be edited by contributors.")
+        profile = revision.profile_data_snapshot if isinstance(revision.profile_data_snapshot, dict) else {}
+        access = profile.get("validator_revision_access")
+        revision_requested = (
+            revision.state == "reviewed"
+            and isinstance(access, dict)
+            and isinstance(access.get("editable_fields"), list)
+            and bool(access.get("editable_fields"))
+        )
+        if revision.revision_type != "progress_update" or (
+            revision.state != "draft" and not revision_requested
+        ):
+            raise PermissionDenied("Only draft or validator-returned progress updates can be edited by contributors.")
         if _is_completed_rdip_project(revision.project):
             raise PermissionDenied("Completed projects are read-only for progress updates.")
         self._ensure_progress_update_open()
@@ -3357,11 +3602,32 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
         funding_error = _validate_simplified_funding(profile_data)
         if funding_error:
             return Response({"detail": funding_error}, status=400)
+        existing_profile = revision.profile_data_snapshot if isinstance(revision.profile_data_snapshot, dict) else {}
+        access = existing_profile.get("validator_revision_access")
+        if revision.state == "reviewed" and isinstance(access, dict):
+            editable_fields = access.get("editable_fields")
+            if not isinstance(editable_fields, list):
+                editable_fields = []
+            blocked_fields = _restricted_revision_changes(
+                existing_profile,
+                profile_data,
+                editable_fields,
+            )
+            if blocked_fields:
+                return Response(
+                    {
+                        "detail": "Only fields selected by the validator can be changed.",
+                        "restricted_fields": blocked_fields,
+                    },
+                    status=400,
+                )
         updated_profile, changed_fields, changes = _apply_simplified_meta(
             profile_data,
-            revision.profile_data_snapshot or {},
+            existing_profile,
             request.user,
         )
+        if isinstance(access, dict):
+            updated_profile["validator_revision_access"] = deepcopy(access)
         current = _ensure_public_revision(revision.project, request.user)
         base_profile = current.profile_data_snapshot if current else revision.project.profile_data
         revision.profile_data_snapshot = updated_profile
@@ -3480,6 +3746,42 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
         if funding_error:
             return Response({"detail": funding_error}, status=400)
 
+        existing_access = (
+            revision.profile_data_snapshot.get("validator_revision_access")
+            if isinstance(revision.profile_data_snapshot, dict)
+            else None
+        )
+        if "editable_fields" in request.data:
+            editable_fields = _clean_revision_editable_fields(
+                request.data.get("editable_fields"),
+                edited_profile,
+            )
+            if editable_fields is None:
+                return Response({"detail": "editable_fields must be a list."}, status=400)
+        elif isinstance(existing_access, dict) and isinstance(existing_access.get("editable_fields"), list):
+            editable_fields = _clean_revision_editable_fields(
+                existing_access.get("editable_fields"),
+                edited_profile,
+            )
+        else:
+            editable_fields = None
+
+        if action_value in ("save_reviewed", "reviewed", "review", "save") and editable_fields == []:
+            return Response(
+                {"detail": "Select at least one field the contributor may revise."},
+                status=400,
+            )
+        if editable_fields is not None and action_value in (
+            "save_draft", "draft", "save_reviewed", "reviewed", "review", "save"
+        ):
+            edited_profile["validator_revision_access"] = {
+                "editable_fields": editable_fields,
+                "selected_by_id": request.user.id,
+                "selected_at": timezone.now().isoformat(),
+            }
+        else:
+            edited_profile.pop("validator_revision_access", None)
+
         current = _ensure_public_revision(revision.project, request.user)
         base_profile = current.profile_data_snapshot if current else revision.project.profile_data
         revision.profile_data_snapshot = edited_profile
@@ -3526,6 +3828,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                 "revision_number": revision.revision_number,
                 "revision_state": revision.state,
                 "changed_fields_count": len(revision.changed_fields or []),
+                "editable_fields_count": len(editable_fields or []),
             },
         )
         if getattr(request.user, "role", "") == "validator" and revision.state == "validator_draft":
@@ -4402,12 +4705,18 @@ class SetupPasswordView(APIView):
         missing = [f for f in required_fields if not str(request.data.get(f) or "").strip()]
         if missing:
             return Response({"detail": f"Missing required fields: {', '.join(missing)}"}, status=400)
+        agency = _normalize_account_agency(request.data.get("agency"))
+        if not agency:
+            return Response(
+                {"detail": "This is an invalid Agency"},
+                status=400,
+            )
         policy_error = _validate_password_policy(new_password)
         if policy_error:
             return Response({"detail": policy_error}, status=400)
         user = token.user
         user.full_name = str(request.data.get("full_name") or "").strip()
-        user.agency = str(request.data.get("agency") or "").strip()
+        user.agency = agency
         user.agency_head = str(request.data.get("agency_head") or "").strip()
         user.office = str(request.data.get("office") or "").strip()
         user.division = str(request.data.get("division") or "").strip()
@@ -4441,7 +4750,7 @@ class SetupPasswordView(APIView):
             event="auth_password_setup",
             ip_address=_client_ip(request)[:64],
             location_hint=_location_hint(request)[:255],
-            details={"source": "setup_token"},
+            details={"source": "setup_token", "agency": user.agency},
         )
         return Response({"status": "ok"})
 

@@ -7,6 +7,7 @@ from django.utils import timezone
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
+from .priority_scoring import _priority_for
 from .models import (
     Notification,
     PriorityRuleSet,
@@ -62,6 +63,14 @@ class PortalWorkflowTests(APITestCase):
                 )
             },
         )
+
+    def test_binary_priority_boundaries(self):
+        thresholds = {"high": 81}
+        self.assertEqual(_priority_for(0, thresholds), "low")
+        self.assertEqual(_priority_for(80, thresholds), "low")
+        self.assertEqual(_priority_for(80.99, thresholds), "low")
+        self.assertEqual(_priority_for(81, thresholds), "high")
+        self.assertEqual(_priority_for(100, thresholds), "high")
 
     def test_employee_to_validator_to_admin_flow(self):
         self._as(self.employee)
@@ -430,6 +439,94 @@ class PortalWorkflowTests(APITestCase):
             project=project, recipient=other_contributor, event_type="progress_update_needs_revision"
         ).exists())
 
+    def test_progress_revision_field_selection_is_enforced(self):
+        self._set_progress_window(timezone.now() - timedelta(hours=1), timezone.now() + timedelta(hours=1))
+        self.employee.agency = "MMDA"
+        self.employee.save(update_fields=["agency"])
+        project = Project.objects.create(
+            name="Restricted Progress Update",
+            implementing_agency="MMDA",
+            municipality="NCR",
+            status="ongoing",
+            validated=True,
+            cost=100000,
+            latitude=14.5,
+            agency="MMDA",
+            budget=100000,
+            created_by=self.employee,
+            profile_data={
+                "submission_type": "simplified",
+                "simplified_form": {
+                    "projectActivity": "Original activity",
+                    "startYear": "2026",
+                    "endYear": "2027",
+                },
+            },
+        )
+        revision = ProjectRevision.objects.create(
+            project=project,
+            revision_number=2,
+            revision_type="progress_update",
+            state="submitted",
+            profile_data_snapshot=project.profile_data,
+            created_by=self.employee,
+            submitted_by=self.employee,
+        )
+
+        self._as(self.validator)
+        requested = self.client.post(
+            f"/api/project-revisions/{revision.id}/review/",
+            {
+                "action": "save_reviewed",
+                "notes": "Update the activity only.",
+                "editable_fields": ["projectActivity"],
+            },
+            format="json",
+        )
+        self.assertEqual(requested.status_code, status.HTTP_200_OK, requested.data)
+        self.assertEqual(requested.data["state"], "reviewed")
+
+        self._as(self.employee)
+        blocked = self.client.put(
+            f"/api/project-revisions/{revision.id}/",
+            {
+                "profile_data": {
+                    "submission_type": "simplified",
+                    "simplified_form": {
+                        "projectActivity": "Allowed activity",
+                        "startYear": "2025",
+                        "endYear": "2027",
+                    },
+                }
+            },
+            format="json",
+        )
+        self.assertEqual(blocked.status_code, status.HTTP_400_BAD_REQUEST, blocked.data)
+        self.assertIn("startYear", blocked.data["restricted_fields"])
+
+        allowed = self.client.put(
+            f"/api/project-revisions/{revision.id}/",
+            {
+                "profile_data": {
+                    "submission_type": "simplified",
+                    "simplified_form": {
+                        "projectActivity": "Allowed activity",
+                        "startYear": "2026",
+                        "endYear": "2027",
+                    },
+                }
+            },
+            format="json",
+        )
+        self.assertEqual(allowed.status_code, status.HTTP_200_OK, allowed.data)
+        self.assertEqual(
+            allowed.data["profile_data_snapshot"]["simplified_form"]["projectActivity"],
+            "Allowed activity",
+        )
+        submitted = self.client.post(f"/api/project-revisions/{revision.id}/submit/", {}, format="json")
+        self.assertEqual(submitted.status_code, status.HTTP_200_OK, submitted.data)
+        self.assertEqual(submitted.data["state"], "submitted")
+
     def test_contributor_progress_draft_and_submission_notify_admin_and_validators(self):
         self._set_progress_window(timezone.now() - timedelta(hours=1), timezone.now() + timedelta(hours=1))
         self.employee.agency = "MMDA"
@@ -560,6 +657,81 @@ class PortalWorkflowTests(APITestCase):
         self.assertEqual(refreshed.status, "proposed")
         self.assertEqual(refreshed.profile_data.get("validator_review", {}).get("review_status"), "draft")
 
+    def test_validator_field_selection_restricts_contributor_revision_changes(self):
+        original_profile = {
+            "submission_type": "detailed",
+            "projectTitle": "Field Restricted Project",
+            "description": "Original profile description",
+            "remarks": "Original remarks",
+            "totalProjectCost": "100",
+        }
+        self._as(self.employee)
+        created = self.client.post(
+            "/api/employee/projects/",
+            {
+                "title": "Field Restricted Project",
+                "agency": "MMDA",
+                "budget": 100,
+                "status": "draft",
+                "description": "Original project description",
+                "profile_data": original_profile,
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED, created.data)
+        project_id = created.data["id"]
+        self.assertEqual(
+            self.client.post(f"/api/employee/projects/{project_id}/submit/", {}, format="json").status_code,
+            status.HTTP_200_OK,
+        )
+
+        self._as(self.validator)
+        requested = self.client.post(
+            f"/api/validator/projects/{project_id}/validate/",
+            {
+                "action": "save_reviewed",
+                "notes": "Update remarks only.",
+                "editable_fields": ["remarks"],
+                "edited_profile_data": original_profile,
+            },
+            format="json",
+        )
+        self.assertEqual(requested.status_code, status.HTTP_200_OK, requested.data)
+        self.assertEqual(requested.data["editable_fields"], ["remarks"])
+
+        self._as(self.employee)
+        blocked_profile = {**original_profile, "description": "Unauthorized", "remarks": "Allowed"}
+        blocked = self.client.put(
+            f"/api/employee/projects/{project_id}/",
+            {
+                "title": "Field Restricted Project",
+                "agency": "MMDA",
+                "budget": 100,
+                "description": "Original project description",
+                "profile_data": blocked_profile,
+            },
+            format="json",
+        )
+        self.assertEqual(blocked.status_code, status.HTTP_400_BAD_REQUEST, blocked.data)
+        self.assertIn("description", blocked.data["restricted_fields"])
+
+        allowed_profile = {**original_profile, "remarks": "Allowed revision"}
+        allowed = self.client.put(
+            f"/api/employee/projects/{project_id}/",
+            {
+                "title": "Field Restricted Project",
+                "agency": "MMDA",
+                "budget": 100,
+                "description": "Original project description",
+                "profile_data": allowed_profile,
+            },
+            format="json",
+        )
+        self.assertEqual(allowed.status_code, status.HTTP_200_OK, allowed.data)
+        project = Project.objects.get(pk=project_id)
+        self.assertEqual(project.profile_data["remarks"], "Allowed revision")
+        self.assertEqual(project.profile_data["description"], "Original profile description")
+
     def test_notification_list_and_mark_read_are_scoped_to_recipient(self):
         project = Project.objects.create(
             name="Scoped Notification",
@@ -631,6 +803,20 @@ class PortalWorkflowTests(APITestCase):
         )
 
         self._as(self.validator)
+        analysis_list = self.client.get(f"/api/validator/projects/{project.id}/priority-analysis/")
+        self.assertEqual(analysis_list.status_code, status.HTTP_200_OK)
+        enriched_scores = analysis_list.data["analyses"][0]["suggested_scores"]
+        self.assertEqual(enriched_scores["guidance_version"], "expanded-explanations-v2")
+        self.assertIn("reasoning", enriched_scores)
+        self.assertIn("recommendations", enriched_scores)
+        self.assertIn("revision_fields", enriched_scores)
+        invalid = self.client.post(
+            f"/api/validator/projects/{project.id}/priority-analysis/{analysis.id}/confirm/",
+            {"final_priority": "medium"},
+            format="json",
+        )
+        self.assertEqual(invalid.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("high or low", invalid.data["detail"])
         confirm = self.client.post(
             f"/api/validator/projects/{project.id}/priority-analysis/{analysis.id}/confirm/",
             {"final_priority": "high", "override_rationale": "Official validator decision."},
@@ -695,6 +881,29 @@ class PortalWorkflowTests(APITestCase):
         analysis = response.data["analysis"]
         self.assertEqual(analysis["suggested_scores"]["missing_facts"], [])
         self.assertEqual(analysis["suggested_scores"]["rdp_track"], "environment")
+        reasoning = analysis["suggested_scores"]["reasoning"]
+        self.assertIn("base score", reasoning["overall"].lower())
+        self.assertTrue(reasoning["criteria"])
+        self.assertTrue(all(item.get("explanation") for item in reasoning["criteria"]))
+        explanations = " ".join(item["explanation"] for item in reasoning["criteria"])
+        self.assertNotIn("deterministic text alignment", explanations.lower())
+        self.assertIn("the calculation is", explanations.lower())
+        readiness_reason = next(item for item in reasoning["criteria"] if item["key"] == "readiness")
+        self.assertIn("validator selected", readiness_reason["explanation"].lower())
+        outcome_reasons = [
+            item for item in reasoning["criteria"]
+            if item["key"] not in ("readiness", "gad_responsiveness", "spatial_coverage")
+            and item.get("evidence")
+        ]
+        self.assertTrue(outcome_reasons)
+        self.assertTrue(any("Evidence was found in these fields" in item["explanation"] for item in outcome_reasons))
+        self.assertTrue(any(item.get("evidence_sources") for item in outcome_reasons))
+        recommendations = analysis["suggested_scores"]["recommendations"]
+        self.assertTrue(recommendations)
+        self.assertTrue(any(item.get("fields") for item in recommendations))
+        revision_fields = analysis["suggested_scores"]["revision_fields"]
+        self.assertTrue(revision_fields)
+        self.assertTrue(any(item["source"] == "contributor" for item in revision_fields))
         self.assertTrue(analysis["regional_scorecard"]["applicable"])
         stored_analysis = ProjectPriorityAnalysis.objects.get(pk=analysis["id"])
         self.assertEqual(stored_analysis.input_snapshot["submission_type"], "detailed")

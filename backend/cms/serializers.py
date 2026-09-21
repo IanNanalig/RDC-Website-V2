@@ -21,7 +21,7 @@ from cms.models import (
     CMSSiteSetting,
 )
 from cms.services.locking import lock_is_active
-from cms.services.media_usage import get_media_usages
+from cms.services.media_usage import get_media_usage_map, get_media_usages
 from cms.services.media_validation import validate_media_upload
 
 
@@ -29,6 +29,15 @@ def _user_display(user):
     if not user:
         return ""
     return getattr(user, "full_name", "") or user.get_username()
+
+
+class CMSMediaAssetListSerializer(serializers.ListSerializer):
+    def to_representation(self, data):
+        instances = list(data.all() if hasattr(data, "all") else data)
+        usage_map = get_media_usage_map(instances)
+        for media in instances:
+            media._cms_usage_cache = usage_map.get(media.pk, [])
+        return super().to_representation(instances)
 
 
 class CMSMediaAssetSerializer(serializers.ModelSerializer):
@@ -40,6 +49,7 @@ class CMSMediaAssetSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = CMSMediaAsset
+        list_serializer_class = CMSMediaAssetListSerializer
         fields = [
             "id", "file", "url", "storage_backend", "storage_key", "public_url",
             "file_type", "mime_type", "size", "alt_text", "caption", "uploaded_by",
@@ -146,6 +156,18 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
         return bool(self._lock_active(obj) and request and request.user.id == obj.lock_owner_id)
 
 
+class CMSPageSectionSummarySerializer(serializers.ModelSerializer):
+    """Section review row without the section content document."""
+
+    class Meta:
+        model = CMSPageSection
+        fields = [
+            "id", "page", "section_key", "section_type", "order", "schema_version",
+            "is_visible", "status", "created_at", "updated_at",
+        ]
+        read_only_fields = fields
+
+
 class CMSPageSerializer(serializers.ModelSerializer):
     sections = CMSPageSectionSerializer(many=True, read_only=True)
     created_by_name = serializers.SerializerMethodField()
@@ -183,6 +205,35 @@ class CMSPageSerializer(serializers.ModelSerializer):
         if self.instance and self.instance.published_at and value != self.instance.slug:
             raise serializers.ValidationError("Slug is locked after publishing to avoid breaking shared links.")
         return value
+
+
+class CMSPageSummarySerializer(serializers.ModelSerializer):
+    """Compact page row used by the CMS index; retrieve still returns the full draft."""
+
+    published_slug = serializers.CharField(read_only=True, allow_blank=True)
+    section_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = CMSPage
+        fields = [
+            "id", "title", "slug", "status", "has_unpublished_changes", "published_slug",
+            "section_count", "review_notes", "published_at", "archived_at", "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class CMSPageEditorSerializer(CMSPageSerializer):
+    """Full page draft for editing without duplicating the published snapshot."""
+
+    class Meta(CMSPageSerializer.Meta):
+        fields = [
+            field for field in CMSPageSerializer.Meta.fields
+            if field != "published_snapshot_json"
+        ]
+        read_only_fields = [
+            field for field in CMSPageSerializer.Meta.read_only_fields
+            if field != "published_snapshot_json"
+        ]
 
 
 class CMSArticleSerializer(serializers.ModelSerializer):
@@ -226,6 +277,39 @@ class CMSArticleSerializer(serializers.ModelSerializer):
         if self.instance and self.instance.published_at and value != self.instance.slug:
             raise serializers.ValidationError("Slug is locked after publishing to avoid breaking shared links.")
         return value
+
+
+class CMSArticleSummarySerializer(serializers.ModelSerializer):
+    """Article metadata without the body or duplicated published snapshot."""
+
+    thumbnail_url = serializers.SerializerMethodField()
+    published_slug = serializers.CharField(read_only=True, allow_blank=True)
+
+    class Meta:
+        model = CMSArticle
+        fields = [
+            "id", "title", "slug", "category", "summary", "thumbnail", "thumbnail_url",
+            "author", "publication_date", "featured", "status", "has_unpublished_changes",
+            "published_slug", "review_notes", "published_at", "archived_at", "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_thumbnail_url(self, obj):
+        return obj.thumbnail.resolved_public_url if obj.thumbnail and not obj.thumbnail.is_archived else ""
+
+
+class CMSArticleEditorSerializer(CMSArticleSerializer):
+    """Full article draft for editing without duplicating the published snapshot."""
+
+    class Meta(CMSArticleSerializer.Meta):
+        fields = [
+            field for field in CMSArticleSerializer.Meta.fields
+            if field != "published_snapshot_json"
+        ]
+        read_only_fields = [
+            field for field in CMSArticleSerializer.Meta.read_only_fields
+            if field != "published_snapshot_json"
+        ]
 
 
 class CMSContributorFormVersionSerializer(serializers.ModelSerializer):
@@ -327,6 +411,47 @@ class CMSContributorFormSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 
+class CMSContributorFormSummarySerializer(serializers.ModelSerializer):
+    """Review-queue row without the potentially large draft form schema."""
+
+    current_published_version_number = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CMSContributorForm
+        fields = [
+            "id", "key", "name", "description", "status", "current_published_version",
+            "current_published_version_number", "has_unpublished_changes", "review_notes",
+            "published_at", "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_current_published_version_number(self, obj):
+        return obj.current_published_version.version_number if obj.current_published_version_id else None
+
+
+class CMSMediaAssetSummarySerializer(serializers.ModelSerializer):
+    """Media index row that deliberately avoids a full CMS reference scan."""
+
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CMSMediaAsset
+        fields = [
+            "id", "file", "url", "file_type", "mime_type", "size", "alt_text", "caption",
+            "is_archived", "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_url(self, obj):
+        url = obj.resolved_public_url
+        if not url:
+            return ""
+        request = self.context.get("request")
+        if request and url.startswith("/"):
+            return request.build_absolute_uri(url)
+        return url
+
+
 class CMSRevisionSerializer(serializers.ModelSerializer):
     changed_by_name = serializers.SerializerMethodField()
     content_type = serializers.SerializerMethodField()
@@ -347,6 +472,49 @@ class CMSRevisionSerializer(serializers.ModelSerializer):
         return obj.content_type_key
 
     def get_is_target_deleted(self, obj):
+        return obj.content_object is None
+
+
+class CMSRevisionSummaryListSerializer(serializers.ListSerializer):
+    """Resolve deleted-target flags in one query per target model, not one per revision."""
+
+    def to_representation(self, data):
+        instances = list(data.all() if hasattr(data, "all") else data)
+        grouped = {}
+        for revision in instances:
+            grouped.setdefault(revision.content_type, set()).add(revision.object_id)
+        for content_type, object_ids in grouped.items():
+            model = content_type.model_class()
+            existing = set(model.objects.filter(pk__in=object_ids).values_list("pk", flat=True)) if model else set()
+            for revision in instances:
+                if revision.content_type_id == content_type.pk:
+                    revision._cms_target_deleted = revision.object_id not in existing
+        return super().to_representation(instances)
+
+
+class CMSRevisionSummarySerializer(serializers.ModelSerializer):
+    changed_by_name = serializers.SerializerMethodField()
+    content_type = serializers.SerializerMethodField()
+    is_target_deleted = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CMSRevision
+        list_serializer_class = CMSRevisionSummaryListSerializer
+        fields = [
+            "id", "content_type", "object_id", "version_number", "action", "status_before",
+            "status_after", "changed_by_name", "is_target_deleted", "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_changed_by_name(self, obj):
+        return _user_display(obj.changed_by)
+
+    def get_content_type(self, obj):
+        return obj.content_type_key
+
+    def get_is_target_deleted(self, obj):
+        if hasattr(obj, "_cms_target_deleted"):
+            return obj._cms_target_deleted
         return obj.content_object is None
 
 

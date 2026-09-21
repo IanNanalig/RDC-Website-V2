@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import cmsApi, {
   type CMSArticle,
   type CMSMediaAsset,
@@ -9,10 +9,14 @@ import cmsApi, {
   type CMSSiteSetting,
 } from "../../services/cmsApi";
 import { ORGANIZATION_NODE_DEFAULTS, RESOLUTIONS_BY_YEAR } from "../../pages/About_RDC";
-import RichTextEditor from "./RichTextEditor";
-import ContributorFormsManager from "./ContributorFormsManager";
+const RichTextEditor = React.lazy(() => import("./RichTextEditor"));
+const ContributorFormsManager = React.lazy(() => import("./ContributorFormsManager"));
+const AIScoringManager = React.lazy(() => import("./AIScoringManager"));
 
-type ResourceTab = "pages" | "news" | "forms" | "media" | "review" | "revisions" | "settings";
+type ResourceTab = "pages" | "news" | "forms" | "media" | "review" | "revisions" | "settings" | "ai";
+type PaginatedResourceTab = "pages" | "news" | "media" | "revisions";
+
+const CMS_LIST_PAGE_SIZE = 30;
 
 type Props = {
   mode: "admin" | "editor";
@@ -473,6 +477,7 @@ const portableMediaUrl = (value: string) => {
 };
 
 const publishedSlug = (item: CMSPage | CMSArticle) => {
+  if (item.published_slug?.trim()) return item.published_slug.trim();
   const snapshotSlug = item.published_snapshot_json?.slug;
   return typeof snapshotSlug === "string" && snapshotSlug.trim()
     ? snapshotSlug.trim()
@@ -505,10 +510,28 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
   const [showGuide, setShowGuide] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const [listPages, setListPages] = useState<Record<PaginatedResourceTab, number>>({
+    pages: 1,
+    news: 1,
+    media: 1,
+    revisions: 1,
+  });
+  const [hasMoreRows, setHasMoreRows] = useState<Record<PaginatedResourceTab, boolean>>({
+    pages: false,
+    news: false,
+    media: false,
+    revisions: false,
+  });
   const developerMode = false;
   const [pageFormBaseline, setPageFormBaseline] = useState(JSON.stringify(emptyPageForm));
   const [sectionFormBaseline, setSectionFormBaseline] = useState("");
   const [articleFormBaseline, setArticleFormBaseline] = useState(JSON.stringify(emptyArticleForm));
+  const loadedTabsRef = useRef<Set<ResourceTab>>(new Set());
+  const mediaLoadedRef = useRef(false);
+  const mediaLoadPromiseRef = useRef<Promise<CMSMediaAsset[]> | null>(null);
+  const tabLoadRequestRef = useRef(0);
+  const searchTimerRef = useRef<number | null>(null);
 
   const isAdmin = mode === "admin";
 
@@ -679,43 +702,143 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     setSectionContent({ ...sectionContent, stats });
   };
 
-  const loadAll = useCallback(async () => {
+  const applySettingsRows = useCallback((rows: CMSSiteSetting[]) => {
+    setSettingsRows(rows);
+    setSettingDrafts(Object.fromEntries(rows.map((row) => [row.id, row.value_json])));
+    setSettingSourceDrafts(Object.fromEntries(rows.map((row) => [row.id, JSON.stringify(row.value_json, null, 2)])));
+  }, []);
+
+  const loadMediaAssets = useCallback(async (force = false) => {
+    if (!force && mediaLoadedRef.current) return;
+    if (mediaLoadPromiseRef.current) {
+      await mediaLoadPromiseRef.current;
+      return;
+    }
+    const request = cmsApi.listMedia();
+    mediaLoadPromiseRef.current = request;
+    try {
+      const rows = await request;
+      setMedia(rows);
+      setListPages((current) => ({ ...current, media: 1 }));
+      setHasMoreRows((current) => ({ ...current, media: rows.length === CMS_LIST_PAGE_SIZE }));
+      mediaLoadedRef.current = true;
+    } finally {
+      if (mediaLoadPromiseRef.current === request) mediaLoadPromiseRef.current = null;
+    }
+  }, []);
+
+  const loadPageDetail = useCallback(async (pageId: number) => {
+    const detail = await cmsApi.getPage(pageId);
+    setPages((current) => current.map((page) => (page.id === detail.id ? detail : page)));
+    return detail;
+  }, []);
+
+  const loadTab = useCallback(async (tab: ResourceTab, force = false, search = "") => {
+    if (!force && loadedTabsRef.current.has(tab)) return;
+    if (tab === "forms" || tab === "ai") {
+      loadedTabsRef.current.add(tab);
+      return;
+    }
+
+    const requestId = ++tabLoadRequestRef.current;
     setLoading(true);
     try {
-      const [pageRows, articleRows, mediaRows, settingRows, revisionRows, queue] = await Promise.all([
-        cmsApi.listPages(),
-        cmsApi.listArticles(),
-        cmsApi.listMedia(),
-        cmsApi.listSettings(),
-        cmsApi.listRevisions(),
-        cmsApi.getReviewQueue(),
-      ]);
-      setPages(pageRows);
-      setArticles(articleRows);
-      setMedia(mediaRows);
-      setSettingsRows(settingRows);
-      setSettingDrafts(Object.fromEntries(settingRows.map((row) => [row.id, row.value_json])));
-      setSettingSourceDrafts(Object.fromEntries(settingRows.map((row) => [row.id, JSON.stringify(row.value_json, null, 2)])));
-      setRevisions(revisionRows);
-      setReviewQueue({ ...queue, forms: Array.isArray(queue.forms) ? queue.forms : [] });
-      const initialPage = pageRows.find((page) => page.slug === "home") || pageRows[0];
-      if (!selectedPageId && initialPage) {
-        setSelectedPageId(initialPage.id);
-        const initialSectionForm = { ...emptySectionForm, page: initialPage.id };
-        setSectionForm(initialSectionForm);
-        setSectionFormBaseline(JSON.stringify(initialSectionForm));
+      if (tab === "pages") {
+        const pageRows = await cmsApi.listPages(search);
+        setPages(pageRows);
+        setListPages((current) => ({ ...current, pages: 1 }));
+        setHasMoreRows((current) => ({ ...current, pages: pageRows.length === CMS_LIST_PAGE_SIZE }));
+        const initialPage = pageRows.find((page) => page.slug === "home") || pageRows[0];
+        if (initialPage) {
+          setSelectedPageId((current) => current && pageRows.some((page) => page.id === current) ? current : initialPage.id);
+          const initialSectionForm = { ...emptySectionForm, page: initialPage.id };
+          setSectionForm((current) => current.page ? current : initialSectionForm);
+          setSectionFormBaseline((current) => current || JSON.stringify(initialSectionForm));
+          void loadPageDetail(initialPage.id).catch((error) => {
+            console.error("Failed to load the selected CMS page.", error);
+            setNotice(getErrorDetail(error, "The page list loaded, but its section details could not be opened."));
+          });
+        }
+      } else if (tab === "news") {
+        const articleRows = await cmsApi.listArticles(search);
+        setArticles(articleRows);
+        setListPages((current) => ({ ...current, news: 1 }));
+        setHasMoreRows((current) => ({ ...current, news: articleRows.length === CMS_LIST_PAGE_SIZE }));
+        void loadMediaAssets().catch((error) => console.error("Failed to load CMS media picker.", error));
+      } else if (tab === "media") {
+        const [, settingRows] = await Promise.all([
+          loadMediaAssets(force),
+          cmsApi.listSettings(),
+        ]);
+        applySettingsRows(settingRows);
+      } else if (tab === "review") {
+        const queue = await cmsApi.getReviewQueue();
+        setReviewQueue({ ...queue, forms: Array.isArray(queue.forms) ? queue.forms : [] });
+      } else if (tab === "revisions") {
+        const revisionRows = await cmsApi.listRevisions(search);
+        setRevisions(revisionRows);
+        setListPages((current) => ({ ...current, revisions: 1 }));
+        setHasMoreRows((current) => ({ ...current, revisions: revisionRows.length === CMS_LIST_PAGE_SIZE }));
+      } else if (tab === "settings") {
+        applySettingsRows(await cmsApi.listSettings());
+        void loadMediaAssets().catch((error) => console.error("Failed to load CMS media picker.", error));
       }
+      loadedTabsRef.current.add(tab);
     } catch (error) {
       console.error(error);
-      setNotice(getErrorDetail(error, "Failed to load CMS workspace."));
+      setNotice(getErrorDetail(error, `Failed to load the ${tab} CMS workspace.`));
+    } finally {
+      if (tabLoadRequestRef.current === requestId) setLoading(false);
+    }
+  }, [applySettingsRows, loadMediaAssets, loadPageDetail]);
+
+  const updateSearch = (value: string) => {
+    setSearchText(value);
+    if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = window.setTimeout(() => {
+      void loadTab(activeTab, true, value.trim());
+    }, 300);
+  };
+
+  useEffect(() => () => {
+    if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
+  }, []);
+
+  const loadMoreRows = async (tab: PaginatedResourceTab) => {
+    if (loading || !hasMoreRows[tab]) return;
+    const nextPage = listPages[tab] + 1;
+    setLoading(true);
+    try {
+      let rowCount = 0;
+      if (tab === "pages") {
+        const rows = await cmsApi.listPages(searchText.trim(), nextPage);
+        rowCount = rows.length;
+        setPages((current) => [...current, ...rows]);
+      } else if (tab === "news") {
+        const rows = await cmsApi.listArticles(searchText.trim(), nextPage);
+        rowCount = rows.length;
+        setArticles((current) => [...current, ...rows]);
+      } else if (tab === "media") {
+        const rows = await cmsApi.listMedia("", nextPage);
+        rowCount = rows.length;
+        setMedia((current) => [...current, ...rows]);
+      } else {
+        const rows = await cmsApi.listRevisions(searchText.trim(), nextPage);
+        rowCount = rows.length;
+        setRevisions((current) => [...current, ...rows]);
+      }
+      setListPages((current) => ({ ...current, [tab]: nextPage }));
+      setHasMoreRows((current) => ({ ...current, [tab]: rowCount === CMS_LIST_PAGE_SIZE }));
+    } catch (error) {
+      setNotice(getErrorDetail(error, `Failed to load more ${tab}.`));
     } finally {
       setLoading(false);
     }
-  }, [selectedPageId]);
+  };
 
   useEffect(() => {
-    loadAll();
-  }, [loadAll]);
+    void loadTab(activeTab);
+  }, [activeTab, loadTab]);
 
   useEffect(() => {
     if (!sectionForm.id || sectionReadOnly) return;
@@ -728,17 +851,27 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     return () => window.clearInterval(timer);
   }, [sectionForm.id, sectionReadOnly]);
 
-  const editPage = (page: CMSPage) => {
+  const editPage = async (page: CMSPage) => {
     if (pageFormHasChanges && pageForm.id !== page.id && !window.confirm("Discard the unsaved page changes and open another page?")) return;
     if (sectionFormHasChanges && sectionForm.page !== page.id) {
       setNotice("Save or discard the open section changes before switching to another page.");
       return;
     }
-    const nextForm = { id: page.id, title: page.title, slug: page.slug };
+    setLoading(true);
+    let fullPage = page;
+    try {
+      if (!Array.isArray(page.sections)) fullPage = await loadPageDetail(page.id);
+    } catch (error) {
+      setNotice(getErrorDetail(error, "Failed to open the page draft."));
+      return;
+    } finally {
+      setLoading(false);
+    }
+    const nextForm = { id: fullPage.id, title: fullPage.title, slug: fullPage.slug };
     setPageForm(nextForm);
     setPageFormBaseline(JSON.stringify(nextForm));
-    setSelectedPageId(page.id);
-    setSectionForm((prev) => ({ ...prev, page: page.id }));
+    setSelectedPageId(fullPage.id);
+    setSectionForm((prev) => ({ ...prev, page: fullPage.id }));
   };
 
   const savePage = async (event: React.FormEvent) => {
@@ -760,7 +893,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       }
       setPageForm(emptyPageForm);
       setPageFormBaseline(JSON.stringify(emptyPageForm));
-      await loadAll();
+      await loadTab("pages", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to save page."));
@@ -790,7 +923,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     try {
       await cmsApi.publishPage(page.id);
       setNotice(`Page published. Public site now uses the new snapshot at ${publicPath}.`);
-      await loadAll();
+      await loadTab("pages", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to publish page."));
@@ -817,6 +950,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
 
   const editSection = async (section: CMSSection) => {
     if (sectionFormHasChanges && sectionForm.id !== section.id && !window.confirm("Discard the unsaved section changes and open another section?")) return;
+    void loadMediaAssets().catch((error) => console.error("Failed to load CMS media picker.", error));
     populateSectionForm(section);
     if (section.is_locked && !section.locked_by_me) {
       setSectionReadOnly(true);
@@ -831,7 +965,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     } catch (error) {
       setSectionReadOnly(true);
       setNotice(getErrorDetail(error, "This section is currently locked by another editor."));
-      await loadAll();
+      await loadTab("pages", true);
     }
   };
 
@@ -848,7 +982,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       } catch {
         // An expired lock is already effectively released.
       }
-      await loadAll();
+      await loadTab("pages", true);
     }
   };
 
@@ -897,7 +1031,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       setSectionForm(nextForm);
       setSectionFormBaseline(JSON.stringify(nextForm));
       setSectionReadOnly(false);
-      await loadAll();
+      await loadTab("pages", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to save section."));
@@ -919,7 +1053,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     try {
       await cmsApi.reorderSections(selectedPage.id, swapped.map((item) => item.id));
       setNotice("Section order updated. Publish the page when ready.");
-      await loadAll();
+      await loadTab("pages", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to reorder sections."));
@@ -928,19 +1062,30 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     }
   };
 
-  const editArticle = (article: CMSArticle) => {
+  const editArticle = async (article: CMSArticle) => {
     if (articleFormHasChanges && articleForm.id !== article.id && !window.confirm("Discard the unsaved news changes and open another article?")) return;
+    void loadMediaAssets().catch((error) => console.error("Failed to load CMS media picker.", error));
+    setLoading(true);
+    let fullArticle = article;
+    try {
+      if (typeof article.body !== "string") fullArticle = await cmsApi.getArticle(article.id);
+    } catch (error) {
+      setNotice(getErrorDetail(error, "Failed to open the news draft."));
+      return;
+    } finally {
+      setLoading(false);
+    }
     const nextForm: ArticleForm = {
-      id: article.id,
-      title: article.title,
-      slug: article.slug,
-      category: article.category,
-      summary: article.summary,
-      body: article.body,
-      thumbnail: article.thumbnail || "",
-      author: article.author,
-      publication_date: article.publication_date || "",
-      featured: article.featured,
+      id: fullArticle.id,
+      title: fullArticle.title,
+      slug: fullArticle.slug,
+      category: fullArticle.category,
+      summary: fullArticle.summary,
+      body: fullArticle.body,
+      thumbnail: fullArticle.thumbnail || "",
+      author: fullArticle.author,
+      publication_date: fullArticle.publication_date || "",
+      featured: fullArticle.featured,
     };
     setArticleForm(nextForm);
     setArticleFormBaseline(JSON.stringify(nextForm));
@@ -975,7 +1120,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       }
       setArticleForm(emptyArticleForm);
       setArticleFormBaseline(JSON.stringify(emptyArticleForm));
-      await loadAll();
+      await loadTab("news", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to save article."));
@@ -1005,7 +1150,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     try {
       await cmsApi.publishArticle(article.id);
       setNotice(`News article published at ${publicPath}.`);
-      await loadAll();
+      await loadTab("news", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to publish article."));
@@ -1037,7 +1182,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       setMediaFile(null);
       setMediaAlt("");
       setMediaCaption("");
-      await loadAll();
+      await loadTab("media", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to upload media."));
@@ -1060,7 +1205,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     try {
       await cmsApi.archiveMedia(item.id);
       setNotice("Media archived.");
-      await loadAll();
+      await loadTab("media", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to archive media."));
@@ -1113,7 +1258,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         setSectionFormBaseline(JSON.stringify(nextForm));
         setSectionReadOnly(false);
       }
-      await loadAll();
+      const refreshTab: ResourceTab = activeTab === "review"
+        ? "review"
+        : kind === "article"
+          ? "news"
+          : "pages";
+      await loadTab(refreshTab, true);
     } catch (error) {
       setNotice(getErrorDetail(error, `Failed to ${action} ${label}.`));
     } finally {
@@ -1138,7 +1288,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         setSectionReadOnly(false);
       }
       setNotice(`Editing lock released for ${section.section_key}.`);
-      await loadAll();
+      await loadTab("pages", true);
     } catch (error) {
       setNotice(getErrorDetail(error, "Failed to release the section lock."));
     }
@@ -1172,7 +1322,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     try {
       await cmsApi.restoreRevision(revision.id);
       setNotice(`Revision v${revision.version_number} restored.`);
-      await loadAll();
+      await loadTab("revisions", true);
     } catch (error) {
       setNotice(getErrorDetail(error, "Failed to restore revision."));
     }
@@ -2144,11 +2294,16 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
             {hasUnsavedChanges && <p className="mt-1 text-xs font-semibold text-amber-700">You have unsaved changes.</p>}
           </div>
           <div className="flex flex-wrap gap-2">
-            {(["pages", "news", "forms", "media", "review", "revisions", "settings"] as ResourceTab[]).map((tab) => (
+            {(["pages", "news", "forms", "media", "review", "revisions", "settings", "ai"] as ResourceTab[]).map((tab) => (
               <button
                 key={tab}
                 type="button"
-                onClick={() => setActiveTab(tab)}
+                onClick={() => {
+                  if (tab !== activeTab && searchText) loadedTabsRef.current.delete(activeTab);
+                  if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
+                  setSearchText("");
+                  setActiveTab(tab);
+                }}
                 className={`portal-btn ${activeTab === tab ? "portal-btn-primary" : "portal-btn-ghost"}`}
               >
                 {{
@@ -2159,12 +2314,23 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   review: "Review Queue",
                   revisions: "Revision History",
                   settings: "Site Settings",
+                  ai: "AI Scoring",
                 }[tab]}
               </button>
             ))}
+            {["pages", "news", "revisions"].includes(activeTab) && (
+              <input
+                type="search"
+                value={searchText}
+                onChange={(event) => updateSearch(event.target.value)}
+                placeholder={`Search ${activeTab === "pages" ? "pages" : activeTab === "news" ? "news" : "history"}`}
+                aria-label={`Search ${activeTab}`}
+                className="min-w-48 rounded-xl border border-slate-300 px-3 py-2 text-sm"
+              />
+            )}
             <button type="button" onClick={() => {
               if (hasUnsavedChanges && !window.confirm("Reload CMS data and discard all unsaved changes?")) return;
-              loadAll();
+              void loadTab(activeTab, true);
             }} className="portal-btn portal-btn-ghost" disabled={loading}>
               {loading ? "Working..." : "Refresh"}
             </button>
@@ -2359,6 +2525,14 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                       const pageId = value ? Number(value) : "";
                       setSelectedPageId(pageId || null);
                       setSectionForm((prev) => ({ ...prev, page: pageId }));
+                      if (pageId) {
+                        const page = pages.find((item) => item.id === pageId);
+                        if (page && !Array.isArray(page.sections)) {
+                          void loadPageDetail(pageId).catch((error) => {
+                            setNotice(getErrorDetail(error, "Failed to load this page's sections."));
+                          });
+                        }
+                      }
                     }}
                     options={sortedPages.map((page) => ({ label: page.title, value: String(page.id) }))}
                   />
@@ -2554,10 +2728,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               <label className="block min-w-0">
                 <span className="text-sm font-medium text-slate-700">Article Body</span>
                 <div className="mt-1">
-                  <RichTextEditor
-                  value={articleForm.body}
-                    onChange={(value) => setArticleForm((prev) => ({ ...prev, body: value }))}
-                  />
+                  <React.Suspense fallback={<div className="rounded-xl border border-slate-200 p-4 text-sm text-slate-500">Loading article editor...</div>}>
+                    <RichTextEditor
+                      value={articleForm.body}
+                      onChange={(value) => setArticleForm((prev) => ({ ...prev, body: value }))}
+                    />
+                  </React.Suspense>
                 </div>
               </label>
               {developerMode && isAdmin && (
@@ -2774,9 +2950,10 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               ) : (
                 <div className="grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {media.map((item) => {
+                    const usageKnown = typeof item.usage_count === "number";
                     const usageCount = item.usage_count || 0;
                     const usedBy = item.used_by || [];
-                    const canArchive = item.can_archive !== false;
+                    const canArchive = usageKnown ? item.can_archive !== false : true;
                     return (
                       <div key={item.id} className="rounded-xl border border-slate-200 p-3">
                         <div className="aspect-video overflow-hidden rounded-lg bg-slate-100">
@@ -2798,8 +2975,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                           {mediaFileTypeLabel(item)} - {formatMediaSize(item.size) || "Unknown size"}
                         </p>
 
-                        <div className={`mt-3 rounded-lg border px-3 py-2 text-xs ${usageCount ? "border-amber-100 bg-amber-50 text-amber-800" : "border-emerald-100 bg-emerald-50 text-emerald-800"}`}>
-                          <p className="font-semibold">{usageCount ? `Used in ${usageCount} CMS location(s)` : "Not used by CMS content"}</p>
+                        <div className={`mt-3 rounded-lg border px-3 py-2 text-xs ${usageCount ? "border-amber-100 bg-amber-50 text-amber-800" : usageKnown ? "border-emerald-100 bg-emerald-50 text-emerald-800" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
+                          <p className="font-semibold">
+                            {usageKnown
+                              ? usageCount ? `Used in ${usageCount} CMS location(s)` : "Not used by CMS content"
+                              : "References are checked safely when you archive"}
+                          </p>
                           {usedBy.length > 0 && (
                             <ul className="mt-1 space-y-1">
                               {usedBy.slice(0, 3).map((usage, index) => (
@@ -2850,7 +3031,17 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         </div>
       )}
 
-      {activeTab === "forms" && <ContributorFormsManager mode={mode} />}
+      {activeTab === "forms" && (
+        <React.Suspense fallback={<div className="portal-card p-5 text-sm text-slate-600">Loading contributor forms...</div>}>
+          <ContributorFormsManager mode={mode} />
+        </React.Suspense>
+      )}
+
+      {activeTab === "ai" && (
+        <React.Suspense fallback={<div className="portal-card p-5 text-sm text-slate-600">Loading AI scoring workspace...</div>}>
+          <AIScoringManager mode={mode} />
+        </React.Suspense>
+      )}
 
       {activeTab === "review" && (
         <div className="grid min-w-0 gap-4 xl:grid-cols-2">
@@ -2975,6 +3166,20 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           )}
         </div>
       )}
+
+      {(["pages", "news", "media", "revisions"] as ResourceTab[]).includes(activeTab)
+        && hasMoreRows[activeTab as PaginatedResourceTab] && (
+          <div className="flex justify-center">
+            <button
+              type="button"
+              className="portal-btn portal-btn-ghost"
+              disabled={loading}
+              onClick={() => void loadMoreRows(activeTab as PaginatedResourceTab)}
+            >
+              {loading ? "Loading..." : "Load more"}
+            </button>
+          </div>
+        )}
     </div>
   );
 };

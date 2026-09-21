@@ -1,9 +1,13 @@
+import json
 import shutil
 import tempfile
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from django.test import SimpleTestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -223,6 +227,75 @@ class CMSWorkflowTests(APITestCase):
         publish_response = self.client.post(f"/api/admin/cms/pages/{response.data['id']}/publish/")
         self.assertEqual(publish_response.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_summary_lists_are_paginated_searchable_and_keep_details_complete(self):
+        self.authenticate()
+        target = CMSPage.objects.create(
+            title="Performance Target",
+            slug="performance-target",
+            published_snapshot_json={"slug": "performance-target", "body": "x" * 5000},
+        )
+        CMSPageSection.objects.create(
+            page=target,
+            section_key="large-section",
+            section_type="cards",
+            order=1,
+            content_json={"items": [{"body": "y" * 5000}]},
+        )
+        for index in range(4):
+            CMSPage.objects.create(title=f"Other Page {index}", slug=f"other-page-{index}")
+
+        with CaptureQueriesContext(connection) as captured:
+            response = self.client.get(
+                "/api/admin/cms/pages/?view=summary&page_size=2&q=Performance"
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["page"], 1)
+        self.assertEqual(response.data["results"][0]["section_count"], 1)
+        self.assertEqual(response.data["results"][0]["published_slug"], "performance-target")
+        self.assertNotIn("published_snapshot_json", response.data["results"][0])
+        self.assertNotIn("sections", response.data["results"][0])
+        self.assertLessEqual(len(captured), 8)
+        self.assertIn("app;dur=", response["Server-Timing"])
+
+        detail = self.client.get(f"/api/admin/cms/pages/{target.pk}/")
+        self.assertEqual(detail.status_code, status.HTTP_200_OK)
+        self.assertIn("published_snapshot_json", detail.data)
+        self.assertEqual(detail.data["sections"][0]["content_json"]["items"][0]["body"], "y" * 5000)
+
+        editor_detail = self.client.get(f"/api/admin/cms/pages/{target.pk}/?view=editor")
+        self.assertEqual(editor_detail.status_code, status.HTTP_200_OK)
+        self.assertNotIn("published_snapshot_json", editor_detail.data)
+        self.assertEqual(editor_detail.data["sections"][0]["content_json"]["items"][0]["body"], "y" * 5000)
+        self.assertLess(
+            len(json.dumps(editor_detail.data, default=str)),
+            len(json.dumps(detail.data, default=str)),
+        )
+
+        legacy = self.client.get("/api/admin/cms/pages/")
+        self.assertIsInstance(legacy.data, list)
+        self.assertIn("published_snapshot_json", legacy.data[0])
+        self.assertIn("sections", legacy.data[0])
+
+    def test_media_summary_does_not_scan_every_cms_document(self):
+        self.authenticate()
+        CMSMediaAsset.objects.create(
+            file="cms/test-document.pdf",
+            file_type=CMSMediaAsset.FILE_TYPE_DOCUMENT,
+            mime_type="application/pdf",
+            size=128,
+        )
+
+        with patch("cms.serializers.get_media_usage_map") as usage_scan:
+            response = self.client.get("/api/admin/cms/media/?view=summary")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertNotIn("used_by", response.data["results"][0])
+        self.assertNotIn("usage_count", response.data["results"][0])
+        usage_scan.assert_not_called()
+
     def test_article_publish_sanitizes_html_and_keeps_draft_private(self):
         self.authenticate()
         response = self.client.post(
@@ -266,6 +339,10 @@ class CMSWorkflowTests(APITestCase):
             {"title": "Private Draft Title"},
             format="json",
         )
+        editor_detail = self.client.get(f"/api/admin/cms/articles/{article_id}/?view=editor")
+        self.assertEqual(editor_detail.status_code, status.HTTP_200_OK)
+        self.assertNotIn("published_snapshot_json", editor_detail.data)
+        self.assertEqual(editor_detail.data["title"], "Private Draft Title")
         self.client.force_authenticate(user=None)
         public_response = self.client.get("/api/public/cms/news/safe-news/")
         self.assertEqual(public_response.data["title"], "Safe News")
@@ -405,6 +482,58 @@ class CMSWorkflowTests(APITestCase):
         self.assertEqual(archive_response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("used_by", archive_response.data)
         self.assertEqual(archive_response.data["used_by"][0]["slug"], article.slug)
+
+    def test_media_list_usage_queries_stay_bounded_as_assets_increase(self):
+        self.authenticate()
+        page_media = CMSMediaAsset.objects.create(
+            file="cms/page-cover.png", file_type=CMSMediaAsset.FILE_TYPE_IMAGE, uploaded_by=self.admin
+        )
+        section_media = CMSMediaAsset.objects.create(
+            file="cms/section-report.pdf", file_type=CMSMediaAsset.FILE_TYPE_DOCUMENT, uploaded_by=self.admin
+        )
+        article_media = CMSMediaAsset.objects.create(
+            file="cms/article-cover.png", file_type=CMSMediaAsset.FILE_TYPE_IMAGE, uploaded_by=self.admin
+        )
+        page = CMSPage.objects.create(
+            title="Media usage page",
+            slug="media-usage-page",
+            published_snapshot_json={"coverAssetId": page_media.pk},
+        )
+        CMSPageSection.objects.create(
+            page=page,
+            section_key="downloads",
+            section_type="document_group",
+            order=1,
+            content_json={"url": section_media.resolved_public_url},
+        )
+        CMSArticle.objects.create(
+            title="Media usage article",
+            slug="media-usage-article",
+            thumbnail=article_media,
+        )
+
+        self.client.get("/api/admin/cms/media/")
+        with CaptureQueriesContext(connection) as small_context:
+            response = self.client.get("/api/admin/cms/media/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = {row["id"]: row for row in response.data}
+        self.assertEqual(rows[page_media.pk]["usage_count"], 1)
+        self.assertEqual(rows[page_media.pk]["used_by"][0]["type"], "page")
+        self.assertEqual(rows[section_media.pk]["usage_count"], 1)
+        self.assertEqual(rows[section_media.pk]["used_by"][0]["type"], "section")
+        self.assertEqual(rows[article_media.pk]["usage_count"], 1)
+        self.assertEqual(rows[article_media.pk]["used_by"][0]["type"], "article")
+
+        for index in range(12):
+            CMSMediaAsset.objects.create(
+                file=f"cms/unused-{index}.png",
+                file_type=CMSMediaAsset.FILE_TYPE_IMAGE,
+                uploaded_by=self.admin,
+            )
+        with CaptureQueriesContext(connection) as large_context:
+            large_response = self.client.get("/api/admin/cms/media/")
+        self.assertEqual(large_response.status_code, status.HTTP_200_OK)
+        self.assertLessEqual(len(large_context), len(small_context) + 1)
 
     def test_event_workflow_only_exposes_published_events(self):
         start = timezone.now() + timedelta(days=2)

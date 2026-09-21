@@ -2,6 +2,49 @@ import React, { useMemo, useState } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { API_BASE_URL } from "../config/api";
 
+const ACCOUNT_AGENCIES = [
+  { code: "DPWH", name: "Department of Public Works and Highways" },
+  { code: "DENR", name: "Department of Environment and Natural Resources" },
+  { code: "RDC-NCR", name: "Regional Development Council National Capital Region" },
+  { code: "DILG", name: "Department of the Interior and Local Government" },
+  { code: "DEPDev", name: "Department of Economy, Planning, and Development" },
+  { code: "DBM", name: "Department of Budget and Management" },
+  { code: "DA", name: "Department of Agriculture" },
+  { code: "DAR", name: "Department of Agrarian Reform" },
+  { code: "DepEd", name: "Department of Education" },
+  { code: "DOH", name: "Department of Health" },
+  { code: "DHSUD", name: "Department of Human Settlements and Urban Development" },
+  { code: "DICT", name: "Department of Information and Communications Technology" },
+  { code: "DOLE", name: "Department of Labor and Employment" },
+  { code: "DOST", name: "Department of Science and Technology" },
+  { code: "DSWD", name: "Department of Social Welfare and Development" },
+  { code: "DOT", name: "Department of Tourism" },
+  { code: "DTI", name: "Department of Trade and Industry" },
+  { code: "DOTr", name: "Department of Transportation" },
+  { code: "TESDA", name: "Technical Education and Skills Development Authority" },
+  { code: "CHED", name: "Commission on Higher Education" },
+  { code: "PSA", name: "Philippine Statistics Authority" },
+] as const;
+
+const normalizeAgency = (value: string) => {
+  const normalized = value.trim().replace(/\s+/g, " ").toLowerCase();
+  return ACCOUNT_AGENCIES.find(
+    (agency) =>
+      agency.code.toLowerCase() === normalized ||
+      agency.name.toLowerCase() === normalized,
+  )?.code;
+};
+
+const hasAgencySearchMatch = (value: string) => {
+  const normalized = value.trim().replace(/\s+/g, " ").toLowerCase();
+  if (!normalized) return true;
+  return ACCOUNT_AGENCIES.some(
+    (agency) =>
+      agency.code.toLowerCase().includes(normalized) ||
+      agency.name.toLowerCase().includes(normalized),
+  );
+};
+
 const passwordRules = [
   { label: "At least 12 characters", test: (v: string) => v.length >= 12 },
   { label: "At least 1 uppercase letter", test: (v: string) => /[A-Z]/.test(v) },
@@ -66,6 +109,7 @@ const SetupPassword: React.FC = () => {
     () => (confirm && password !== confirm ? "Passwords do not match." : ""),
     [password, confirm],
   );
+  const agencyUnavailable = !hasAgencySearchMatch(profile.agency);
 
   const profileRequired = [
     { key: "full_name", label: "Full Name" },
@@ -93,6 +137,11 @@ const SetupPassword: React.FC = () => {
       setError(`Please complete: ${missing.map((m) => m.label).join(", ")}.`);
       return;
     }
+    const agency = normalizeAgency(profile.agency);
+    if (!agency) {
+      setError("This is an invalid Agency");
+      return;
+    }
     if (policyError) {
       setError(policyError);
       return;
@@ -106,7 +155,7 @@ const SetupPassword: React.FC = () => {
       const res = await fetch(`${API_BASE_URL}/auth/setup-password/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, new_password: password, ...profile }),
+        body: JSON.stringify({ token, new_password: password, ...profile, agency }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -171,11 +220,36 @@ const SetupPassword: React.FC = () => {
                 <span className="text-sm text-slate-700">Agency *</span>
                 <input
                   type="text"
+                  id="registration-agency"
+                  name="agency"
+                  list="registration-agency-options"
+                  placeholder="Search or select agency"
                   value={profile.agency}
                   onChange={(e) => setProfile((p) => ({ ...p, agency: e.target.value }))}
-                  className="mt-1 w-full border rounded-lg px-3 py-2"
+                  className={`mt-1 w-full rounded-lg border px-3 py-2 ${
+                    agencyUnavailable
+                      ? "border-rose-500 focus:border-rose-500 focus:ring-rose-500"
+                      : ""
+                  }`}
+                  autoComplete="organization"
+                  aria-invalid={agencyUnavailable}
+                  aria-describedby="registration-agency-help"
                   required
                 />
+                <datalist id="registration-agency-options">
+                  {ACCOUNT_AGENCIES.map((agency) => (
+                    <option key={agency.code} value={agency.code} label={agency.name} />
+                  ))}
+                </datalist>
+                <p
+                  id="registration-agency-help"
+                  className={`mt-1 text-xs ${agencyUnavailable ? "text-rose-600" : "text-slate-500"}`}
+                  role={agencyUnavailable ? "alert" : undefined}
+                >
+                  {agencyUnavailable
+                    ? "This is an invalid Agency"
+                    : "Search using the agency acronym or full name."}
+                </p>
               </label>
               <label className="block md:col-span-2">
                 <span className="text-sm text-slate-700">Current Head of Agency/Local Chief Executive *</span>

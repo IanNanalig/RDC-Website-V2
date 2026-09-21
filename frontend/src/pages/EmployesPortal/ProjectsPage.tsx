@@ -31,6 +31,9 @@ type ApiProject = {
   reviewed_by_username?: string;
   validator_edited?: boolean;
   validator_edited_fields_count?: number;
+  form_version?: number | null;
+  current_form_version?: number | null;
+  uses_outdated_form?: boolean;
   submitted_by?: {
     username?: string;
     email?: string;
@@ -56,6 +59,9 @@ type ProjectRevisionRow = {
   created_by_name?: string;
   submitted_by_name?: string;
   updated_at?: string;
+  form_version?: number | null;
+  current_form_version?: number | null;
+  uses_outdated_form?: boolean;
 };
 
 const statusLabel = (status?: string, workflowLabel?: string) => {
@@ -201,6 +207,9 @@ const ProjectsPage: React.FC = () => {
             updated_at: r.updated_at,
             submitted_by_name: r.submitted_by_name || r.created_by_name || "Unknown",
             submission_type: r.submission_type,
+            form_version: r.form_version,
+            current_form_version: r.current_form_version,
+            uses_outdated_form: r.uses_outdated_form,
             profile_data: r.profile_data_snapshot || (r.submission_type === "simplified" ? { submission_type: "simplified", simplified_form: {} } : {}),
           }));
           rows = [...revisionRows, ...rows];
@@ -415,7 +424,17 @@ const ProjectsPage: React.FC = () => {
             <tbody>
               {filtered.map((p) => (
                 <tr key={p.is_revision ? `revision-${p.revision_id}` : `project-${p.id}`}>
-                  <td className="max-w-[220px] truncate" title={p.title || p.name || "Untitled"}>{p.title || p.name || "Untitled"}</td>
+                  <td className="max-w-[240px]" title={p.title || p.name || "Untitled"}>
+                    <div className="truncate">{p.title || p.name || "Untitled"}</div>
+                    {p.uses_outdated_form && (
+                      <div
+                        className="mt-1 text-xs font-semibold text-amber-700"
+                        title={`Saved with form version ${p.form_version}; current form version is ${p.current_form_version}.`}
+                      >
+                        Uses an older form — may need updating
+                      </div>
+                    )}
+                  </td>
                   {(role === "admin" || role === "validator" || role === "employee") && (
                     <td className="max-w-[180px] truncate" title={p.submitted_by_name || p.submitted_by?.username || "Unknown"}>
                       {p.submitted_by_name || p.submitted_by?.username || "Unknown"}

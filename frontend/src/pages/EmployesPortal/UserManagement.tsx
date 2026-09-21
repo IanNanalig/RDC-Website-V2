@@ -8,6 +8,7 @@ type UserRow = {
   username: string;
   email: string;
   role: string;
+  agency?: string;
   is_active: boolean;
 };
 
@@ -1537,7 +1538,7 @@ const UserManagement = () => {
                   <tr key={u.id}>
                     <td>{u.username}</td>
                     <td>{u.email || "-"}</td>
-                    <td>{(u as any).agency || "-"}</td>
+                    <td>{u.agency || "-"}</td>
                     <td>{labelRole(u.role)}</td>
                     <td>
                       <span

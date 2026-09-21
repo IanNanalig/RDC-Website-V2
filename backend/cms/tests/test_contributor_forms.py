@@ -470,6 +470,29 @@ class ContributorFormWorkflowTests(APITestCase):
             existing.profile_data["simplified_form"]["custom_fields"]["custom_historical_note"],
             "Keep this answer",
         )
+        existing_status = ProjectSerializer(existing).data
+        self.assertEqual(existing_status["form_version"], 1)
+        self.assertEqual(existing_status["current_form_version"], live_version)
+        self.assertTrue(existing_status["uses_outdated_form"])
+
+        current = Project.objects.create(
+            name="Current form project",
+            agency="MMDA",
+            implementing_agency="MMDA",
+            budget=0,
+            cost=0,
+            municipality="NCR",
+            latitude=14.5,
+            status="planning",
+            created_by=self.contributor,
+            profile_data={
+                "form_schema": {"key": "simplified-rdip", "version": live_version},
+                "simplified_form": {},
+            },
+        )
+        current_status = ProjectSerializer(current).data
+        self.assertEqual(current_status["form_version"], live_version)
+        self.assertFalse(current_status["uses_outdated_form"])
 
         new_profile = ProjectSerializer().validate_profile_data(
             {

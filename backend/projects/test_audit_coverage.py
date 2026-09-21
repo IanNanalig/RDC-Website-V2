@@ -188,7 +188,7 @@ class AuditCoverageTests(APITestCase):
             "/api/auth/setup-password/",
             {
                 "token": token.token, "new_password": "NewStrongPassword123_",
-                "full_name": "Audit Editor", "agency": "RDC", "agency_head": "RDC",
+                "full_name": "Audit Editor", "agency": "RDC-NCR", "agency_head": "RDC",
                 "office": "Office", "division": "Division", "position": "Editor",
                 "contact_number": "09170000000", "phone_number": "09170000000",
             },

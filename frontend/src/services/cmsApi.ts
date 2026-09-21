@@ -29,7 +29,9 @@ export type CMSPage = {
   title: string;
   slug: string;
   status: CMSStatus;
-  published_snapshot_json: Record<string, unknown>;
+  published_snapshot_json?: Record<string, unknown>;
+  published_slug?: string;
+  section_count?: number;
   has_unpublished_changes: boolean;
   sections: CMSSection[];
   published_at?: string | null;
@@ -51,7 +53,8 @@ export type CMSArticle = {
   publication_date?: string | null;
   featured: boolean;
   status: CMSStatus;
-  published_snapshot_json: Record<string, unknown>;
+  published_snapshot_json?: Record<string, unknown>;
+  published_slug?: string;
   has_unpublished_changes: boolean;
   published_at?: string | null;
   archived_at?: string | null;
@@ -145,6 +148,124 @@ export type CMSReviewQueue = {
   forms: CMSContributorForm[];
 };
 
+export type CMSAIOutcomeRule = {
+  key: string;
+  label: string;
+  weight: number;
+  keywords: string[];
+};
+
+export type CMSAIScaleRule = {
+  key: string;
+  raw: number;
+  guideline: string;
+};
+
+export type CMSAIRuleConfig = {
+  thresholds: {
+    high: number;
+    regional_project_cost: number;
+    pap_weights: {
+      readiness: number;
+      gad_responsiveness: number;
+      spatial_coverage: number;
+    };
+  };
+  sector_criteria: Record<string, CMSAIOutcomeRule[]>;
+  keyword_dictionaries: {
+    common_outcomes: CMSAIOutcomeRule[];
+    negative_rules: Array<{ key: string; label: string; keywords: string[] }>;
+    readiness: CMSAIScaleRule[];
+    gad: CMSAIScaleRule[];
+    outcome_rating: {
+      chapter_and_two_keywords: number;
+      chapter_or_three_keywords: number;
+      one_keyword: number;
+      no_keywords: number;
+    };
+    guidelines: string[];
+  };
+};
+
+export type CMSAIHistoricalProject = {
+  confirmation_id: number;
+  project_id: number;
+  project_title: string;
+  agency: string;
+  sector: string;
+  submission_type: string;
+  project_status: string;
+  suggested_priority: string;
+  final_priority: string;
+  base_score: number;
+  rule_version: string;
+  validator_name: string;
+  override_rationale: string;
+  confirmed_at: string;
+  training_record_id?: number;
+  training_eligible?: boolean;
+  exclusion_reason?: string;
+};
+
+export type CMSAIModelVersion = {
+  id: number;
+  version: string;
+  algorithm: string;
+  feature_schema_version: string;
+  dataset_version: string;
+  sample_count: number;
+  class_labels: string[];
+  feature_names: string[];
+  metrics: {
+    accuracy?: number | null;
+    sample_count?: number;
+    held_out_count?: number;
+    evaluation_scope?: string;
+    warning?: string;
+    label_counts?: Record<string, number>;
+  };
+  status: "active" | "retired";
+  trained_by_name: string;
+  created_at: string;
+};
+
+export type CMSAITrainingDataset = {
+  candidate_count: number;
+  eligible_project_count: number;
+  excluded_count: number;
+  label_counts: Record<"low" | "high", number> & { medium?: number };
+  minimum_projects: number;
+  required_labels: string[];
+  ready_to_train: boolean;
+};
+
+export type CMSAIScoringWorkspace = {
+  system_type: "hybrid_rules_similarity_ml" | "deterministic_rule_based";
+  learns_from_historical_projects: boolean;
+  learning_explanation: string;
+  active_rule_set: {
+    id: number;
+    version: string;
+    algorithm_version: string;
+    created_at: string;
+    config: CMSAIRuleConfig;
+  };
+  rule_versions: Array<{
+    id: number;
+    version: string;
+    algorithm_version: string;
+    is_active: boolean;
+    analysis_count: number;
+    created_at: string;
+  }>;
+  historical_projects: CMSAIHistoricalProject[];
+  historical_count: number;
+  training_dataset?: CMSAITrainingDataset;
+  active_model?: CMSAIModelVersion | null;
+  model_versions?: CMSAIModelVersion[];
+  detail?: string;
+};
+
 export type CMSArticleSnapshot = {
   title: string;
   slug: string;
@@ -221,8 +342,18 @@ const listFromResponse = <T>(data: unknown): T[] => {
   return [];
 };
 
+const summaryQuery = (params: Record<string, string | number | undefined> = {}) => {
+  const query = new URLSearchParams({ view: "summary", page_size: "30" });
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && String(value).trim()) query.set(key, String(value));
+  });
+  return query.toString();
+};
+
 export const cmsApi = {
-  listPages: async () => listFromResponse<CMSPage>(await api.get("admin/cms/pages/")),
+  listPages: async (search = "", page = 1) =>
+    listFromResponse<CMSPage>(await api.get(`admin/cms/pages/?${summaryQuery({ q: search, page })}`)),
+  getPage: (id: number) => api.get(`admin/cms/pages/${id}/?view=editor`) as Promise<CMSPage>,
   createPage: (payload: Pick<CMSPage, "title" | "slug">) => api.post("admin/cms/pages/", payload),
   updatePage: (id: number, payload: Pick<CMSPage, "title" | "slug">) =>
     api.put(`admin/cms/pages/${id}/`, payload),
@@ -249,7 +380,9 @@ export const cmsApi = {
   rejectSection: (id: number, remarks = "") => api.post(`admin/cms/sections/${id}/reject/`, { remarks }),
   archiveSection: (id: number) => api.post(`admin/cms/sections/${id}/archive/`),
 
-  listArticles: async () => listFromResponse<CMSArticle>(await api.get("admin/cms/articles/")),
+  listArticles: async (search = "", page = 1) =>
+    listFromResponse<CMSArticle>(await api.get(`admin/cms/articles/?${summaryQuery({ q: search, page })}`)),
+  getArticle: (id: number) => api.get(`admin/cms/articles/${id}/?view=editor`) as Promise<CMSArticle>,
   createArticle: (payload: Partial<CMSArticle>) => api.post("admin/cms/articles/", payload),
   updateArticle: (id: number, payload: Partial<CMSArticle>) =>
     api.put(`admin/cms/articles/${id}/`, payload),
@@ -288,8 +421,8 @@ export const cmsApi = {
   getContributorFormVersion: (key: string, version: number) =>
     api.get(`contributor-forms/${key}/versions/${version}/`) as Promise<ContributorFormPayload>,
 
-  listMedia: async () =>
-    listFromResponse<CMSMediaAsset>(await api.get("admin/cms/media/")).map((asset) => ({
+  listMedia: async (search = "", page = 1) =>
+    listFromResponse<CMSMediaAsset>(await api.get(`admin/cms/media/?${summaryQuery({ q: search, page })}`)).map((asset) => ({
       ...asset,
       file: resolveCmsMediaUrl(asset.file),
       url: resolveCmsMediaUrl(asset.url),
@@ -300,9 +433,19 @@ export const cmsApi = {
   listSettings: async () => listFromResponse<CMSSiteSetting>(await api.get("admin/cms/settings/")),
   updateSetting: (key: string, payload: Pick<CMSSiteSetting, "value_json" | "description">) =>
     api.patch(`admin/cms/settings/${key}/`, payload),
-  listRevisions: async () => listFromResponse<CMSRevision>(await api.get("admin/cms/revisions/")),
+  listRevisions: async (search = "", page = 1) =>
+    listFromResponse<CMSRevision>(await api.get(`admin/cms/revisions/?${summaryQuery({ q: search, page })}`)),
   restoreRevision: (id: number) => api.post(`admin/cms/revisions/${id}/restore-revision/`),
-  getReviewQueue: () => api.get("admin/cms/review-queue/") as Promise<CMSReviewQueue>,
+  getReviewQueue: () => api.get("admin/cms/review-queue/?view=summary") as Promise<CMSReviewQueue>,
+  getAIScoringWorkspace: () => api.get("admin/cms/ai-scoring/?limit=200") as Promise<CMSAIScoringWorkspace>,
+  activateAIScoringRules: (config: CMSAIRuleConfig, changeNote: string) =>
+    api.post("admin/cms/ai-scoring/", { config, change_note: changeNote }) as Promise<CMSAIScoringWorkspace>,
+  trainAIModel: () => api.post("admin/ai/models/train/", {}),
+  updateAITrainingRecord: (id: number, isEligible: boolean, exclusionReason = "") =>
+    api.patch(`admin/ai/training-data/${id}/`, {
+      is_eligible: isEligible,
+      exclusion_reason: exclusionReason,
+    }),
 
   getPublicPage: (slug: string) =>
     api

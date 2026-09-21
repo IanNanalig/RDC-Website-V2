@@ -9,6 +9,7 @@ from cms.views import (
     AdminCMSPageViewSet,
     AdminCMSRevisionViewSet,
     AdminCMSReviewQueueView,
+    AdminAIPriorityCMSView,
     AdminCMSSiteSettingViewSet,
     PublicCMSArticleDetailView,
     PublicCMSArticleListView,
@@ -39,6 +40,7 @@ urlpatterns = [
     path("public/cms/events/", PublicEventViewSet.as_view({"get": "list"}), name="public-cms-events"),
     path("public/cms/site-settings/", PublicCMSSiteSettingsView.as_view(), name="public-cms-site-settings"),
     path("admin/cms/review-queue/", AdminCMSReviewQueueView.as_view(), name="admin-cms-review-queue"),
+    path("admin/cms/ai-scoring/", AdminAIPriorityCMSView.as_view(), name="admin-cms-ai-scoring"),
 ]
 
 urlpatterns += router.urls

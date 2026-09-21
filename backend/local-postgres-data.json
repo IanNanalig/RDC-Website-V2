@@ -17423,8 +17423,7 @@
     "algorithm_version": "expert-v1",
     "is_active": true,
     "thresholds": {
-      "high": 80,
-      "medium": 50
+      "high": 81
     },
     "sector_criteria": {
       "social": [

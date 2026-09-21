@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import PortalLayout from "../../components/portal/PortalLayout";
-import CmsManager from "../../components/portal/CmsManager";
-import PublicEventsManager from "../../components/portal/PublicEventsManager";
+
+const CmsManager = lazy(() => import("../../components/portal/CmsManager"));
+const PublicEventsManager = lazy(() => import("../../components/portal/PublicEventsManager"));
 
 type PortalUser = {
   username?: string;
@@ -25,6 +26,7 @@ const ContentManagement = () => {
     if (path.includes("/settings")) return "settings" as const;
     if (path.includes("/revisions")) return "revisions" as const;
     if (path.includes("/review")) return "review" as const;
+    if (path.includes("/ai-scoring")) return "ai" as const;
     return "pages" as const;
   }, [location.pathname]);
   const [activeTab, setActiveTab] = useState<"cms" | "events">(routeTab);
@@ -60,11 +62,13 @@ const ContentManagement = () => {
         </div>
       </div>
 
-      {activeTab === "cms" ? (
-        <CmsManager mode={role === "admin" ? "admin" : "editor"} initialTab={cmsInitialTab} />
-      ) : (
-        <PublicEventsManager mode={role === "admin" ? "admin" : "editor"} />
-      )}
+      <Suspense fallback={<div className="portal-card p-5 text-sm text-slate-600">Loading content workspace...</div>}>
+        {activeTab === "cms" ? (
+          <CmsManager mode={role === "admin" ? "admin" : "editor"} initialTab={cmsInitialTab} />
+        ) : (
+          <PublicEventsManager mode={role === "admin" ? "admin" : "editor"} />
+        )}
+      </Suspense>
     </PortalLayout>
   );
 };

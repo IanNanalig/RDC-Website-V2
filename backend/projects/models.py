@@ -363,7 +363,6 @@ class PriorityRuleSet(models.Model):
 class ProjectPriorityAnalysis(models.Model):
     PRIORITY_CHOICES = [
         ("high", "High Priority"),
-        ("medium", "Medium Priority"),
         ("low", "Low Priority"),
         ("incomplete", "Incomplete"),
     ]
@@ -398,7 +397,6 @@ class ProjectPriorityAnalysis(models.Model):
 class ProjectPriorityConfirmation(models.Model):
     PRIORITY_CHOICES = [
         ("high", "High Priority"),
-        ("medium", "Medium Priority"),
         ("low", "Low Priority"),
     ]
 

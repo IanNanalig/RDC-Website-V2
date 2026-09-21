@@ -280,7 +280,8 @@ const TextField: React.FC<{
   helpText?: string;
   diffBefore?: string;
   editMeta?: EditMeta;
-}> = ({ label, value, onChange, required, placeholder, helpText, diffBefore, editMeta }) => {
+  disabled?: boolean;
+}> = ({ label, value, onChange, required, placeholder, helpText, diffBefore, editMeta, disabled }) => {
   const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
   const metaLabel = hasEditMeta
     ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
@@ -290,11 +291,12 @@ const TextField: React.FC<{
   <label className="block">
     <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
     <input
-      className={`mt-1 w-full border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
+      className={`mt-1 w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       required={required}
       placeholder={placeholder}
+      disabled={disabled}
     />
     {helpText && <p className="mt-1 text-xs text-slate-500">{helpText}</p>}
     {diffBefore !== undefined && (
@@ -320,7 +322,8 @@ const TextAreaField: React.FC<{
   helpText?: string;
   diffBefore?: string;
   editMeta?: EditMeta;
-}> = ({ label, value, onChange, required, rows = 3, placeholder, helpText, diffBefore, editMeta }) => {
+  disabled?: boolean;
+}> = ({ label, value, onChange, required, rows = 3, placeholder, helpText, diffBefore, editMeta, disabled }) => {
   const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
   const metaLabel = hasEditMeta
     ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
@@ -330,12 +333,13 @@ const TextAreaField: React.FC<{
   <label className="block">
     <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
     <textarea
-      className={`mt-1 w-full border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
+      className={`mt-1 w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
       rows={rows}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       required={required}
       placeholder={placeholder}
+      disabled={disabled}
     />
     {helpText && <p className="mt-1 text-xs text-slate-500">{helpText}</p>}
     {diffBefore !== undefined && (
@@ -406,7 +410,8 @@ const CheckboxGroup: React.FC<{
   editMeta?: EditMeta;
   required?: boolean;
   helpText?: string;
-}> = ({ label, options, values, onChange, diffBefore, editMeta, required, helpText }) => {
+  disabled?: boolean;
+}> = ({ label, options, values, onChange, diffBefore, editMeta, required, helpText, disabled }) => {
   const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
   const metaLabel = hasEditMeta
     ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
@@ -415,7 +420,7 @@ const CheckboxGroup: React.FC<{
   return (
   <div>
     <p className="text-sm text-slate-700 mb-1">{label}{required ? " *" : ""}</p>
-    <div className={`columns-1 sm:columns-2 lg:columns-3 gap-x-6 border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}>
+    <div className={`columns-1 sm:columns-2 lg:columns-3 gap-x-6 border rounded p-2 ${disabled ? "bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}>
       {options.map((option) => {
         const optionValue = typeof option === "string" ? option : option.value;
         const optionLabel = typeof option === "string" ? option : option.label;
@@ -426,6 +431,7 @@ const CheckboxGroup: React.FC<{
               className="mt-0.5"
               type="checkbox"
               checked={checked}
+              disabled={disabled}
               onChange={(e) => {
                 if (e.target.checked) onChange([...values, optionValue]);
                 else onChange(values.filter((v) => v !== optionValue));
@@ -459,7 +465,8 @@ const SelectField: React.FC<{
   diffBefore?: string;
   editMeta?: EditMeta;
   helpText?: string;
-}> = ({ label, value, onChange, options, required, diffBefore, editMeta, helpText }) => {
+  disabled?: boolean;
+}> = ({ label, value, onChange, options, required, diffBefore, editMeta, helpText, disabled }) => {
   const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
   const metaLabel = hasEditMeta
     ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
@@ -469,10 +476,11 @@ const SelectField: React.FC<{
   <label className="block">
     <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
     <select
-      className={`mt-1 w-full border rounded p-2 ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
+      className={`mt-1 w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       required={required}
+      disabled={disabled}
     >
       <option value="">Choose</option>
       {options.map((option) => {
@@ -515,6 +523,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const [workflowStatusLabel, setWorkflowStatusLabel] = useState<string>("Draft");
   const [officialPriorityLabel, setOfficialPriorityLabel] = useState<string>("");
   const [validationComment, setValidationComment] = useState<string>("");
+  const [savedFormVersion, setSavedFormVersion] = useState<number | null>(null);
+  const [currentFormVersion, setCurrentFormVersion] = useState<number | null>(null);
+  const [usesOutdatedForm, setUsesOutdatedForm] = useState(false);
   const [revisionState, setRevisionState] = useState<string>("");
   const [formReady, setFormReady] = useState(false);
   const [localDraftHydrated, setLocalDraftHydrated] = useState(false);
@@ -523,6 +534,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const [serverUpdatedAt, setServerUpdatedAt] = useState<string | null>(null);
   const [validatorNotes, setValidatorNotes] = useState("");
   const [validatorReviewStatus, setValidatorReviewStatus] = useState("");
+  const [editableFields, setEditableFields] = useState<string[]>([]);
   const [diffMap, setDiffMap] = useState<Record<string, DiffField>>({});
   const [fieldEditMeta, setFieldEditMeta] = useState<Record<string, EditMeta>>({});
   const [comments, setComments] = useState<ProjectComment[]>([]);
@@ -540,6 +552,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const isDiffMode = isAdmin && searchParams.get("mode") === "diff";
   const normalizedReviewStatus = validatorReviewStatus === "validated" ? "endorsed" : validatorReviewStatus;
   const canReviseSubmitted = isEmployee && isEditMode && !isRevisionMode && workflowStatus === "needs_revision";
+  const canReviseProgress = isEmployee && isRevisionMode && revisionState === "reviewed" && editableFields.length > 0;
   const formRef = useRef(form);
 
   const draftStorageKey = useMemo(() => {
@@ -629,6 +642,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
           }
           pd = (data?.profile_data || {}) as Record<string, unknown>;
         }
+        const savedVersion = data?.form_version;
+        const liveVersion = data?.current_form_version;
+        setSavedFormVersion(savedVersion != null && Number.isFinite(Number(savedVersion)) ? Number(savedVersion) : null);
+        setCurrentFormVersion(liveVersion != null && Number.isFinite(Number(liveVersion)) ? Number(liveVersion) : null);
+        setUsesOutdatedForm(Boolean(data?.uses_outdated_form));
         const formMarker = pd?.form_schema && typeof pd.form_schema === "object"
           ? pd.form_schema as Record<string, unknown>
           : null;
@@ -654,6 +672,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
           setFieldEditMeta({});
         }
         const validatorReview = pd?.validator_review as Record<string, unknown> | undefined;
+        const revisionAccess = pd?.validator_revision_access as Record<string, unknown> | undefined;
+        const rawEditableFields = isRevisionMode
+          ? revisionAccess?.editable_fields
+          : validatorReview?.editable_fields;
+        const loadedEditableFields = Array.isArray(rawEditableFields)
+          ? rawEditableFields.map((field) => String(field))
+          : [];
+        setEditableFields(loadedEditableFields);
         const contributorSnapshot =
           pd?.contributor_snapshot && typeof pd.contributor_snapshot === "object"
             ? (pd.contributor_snapshot as Record<string, unknown>)
@@ -774,7 +800,24 @@ const SimplifiedProjectSubmission: React.FC = () => {
           return;
         }
       }
-      setForm((prev) => ({ ...prev, ...parsed.form }));
+      setForm((prev) => {
+        if (!canReviseSubmitted && !canReviseProgress) {
+          return { ...prev, ...parsed.form };
+        }
+        const next = { ...prev };
+        editableFields.forEach((field) => {
+          if (field.startsWith("custom_") && parsed.form?.custom_fields) {
+            next.custom_fields = {
+              ...next.custom_fields,
+              [field]: parsed.form.custom_fields[field],
+            };
+          } else if (Object.prototype.hasOwnProperty.call(parsed.form, field)) {
+            (next as unknown as Record<string, unknown>)[field] =
+              (parsed.form as Record<string, unknown>)[field];
+          }
+        });
+        return next;
+      });
       if (parsed.savedAt) setLastLocalSaveAt(parsed.savedAt);
       setRestoreNotice("Recovered your unsaved local inputs from this browser.");
     } catch (error) {
@@ -782,7 +825,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
     } finally {
       setLocalDraftHydrated(true);
     }
-  }, [isEmployee, formReady, draftStorageKey, serverUpdatedAt]);
+  }, [isEmployee, formReady, draftStorageKey, serverUpdatedAt, canReviseSubmitted, canReviseProgress, editableFields]);
 
   const commentEndpointBase = useMemo(
     () =>
@@ -930,9 +973,18 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
   useEffect(() => {
     if (!yearKeys.length) return;
+    const restrictedRevision = canReviseSubmitted || canReviseProgress;
+    const canChangeFundingRequirement =
+      !restrictedRevision || editableFields.includes("fundingRequirementByYear");
+    const canChangeActualFunding =
+      !restrictedRevision || editableFields.includes("actualFundingByYear");
     updateFormWithLocalDraft((prev) => {
-      const nextFr = pruneMap(prev.fundingRequirementByYear, yearKeys);
-      const nextAa = pruneMap(prev.actualFundingByYear, yearKeys);
+      const nextFr = canChangeFundingRequirement
+        ? pruneMap(prev.fundingRequirementByYear, yearKeys)
+        : prev.fundingRequirementByYear;
+      const nextAa = canChangeActualFunding
+        ? pruneMap(prev.actualFundingByYear, yearKeys)
+        : prev.actualFundingByYear;
       if (mapsEqual(prev.fundingRequirementByYear, nextFr) && mapsEqual(prev.actualFundingByYear, nextAa)) {
         return prev;
       }
@@ -942,7 +994,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
         actualFundingByYear: nextAa,
       };
     });
-  }, [updateFormWithLocalDraft, yearKeys, yearKeysSignature]);
+  }, [
+    canReviseProgress,
+    canReviseSubmitted,
+    editableFields,
+    updateFormWithLocalDraft,
+    yearKeys,
+    yearKeysSignature,
+  ]);
 
   const frTotal = useMemo(
     () => yearKeys.reduce((sum, key) => sum + toNumber(form.fundingRequirementByYear[key] || ""), 0),
@@ -968,14 +1027,24 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
   const isReadOnly =
     isAdmin ||
-    (isEmployee && !canWriteCurrentForm && !canReviseSubmitted) ||
-    (isEmployee && isRevisionMode && revisionState !== "draft") ||
+    (isEmployee && !canWriteCurrentForm && !canReviseSubmitted && !canReviseProgress) ||
+    (isEmployee && isRevisionMode && revisionState !== "draft" && !canReviseProgress) ||
     (isEmployee && isEditMode && !isRevisionMode && projectStatus !== "planning" && !canReviseSubmitted) ||
     (isValidator && normalizedReviewStatus === "endorsed");
   const diffOf = (field: string) => diffMap[field];
   const editMetaOf = (field: string) => fieldEditMeta[field];
+  const revisionFieldLocked = (field: string) =>
+    (canReviseSubmitted || canReviseProgress) && !editableFields.includes(field);
+  const toggleEditableField = (field: string) => {
+    setEditableFields((current) =>
+      current.includes(field)
+        ? current.filter((item) => item !== field)
+        : [...current, field],
+    );
+  };
 
   const setField = <K extends keyof SimplifiedForm>(key: K, value: SimplifiedForm[K]) => {
+    if (revisionFieldLocked(String(key))) return;
     updateFormWithLocalDraft((prev) => ({ ...prev, [key]: value }));
   };
   const setPriorityFact = (key: keyof SimplifiedForm["priorityAnalysisFacts"], value: string) => {
@@ -1038,6 +1107,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
           setLoading(false);
           return;
         }
+        if (action === "reviewed" && editableFields.length === 0) {
+          alert("Select at least one field the contributor may revise.");
+          setLoading(false);
+          return;
+        }
         const validatorAction =
           action === "draft"
             ? "save_draft"
@@ -1068,6 +1142,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
           notes: validatorNotes,
           public_note: validatorNotes,
           edited_profile_data: normalizedProfileData,
+          editable_fields: editableFields,
           },
         );
         localStorage.setItem("projects_last_update", Date.now().toString());
@@ -1151,6 +1226,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   };
 
   const setConfiguredFieldValue = (field: ContributorFormField, value: string | string[]) => {
+    if (revisionFieldLocked(field.key)) return;
     if (field.key.startsWith("custom_")) {
       updateFormWithLocalDraft((previous) => ({
         ...previous,
@@ -1186,6 +1262,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       helpText: field.help_text,
       diffBefore,
       editMeta,
+      disabled: revisionFieldLocked(field.key),
     };
 
     if (field.type === "currency_by_year") {
@@ -1208,6 +1285,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                     ...previous,
                     [mapKey]: { ...previous[mapKey], [key]: next },
                   }))}
+                  disabled={revisionFieldLocked(field.key)}
                   diffBefore={diffOf(`${field.key}.${key}`)?.before}
                   editMeta={editMetaOf(`${field.key}.${key}`)}
                   formatMoney
@@ -1236,7 +1314,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       return (
         <label className="block">
           <span className="text-sm text-slate-700">{field.label}{required ? " *" : ""}</span>
-          <input type="date" className="mt-1 w-full rounded border p-2" value={String(value)} required={required} onChange={(event) => setConfiguredFieldValue(field, event.target.value)} />
+          <input type="date" className="mt-1 w-full rounded border p-2 disabled:bg-slate-100 disabled:text-slate-500" value={String(value)} required={required} disabled={revisionFieldLocked(field.key)} onChange={(event) => setConfiguredFieldValue(field, event.target.value)} />
           {field.help_text && <p className="mt-1 text-xs text-slate-500">{field.help_text}</p>}
         </label>
       );
@@ -1311,7 +1389,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
           {currentWindowMessage || "This workflow is currently closed by admin."}
         </div>
       )}
-      {isRevisionMode && isEmployee && revisionState !== "draft" && (
+      {isRevisionMode && isEmployee && revisionState !== "draft" && !canReviseProgress && (
         <div className="portal-card p-3 mb-3 border-blue-200 bg-blue-50 text-blue-800">
           This progress update has already been submitted and is now view-only for contributors.
         </div>
@@ -1321,6 +1399,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
           {canReviseSubmitted
             ? "This submission needs revision. Update the form and submit it again for validation."
             : "This submission is already sent and is now view-only for contributors."}
+        </div>
+      )}
+      {isEmployee && (canReviseSubmitted || canReviseProgress) && (
+        <div className="portal-card p-3 mb-3 border-indigo-200 bg-indigo-50 text-indigo-900 text-sm">
+          Only the fields selected by the validator are editable. All other fields are locked.
         </div>
       )}
       {isEditMode && !isRevisionMode && (
@@ -1334,6 +1417,17 @@ const SimplifiedProjectSubmission: React.FC = () => {
               <span className="font-semibold">Validator note:</span> {validationComment}
             </p>
           )}
+        </div>
+      )}
+      {isEditMode && usesOutdatedForm && (
+        <div className="portal-card p-3 mb-3 border-amber-300 bg-amber-50 text-amber-900 text-sm" role="alert">
+          <p className="font-semibold">Project is using an older contributor form and may need updating.</p>
+          <p className="mt-1">
+            This project is saved on form version {savedFormVersion ?? "an earlier version"}; the current published form is version {currentFormVersion ?? "newer"}.
+            Its existing answers have not been changed automatically. {isValidator
+              ? "Review the project and send it back to the contributor only if revisions are necessary."
+              : "The validator will decide whether it needs to be sent back for revisions."}
+          </p>
         </div>
       )}
       {(restoreNotice || localSavedLabel) && (
@@ -1364,6 +1458,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
             <div><h2 className="text-lg font-bold text-slate-900">{formSchema.title}</h2>{formSchema.description && <p className="text-sm text-slate-500">{formSchema.description}</p>}</div>
           </div>
+          {isValidator && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900" role="alert">
+              If the project needs revisions, please tick the boxes that need revisions before sending it back to the contributor/s.
+            </div>
+          )}
           {formSchema.sections
             .filter((section) => section.visible !== false && (!section.admin_only || isAdmin))
             .map((section) => {
@@ -1377,7 +1476,20 @@ const SimplifiedProjectSubmission: React.FC = () => {
                   <div className="grid gap-4 xl:grid-cols-2">
                     {fields.map((field) => (
                       <div key={field.key} className={["textarea", "multiselect", "currency_by_year"].includes(field.type) ? "xl:col-span-2" : ""}>
+                        {isValidator && (
+                          <label className="mb-2 flex items-center gap-2 rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-800">
+                            <input
+                              type="checkbox"
+                              checked={editableFields.includes(field.key)}
+                              onChange={() => toggleEditableField(field.key)}
+                            />
+                            Contributor may edit this field
+                          </label>
+                        )}
                         {renderConfiguredField(field)}
+                        {!isValidator && revisionFieldLocked(field.key) && (
+                          <p className="mt-1 text-xs font-medium text-slate-500">Locked by validator</p>
+                        )}
                       </div>
                     ))}
                   </div>
