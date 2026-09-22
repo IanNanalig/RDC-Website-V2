@@ -1536,7 +1536,7 @@ const UserManagement = () => {
               <tbody>
                 {users.map((u) => (
                   <tr key={u.id}>
-                    <td>{u.username}</td>
+                    <td>{u.full_name || u.username}</td>
                     <td>{u.email || "-"}</td>
                     <td>{u.agency || "-"}</td>
                     <td>{labelRole(u.role)}</td>

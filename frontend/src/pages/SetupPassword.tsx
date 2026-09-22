@@ -320,7 +320,7 @@ const SetupPassword: React.FC = () => {
                   className="mt-1 w-full border rounded-lg px-3 py-2 bg-slate-100 text-slate-600"
                 />
                 <p className="text-xs text-slate-500 mt-1">
-                  This email will be used as your username.
+                  This email will be used to sign in. Your full name will be shown as your username.
                 </p>
               </label>
             </div>
