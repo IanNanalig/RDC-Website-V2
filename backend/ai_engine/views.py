@@ -1,3 +1,4 @@
+from django.conf import settings
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -33,11 +34,17 @@ class AdminAIModelTrainView(APIView):
             model = train_new_model(request.user)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        provider_note = (
+            "The hosted Groq model was not fine-tuned, and the approved scoring rules remain primary."
+            if getattr(settings, "GROQ_ENABLED", False)
+            else "The approved scoring rules remain primary and this learned prediction remains advisory."
+        )
         return Response(
             {
                 "detail": (
-                    f"Model {model.version} is now active. It learned from {model.sample_count} "
-                    "distinct validator-confirmed projects."
+                    f"Historical reference model {model.version} is now active. Its versioned RAG dataset and "
+                    f"local calibration model use {model.sample_count} distinct validator-confirmed projects. "
+                    f"{provider_note}"
                 ),
                 "model": AIModelVersionSerializer(model).data,
                 "dataset": training_dataset_summary(),

@@ -293,6 +293,16 @@ PASSWORD_RESET_RATE_LIMIT_IP = int(os.environ.get("PASSWORD_RESET_RATE_LIMIT_IP"
 TURNSTILE_SECRET_KEY = os.environ.get("TURNSTILE_SECRET_KEY", "")
 TURNSTILE_REQUIRED = os.environ.get("TURNSTILE_REQUIRED", "false").lower() in ("1", "true", "yes")
 
+# Groq inference. The key must be supplied through the environment and is never exposed to the frontend.
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+GROQ_PRIMARY_MODEL = os.environ.get("GROQ_PRIMARY_MODEL", "llama-3.1-8b-instant").strip()
+GROQ_BACKUP_MODEL = os.environ.get("GROQ_BACKUP_MODEL", "llama-3.3-70b-versatile").strip()
+GROQ_API_URL = os.environ.get("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions").strip()
+GROQ_TIMEOUT_SECONDS = max(5, env_int("GROQ_TIMEOUT_SECONDS", 30))
+GROQ_MAX_COMPLETION_TOKENS = max(256, env_int("GROQ_MAX_COMPLETION_TOKENS", 4096))
+GROQ_PUBLIC_CHAT_RATE = os.environ.get("GROQ_PUBLIC_CHAT_RATE", "20/min").strip() or "20/min"
+GROQ_ENABLED = bool(GROQ_API_KEY and GROQ_PRIMARY_MODEL)
+
 # Sentry configuration (optional)
 SENTRY_DSN = os.environ.get('SENTRY_DSN', '')
 if SENTRY_DSN:

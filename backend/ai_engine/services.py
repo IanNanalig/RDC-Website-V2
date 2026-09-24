@@ -81,6 +81,12 @@ def training_dataset_summary(sync=False):
         sync_all_training_records()
     records = _latest_eligible_records()
     counts = Counter(record.target_priority for record in records)
+    dataset_version = _dataset_version(records)
+    active_model = get_active_model()
+    ready_to_train = (
+        len(records) >= MINIMUM_TRAINING_PROJECTS
+        and all(counts.get(label, 0) for label in PRIORITY_CLASSES)
+    )
     return {
         "candidate_count": AITrainingRecord.objects.count(),
         "eligible_project_count": len(records),
@@ -88,7 +94,16 @@ def training_dataset_summary(sync=False):
         "label_counts": {label: counts.get(label, 0) for label in PRIORITY_CLASSES},
         "minimum_projects": MINIMUM_TRAINING_PROJECTS,
         "required_labels": PRIORITY_CLASSES,
-        "ready_to_train": len(records) >= MINIMUM_TRAINING_PROJECTS and all(counts.get(label, 0) for label in PRIORITY_CLASSES),
+        "ready_to_train": ready_to_train,
+        "dataset_version": dataset_version,
+        "active_dataset_version": active_model.dataset_version if active_model else "",
+        "active_model_version": active_model.version if active_model else "",
+        "active_sample_count": active_model.sample_count if active_model else 0,
+        "last_trained_at": active_model.created_at if active_model else None,
+        "is_current": bool(active_model and active_model.dataset_version == dataset_version),
+        "requires_retraining": bool(
+            ready_to_train and (not active_model or active_model.dataset_version != dataset_version)
+        ),
     }
 
 
@@ -104,6 +119,20 @@ def _dataset_version(records):
         for record in sorted(records, key=lambda item: item.pk)
     ]
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def reference_dataset_version(exclude_project_id=None):
+    """Return the activated RAG identity used for confirmation freshness.
+
+    Live bootstrap references remain deliberately unversioned. Confirming this or
+    another project must not invalidate a confirmed validator copy. Once an
+    administrator creates a controlled reference version, its stable dataset hash
+    participates in freshness checks.
+    """
+    active_model = get_active_model()
+    if active_model:
+        return active_model.dataset_version
+    return "live-unversioned"
 
 
 def _split_records(records):
@@ -217,6 +246,9 @@ def train_new_model(user):
         for record in records
     ])
     _log_activity(user, "ai_model_trained", {
+        "operation": "historical_reference_rebuilt",
+        "rules_remain_primary": True,
+        "hosted_model_fine_tuned": False,
         "model_version": model.version,
         "dataset_version": model.dataset_version,
         "sample_count": model.sample_count,
@@ -249,8 +281,121 @@ def set_training_record_eligibility(record, user, is_eligible, reason=""):
 
 def ensure_learning_assessment(priority_analysis):
     features = extract_feature_snapshot(priority_analysis)
-    model = get_active_model()
     candidates = [record for record in _latest_eligible_records() if record.project_id != priority_analysis.project_id]
+    scores = priority_analysis.suggested_scores if isinstance(priority_analysis.suggested_scores, dict) else {}
+    provider = scores.get("ai_provider") if isinstance(scores.get("ai_provider"), dict) else {}
+    groq_analysis = scores.get("groq_analysis") if isinstance(scores.get("groq_analysis"), dict) else {}
+    groq_prediction = (
+        groq_analysis.get("historical_prediction")
+        if isinstance(groq_analysis.get("historical_prediction"), dict)
+        else {}
+    )
+    if provider.get("name") == "groq" and provider.get("model"):
+        reference_model = AIModelVersion.objects.filter(
+            version=str(provider.get("reference_model_version") or ""),
+        ).first()
+        if reference_model:
+            candidates = list(
+                AITrainingRecord.objects.filter(
+                    model_memberships__model_version=reference_model,
+                ).exclude(project_id=priority_analysis.project_id).select_related(
+                    "project", "confirmation__validator", "confirmation__analysis", "rule_set"
+                ).order_by("-confirmation__created_at", "-id")
+            )
+        dataset_version = str(provider.get("dataset_version") or "empty")
+        inference_version = (
+            f"groq-{provider['model']}-{dataset_version}-{priority_analysis.source_hash[:10]}"
+        )[:80]
+        existing = AIProjectAnalysis.objects.filter(
+            priority_analysis=priority_analysis,
+            inference_version=inference_version,
+        ).select_related("model_version").prefetch_related(
+            "similar_projects__training_record__project",
+            "similar_projects__training_record__confirmation__validator",
+        ).first()
+        if existing:
+            return existing
+
+        missing_facts = scores.get("missing_facts") or []
+        predicted = str(groq_prediction.get("priority") or "").lower()
+        if predicted not in PRIORITY_CLASSES:
+            predicted = ""
+        try:
+            confidence = max(0.0, min(1.0, float(groq_prediction.get("confidence") or 0)))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if missing_facts:
+            status = "insufficient_evidence"
+            predicted = ""
+            confidence = 0.0
+            summary = (
+                "Groq reviewed the project, but its historical priority prediction is withheld until the required "
+                "validator facts are complete."
+            )
+        elif not candidates:
+            status = "untrained"
+            predicted = ""
+            confidence = 0.0
+            summary = (
+                "Groq is active, but no eligible validator-confirmed historical projects are available yet. "
+                "Confirm projects and keep suitable records eligible in the AI Scoring CMS."
+            )
+        elif predicted:
+            status = "ready"
+            summary = str(groq_prediction.get("explanation") or "").strip() or (
+                f"Groq compared this project with {len(candidates)} eligible validator-confirmed projects and "
+                f"suggested {predicted.title()} Priority as advisory historical context."
+            )
+        else:
+            status = "insufficient_evidence"
+            summary = "Groq did not return a reliable historical priority prediction for this project."
+        probabilities = {}
+        if predicted:
+            other = "high" if predicted == "low" else "low"
+            probabilities = {predicted: round(confidence, 6), other: round(1.0 - confidence, 6)}
+        explanation = {
+            "summary": summary,
+            "influential_features": [],
+            "limitations": [
+                "The approved scoring rules and current project evidence remain the primary basis for scoring.",
+                "The administrator rebuilds a versioned reference dataset and local calibration model; this does not fine-tune the hosted Groq model.",
+                "The prediction is advisory and cannot validate, endorse, reject, or change the project.",
+                "The validator must verify all cited evidence and make the final decision.",
+            ],
+            "provider": "groq",
+            "provider_model": provider.get("model"),
+            "used_backup": bool(provider.get("used_backup")),
+            "dataset_version": dataset_version,
+            "sample_count": len(candidates),
+            "reference_model_version": reference_model.version if reference_model else "live-unversioned",
+        }
+        assessment = AIProjectAnalysis.objects.create(
+            priority_analysis=priority_analysis,
+            guideline_rule_set=priority_analysis.rule_set,
+            model_version=reference_model,
+            inference_version=inference_version,
+            feature_schema_version=FEATURE_SCHEMA_VERSION,
+            feature_snapshot=features,
+            status=status,
+            predicted_priority=predicted,
+            confidence=confidence,
+            class_probabilities=probabilities,
+            explanation=explanation,
+        )
+        matches = find_similar_projects(features, candidates, limit=3)
+        AISimilarProject.objects.bulk_create([
+            AISimilarProject(
+                analysis=assessment,
+                training_record=match["record"],
+                rank=index,
+                similarity_score=round(match["score"], 6),
+                shared_features=match["shared_features"],
+            )
+            for index, match in enumerate(matches, start=1)
+        ])
+        return assessment
+
+    model = get_active_model()
     if model:
         inference_version = model.version
     else:

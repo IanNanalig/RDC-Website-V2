@@ -11,7 +11,7 @@ from cms.form_schema import FormSchemaError, validate_simplified_answers
 from cms.models import CMSContributorForm
 from cms.services.locking import acquire_form_lock
 from cms.services.publishing import publish_contributor_form, restore_contributor_form_version
-from projects.models import Notification, Project, User
+from projects.models import Notification, Project, ProjectRevision, User, UserActivity
 from projects.serializers import ProjectSerializer
 
 
@@ -34,6 +34,12 @@ class ContributorFormWorkflowTests(APITestCase):
             email="form-contributor@example.com",
             password="StrongTestPassword123!",
             role="staff",
+        )
+        self.validator = User.objects.create_user(
+            username="form-validator",
+            email="form-validator@example.com",
+            password="StrongTestPassword123!",
+            role="validator",
         )
         self.form = CMSContributorForm.objects.select_related("current_published_version").get(
             key="simplified-rdip"
@@ -507,6 +513,104 @@ class ContributorFormWorkflowTests(APITestCase):
             }
         )
         self.assertEqual(new_profile["form_schema"]["version"], live_version)
+
+    def test_validator_can_explicitly_update_an_old_project_form_without_changing_workflow(self):
+        self.assertEqual(self._save_draft(self._draft_with_custom_field(required=True)).status_code, status.HTTP_200_OK)
+        self.authenticate(self.admin)
+        published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
+        self.assertEqual(published.status_code, status.HTTP_200_OK)
+        live_version = published.data["current_published_version_number"]
+
+        project = Project.objects.create(
+            name="Project ready for form update",
+            agency="DENR",
+            implementing_agency="DENR",
+            budget=1000000,
+            cost=1000000,
+            municipality="NCR",
+            latitude=14.5,
+            status="completed",
+            validated=True,
+            created_by=self.contributor,
+            profile_data={
+                "submission_type": "simplified",
+                "form_schema": {"key": "simplified-rdip", "version": 1},
+                "simplified_form": {
+                    "projectTitle": "Project ready for form update",
+                    "custom_fields": {"custom_historical_note": "Preserve this answer"},
+                },
+            },
+        )
+        progress_draft = ProjectRevision.objects.create(
+            project=project,
+            revision_number=2,
+            revision_type="progress_update",
+            state="draft",
+            created_by=self.contributor,
+            profile_data_snapshot={
+                "submission_type": "simplified",
+                "form_schema": {"key": "simplified-rdip", "version": 1},
+                "simplified_form": {
+                    "projectActivity": "Draft answer to preserve",
+                    "custom_fields": {"custom_historical_note": "Preserve this draft answer"},
+                },
+            },
+        )
+
+        self.authenticate(self.validator)
+        available = self.client.get("/api/validator/projects/?view=summary&scope=update_forms")
+        self.assertEqual(available.status_code, status.HTTP_200_OK)
+        listed = next(item for item in available.data if item["id"] == project.id)
+        self.assertEqual(listed["form_version"], 1)
+        self.assertEqual(listed["current_form_version"], live_version)
+        self.assertTrue(listed["uses_outdated_form"])
+
+        with CaptureQueriesContext(connection) as update_queries:
+            updated = self.client.post(f"/api/validator/projects/{project.id}/update-form/", {}, format="json")
+        self.assertEqual(updated.status_code, status.HTTP_200_OK)
+        self.assertEqual(updated.data["previous_form_version"], 1)
+        self.assertEqual(updated.data["form_version"], live_version)
+        project_lock_queries = [
+            item["sql"]
+            for item in update_queries.captured_queries
+            if 'SELECT' in item["sql"].upper() and 'FROM "projects_project"' in item["sql"]
+        ]
+        self.assertTrue(project_lock_queries)
+        self.assertNotIn('JOIN "projects_user"', project_lock_queries[0])
+
+        project.refresh_from_db()
+        self.assertEqual(project.profile_data["form_schema"]["version"], live_version)
+        self.assertEqual(
+            project.profile_data["simplified_form"]["custom_fields"]["custom_historical_note"],
+            "Preserve this answer",
+        )
+        self.assertEqual(project.status, "completed")
+        self.assertTrue(project.validated)
+        progress_draft.refresh_from_db()
+        self.assertEqual(progress_draft.profile_data_snapshot["form_schema"]["version"], live_version)
+        self.assertEqual(
+            progress_draft.profile_data_snapshot["simplified_form"]["custom_fields"]["custom_historical_note"],
+            "Preserve this draft answer",
+        )
+        self.assertEqual(updated.data["updated_progress_drafts"], 1)
+        self.assertTrue(UserActivity.objects.filter(
+            user=self.validator,
+            project=project,
+            event="project_update",
+            details__operation="contributor_form_version_update",
+        ).exists())
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.contributor,
+            project=project,
+            event_type="project_form_version_updated",
+        ).exists())
+
+        no_longer_available = self.client.get("/api/validator/projects/?view=summary&scope=update_forms")
+        self.assertNotIn(project.id, [item["id"] for item in no_longer_available.data])
+
+        self.authenticate(self.contributor)
+        forbidden = self.client.post(f"/api/validator/projects/{project.id}/update-form/", {}, format="json")
+        self.assertEqual(forbidden.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_required_custom_field_is_checked_only_for_complete_submission(self):
         saved = self._save_draft(self._draft_with_custom_field(required=True))

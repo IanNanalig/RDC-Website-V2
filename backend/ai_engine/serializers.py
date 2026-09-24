@@ -78,16 +78,17 @@ def serialize_learning_assessment(assessment):
             "validator_name": _user_name(record.confirmation.validator),
         })
     model = assessment.model_version
+    explanation = assessment.explanation if isinstance(assessment.explanation, dict) else {}
     return {
         "status": assessment.status,
         "advisory": True,
-        "model_version": model.version if model else None,
-        "dataset_version": model.dataset_version if model else None,
-        "sample_count": model.sample_count if model else 0,
+        "model_version": model.version if model else explanation.get("provider_model"),
+        "dataset_version": model.dataset_version if model else explanation.get("dataset_version"),
+        "sample_count": model.sample_count if model else int(explanation.get("sample_count") or 0),
         "predicted_priority": assessment.predicted_priority or None,
         "confidence": round(float(assessment.confidence), 4),
         "class_probabilities": assessment.class_probabilities,
-        "explanation": assessment.explanation,
+        "explanation": explanation,
         "similar_projects": similar,
         "generated_at": assessment.created_at,
     }

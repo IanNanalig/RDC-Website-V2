@@ -9,6 +9,7 @@ from projects.models import (
 )
 from projects.priority_scoring import confirm_analysis, get_active_priority_rule_set
 
+from .groq_priority import _historical_context
 from .models import AIModelVersion, AIProjectAnalysis, AITrainingRecord
 from .services import ensure_learning_assessment
 
@@ -217,3 +218,45 @@ class ControlledLearningTests(APITestCase):
         self.assertNotEqual(original_assessment.model_version_id, refreshed_assessment.model_version_id)
         self.assertTrue(AIModelVersion.objects.filter(pk=original_assessment.model_version_id, status="retired").exists())
         self.assertEqual(AIProjectAnalysis.objects.filter(priority_analysis=analysis).count(), 2)
+
+    def test_rebuilt_rag_context_uses_versioned_projects_scores_and_rationale(self):
+        low_analysis, low_confirmation = self._confirmed(
+            50,
+            "low",
+            45,
+            "infrastructure",
+            "Local drainage repair with a limited service area.",
+        )
+        self._confirmed(
+            51,
+            "high",
+            91,
+            "environment",
+            "Region-wide watershed restoration with measured flood-risk reduction.",
+        )
+        low_confirmation.override_rationale = "The evidence supports a local rather than region-wide priority."
+        low_confirmation.adjusted_scores = {"readiness": 4}
+        low_confirmation.save(update_fields=["override_rationale", "adjusted_scores"])
+        self.client.force_authenticate(self.admin)
+
+        trained = self.client.post("/api/admin/ai/models/train/", {}, format="json")
+        examples, _matches, dataset_version, reference_model = _historical_context(
+            low_analysis.input_snapshot,
+            "infrastructure",
+        )
+
+        self.assertEqual(trained.status_code, status.HTTP_201_CREATED, trained.data)
+        self.assertEqual(reference_model["version"], trained.data["model"]["version"])
+        self.assertEqual(dataset_version, trained.data["model"]["dataset_version"])
+        self.assertEqual(
+            reference_model["retrieval_calibration"]["method"],
+            "similarity_weighted_validator_outcomes",
+        )
+        self.assertEqual(reference_model["retrieval_calibration"]["reference_count"], 2)
+        low_example = next(item for item in examples if item["project_id"] == low_analysis.project_id)
+        self.assertEqual(low_example["rule_base_score"], 45)
+        self.assertEqual(low_example["validator_final_priority"], "low")
+        self.assertEqual(low_example["validator_adjusted_scores"], {"readiness": 4})
+        self.assertIn("local rather than region-wide", low_example["validator_override_rationale"])
+        self.assertEqual(low_example["rule_version"], self.rule_set.version)
+        self.assertEqual(low_example["criterion_scores"][0]["key"], "outcome")

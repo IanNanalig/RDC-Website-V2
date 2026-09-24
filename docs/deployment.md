@@ -65,6 +65,13 @@ EMAIL_HOST_PASSWORD=your-google-app-password
 EMAIL_USE_TLS=true
 DEFAULT_FROM_EMAIL=RDC Portal <your-gmail-address@gmail.com>
 CONTACT_RECEIVER_EMAIL=your-receiver-email@example.com
+
+GROQ_API_KEY=your-rotated-groq-api-key
+GROQ_PRIMARY_MODEL=llama-3.1-8b-instant
+GROQ_BACKUP_MODEL=llama-3.3-70b-versatile
+GROQ_TIMEOUT_SECONDS=30
+GROQ_MAX_COMPLETION_TOKENS=4096
+GROQ_PUBLIC_CHAT_RATE=20/min
 ```
 
 Place frontend values in `frontend/.env`:
@@ -149,6 +156,13 @@ EMAIL_HOST_PASSWORD=client-google-app-password
 EMAIL_USE_TLS=true
 DEFAULT_FROM_EMAIL=RDC Portal <client-production-sender@gmail.com>
 CONTACT_RECEIVER_EMAIL=client-receiver@example.com
+
+GROQ_API_KEY=your-rotated-production-groq-api-key
+GROQ_PRIMARY_MODEL=llama-3.1-8b-instant
+GROQ_BACKUP_MODEL=llama-3.3-70b-versatile
+GROQ_TIMEOUT_SECONDS=30
+GROQ_MAX_COMPLETION_TOKENS=4096
+GROQ_PUBLIC_CHAT_RATE=20/min
 ```
 
 ## Render Backend Commands

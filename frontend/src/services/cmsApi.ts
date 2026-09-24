@@ -153,6 +153,10 @@ export type CMSAIOutcomeRule = {
   label: string;
   weight: number;
   keywords: string[];
+  description: string;
+  matching_guidance: string;
+  match_mode: "keyword" | "contextual";
+  context_phrases: string[];
 };
 
 export type CMSAIScaleRule = {
@@ -204,6 +208,7 @@ export type CMSAIHistoricalProject = {
   confirmed_at: string;
   training_record_id?: number;
   training_eligible?: boolean;
+  in_active_reference?: boolean;
   exclusion_reason?: string;
 };
 
@@ -237,18 +242,47 @@ export type CMSAITrainingDataset = {
   minimum_projects: number;
   required_labels: string[];
   ready_to_train: boolean;
+  dataset_version?: string;
+  active_dataset_version?: string;
+  active_model_version?: string;
+  active_sample_count?: number;
+  last_trained_at?: string | null;
+  is_current?: boolean;
+  requires_retraining?: boolean;
 };
 
 export type CMSAIScoringWorkspace = {
-  system_type: "hybrid_rules_similarity_ml" | "deterministic_rule_based";
+  system_type: "groq_rag_rules" | "hybrid_rules_similarity_ml" | "deterministic_rule_based";
   learns_from_historical_projects: boolean;
   learning_explanation: string;
+  ai_provider?: {
+    name: "groq" | "local";
+    enabled: boolean;
+    primary_model: string;
+    backup_model: string;
+    historical_mode: "retrieval_augmented_generation" | "versioned_rag_calibration" | "trained_local_model";
+  };
+  rag_pipeline?: {
+    rules_primary: boolean;
+    hosted_model_fine_tuned: boolean;
+    retrieval_limit: number;
+    reference_model_version: string;
+    dataset_version: string;
+    reference_dataset_current: boolean;
+    requires_retraining: boolean;
+    steps: Array<{
+      key: string;
+      title: string;
+      description: string;
+    }>;
+  };
   active_rule_set: {
     id: number;
     version: string;
     algorithm_version: string;
     created_at: string;
     config: CMSAIRuleConfig;
+    draft_config?: CMSAIRuleConfig;
   };
   rule_versions: Array<{
     id: number;

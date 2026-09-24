@@ -87,6 +87,7 @@ from projects.models import (
     UserActivity,
 )
 from projects.priority_scoring import (
+    contextual_priority_rule_draft,
     get_active_priority_rule_set,
     priority_rule_config,
     validate_priority_rule_config,
@@ -815,6 +816,7 @@ class ContributorFormVersionView(APIView):
 def _priority_reference_payload(limit=200):
     active = get_active_priority_rule_set()
     active_model = get_active_model()
+    groq_enabled = bool(getattr(settings, "GROQ_ENABLED", False))
     history = PriorityRuleSet.objects.annotate(analysis_count=Count("analyses")).order_by("-created_at")[:20]
     confirmations = ProjectPriorityConfirmation.objects.select_related(
         "analysis__project",
@@ -822,6 +824,9 @@ def _priority_reference_payload(limit=200):
         "validator",
         "ai_training_record",
     ).order_by("-created_at")[:limit]
+    active_reference_record_ids = set(
+        active_model.dataset_memberships.values_list("training_record_id", flat=True)
+    ) if active_model else set()
     historical_projects = []
     for confirmation in confirmations:
         analysis = confirmation.analysis
@@ -858,23 +863,82 @@ def _priority_reference_payload(limit=200):
                 "confirmed_at": confirmation.created_at,
                 "training_record_id": training_record.pk if training_record else None,
                 "training_eligible": training_record.is_eligible if training_record else False,
+                "in_active_reference": bool(
+                    training_record and training_record.pk in active_reference_record_ids
+                ),
                 "exclusion_reason": training_record.exclusion_reason if training_record else "Pending dataset synchronization.",
             }
         )
+    training_dataset = training_dataset_summary()
     return {
-        "system_type": "hybrid_rules_similarity_ml",
+        "system_type": "groq_rag_rules" if groq_enabled else "hybrid_rules_similarity_ml",
         "learns_from_historical_projects": True,
         "learning_explanation": (
+            "The active CMS rules and current project evidence remain the primary scoring method. An administrator can "
+            "curate validator-confirmed projects and rebuild a versioned historical reference model. Groq then receives "
+            "the most similar projects, their rule scores, and their human-confirmed outcomes as secondary calibration "
+            "context. This is retrieval-augmented generation, not fine-tuning of the hosted Groq model, and the validator "
+            "always makes the final decision."
+            if groq_enabled else
             "The engine applies the active versioned rules first, then an administrator can train a separate, "
             "versioned model using only validator-confirmed project outcomes. It also compares each project with "
             "confirmed historical projects. The learned prediction remains advisory and never changes a validator's final decision."
         ),
+        "ai_provider": {
+            "name": "groq" if groq_enabled else "local",
+            "enabled": groq_enabled,
+            "primary_model": getattr(settings, "GROQ_PRIMARY_MODEL", "") if groq_enabled else "",
+            "backup_model": getattr(settings, "GROQ_BACKUP_MODEL", "") if groq_enabled else "",
+            "historical_mode": "versioned_rag_calibration" if groq_enabled else "trained_local_model",
+        },
+        "rag_pipeline": {
+            "rules_primary": True,
+            "hosted_model_fine_tuned": False,
+            "retrieval_limit": 6,
+            "reference_model_version": active_model.version if active_model else "",
+            "dataset_version": training_dataset["dataset_version"],
+            "reference_dataset_current": training_dataset["is_current"],
+            "requires_retraining": training_dataset["requires_retraining"],
+            "steps": [
+                {
+                    "key": "confirm",
+                    "title": "Human-confirmed projects",
+                    "description": "Only projects with a validator-confirmed final priority can become references.",
+                },
+                {
+                    "key": "curate",
+                    "title": "Administrator curation",
+                    "description": "Administrators include suitable records or exclude unreliable and duplicate records.",
+                },
+                {
+                    "key": "rebuild",
+                    "title": "Versioned rebuild",
+                    "description": "A rebuild snapshots the eligible dataset and trains the local advisory calibration model.",
+                },
+                {
+                    "key": "retrieve",
+                    "title": "Retrieve similar projects",
+                    "description": "For each proposal, the system retrieves up to six similar projects from the active snapshot.",
+                },
+                {
+                    "key": "analyze",
+                    "title": "Rules-first Groq analysis",
+                    "description": "Groq applies the approved criteria first and uses historical scores only as secondary context.",
+                },
+                {
+                    "key": "decide",
+                    "title": "Validator decision",
+                    "description": "The validator reviews the explanation and remains responsible for the final priority.",
+                },
+            ],
+        },
         "active_rule_set": {
             "id": active.pk,
             "version": active.version,
             "algorithm_version": active.algorithm_version,
             "created_at": active.created_at,
             "config": priority_rule_config(active),
+            "draft_config": contextual_priority_rule_draft(active),
         },
         "rule_versions": [
             {
@@ -889,7 +953,7 @@ def _priority_reference_payload(limit=200):
         ],
         "historical_projects": historical_projects,
         "historical_count": ProjectPriorityConfirmation.objects.count(),
-        "training_dataset": training_dataset_summary(),
+        "training_dataset": training_dataset,
         "active_model": AIModelVersionSerializer(active_model).data if active_model else None,
         "model_versions": AIModelVersionSerializer(
             AIModelVersion.objects.select_related("trained_by").all()[:20], many=True
@@ -915,6 +979,20 @@ class AdminAIPriorityCMSView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
+        outcome_rules = [*config["keyword_dictionaries"]["common_outcomes"]]
+        for sector_rules in config["sector_criteria"].values():
+            outcome_rules.extend(sector_rules)
+        if any(rule.get("match_mode") != "contextual" for rule in outcome_rules):
+            return Response(
+                {
+                    "detail": (
+                        "New AI scoring rule versions must use contextual sentence matching "
+                        "for every RDP outcome criterion."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         change_note = str(request.data.get("change_note") or "").strip()[:500]
         timestamp = timezone.now().strftime("%Y%m%d-%H%M%S")
         version_base = f"rdc-priority-{timestamp}"
@@ -928,7 +1006,7 @@ class AdminAIPriorityCMSView(APIView):
             PriorityRuleSet.objects.select_for_update().filter(is_active=True).update(is_active=False)
             active = PriorityRuleSet.objects.create(
                 version=version,
-                algorithm_version="expert-v2-cms",
+                algorithm_version="expert-v3-contextual",
                 is_active=True,
                 thresholds=config["thresholds"],
                 sector_criteria=config["sector_criteria"],

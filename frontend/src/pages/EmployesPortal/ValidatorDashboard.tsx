@@ -118,7 +118,7 @@ const ValidatorDashboard: React.FC = () => {
           <div className="portal-card-header">
             <h2 className="text-lg font-semibold">Validation Operations</h2>
           </div>
-          <div className="portal-card-body grid grid-cols-1 xl:grid-cols-2 gap-3">
+          <div className="portal-card-body grid grid-cols-1 xl:grid-cols-3 gap-3">
             <Link to="/validator/projects" className="portal-card p-4 hover:shadow-md transition-shadow">
               <p className="font-semibold">Open Pending Projects</p>
               <p className="text-sm text-slate-500 mt-1">Review full template forms and issue approve/reject actions.</p>
@@ -126,6 +126,10 @@ const ValidatorDashboard: React.FC = () => {
             <Link to="/validator/projects/history" className="portal-card p-4 hover:shadow-md transition-shadow">
               <p className="font-semibold">Reviewed & Endorsed History</p>
               <p className="text-sm text-slate-500 mt-1">See projects you already reviewed/endorsed and open them again.</p>
+            </Link>
+            <Link to="/validator/projects/update-forms" className="portal-card p-4 hover:shadow-md transition-shadow">
+              <p className="font-semibold">Update Older Project Forms</p>
+              <p className="text-sm text-slate-500 mt-1">Select older projects and move them to the latest contributor form.</p>
             </Link>
           </div>
         </div>

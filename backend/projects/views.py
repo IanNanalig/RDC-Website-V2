@@ -22,6 +22,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import SimpleRateThrottle
 from rest_framework.views import APIView
 from cms.form_schema import FormSchemaError, validate_simplified_answers
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -117,6 +118,14 @@ PUBLIC_PROJECTS_CACHE_TTL_SECONDS = 3600
 PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL = "public, no-cache, must-revalidate"
 PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 3
 PUBLIC_PROJECTS_CACHE_VERSION_KEY = "public_projects:version"
+
+
+class PublicChatRateThrottle(SimpleRateThrottle):
+    scope = "public_chat"
+    rate = getattr(settings, "GROQ_PUBLIC_CHAT_RATE", "20/min")
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {"scope": self.scope, "ident": self.get_ident(request)}
 
 
 class HealthCheckView(APIView):
@@ -678,6 +687,41 @@ def _is_simplified_profile(profile_data):
     return str(profile_data.get("submission_type") or "").strip().lower() == "simplified" or isinstance(
         profile_data.get("simplified_form"), dict
     )
+
+
+def _saved_contributor_form_marker(profile_data):
+    """Return the saved form key/version for a simplified project."""
+    if not _is_simplified_profile(profile_data):
+        return None
+    marker = profile_data.get("form_schema")
+    marker = marker if isinstance(marker, dict) else {}
+    key = str(marker.get("key") or "simplified-rdip").strip() or "simplified-rdip"
+    try:
+        version = int(marker.get("version") or 1)
+    except (TypeError, ValueError):
+        version = 1
+    return key, max(version, 1)
+
+
+def _upgrade_profile_form_marker(profile_data, source_profile_data):
+    """Upgrade an editable snapshot to the source project's newer form marker."""
+    if not isinstance(profile_data, dict):
+        return profile_data, None
+    saved_marker = _saved_contributor_form_marker(profile_data)
+    source_marker = _saved_contributor_form_marker(source_profile_data)
+    if saved_marker is None or source_marker is None:
+        return profile_data, None
+    saved_key, saved_version = saved_marker
+    source_key, source_version = source_marker
+    if saved_key != source_key or saved_version >= source_version:
+        return profile_data, None
+    upgraded = deepcopy(profile_data)
+    upgraded["form_schema"] = {"key": source_key, "version": source_version}
+    return upgraded, {
+        "form_key": source_key,
+        "previous_form_version": saved_version,
+        "new_form_version": source_version,
+    }
 
 
 def _project_link(project, recipient):
@@ -1355,6 +1399,7 @@ def _compose_public_content_answer(question: str, content: PublicContent, langua
 
 class PublicChatAskView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [PublicChatRateThrottle]
 
     def post(self, request):
         question = str(request.data.get("question") or "").strip()
@@ -1446,6 +1491,80 @@ class PublicChatAskView(APIView):
             ranked.sort(key=lambda item: item[0], reverse=True)
 
         _public_chat_update_faq(normalized, question, best)
+
+        if not contact_intent and getattr(best, "slug", "") != "contact":
+            ordered_content = []
+            seen_content_ids = set()
+            if best:
+                ordered_content.append(best)
+                seen_content_ids.add(best.pk)
+            for _score, content in ranked:
+                if content.pk not in seen_content_ids:
+                    ordered_content.append(content)
+                    seen_content_ids.add(content.pk)
+            if len(ordered_content) < 8:
+                for content in content_qs:
+                    if content.pk not in seen_content_ids:
+                        ordered_content.append(content)
+                        seen_content_ids.add(content.pk)
+                    if len(ordered_content) >= 8:
+                        break
+            try:
+                from ai_engine.groq_chat import answer_public_question
+
+                groq_answer = answer_public_question(
+                    question,
+                    language,
+                    [
+                        {
+                            "slug": content.slug,
+                            "title": content.title,
+                            "url": content.url,
+                            "summary": content.summary,
+                            "body": content.body,
+                        }
+                        for content in ordered_content
+                    ],
+                )
+            except Exception:
+                groq_answer = None
+            if groq_answer and groq_answer.get("answered"):
+                selected_slugs = set(groq_answer.get("source_slugs") or [])
+                selected_content = [content for content in ordered_content if content.slug in selected_slugs]
+                if not selected_content and best:
+                    selected_content = [best]
+                sources = _public_chat_sources(None, [
+                    {"title": content.title, "url": content.url}
+                    for content in selected_content
+                    if content.url
+                ])
+                related_links = _public_chat_related_links(ranked, exclude_slug=getattr(best, "slug", ""))
+                confidence = float(groq_answer.get("confidence") or 0)
+                answer_type = _public_chat_answer_type(confidence, True)
+                interaction = _public_chat_record_interaction(
+                    request,
+                    question,
+                    normalized,
+                    language,
+                    selected_content[0] if selected_content else best,
+                    confidence,
+                    answer_type,
+                )
+                return Response(
+                    {
+                        "answer": groq_answer["answer"],
+                        "confidence": round(confidence, 2),
+                        "answer_type": answer_type,
+                        "sources": sources,
+                        "related_links": related_links,
+                        "language": language,
+                        "interaction_id": interaction.id,
+                        "suggested_questions": suggested,
+                        "ai_provider": "groq",
+                        "ai_model": groq_answer.get("model"),
+                        "used_backup_model": bool(groq_answer.get("used_backup")),
+                    }
+                )
 
         if not best or best_score < PUBLIC_CHAT_MIN_SCORE:
             contact_content = content_qs.filter(slug="contact").first()
@@ -3035,6 +3154,12 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if not isinstance(supplements, dict):
             supplements = {}
         analysis, reused = analyze_project(project, request.user, snapshot, supplements)
+        ai_provider = (
+            analysis.suggested_scores.get("ai_provider")
+            if isinstance(analysis.suggested_scores, dict)
+            and isinstance(analysis.suggested_scores.get("ai_provider"), dict)
+            else {}
+        )
         _log_activity(
             request,
             "priority_analysis_reused" if reused else "priority_analysis_run",
@@ -3044,6 +3169,10 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 "score": float(analysis.base_score),
                 "priority": analysis.suggested_priority,
                 "reused": reused,
+                "ai_provider": ai_provider.get("name") or "local",
+                "ai_model": ai_provider.get("model") or "",
+                "used_backup_model": bool(ai_provider.get("used_backup")),
+                "ai_mode": ai_provider.get("mode") or "",
             },
         )
         return Response(
@@ -3485,12 +3614,32 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             state__in=["draft", "submitted", "validator_draft", "reviewed"],
         ).order_by("-updated_at").first()
         if active:
+            if active.state in ("draft", "reviewed"):
+                upgraded_profile, form_change = _upgrade_profile_form_marker(
+                    active.profile_data_snapshot,
+                    project.profile_data,
+                )
+                if form_change:
+                    active.profile_data_snapshot = upgraded_profile
+                    active.save(update_fields=["profile_data_snapshot", "updated_at"])
+                    _log_activity(
+                        request,
+                        "project_revision_updated",
+                        project,
+                        {
+                            "operation": "progress_draft_form_version_sync",
+                            "revision_id": active.id,
+                            "revision_number": active.revision_number,
+                            **form_change,
+                        },
+                    )
             return Response(ProjectRevisionSerializer(active).data)
 
         current = _ensure_public_revision(project, request.user)
         base_profile = deepcopy(current.profile_data_snapshot if current else project.profile_data)
         if not isinstance(base_profile, dict):
             base_profile = {}
+        base_profile, _ = _upgrade_profile_form_marker(base_profile, project.profile_data)
         revision = ProjectRevision.objects.create(
             project=project,
             revision_number=_next_revision_number(project),
@@ -3947,7 +4096,35 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
             review_status = review_status_for(project)
             return reviewed_by_id == user.id and review_status in ("draft", "reviewed", "endorsed", "rejected")
 
+        if self.action == "update_form":
+            return _project_queryset_with_related(
+                Project.objects.filter(archived=False, is_active=True).order_by("-created_at"),
+                prefetch_priority=False,
+            )
+
         if self.action == "list":
+            if scope == "update_forms":
+                # Imported lazily to keep the project/CMS dependency one-way.
+                from cms.models import CMSContributorForm
+
+                live_versions = dict(
+                    CMSContributorForm.objects.filter(
+                        current_published_version__isnull=False,
+                    ).values_list("key", "current_published_version__version_number")
+                )
+                outdated_ids = []
+                for project in all_projects.filter(archived=False, is_active=True):
+                    marker = _saved_contributor_form_marker(project.profile_data)
+                    if marker is None:
+                        continue
+                    key, saved_version = marker
+                    live_version = live_versions.get(key)
+                    if live_version is not None and saved_version < live_version:
+                        outdated_ids.append(project.id)
+                return _project_queryset_with_related(
+                    Project.objects.filter(id__in=outdated_ids).order_by("-updated_at"),
+                    prefetch_priority=False,
+                )
             if scope == "history":
                 ids = [
                     p.id
@@ -3992,6 +4169,111 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
 
     def destroy(self, request, *args, **kwargs):
         raise PermissionDenied("Only admin can delete projects")
+
+    @action(detail=True, methods=["post"], url_path="update-form")
+    def update_form(self, request, pk=None):
+        """Opt a pinned simplified project into the latest published form."""
+        from cms.models import CMSContributorForm
+
+        with transaction.atomic():
+            project = (
+                Project.objects.select_for_update()
+                .filter(pk=pk, archived=False, is_active=True)
+                .first()
+            )
+            if project is None:
+                return Response({"detail": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            profile_data = deepcopy(project.profile_data) if isinstance(project.profile_data, dict) else {}
+            marker = _saved_contributor_form_marker(profile_data)
+            if marker is None:
+                return Response(
+                    {"detail": "Only projects using the simplified contributor form can be updated."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            form_key, previous_version = marker
+            contributor_form = (
+                CMSContributorForm.objects.select_related("current_published_version")
+                .filter(key=form_key)
+                .first()
+            )
+            live_version = (
+                contributor_form.current_published_version.version_number
+                if contributor_form and contributor_form.current_published_version
+                else None
+            )
+            if live_version is None:
+                return Response(
+                    {"detail": "No published contributor form is available for this project."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if previous_version >= live_version:
+                return Response(
+                    {"detail": "This project already uses the latest contributor form."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            profile_data["form_schema"] = {"key": form_key, "version": live_version}
+            project.profile_data = profile_data
+            project.save(update_fields=["profile_data", "updated_at"])
+
+            updated_progress_drafts = []
+            editable_progress_revisions = ProjectRevision.objects.select_for_update().filter(
+                project=project,
+                revision_type="progress_update",
+                state__in=["draft", "reviewed"],
+            )
+            for revision in editable_progress_revisions:
+                upgraded_profile, form_change = _upgrade_profile_form_marker(
+                    revision.profile_data_snapshot,
+                    profile_data,
+                )
+                if not form_change:
+                    continue
+                revision.profile_data_snapshot = upgraded_profile
+                revision.save(update_fields=["profile_data_snapshot", "updated_at"])
+                updated_progress_drafts.append({
+                    "revision_id": revision.id,
+                    "revision_number": revision.revision_number,
+                    **form_change,
+                })
+
+            _log_activity(
+                request,
+                "project_update",
+                project,
+                {
+                    "operation": "contributor_form_version_update",
+                    "form_key": form_key,
+                    "previous_form_version": previous_version,
+                    "new_form_version": live_version,
+                    "project_status_unchanged": True,
+                    "updated_progress_drafts": updated_progress_drafts,
+                },
+            )
+            _notify_many(
+                _project_employee_recipients(project),
+                event_type="project_form_version_updated",
+                title="Project contributor form updated",
+                message=(
+                    f"{_project_title(project)} now uses contributor form version {live_version}. "
+                    "Existing answers were preserved; newly added fields may need to be completed "
+                    "if the validator requests revisions."
+                ),
+                project=project,
+                actor=request.user,
+                dedupe_key=f"project:{project.id}:form-version:{live_version}",
+            )
+
+        return Response({
+            "detail": "The project now uses the latest contributor form. Existing answers were preserved.",
+            "project_id": project.id,
+            "previous_form_version": previous_version,
+            "form_version": live_version,
+            "current_form_version": live_version,
+            "uses_outdated_form": False,
+            "updated_progress_drafts": len(updated_progress_drafts),
+        })
 
 
 class AdminProjectViewSet(BaseProjectViewSet):

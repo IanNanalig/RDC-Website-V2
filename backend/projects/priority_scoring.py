@@ -4,6 +4,8 @@ import re
 from copy import deepcopy
 from decimal import Decimal, ROUND_HALF_UP
 
+from django.conf import settings
+
 from .models import PriorityRuleSet, ProjectPriorityAnalysis, ProjectPriorityConfirmation
 from .utils import derive_ncr_lgus
 
@@ -11,7 +13,95 @@ from .utils import derive_ncr_lgus
 RULE_VERSION = "rdc-priority-v1"
 ALGORITHM_VERSION = "expert-v1"
 REGIONAL_THRESHOLD = 200_000_000
-ANALYSIS_GUIDANCE_VERSION = "expanded-explanations-v2"
+ANALYSIS_GUIDANCE_VERSION = "contextual-explanations-v3"
+
+DEFAULT_OUTCOME_CONTEXT_PHRASES = [
+    "improve", "increase", "expand", "provide", "strengthen", "reduce", "protect",
+    "develop", "upgrade", "enhance", "support", "deliver", "implement", "restore",
+    "modernize", "promote", "ensure", "construct", "build", "rehabilitate", "establish",
+]
+
+OUTCOME_CONTEXT_RULES = {
+    "capabilities": {
+        "guidance": "Valid evidence must describe how a project intervention will improve access, quality, protection, or measurable outcomes for individuals, families, or communities in areas such as health, education, housing, or social protection.",
+        "phrases": ["improve health", "improve learning", "expand access", "increase coverage", "deliver services", "protect families", "support families", "provide housing", "strengthen social protection", "benefit households", "reduce mortality"],
+    },
+    "jobs": {
+        "guidance": "Valid evidence must connect employment, livelihood, industry, business, or trade terms to job creation, higher incomes, improved productivity, enterprise growth, skills development, or product competitiveness.",
+        "phrases": ["create jobs", "generate employment", "increase income", "support livelihoods", "develop skills", "expand enterprises", "improve productivity", "strengthen industry", "increase competitiveness", "grow businesses", "promote trade"],
+    },
+    "connectivity": {
+        "guidance": "Valid evidence must explain how transport or digital infrastructure will connect locations or users, reduce travel time or congestion, increase capacity, or improve safe and inclusive mobility.",
+        "phrases": ["improve connectivity", "connect communities", "reduce travel time", "decongest traffic", "increase transport capacity", "improve mobility", "expand access", "upgrade roads", "construct roads", "rehabilitate bridges", "link growth centers"],
+    },
+    "sustainable_utilities": {
+        "guidance": "Valid evidence must connect water, drainage, flood, energy, sewerage, or irrigation infrastructure to expanded coverage, reliability, resilience, treatment capacity, or reduced service disruption and flooding.",
+        "phrases": ["expand water supply", "improve water access", "provide potable water", "reduce flooding", "improve drainage", "increase energy capacity", "provide reliable energy", "construct sewerage", "treat wastewater", "rehabilitate irrigation", "improve service reliability"],
+    },
+    "social_support": {
+        "guidance": "Valid evidence must show how infrastructure will expand or improve delivery of education, health, housing, or community services, especially capacity and access for intended beneficiaries.",
+        "phrases": ["expand service access", "increase facility capacity", "construct schools", "rehabilitate hospitals", "provide housing", "improve community services", "support education delivery", "support health services", "benefit underserved communities"],
+    },
+    "human_social": {
+        "guidance": "Valid evidence must describe a concrete improvement in health, education, nutrition, housing, community welfare, or access to social services and identify the people or communities expected to benefit.",
+        "phrases": ["improve health outcomes", "expand education access", "improve nutrition", "provide housing", "strengthen community services", "increase social service coverage", "support vulnerable families", "improve quality of life"],
+    },
+    "vulnerability": {
+        "guidance": "Valid evidence must explain how the project reduces exposure to poverty, food insecurity, price shocks, disasters, or other risks, or strengthens protection and resilience for vulnerable groups.",
+        "phrases": ["reduce vulnerability", "reduce poverty", "protect purchasing power", "improve food security", "strengthen resilience", "provide social protection", "reduce disaster risk", "support vulnerable groups", "stabilize household income"],
+    },
+    "income": {
+        "guidance": "Valid evidence must connect skills, training, employment, livelihood, or enterprise support to increased employability, sustainable income, job placement, or livelihood opportunities.",
+        "phrases": ["increase income", "improve employability", "create employment", "support livelihoods", "develop skills", "provide training", "expand job opportunities", "support enterprises", "place workers"],
+    },
+    "agriculture": {
+        "guidance": "Valid evidence must connect agriculture, fisheries, farming, or food systems to modernization, productivity, value-chain development, market access, food security, or farmer and fisher income.",
+        "phrases": ["modernize agriculture", "increase farm productivity", "improve food security", "support farmers", "support fishers", "expand market access", "develop value chains", "reduce post-harvest losses", "increase agricultural income"],
+    },
+    "industry_services": {
+        "guidance": "Valid evidence must explain how the project strengthens industry, services, tourism, enterprises, or business activity through productivity, market growth, investment, capacity, or service innovation.",
+        "phrases": ["revitalize industry", "improve services", "grow tourism", "support enterprises", "increase productivity", "attract investment", "expand markets", "strengthen businesses", "create economic activity"],
+    },
+    "trade_rd": {
+        "guidance": "Valid evidence must connect trade, investment, research, technology, digitalization, or innovation to commercialization, adoption, productivity, market access, investment generation, or measurable research outputs.",
+        "phrases": ["promote trade", "attract investment", "advance research", "develop technology", "adopt technology", "support innovation", "commercialize research", "expand market access", "increase digital adoption", "improve productivity"],
+    },
+    "livable": {
+        "guidance": "Valid evidence must show how housing, urban development, green space, waste management, or community facilities improve safety, environmental quality, accessibility, or living conditions.",
+        "phrases": ["establish livable communities", "improve living conditions", "provide affordable housing", "improve urban services", "expand green spaces", "improve waste management", "reduce landfill waste", "recover solid waste", "recycle waste", "create safe communities", "improve accessibility", "revitalize neighborhoods"],
+    },
+    "climate": {
+        "guidance": "Valid evidence must identify a climate hazard or emissions source and explain how project activities reduce exposure, increase adaptive capacity, strengthen resilience, or mitigate greenhouse-gas emissions.",
+        "phrases": ["adapt to climate change", "climate mitigation", "reduce climate risk", "strengthen climate resilience", "improve environmental resilience", "mitigate emissions", "reduce greenhouse gas emissions", "protect against flooding", "restore ecosystems", "increase adaptive capacity", "reduce heat exposure"],
+    },
+    "disaster": {
+        "guidance": "Valid evidence must connect disaster or risk terms to preparedness, prevention, early warning, emergency response, relief, recovery, reconstruction, or reduced loss of life and assets.",
+        "phrases": ["strengthen disaster preparedness", "reduce disaster risk", "improve early warning", "support emergency response", "provide disaster relief", "accelerate recovery", "support reconstruction", "protect lives and assets", "reduce flood risk"],
+    },
+    "finance": {
+        "guidance": "Valid evidence must show how the project expands access to financial services or improves budgeting, revenue, expenditure, fiscal controls, transparency, or public financial management outcomes.",
+        "phrases": ["expand financial access", "improve financial inclusion", "improve budgeting", "strengthen fiscal management", "increase revenue efficiency", "improve expenditure management", "strengthen financial controls", "improve fiscal transparency"],
+    },
+    "governance": {
+        "guidance": "Valid evidence must connect governance, administration, institutions, culture, or public service terms to accountability, participation, institutional capacity, service quality, efficiency, or culture-sensitive delivery.",
+        "phrases": ["improve governance", "strengthen institutions", "increase accountability", "improve public services", "increase participation", "build institutional capacity", "improve administrative efficiency", "promote culture-sensitive development", "strengthen transparency"],
+    },
+    "peace_justice": {
+        "guidance": "Valid evidence must explain how security, safety, peace, justice, or policing interventions prevent harm, improve emergency or law-enforcement capacity, expand access to justice, or strengthen public safety.",
+        "phrases": ["improve public safety", "strengthen peace and order", "prevent crime", "expand access to justice", "improve law enforcement", "protect communities", "strengthen emergency response", "reduce violence", "improve justice services"],
+    },
+}
+
+
+def _outcome_context_defaults(key, label):
+    configured = OUTCOME_CONTEXT_RULES.get(str(key), {})
+    return {
+        "guidance": configured.get("guidance") or (
+            f"Valid evidence must connect this criterion's matching terms to a concrete project action, output, "
+            f"beneficiary effect, or measurable result that supports {str(label).strip().lower()}."
+        ),
+        "phrases": list(configured.get("phrases") or DEFAULT_OUTCOME_CONTEXT_PHRASES),
+    }
 
 PRIORITY_LABELS = {
     "high": "High Priority",
@@ -127,11 +217,19 @@ FACT_VALUE_LABELS = {
 
 
 def _criterion_rule(key, label, weight, keywords):
+    context_defaults = _outcome_context_defaults(key, label)
     return {
         "key": str(key),
         "label": str(label),
         "weight": float(weight),
         "keywords": [str(keyword) for keyword in keywords],
+        "description": (
+            f"Measures whether the documented project activities and intended results contribute to "
+            f"{str(label).strip().lower()}."
+        ),
+        "matching_guidance": context_defaults["guidance"],
+        "match_mode": "contextual",
+        "context_phrases": context_defaults["phrases"],
     }
 
 
@@ -203,6 +301,19 @@ def _keywords(value, label):
     return cleaned
 
 
+def _optional_keywords(value, label):
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be a list of words or phrases.")
+    cleaned = []
+    for keyword in value:
+        word = re.sub(r"\s+", " ", str(keyword or "").strip().lower())
+        if word and word not in cleaned:
+            cleaned.append(word)
+    return cleaned
+
+
 def _criterion_rules(value, label):
     if not isinstance(value, list) or not value:
         raise ValueError(f"{label} must contain at least one criterion.")
@@ -220,11 +331,28 @@ def _criterion_rules(value, label):
         title = str(item.get("label") or "").strip()
         if not title:
             raise ValueError(f"{label} criterion {index} requires a label.")
+        context_defaults = _outcome_context_defaults(key, title)
+        description = str(item.get("description") or "").strip() or (
+            f"Measures whether the documented project activities and intended results contribute to {title.lower()}."
+        )
+        matching_guidance = str(item.get("matching_guidance") or "").strip() or context_defaults["guidance"]
+        match_mode = str(item.get("match_mode") or "keyword").strip().lower()
+        if match_mode not in ("keyword", "contextual"):
+            raise ValueError(f"{title} matching mode must be keyword or contextual.")
+        context_phrases = _optional_keywords(item.get("context_phrases"), f"{title} supporting context phrases")
+        if item.get("context_phrases") is None:
+            context_phrases = context_defaults["phrases"]
+        if match_mode == "contextual" and not context_phrases:
+            raise ValueError(f"{title} requires at least one supporting context phrase in contextual mode.")
         rows.append({
             "key": key,
             "label": title,
             "weight": _number(item.get("weight"), f"{title} weight", 0, 100),
             "keywords": _keywords(item.get("keywords"), f"{title} keywords"),
+            "description": description,
+            "matching_guidance": matching_guidance,
+            "match_mode": match_mode,
+            "context_phrases": context_phrases,
         })
     return rows
 
@@ -381,6 +509,21 @@ def priority_rule_config(rule_set=None):
         return validate_priority_rule_config(default_priority_rule_config())
 
 
+def contextual_priority_rule_draft(rule_set=None):
+    """Prepare an editable contextual-only draft without mutating the active rule version."""
+    config = priority_rule_config(rule_set)
+    outcome_rules = [*config["keyword_dictionaries"]["common_outcomes"]]
+    for sector_rules in config["sector_criteria"].values():
+        outcome_rules.extend(sector_rules)
+    for rule in outcome_rules:
+        rule["match_mode"] = "contextual"
+        configured = OUTCOME_CONTEXT_RULES.get(rule["key"])
+        if configured:
+            rule["matching_guidance"] = configured["guidance"]
+            rule["context_phrases"] = list(configured["phrases"])
+    return validate_priority_rule_config(config)
+
+
 def _money_total(value):
     if not isinstance(value, dict):
         return 0
@@ -449,6 +592,46 @@ def _compact_text(value, maximum=180):
     if len(text) <= maximum:
         return text
     return f"{text[:maximum - 3].rstrip()}..."
+
+
+def _term_in_text(term, text):
+    normalized_term = re.sub(r"\s+", " ", str(term or "").strip().lower())
+    normalized_text = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not normalized_term or not normalized_text:
+        return False
+    return re.search(rf"(?<!\w){re.escape(normalized_term)}(?!\w)", normalized_text) is not None
+
+
+def _contextual_outcome_matches(form, keywords, context_phrases):
+    """Count primary terms only when the same sentence contains supporting context."""
+    sources = []
+    matched_terms = set()
+    values = [(field, form.get(field)) for field in SCORING_TEXT_FIELDS if field != "rdpMainChapter"]
+    values.append(("sdgSelections", form.get("sdgSelections") or []))
+    for field, raw_value in values:
+        if isinstance(raw_value, (list, tuple)):
+            display_value = ", ".join(str(value) for value in raw_value if str(value).strip())
+        else:
+            display_value = str(raw_value or "")
+        segments = [
+            re.sub(r"\s+", " ", segment).strip()
+            for segment in re.split(r"(?:[.!?;]+|\r?\n)+", display_value)
+            if segment.strip()
+        ]
+        for segment in segments:
+            primary_matches = [term for term in keywords if _term_in_text(term, segment)]
+            supporting_matches = [term for term in context_phrases if _term_in_text(term, segment)]
+            if not primary_matches or not supporting_matches:
+                continue
+            matched_terms.update(primary_matches)
+            sources.append({
+                "field": field,
+                "label": SCORING_FIELD_LABELS.get(field, field),
+                "matches": primary_matches,
+                "context_matches": supporting_matches,
+                "excerpt": _compact_text(segment),
+            })
+    return sorted(matched_terms), sources
 
 
 def _evidence_sources(form, evidence):
@@ -536,29 +719,80 @@ def _outcome_explanation(item, form):
     weight = float(item.get("weight") or 0)
     score = float(item.get("score") or 0)
     evidence = [str(value).strip().lower() for value in item.get("evidence") or [] if str(value).strip()]
-    sources = _evidence_sources(form, evidence)
+    sources = item.get("evidence_sources") if isinstance(item.get("evidence_sources"), list) else []
+    if not sources:
+        sources = _evidence_sources(form, evidence)
     chapter = str(form.get("rdpMainChapter") or "").lower()
-    chapter_match = any(term in chapter for term in evidence)
+    chapter_match = bool(item.get("chapter_match")) if "chapter_match" in item else any(
+        _term_in_text(term, chapter) for term in evidence
+    )
+    match_mode = str(item.get("match_mode") or "keyword")
+    rule_description = str(item.get("rule_description") or "").strip()
+    matching_guidance = str(item.get("matching_guidance") or "").strip()
+    ai_explanation = str(item.get("ai_explanation") or "").strip()
 
-    if chapter_match and len(evidence) >= 2:
+    if ai_explanation:
+        evidence_note = ""
+        if evidence:
+            evidence_note = " Evidence cited from the project: " + "; ".join(
+                f"'{value}'" for value in evidence[:5]
+            ) + "."
+        return (
+            f"Contextual Assessment: {ai_explanation}{evidence_note} "
+            f"{_weighted_calculation(raw, weight, score)} The result is advisory and must be confirmed by the validator."
+        ).strip()
+
+    if match_mode == "contextual" and chapter_match and len(evidence) >= 2:
+        basis = (
+            "The selected RDP Main Chapter aligns with the criterion, and at least two distinct matching terms appear "
+            "in sentences that also describe a project action, output, beneficiary effect, or intended result. "
+            "This meets the strongest contextual-alignment condition."
+        )
+    elif match_mode == "contextual" and chapter_match and evidence:
+        basis = (
+            "The selected RDP Main Chapter aligns with the criterion, and the narrative contains a context-supported "
+            "matching term. This meets the chapter-plus-context condition."
+        )
+    elif match_mode == "contextual" and len(evidence) >= 3:
+        basis = (
+            "The project narrative contains at least three distinct matching terms in sentences that also describe "
+            "concrete actions or intended results. The selected RDP Main Chapter did not add an alignment signal."
+        )
+    elif match_mode == "contextual" and evidence:
+        basis = (
+            f"The scorer found {len(evidence)} distinct context-supported matching "
+            f"term{'s' if len(evidence) != 1 else ''}. This shows a limited documented connection, so the criterion "
+            "did not qualify for a stronger rating."
+        )
+    elif match_mode == "contextual" and chapter_match:
+        basis = (
+            "The selected RDP Main Chapter contains aligned wording, but no project sentence connects a matching term "
+            "to a concrete action, output, beneficiary effect, or intended result. The chapter selection alone therefore "
+            "received no outcome-alignment points under this contextual rule."
+        )
+    elif match_mode == "contextual":
+        basis = (
+            "No context-supported evidence for this outcome was found. A matching word by itself was not counted unless "
+            "the same sentence connected it to a concrete project action, output, beneficiary effect, or intended result."
+        )
+    elif chapter_match and len(evidence) >= 2:
         basis = (
             "The RDP Main Chapter contains aligned wording and the analyzed project fields contain at least two relevant terms. "
-            "This meets the strongest text-alignment condition in the current rule."
+            "This meets the strongest text-alignment condition in the legacy keyword rule."
         )
     elif chapter_match:
         basis = (
-            "The RDP Main Chapter contains aligned wording. This is treated as a strong alignment signal even though "
-            "the supporting project narrative contains fewer than two distinct matched terms."
+            "The RDP Main Chapter contains aligned wording. The legacy keyword rule treats this as a strong alignment signal."
         )
     elif len(evidence) >= 3:
         basis = (
-            "The project narrative contains at least three distinct relevant terms, which meets the stronger narrative-alignment condition. "
-            "The selected RDP Main Chapter did not provide an additional matching signal."
+            "The project narrative contains at least three distinct relevant terms, which meets the stronger "
+            "narrative-alignment condition in the legacy keyword rule."
         )
     elif evidence:
         basis = (
-            f"The scorer found only {len(evidence)} distinct relevant term{'s' if len(evidence) != 1 else ''}. "
-            "This indicates a limited text connection, so the criterion did not qualify for a stronger alignment rating."
+            f"The legacy keyword rule found only {len(evidence)} distinct relevant "
+            f"term{'s' if len(evidence) != 1 else ''}, so it assigned only a limited text-alignment rating."
         )
     else:
         basis = (
@@ -570,20 +804,27 @@ def _outcome_explanation(item, form):
         source_parts = []
         for source in sources[:4]:
             terms = ", ".join(f"'{term}'" for term in source["matches"])
+            context_terms = ", ".join(f"'{term}'" for term in source.get("context_matches") or [])
+            context_text = f" with supporting context {context_terms}" if context_terms else ""
             source_parts.append(
-                f"{source['label']} contains {terms} in the text '{source['excerpt']}'"
+                f"{source['label']} contains {terms}{context_text} in the text '{source['excerpt']}'"
             )
         source_text = " Evidence was found in these fields: " + "; ".join(source_parts) + "."
     else:
         source_text = ""
 
+    rule_context = ""
+    if rule_description:
+        rule_context += f" Criterion intent: {rule_description}"
+    if matching_guidance:
+        rule_context += f" CMS matching guidance: {matching_guidance}"
     limitation = (
         " These matches show why the rule assigned the rating, but they do not prove that the project will achieve the outcome; "
         "the validator must confirm that the described activities and measurable outputs genuinely support it."
         if evidence
         else " The validator should add or verify outcome evidence only when it is factually supported by the project."
     )
-    return f"{basis}{source_text} {_weighted_calculation(raw, weight, score)}{limitation}"
+    return f"{rule_context.strip()} {basis}{source_text} {_weighted_calculation(raw, weight, score)}{limitation}".strip()
 
 
 def _merge_facts(form, supplements):
@@ -606,9 +847,9 @@ def _fact_key(value):
     }.get(key, key)
 
 
-def _criterion(key, label, raw, weight, remarks, evidence=None):
+def _criterion(key, label, raw, weight, remarks, evidence=None, extra=None):
     points = (Decimal(str(raw)) / Decimal("10") * Decimal(str(weight))).quantize(Decimal("0.01"))
-    return {
+    result = {
         "key": key,
         "criterion": label,
         "raw": raw,
@@ -617,6 +858,9 @@ def _criterion(key, label, raw, weight, remarks, evidence=None):
         "remarks": remarks,
         "evidence": evidence or [],
     }
+    if isinstance(extra, dict):
+        result.update(extra)
+    return result
 
 
 def _spatial_rating(scope, lgu_count):
@@ -653,16 +897,36 @@ def _sector_track(form, facts, text):
     return "social"
 
 
-def _outcome_rating(text, chapter, keywords, rating_rules):
+def _outcome_rating(form, text, chapter, outcome_rule, rating_rules):
+    keywords = outcome_rule["keywords"]
+    match_mode = outcome_rule.get("match_mode") or "keyword"
+    chapter_hit = any(_term_in_text(keyword, chapter) for keyword in keywords)
+    if match_mode == "contextual":
+        hits, evidence_sources = _contextual_outcome_matches(
+            form,
+            keywords,
+            outcome_rule.get("context_phrases") or [],
+        )
+        if chapter_hit and len(hits) >= 2:
+            raw = rating_rules["chapter_and_two_keywords"]
+        elif (chapter_hit and hits) or len(hits) >= 3:
+            raw = rating_rules["chapter_or_three_keywords"]
+        elif hits:
+            raw = rating_rules["one_keyword"]
+        else:
+            raw = rating_rules["no_keywords"]
+        return raw, hits, chapter_hit, evidence_sources
+
     hits = sorted({keyword for keyword in keywords if keyword in text})
-    chapter_hit = any(keyword in chapter for keyword in keywords)
     if chapter_hit and len(hits) >= 2:
-        return rating_rules["chapter_and_two_keywords"], hits
-    if chapter_hit or len(hits) >= 3:
-        return rating_rules["chapter_or_three_keywords"], hits
-    if len(hits) >= 1:
-        return rating_rules["one_keyword"], hits
-    return rating_rules["no_keywords"], []
+        raw = rating_rules["chapter_and_two_keywords"]
+    elif chapter_hit or len(hits) >= 3:
+        raw = rating_rules["chapter_or_three_keywords"]
+    elif hits:
+        raw = rating_rules["one_keyword"]
+    else:
+        raw = rating_rules["no_keywords"]
+    return raw, hits, chapter_hit, _evidence_sources(form, hits)
 
 
 def _priority_for(score, thresholds):
@@ -857,7 +1121,9 @@ def _build_analysis_guidance(snapshot, scores, regional, flags, suggested_priori
             evidence_sources = []
         else:
             explanation = _outcome_explanation(item, form)
-            evidence_sources = _evidence_sources(form, evidence)
+            evidence_sources = item.get("evidence_sources") if isinstance(item.get("evidence_sources"), list) else []
+            if not evidence_sources:
+                evidence_sources = _evidence_sources(form, evidence)
         reasoning_items.append(
             {
                 "key": key,
@@ -869,6 +1135,9 @@ def _build_analysis_guidance(snapshot, scores, regional, flags, suggested_priori
                 "explanation": explanation,
                 "evidence": evidence,
                 "evidence_sources": evidence_sources,
+                "rule_description": str(item.get("rule_description") or ""),
+                "matching_guidance": str(item.get("matching_guidance") or ""),
+                "match_mode": str(item.get("match_mode") or "keyword"),
             }
         )
         potential_gain = round(max(0.0, weight - score), 2)
@@ -1074,15 +1343,63 @@ def get_active_priority_rule_set():
     return _active_ruleset()
 
 
-def source_hash(snapshot, supplements, rule_set=None):
+def source_hash(
+    snapshot,
+    supplements,
+    rule_set=None,
+    project=None,
+):
     rules = rule_set or _active_ruleset()
+    historical_dataset_version = ""
+    if getattr(settings, "GROQ_ENABLED", False):
+        try:
+            from ai_engine.services import reference_dataset_version
+
+            historical_dataset_version = reference_dataset_version(
+                exclude_project_id=getattr(project, "pk", None),
+            )
+        except Exception:
+            historical_dataset_version = "unavailable"
     payload = {
         "snapshot": snapshot if isinstance(snapshot, dict) else {},
         "supplements": supplements if isinstance(supplements, dict) else {},
         "rules": rules.version,
         "algorithm": rules.algorithm_version,
+        "ai_provider": "groq" if getattr(settings, "GROQ_ENABLED", False) else "local-fallback",
+        "ai_primary_model": getattr(settings, "GROQ_PRIMARY_MODEL", "") if getattr(settings, "GROQ_ENABLED", False) else "",
+        "ai_backup_model": getattr(settings, "GROQ_BACKUP_MODEL", "") if getattr(settings, "GROQ_ENABLED", False) else "",
+        "historical_dataset_version": historical_dataset_version,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _confirmation_snapshot_hash(snapshot):
+    """Hash only the validator-visible project copy used for confirmation.
+
+    AI provider, model, and historical-reference changes are intentionally not
+    included here. Those may create a new analysis, but they must not make an
+    already confirmed, unchanged validator copy impossible to endorse.
+    """
+    normalized = deepcopy(snapshot) if isinstance(snapshot, dict) else {}
+    for key in ("validator_review", "contributor_snapshot", "public_summary"):
+        normalized.pop(key, None)
+    if isinstance(normalized.get("simplified_form"), dict):
+        marker = normalized.get("form_schema")
+        if isinstance(marker, dict):
+            normalized["form_schema"] = {
+                "key": str(marker.get("key") or "simplified-rdip"),
+                "version": marker.get("version") or 1,
+            }
+        else:
+            normalized["form_schema"] = {"key": "simplified-rdip", "version": 1}
+    encoded = json.dumps(
+        normalized,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -1092,7 +1409,7 @@ def analyze_project(project, validator, snapshot, supplements=None):
     rule_config = priority_rule_config(rules)
     thresholds = rule_config["thresholds"]
     dictionaries = rule_config["keyword_dictionaries"]
-    digest = source_hash(snapshot, supplements, rules)
+    digest = source_hash(snapshot, supplements, rules, project=project)
     existing = ProjectPriorityAnalysis.objects.filter(project=project, rule_set=rules, source_hash=digest).first()
     if existing:
         existing = ensure_analysis_guidance(existing)
@@ -1149,8 +1466,13 @@ def analyze_project(project, validator, snapshot, supplements=None):
         key = outcome_rule["key"]
         label = outcome_rule["label"]
         weight = outcome_rule["weight"]
-        keywords = outcome_rule["keywords"]
-        raw, evidence = _outcome_rating(text, chapter, keywords, dictionaries["outcome_rating"])
+        raw, evidence, chapter_match, evidence_sources = _outcome_rating(
+            form,
+            text,
+            chapter,
+            outcome_rule,
+            dictionaries["outcome_rating"],
+        )
         outcomes.append(_criterion(
             key,
             label,
@@ -1158,7 +1480,53 @@ def analyze_project(project, validator, snapshot, supplements=None):
             weight,
             "The suggested rating is based on relevant words found in the project details.",
             evidence,
+            {
+                "rule_description": outcome_rule.get("description") or "",
+                "matching_guidance": outcome_rule.get("matching_guidance") or "",
+                "match_mode": outcome_rule.get("match_mode") or "keyword",
+                "context_phrases": outcome_rule.get("context_phrases") or [],
+                "chapter_match": chapter_match,
+                "evidence_sources": evidence_sources,
+            },
         ))
+
+    groq_analysis = None
+    try:
+        from ai_engine.groq_priority import analyze_priority_with_groq
+
+        groq_analysis = analyze_priority_with_groq(
+            project,
+            snapshot,
+            supplements,
+            outcome_rules,
+            track,
+            dictionaries.get("guidelines") or [],
+        )
+    except Exception:
+        # An external inference failure must not block a validator from using the existing safe scorecard.
+        groq_analysis = None
+    if groq_analysis:
+        assessment_by_key = {
+            item["key"]: item
+            for item in groq_analysis.get("outcomes") or []
+            if isinstance(item, dict) and item.get("key")
+        }
+        for outcome in outcomes:
+            assessment = assessment_by_key.get(outcome["key"])
+            if not assessment:
+                continue
+            raw = max(0.0, min(10.0, float(assessment.get("raw_score") or 0)))
+            outcome["raw"] = raw
+            outcome["score"] = float(
+                (Decimal(str(raw)) / Decimal("10") * Decimal(str(outcome["weight"]))).quantize(Decimal("0.01"))
+            )
+            outcome["remarks"] = "Groq evaluated the project narrative against the active CMS criterion guidance."
+            outcome["evidence"] = assessment.get("evidence") or []
+            outcome["evidence_sources"] = []
+            outcome["match_mode"] = "groq_contextual"
+            outcome["ai_explanation"] = assessment.get("explanation") or ""
+            outcome["ai_recommendation"] = assessment.get("recommendation") or ""
+            outcome["ai_revision_fields"] = assessment.get("revision_fields") or []
     outcome_total = sum(item["score"] for item in outcomes)
     base_score = round(pap_total + outcome_total, 2)
 
@@ -1210,6 +1578,10 @@ def analyze_project(project, validator, snapshot, supplements=None):
         risks.append("Actual funding is reported without a financial accomplishment narrative.")
     if missing:
         risks.append("Official score confirmation requires missing factual inputs.")
+    if groq_analysis:
+        for risk in groq_analysis.get("risks") or []:
+            if risk and risk not in risks:
+                risks.append(risk)
 
     suggested_priority = "incomplete" if missing else _priority_for(base_score, thresholds)
     strongest = sorted(pap + outcomes, key=lambda item: item["score"], reverse=True)[:2]
@@ -1232,6 +1604,25 @@ def analyze_project(project, validator, snapshot, supplements=None):
         "base_total": base_score,
         "missing_facts": missing,
     }
+    if groq_analysis:
+        suggested_scores["ai_provider"] = groq_analysis.get("provider") or {"name": "groq"}
+        suggested_scores["groq_analysis"] = {
+            "historical_prediction": groq_analysis.get("historical_prediction") or {},
+        }
+    elif getattr(settings, "GROQ_ENABLED", False):
+        suggested_scores["ai_provider"] = {
+            "name": "groq",
+            "status": "unavailable",
+            "mode": "deterministic_emergency_fallback",
+            "primary_model": getattr(settings, "GROQ_PRIMARY_MODEL", ""),
+            "backup_model": getattr(settings, "GROQ_BACKUP_MODEL", ""),
+        }
+    else:
+        suggested_scores["ai_provider"] = {
+            "name": "local",
+            "status": "not_configured",
+            "mode": "deterministic_fallback",
+        }
     suggested_scores.update(
         _build_analysis_guidance(
             snapshot,
@@ -1243,6 +1634,51 @@ def analyze_project(project, validator, snapshot, supplements=None):
             supplements=supplements,
         )
     )
+    if groq_analysis:
+        overall_reasoning = str(groq_analysis.get("overall_reasoning") or "").strip()
+        if overall_reasoning:
+            existing_overall = str(suggested_scores.get("reasoning", {}).get("overall") or "")
+            suggested_scores["reasoning"]["overall"] = (
+                f"Assessment: {overall_reasoning} {existing_overall}"
+            ).strip()
+        recommendations = list(suggested_scores.get("recommendations") or [])
+        revisions = {
+            (item.get("source"), item.get("key")): item
+            for item in suggested_scores.get("revision_fields") or []
+            if isinstance(item, dict)
+        }
+        for outcome in outcomes:
+            recommendation = str(outcome.get("ai_recommendation") or "").strip()
+            field_keys = [str(value) for value in outcome.get("ai_revision_fields") or [] if str(value)]
+            fields = []
+            for key in field_keys:
+                field = {
+                    "key": key,
+                    "label": SCORING_FIELD_LABELS.get(key, key.replace("_", " ").title()),
+                    "source": "contributor",
+                    "reasons": [outcome["criterion"]],
+                    "priority": "high" if float(outcome.get("raw") or 0) < 5 else "medium",
+                }
+                fields.append(field)
+                revisions[("contributor", key)] = field
+            if recommendation:
+                recommendations = [
+                    item for item in recommendations
+                    if not (isinstance(item, dict) and item.get("scorecard") == "base" and item.get("key") == outcome["key"])
+                ]
+                recommendations.append(
+                    {
+                        "key": outcome["key"],
+                        "criterion": outcome["criterion"],
+                        "priority": "high" if float(outcome.get("raw") or 0) < 5 else "medium",
+                        "potential_gain": round(max(0.0, float(outcome["weight"]) - float(outcome["score"])), 2),
+                        "scorecard": "base",
+                        "recommendation": recommendation,
+                        "fields": fields,
+                    }
+                )
+        suggested_scores["recommendations"] = recommendations
+        suggested_scores["revision_fields"] = list(revisions.values())
     analysis = ProjectPriorityAnalysis.objects.create(
         project=project,
         validator=validator,
@@ -1263,13 +1699,16 @@ def analyze_project(project, validator, snapshot, supplements=None):
 
 
 def has_matching_confirmation(project, snapshot):
-    analysis = project.priority_analyses.filter(confirmations__isnull=False).order_by("-created_at").first()
-    if not analysis:
-        return False
     active_rules = _active_ruleset()
-    if analysis.rule_set_id != active_rules.pk:
-        return False
-    return analysis.source_hash == source_hash(snapshot, analysis.supplements, active_rules)
+    current_snapshot_hash = _confirmation_snapshot_hash(snapshot)
+    confirmed_analyses = project.priority_analyses.filter(
+        confirmations__isnull=False,
+        rule_set=active_rules,
+    ).distinct().only("input_snapshot")
+    return any(
+        _confirmation_snapshot_hash(analysis.input_snapshot) == current_snapshot_hash
+        for analysis in confirmed_analyses
+    )
 
 
 def confirm_analysis(analysis, validator, adjusted_scores, final_priority, override_rationale, confirmed_flags):

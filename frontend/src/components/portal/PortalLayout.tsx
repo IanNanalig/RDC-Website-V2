@@ -67,6 +67,7 @@ const navByRole: Record<Role, NavItem[]> = {
     { label: "Dashboard", to: "/validator/dashboard" },
     { label: "Review Queue", to: "/validator/projects" },
     { label: "Reviewed & Endorsed", to: "/validator/projects/history" },
+    { label: "Update Older Forms", to: "/validator/projects/update-forms" },
   ],
   employee: [
     { label: "Dashboard", to: "/employee/dashboard" },
@@ -267,7 +268,11 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
             <p className="portal-side-label">Navigation</p>
             <nav className="space-y-1">
               {navItems.map((item) => {
-                const active = location.pathname.startsWith(item.to);
+                const active =
+                  location.pathname === item.to ||
+                  (item.to === "/validator/projects" &&
+                    /^\/validator\/projects\/\d+\/review(?:\/simplified)?\/?$/.test(location.pathname)) ||
+                  (item.to !== "/validator/projects" && location.pathname.startsWith(`${item.to}/`));
                 const encodingDisabled =
                   role === "employee" && item.to === "/employee/projects/new" && !encodingWindow.can_encode;
                 return (

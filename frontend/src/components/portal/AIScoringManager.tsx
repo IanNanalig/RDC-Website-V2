@@ -15,7 +15,25 @@ const sectorLabels: Record<string, string> = {
   financial_admin: "Financial and Administrative",
 };
 
+const defaultContextPhrases = [
+  "improve", "increase", "expand", "provide", "strengthen", "reduce", "protect",
+  "develop", "upgrade", "enhance", "support", "deliver", "implement", "restore",
+  "modernize", "promote", "ensure", "construct", "build", "rehabilitate", "establish",
+];
+
 const cloneConfig = (value: CMSAIRuleConfig) => JSON.parse(JSON.stringify(value)) as CMSAIRuleConfig;
+
+const prepareContextualConfig = (value: CMSAIRuleConfig) => {
+  const next = cloneConfig(value);
+  const outcomeRules = [
+    ...next.keyword_dictionaries.common_outcomes,
+    ...Object.values(next.sector_criteria).flat(),
+  ];
+  outcomeRules.forEach((rule) => {
+    rule.match_mode = "contextual";
+  });
+  return next;
+};
 
 const errorDetail = (error: unknown, fallback: string) => {
   if (!(error instanceof Error) || !error.message) return fallback;
@@ -84,7 +102,16 @@ const OutcomeRuleEditor = ({
   };
   const add = () => {
     const key = `custom_${title.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_${Date.now()}`;
-    onChange([...rules, { key, label: "New outcome criterion", weight: 0, keywords: ["new keyword"] }]);
+    onChange([...rules, {
+      key,
+      label: "New outcome criterion",
+      weight: 0,
+      keywords: ["new keyword"],
+      description: "Explain what project outcome this criterion is intended to measure.",
+      matching_guidance: "Explain what the project sentence must demonstrate before a matching term counts as evidence.",
+      match_mode: "contextual",
+      context_phrases: defaultContextPhrases,
+    }]);
   };
   return (
     <details className="rounded-xl border border-slate-200 bg-white" open={title === "Common outcomes"}>
@@ -101,10 +128,40 @@ const OutcomeRuleEditor = ({
               </label>
               <NumberInput label="Weight" value={rule.weight} min={0} max={100} disabled={disabled} onChange={(weight) => update(index, { weight })} />
             </div>
+            <div className="mt-3 grid gap-3 lg:grid-cols-2">
+              <label className="block">
+                <span className="text-xs font-medium text-slate-600">What this criterion measures</span>
+                <textarea rows={3} disabled={disabled} value={rule.description || ""} onChange={(event) => update(index, { description: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100" placeholder="Briefly explain the intended outcome and what the project should contribute." />
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium text-slate-600">What counts as valid evidence</span>
+                <textarea rows={3} disabled={disabled} value={rule.matching_guidance || ""} onChange={(event) => update(index, { matching_guidance: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100" placeholder="Explain how a sentence must connect the terms to an activity, output, beneficiary, or result." />
+              </label>
+            </div>
+            <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+              <span className="text-xs font-medium text-slate-600">Matching method</span>
+              <p className="mt-0.5 text-sm font-semibold text-blue-900">
+                {rule.match_mode === "contextual" || !disabled
+                  ? "Contextual sentence match"
+                  : "Keyword presence only (historical active version)"}
+              </p>
+              <p className="mt-1 text-xs text-slate-600">
+                {rule.match_mode === "contextual" || !disabled
+                  ? "A topic word counts only when the same sentence also explains a relevant action, output, beneficiary effect, or result."
+                  : "This older version is preserved for audit history. An administrator can replace it by activating a contextual-only rule version."}
+              </p>
+            </div>
             <label className="mt-3 block">
-              <span className="text-xs font-medium text-slate-600">Matching words or phrases, separated by commas</span>
+              <span className="text-xs font-medium text-slate-600">Primary matching words or phrases, separated by commas</span>
               <input disabled={disabled} value={rule.keywords.join(", ")} onChange={(event) => update(index, { keywords: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100" />
             </label>
+            {(rule.match_mode || "keyword") === "contextual" && (
+              <div className="mt-3 block">
+                <span className="text-xs font-medium text-slate-600">Required supporting words or phrases in the same sentence</span>
+                <input disabled={disabled} value={(rule.context_phrases || []).join(", ")} onChange={(event) => update(index, { context_phrases: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100" />
+                <span className="mt-1 block text-xs text-slate-500">These phrases are specific to this criterion. A primary term scores only when the same sentence also contains at least one of these relevant supporting phrases.</span>
+              </div>
+            )}
             <div className="mt-2 flex items-center justify-between gap-3 text-xs text-slate-500">
               <span>Rule key: {rule.key}</span>
               {!disabled && rules.length > 1 && <button type="button" className="font-semibold text-rose-700" onClick={() => onChange(rules.filter((_, ruleIndex) => ruleIndex !== index))}>Remove criterion</button>}
@@ -134,13 +191,15 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
     try {
       const next = await cmsApi.getAIScoringWorkspace();
       setWorkspace(next);
-      setConfig(cloneConfig(next.active_rule_set.config));
+      setConfig(canEdit
+        ? prepareContextualConfig(next.active_rule_set.draft_config || next.active_rule_set.config)
+        : cloneConfig(next.active_rule_set.config));
     } catch (error) {
       setNotice(errorDetail(error, "Failed to load AI scoring rules and reference projects."));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [canEdit]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -178,7 +237,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
     try {
       const next = await cmsApi.activateAIScoringRules(config, changeNote.trim());
       setWorkspace(next);
-      setConfig(cloneConfig(next.active_rule_set.config));
+      setConfig(prepareContextualConfig(next.active_rule_set.draft_config || next.active_rule_set.config));
       setChangeNote("");
       setNotice(next.detail || "New AI scoring rules activated.");
     } catch (error) {
@@ -190,15 +249,15 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
 
   const trainModel = async () => {
     if (!canEdit || !workspace?.training_dataset?.ready_to_train) return;
-    if (!window.confirm("Train and activate a new model version from the currently eligible validator-confirmed projects? Existing model versions and analyses will remain preserved.")) return;
+    if (!window.confirm("Rebuild and activate the historical reference context from the currently eligible validator-confirmed projects? This creates a new versioned RAG dataset and local calibration model. It does not fine-tune Groq, change the approved scoring rules, or alter previous analyses.")) return;
     setTraining(true);
     setNotice("");
     try {
       const response = await cmsApi.trainAIModel() as { detail?: string };
-      setNotice(response?.detail || "A new historical learning model is active.");
+      setNotice(response?.detail || "The rebuilt historical reference context is active.");
       await load();
     } catch (error) {
-      setNotice(errorDetail(error, "The historical learning model could not be trained."));
+      setNotice(errorDetail(error, "The historical reference context could not be rebuilt."));
     } finally {
       setTraining(false);
     }
@@ -223,7 +282,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
     setNotice("");
     try {
       await cmsApi.updateAITrainingRecord(row.training_record_id, nextEligible, reason);
-      setNotice(nextEligible ? "The project is eligible for the next model training run." : "The project was excluded from future model training runs.");
+      setNotice(nextEligible ? "The project is eligible for future AI historical context." : "The project was excluded from future AI historical context.");
       await load();
     } catch (error) {
       setNotice(errorDetail(error, "The training record could not be updated."));
@@ -248,6 +307,17 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
     ready_to_train: false,
   };
   const modelVersions = workspace.model_versions || [];
+  const groqEnabled = workspace.ai_provider?.name === "groq" && workspace.ai_provider.enabled;
+  const referenceContextCurrent = trainingDataset.is_current ?? false;
+  const requiresReferenceRebuild = trainingDataset.requires_retraining ?? !referenceContextCurrent;
+  const ragSteps = workspace.rag_pipeline?.steps || [
+    { key: "confirm", title: "Human-confirmed projects", description: "Validator-confirmed outcomes become candidates." },
+    { key: "curate", title: "Administrator curation", description: "Include reliable records and exclude unsuitable ones." },
+    { key: "rebuild", title: "Versioned rebuild", description: "Snapshot the references and train local calibration." },
+    { key: "retrieve", title: "Similarity retrieval", description: "Find the most comparable approved projects." },
+    { key: "analyze", title: "Rules-first analysis", description: "Use history as secondary context, never as the rule." },
+    { key: "decide", title: "Validator decision", description: "A human remains responsible for the final result." },
+  ];
 
   return (
     <div className="space-y-4">
@@ -260,9 +330,9 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
         </div>
         <div className="portal-card-body grid gap-4 lg:grid-cols-[1.3fr_0.7fr]">
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
-            <p className="font-bold">This is a controlled hybrid analysis engine.</p>
+            <p className="font-bold">{groqEnabled ? "This is a controlled Groq-assisted analysis engine." : "This is a controlled hybrid analysis engine."}</p>
             <p className="mt-2 leading-6">{workspace.learning_explanation}</p>
-            <p className="mt-2 leading-6">It does not learn from its own predictions. Only validator-confirmed outcomes can enter a controlled administrator-started training run.</p>
+            <p className="mt-2 leading-6">It does not learn from its own predictions. Only validator-confirmed outcomes can be used as historical reference data.</p>
           </div>
           <div className="rounded-xl border border-slate-200 p-4 text-sm">
             <p className="text-xs uppercase tracking-wide text-slate-500">Active rule version</p>
@@ -270,9 +340,11 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
             <p className="mt-1 text-slate-600">Algorithm: {workspace.active_rule_set.algorithm_version}</p>
             <p className="text-slate-600">Activated: {formatDate(workspace.active_rule_set.created_at)}</p>
             <div className="mt-3 border-t border-slate-200 pt-3">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Active learned model</p>
-              <p className="mt-1 font-bold text-slate-900">{workspace.active_model?.version || "Not trained yet"}</p>
-              {workspace.active_model && <p className="text-slate-600">{workspace.active_model.sample_count} confirmed projects · {workspace.active_model.algorithm}</p>}
+              <p className="text-xs uppercase tracking-wide text-slate-500">Active AI provider</p>
+              <p className="mt-1 font-bold text-slate-900">{groqEnabled ? `Groq · ${workspace.ai_provider?.primary_model}` : workspace.active_model?.version || "Local fallback only"}</p>
+              {groqEnabled
+                ? <p className="text-slate-600">Backup: {workspace.ai_provider?.backup_model}</p>
+                : workspace.active_model && <p className="text-slate-600">{workspace.active_model.sample_count} confirmed projects · {workspace.active_model.algorithm}</p>}
             </div>
           </div>
         </div>
@@ -317,12 +389,12 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
 
           <div className="rounded-xl border border-slate-200 p-4">
             <h4 className="font-semibold text-slate-800">Project-text matching scores</h4>
-            <p className="mt-1 text-xs text-slate-500">These values determine the raw rating when relevant words are found in the project details.</p>
+            <p className="mt-1 text-xs text-slate-500">These values determine the raw rating after the active criterion rule decides whether the project contains valid evidence. Contextual rules require a matching term and supporting wording in the same sentence.</p>
             <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <NumberInput label="Chapter + 2 words" value={config.keyword_dictionaries.outcome_rating.chapter_and_two_keywords} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries.outcome_rating.chapter_and_two_keywords = value; })} />
-              <NumberInput label="Chapter or 3 words" value={config.keyword_dictionaries.outcome_rating.chapter_or_three_keywords} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries.outcome_rating.chapter_or_three_keywords = value; })} />
-              <NumberInput label="At least 1 word" value={config.keyword_dictionaries.outcome_rating.one_keyword} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries.outcome_rating.one_keyword = value; })} />
-              <NumberInput label="No matching words" value={config.keyword_dictionaries.outcome_rating.no_keywords} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries.outcome_rating.no_keywords = value; })} />
+              <NumberInput label="Chapter + 2 valid matches" value={config.keyword_dictionaries.outcome_rating.chapter_and_two_keywords} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries.outcome_rating.chapter_and_two_keywords = value; })} />
+              <NumberInput label="Chapter + context or 3 matches" value={config.keyword_dictionaries.outcome_rating.chapter_or_three_keywords} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries.outcome_rating.chapter_or_three_keywords = value; })} />
+              <NumberInput label="At least 1 valid match" value={config.keyword_dictionaries.outcome_rating.one_keyword} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries.outcome_rating.one_keyword = value; })} />
+              <NumberInput label="No valid evidence" value={config.keyword_dictionaries.outcome_rating.no_keywords} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries.outcome_rating.no_keywords = value; })} />
             </div>
           </div>
 
@@ -367,26 +439,47 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
       <section className="portal-card overflow-hidden border-violet-200">
         <div className="portal-card-header flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 className="font-bold text-slate-900">Controlled Historical Learning</h3>
-            <p className="text-xs text-slate-500">Training runs only when an administrator starts one. AI predictions never become training labels.</p>
+            <h3 className="font-bold text-slate-900">Historical Project Context and RAG Training</h3>
+            <p className="text-xs text-slate-500">Administrators control the reference dataset. Approved rules stay primary; previous scores provide secondary calibration for nuanced proposals.</p>
           </div>
           {canEdit && (
-            <button type="button" className="portal-btn portal-btn-primary" disabled={training || !trainingDataset.ready_to_train} onClick={() => void trainModel()}>
-              {training ? "Training..." : "Train New Model Version"}
+            <button type="button" className="portal-btn portal-btn-primary" disabled={training || !trainingDataset.ready_to_train || !requiresReferenceRebuild} onClick={() => void trainModel()}>
+              {training ? "Rebuilding..." : !trainingDataset.ready_to_train ? "More Confirmed Projects Needed" : referenceContextCurrent ? "Historical Context Is Current" : "Retrain Historical Context"}
             </button>
           )}
         </div>
         <div className="portal-card-body space-y-4">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-indigo-950">How this RAG mini-system works</p>
+                <p className="mt-1 max-w-4xl text-xs text-indigo-900">This operation rebuilds a controlled reference collection and a local advisory calibration model. It does not modify or fine-tune the hosted Groq model. During analysis, Groq receives only the most similar approved references, including their rule score, final validator priority, and rationale.</p>
+              </div>
+              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-indigo-800 ring-1 ring-indigo-200">Rules remain primary</span>
+            </div>
+            <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {ragSteps.map((step, index) => (
+                <div key={step.key} className="rounded-lg border border-indigo-100 bg-white p-3">
+                  <p className="text-xs font-bold uppercase tracking-wide text-indigo-600">Step {index + 1}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">{step.title}</p>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">{step.description}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
             <div className="rounded-xl border border-slate-200 p-3"><p className="text-xs uppercase text-slate-500">Eligible projects</p><p className="mt-1 text-xl font-bold">{trainingDataset.eligible_project_count}</p></div>
             <div className="rounded-xl border border-rose-200 bg-rose-50/40 p-3"><p className="text-xs uppercase text-rose-700">Low priority</p><p className="mt-1 text-xl font-bold">{trainingDataset.label_counts.low || 0}</p></div>
             <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-3"><p className="text-xs uppercase text-emerald-700">High priority</p><p className="mt-1 text-xl font-bold">{trainingDataset.label_counts.high || 0}</p></div>
+            <div className={`rounded-xl border p-3 ${referenceContextCurrent ? "border-emerald-200 bg-emerald-50/40" : "border-amber-200 bg-amber-50/50"}`}><p className="text-xs uppercase text-slate-500">Reference status</p><p className="mt-1 text-base font-bold">{referenceContextCurrent ? "Current" : trainingDataset.ready_to_train ? "Rebuild needed" : "Not ready"}</p><p className="mt-1 text-xs text-slate-500">{trainingDataset.active_model_version || "No active version"}</p></div>
             <div className="rounded-xl border border-slate-200 p-3"><p className="text-xs uppercase text-slate-500">Excluded records</p><p className="mt-1 text-xl font-bold">{trainingDataset.excluded_count}</p></div>
           </div>
-          {!trainingDataset.ready_to_train && <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">Training requires at least one eligible validator-confirmed project in each category: low and high priority.</p>}
+          {!trainingDataset.ready_to_train && <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">A rebuild requires at least one eligible validator-confirmed project in each category: low and high priority.</p>}
+          {trainingDataset.ready_to_train && requiresReferenceRebuild && <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">The eligible records have changed since the active reference version. Rebuild the historical context before expecting those changes to affect new analyses.</p>}
+          {groqEnabled && referenceContextCurrent && <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-900">New analyses retrieve up to {workspace.rag_pipeline?.retrieval_limit || 6} similar projects from this active version. Historical results can refine comparisons, but cannot override the active rules or make the validator's decision.</p>}
           {modelVersions.length > 0 && (
             <div className="space-y-2">
-              <h4 className="text-sm font-semibold text-slate-800">Model Version History</h4>
+              <h4 className="text-sm font-semibold text-slate-800">Historical Reference Version History</h4>
               {modelVersions.map((model) => (
                 <div key={model.id} className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2 text-sm">
                   <div><p className="font-semibold text-slate-800">{model.version} {model.status === "active" && <span className="ml-2 rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-800">active</span>}</p><p className="text-xs text-slate-500">{model.algorithm} · {model.sample_count} projects · {formatDate(model.created_at)}</p>{model.metrics.warning && <p className="mt-1 text-xs text-amber-700">{model.metrics.warning}</p>}</div>
@@ -412,7 +505,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
 
       <section className="portal-card overflow-hidden">
         <div className="portal-card-header flex flex-wrap items-start justify-between gap-3">
-          <div><h3 className="font-bold text-slate-900">Historical Project Training Dataset</h3><p className="text-xs text-slate-500">Only human-confirmed outcomes are eligible. Administrators can exclude unsuitable records before the next controlled training run.</p></div>
+          <div><h3 className="font-bold text-slate-900">Historical Project Reference Dataset</h3><p className="text-xs text-slate-500">Only human-confirmed outcomes are eligible. Administrators can exclude unsuitable records from future Groq context and local fallback training.</p></div>
           <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">{workspace.historical_count} confirmed record{workspace.historical_count === 1 ? "" : "s"}</span>
         </div>
         <div className="portal-card-body">
@@ -420,8 +513,8 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
           {filteredHistory.length === 0 ? <p className="text-sm text-slate-500">No confirmed historical priority analyses match this search.</p> : (
             <div className="overflow-x-auto rounded-xl border border-slate-200">
               <table className="w-full min-w-[1120px] text-left text-xs">
-                <thead className="bg-slate-50 text-slate-700"><tr><th className="px-3 py-2">Project</th><th className="px-3 py-2">Agency / Sector</th><th className="px-3 py-2">Score</th><th className="px-3 py-2">Suggested</th><th className="px-3 py-2">Final</th><th className="px-3 py-2">Rule version</th><th className="px-3 py-2">Confirmed by</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">Model training</th></tr></thead>
-                <tbody>{filteredHistory.map((row) => <tr key={row.confirmation_id} className="border-t border-slate-100 align-top"><td className="px-3 py-2"><p className="font-semibold text-slate-800">{row.project_title}</p><p className="text-slate-500">{row.submission_type} · {row.project_status}</p>{row.override_rationale && <p className="mt-1 text-amber-700">Override: {row.override_rationale}</p>}</td><td className="px-3 py-2">{row.agency || "-"}<br /><span className="text-slate-500">{row.sector || "Unspecified"}</span></td><td className="px-3 py-2">{Number(row.base_score).toFixed(2)}</td><td className="px-3 py-2">{priorityLabel(row.suggested_priority)}</td><td className="px-3 py-2 font-semibold">{priorityLabel(row.final_priority)}</td><td className="px-3 py-2">{row.rule_version}</td><td className="px-3 py-2">{row.validator_name || "-"}</td><td className="px-3 py-2">{formatDate(row.confirmed_at)}</td><td className="px-3 py-2"><span className={`rounded-full px-2 py-1 font-semibold ${row.training_eligible ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>{row.training_eligible ? "Eligible" : "Excluded"}</span>{row.exclusion_reason && <p className="mt-1 max-w-[220px] text-slate-500">{row.exclusion_reason}</p>}{canEdit && <button type="button" disabled={updatingRecordId === row.training_record_id} onClick={() => void toggleTrainingRecord(row)} className="mt-2 block font-semibold text-blue-700 disabled:text-slate-400">{updatingRecordId === row.training_record_id ? "Updating..." : row.training_eligible ? "Exclude" : "Include"}</button>}</td></tr>)}</tbody>
+                <thead className="bg-slate-50 text-slate-700"><tr><th className="px-3 py-2">Project</th><th className="px-3 py-2">Agency / Sector</th><th className="px-3 py-2">Score</th><th className="px-3 py-2">Suggested</th><th className="px-3 py-2">Final</th><th className="px-3 py-2">Rule version</th><th className="px-3 py-2">Confirmed by</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">AI reference use</th></tr></thead>
+                <tbody>{filteredHistory.map((row) => <tr key={row.confirmation_id} className="border-t border-slate-100 align-top"><td className="px-3 py-2"><p className="font-semibold text-slate-800">{row.project_title}</p><p className="text-slate-500">{row.submission_type} · {row.project_status}</p>{row.override_rationale && <p className="mt-1 text-amber-700">Override: {row.override_rationale}</p>}</td><td className="px-3 py-2">{row.agency || "-"}<br /><span className="text-slate-500">{row.sector || "Unspecified"}</span></td><td className="px-3 py-2">{Number(row.base_score).toFixed(2)}</td><td className="px-3 py-2">{priorityLabel(row.suggested_priority)}</td><td className="px-3 py-2 font-semibold">{priorityLabel(row.final_priority)}</td><td className="px-3 py-2">{row.rule_version}</td><td className="px-3 py-2">{row.validator_name || "-"}</td><td className="px-3 py-2">{formatDate(row.confirmed_at)}</td><td className="px-3 py-2"><span className={`rounded-full px-2 py-1 font-semibold ${row.training_eligible ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>{row.training_eligible ? "Eligible" : "Excluded"}</span><p className={`mt-1 text-[11px] font-medium ${row.in_active_reference && !row.training_eligible ? "text-amber-700" : "text-slate-500"}`}>{row.in_active_reference ? row.training_eligible ? "In active reference version" : "Remains active until rebuild" : row.training_eligible ? "Pending next rebuild" : "Not in active version"}</p>{row.exclusion_reason && <p className="mt-1 max-w-[220px] text-slate-500">{row.exclusion_reason}</p>}{canEdit && <button type="button" disabled={updatingRecordId === row.training_record_id} onClick={() => void toggleTrainingRecord(row)} className="mt-2 block font-semibold text-blue-700 disabled:text-slate-400">{updatingRecordId === row.training_record_id ? "Updating..." : row.training_eligible ? "Exclude" : "Include"}</button>}</td></tr>)}</tbody>
               </table>
             </div>
           )}

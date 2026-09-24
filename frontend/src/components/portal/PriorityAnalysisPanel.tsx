@@ -65,6 +65,9 @@ type LearningResult = {
     summary?: string;
     influential_features?: Array<{ feature: string; contribution: number }>;
     limitations?: string[];
+    provider?: string;
+    provider_model?: string;
+    used_backup?: boolean;
   };
   similar_projects?: Array<{
     project_id: number;
@@ -98,6 +101,15 @@ type Analysis = {
     reasoning?: ScoreReasoning;
     recommendations?: ScoreRecommendation[];
     revision_fields?: GuidanceField[];
+    ai_provider?: {
+      name?: string;
+      model?: string;
+      primary_model?: string;
+      backup_model?: string;
+      used_backup?: boolean;
+      status?: string;
+      mode?: string;
+    };
   };
   regional_scorecard?: {
     applicable?: boolean;
@@ -140,6 +152,8 @@ const normalizePriority = (value?: string) => {
 };
 
 const binaryPriorityText = (value?: string) => String(value || "")
+  .replace(/Groq contextual assessment/gi, "Contextual Assessment")
+  .replace(/Groq assessment/gi, "Assessment")
   .replace(/medium priority/gi, "low priority");
 
 const featureLabel = (value: string) => (value === "rule_suggested_medium" ? "rule_suggested_low" : value)
@@ -164,12 +178,19 @@ const Select: React.FC<{
 );
 
 const plainLanguageExplanation = (value?: string) => String(value || "")
+  .replace(/Groq contextual assessment/gi, "Contextual Assessment")
+  .replace(/Groq assessment/gi, "Assessment")
   .replace(/Deterministic text alignment suggestion\./gi, "The suggested rating is based on relevant words found in the project details.")
   .replace(/Detected evidence:/gi, "Matching words found:")
   .replace(
     /No matching outcome evidence was detected in the analyzed project text\./gi,
     "No relevant words for this outcome were found in the project details.",
   );
+
+const explanationPoints = (value?: string) => String(value || "")
+  .split(/[.!?]\s+(?=[A-Z0-9])/)
+  .map((item) => item.trim())
+  .filter(Boolean);
 
 const CriteriaTable: React.FC<{ title: string; criteria?: Criterion[]; total?: number; adjustable?: boolean; adjusted?: Record<string, number>; onAdjust?: (key: string, value: number) => void }> = ({
   title,
@@ -295,6 +316,11 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapsh
   const revisionFields = analysis?.suggested_scores?.revision_fields || [];
   const confirmed = analysis?.latest_confirmation;
   const visiblePriority = confirmed?.final_priority || analysis?.suggested_priority;
+  const analysisComplete = Boolean(
+    analysis
+    && analysis.suggested_priority !== "incomplete"
+    && missingFacts.length === 0,
+  );
   const history = useMemo(() => analyses.slice(0, 5), [analyses]);
   const learning = analysis?.learning_result;
 
@@ -366,12 +392,19 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapsh
               <div className="rounded-xl border border-slate-200 p-3"><p className="text-xs uppercase text-slate-500">Suggested</p><p className="mt-1 font-semibold">{priorityLabel(analysis.suggested_priority)}</p></div>
               <div className="rounded-xl border border-slate-200 p-3"><p className="text-xs uppercase text-slate-500">Rule Version</p><p className="mt-1 font-semibold">{analysis.rule_version || "-"}</p></div>
             </div>
+            {analysis.suggested_scores.ai_provider && (
+              <div className={`rounded-xl border px-3 py-2 text-sm ${analysis.suggested_scores.ai_provider.model && analysisComplete ? "border-emerald-200 bg-emerald-50 text-emerald-950" : "border-amber-200 bg-amber-50 text-amber-950"}`}>
+                {analysis.suggested_scores.ai_provider.model
+                  ? <strong>{analysisComplete ? "Analysis successful" : "Analysis incomplete"}</strong>
+                  : <>Groq was unavailable or not configured, so the safe <strong>deterministic fallback</strong> produced this analysis.</>}
+              </div>
+            )}
             <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">{binaryPriorityText(analysis.summary)}</p>
             {learning && (
               <section className="rounded-xl border border-violet-200 bg-violet-50/40 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <h3 className="font-semibold text-violet-950">Historical Learning and Similar Projects</h3>
+                    <h3 className="font-semibold text-violet-950">Historical Context and Similar Projects</h3>
                     <p className="mt-1 text-xs text-violet-800">Advisory context only. The validator remains responsible for the final assessment.</p>
                   </div>
                   {learning.status === "ready" && learning.predicted_priority && <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${priorityBadge(learning.predicted_priority)}`}>Learned: {priorityLabel(learning.predicted_priority)}</span>}
@@ -379,8 +412,8 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapsh
                 <p className="mt-3 text-sm leading-6 text-slate-700">{binaryPriorityText(learning.explanation?.summary)}</p>
                 {learning.status === "ready" && (
                   <div className="mt-3 grid gap-3 md:grid-cols-3">
-                    <div className="rounded-lg border border-violet-100 bg-white p-3"><p className="text-xs uppercase text-slate-500">Model version</p><p className="mt-1 font-semibold text-slate-800">{learning.model_version}</p></div>
-                    <div className="rounded-lg border border-violet-100 bg-white p-3"><p className="text-xs uppercase text-slate-500">Confirmed projects learned from</p><p className="mt-1 font-semibold text-slate-800">{learning.sample_count}</p></div>
+                    <div className="rounded-lg border border-violet-100 bg-white p-3"><p className="text-xs uppercase text-slate-500">Model version</p><p className="mt-1 font-semibold text-slate-800">Version 1</p></div>
+                    <div className="rounded-lg border border-violet-100 bg-white p-3"><p className="text-xs uppercase text-slate-500">Eligible confirmed references</p><p className="mt-1 font-semibold text-slate-800">{learning.sample_count}</p></div>
                     <div className="rounded-lg border border-violet-100 bg-white p-3"><p className="text-xs uppercase text-slate-500">Pattern confidence</p><p className="mt-1 font-semibold text-slate-800">{(Number(learning.confidence || 0) * 100).toFixed(1)}%</p></div>
                   </div>
                 )}
@@ -400,7 +433,16 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapsh
             {scoreReasoning && (
               <section className="rounded-xl border border-blue-200 bg-blue-50/40 p-4">
                 <h3 className="font-semibold text-blue-950">Reasoning and Explanation</h3>
-                {scoreReasoning.overall && <p className="mt-2 text-sm leading-6 text-slate-700">{binaryPriorityText(scoreReasoning.overall)}</p>}
+                {scoreReasoning.overall && (
+                  <div className="mt-3 rounded-lg border border-blue-100 bg-white p-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-blue-800">Overall score summary</p>
+                    <ul className="mt-2 list-disc space-y-1.5 pl-5 text-sm leading-6 text-slate-700">
+                      {explanationPoints(binaryPriorityText(scoreReasoning.overall)).map((point, index) => (
+                        <li key={`${index}-${point}`}>{point}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <div className="mt-3 grid gap-2 lg:grid-cols-2">
                   {(scoreReasoning.criteria || []).map((item) => (
                     <div key={item.key} className="rounded-lg border border-blue-100 bg-white p-3 text-sm">
@@ -410,7 +452,22 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapsh
                           {Number(item.score || 0).toFixed(2)} / {Number(item.maximum_score || 0).toFixed(2)}
                         </span>
                       </div>
-                      <p className="mt-2 leading-5 text-slate-600">{plainLanguageExplanation(item.explanation)}</p>
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                        <div className="rounded-md bg-slate-50 px-2.5 py-2">
+                          <p className="text-slate-500">Raw rating</p>
+                          <p className="mt-0.5 font-semibold text-slate-800">{Number(item.raw || 0).toFixed(1)} / 10</p>
+                        </div>
+                        <div className="rounded-md bg-slate-50 px-2.5 py-2">
+                          <p className="text-slate-500">Criterion weight</p>
+                          <p className="mt-0.5 font-semibold text-slate-800">{Number(item.weight || 0).toFixed(1)} points</p>
+                        </div>
+                      </div>
+                      <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Why this score was given</p>
+                      <ul className="mt-1.5 list-disc space-y-1.5 pl-5 leading-5 text-slate-600">
+                        {explanationPoints(plainLanguageExplanation(item.explanation)).map((point, index) => (
+                          <li key={`${index}-${point}`}>{point}</li>
+                        ))}
+                      </ul>
                     </div>
                   ))}
                 </div>

@@ -293,7 +293,8 @@ const ProjectsPage: React.FC = () => {
   const canSubmitProject = (p: ApiProject) =>
     role === "employee" &&
     !p.is_revision &&
-    ((canEncode && p.status === "planning") || p.workflow_status === "needs_revision");
+    canEncode &&
+    p.status === "planning";
 
   const isSimplifiedProject = (p: ApiProject) => {
     const pd = p.profile_data as Record<string, any> | undefined;
@@ -380,7 +381,7 @@ const ProjectsPage: React.FC = () => {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search by project title or agency"
+            placeholder={role === "employee" ? "Search by project title" : "Search by project title or agency"}
             className="w-full border border-slate-200 rounded-xl px-3 py-2 bg-white"
           />
           <select
@@ -459,20 +460,24 @@ const ProjectsPage: React.FC = () => {
                     {role === "employee" && (
                       <>
                         <button onClick={() => navigate(`/employee/projects/${p.id}/view`)} className="text-blue-700 hover:underline whitespace-nowrap">View</button>
-                        <button
-                          disabled={!canEditProject(p)}
-                          onClick={() => navigate(editPath(p))}
-                          className={`whitespace-nowrap ${canEditProject(p) ? "text-blue-600 hover:underline" : "text-slate-400 cursor-not-allowed"}`}
-                        >
-                          {p.workflow_status === "needs_revision" ? "Revise" : "Edit"}
-                        </button>
-                        <button
-                          disabled={!canSubmitProject(p)}
-                          onClick={() => handleSubmit(p.id)}
-                          className={`whitespace-nowrap ${canSubmitProject(p) ? "text-indigo-600 hover:underline" : "text-slate-400 cursor-not-allowed"}`}
-                        >
-                          {p.workflow_status === "needs_revision" ? "Resubmit" : "Submit"}
-                        </button>
+                        {!p.is_revision && (p.status === "planning" || p.workflow_status === "needs_revision") && (
+                          <button
+                            disabled={!canEditProject(p)}
+                            onClick={() => navigate(editPath(p))}
+                            className={`whitespace-nowrap ${canEditProject(p) ? "text-blue-600 hover:underline" : "text-slate-400 cursor-not-allowed"}`}
+                          >
+                            {p.workflow_status === "needs_revision" ? "Revise" : "Edit"}
+                          </button>
+                        )}
+                        {!p.is_revision && p.status === "planning" && (
+                          <button
+                            disabled={!canSubmitProject(p)}
+                            onClick={() => handleSubmit(p.id)}
+                            className={`whitespace-nowrap ${canSubmitProject(p) ? "text-indigo-600 hover:underline" : "text-slate-400 cursor-not-allowed"}`}
+                          >
+                            Submit
+                          </button>
+                        )}
                         {canStartProgressUpdate(p) && (
                           <button
                             disabled={!canProgressUpdate}

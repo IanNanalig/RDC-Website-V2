@@ -1,13 +1,15 @@
 import json
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.db import connection
+from django.test import override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
-from .priority_scoring import _priority_for
+from .priority_scoring import _priority_for, confirm_analysis
 from .models import (
     Notification,
     PriorityRuleSet,
@@ -590,6 +592,57 @@ class PortalWorkflowTests(APITestCase):
             ).exists()
         )
 
+    def test_opening_an_editable_progress_draft_syncs_the_project_form_version(self):
+        self._set_progress_window(timezone.now() - timedelta(hours=1), timezone.now() + timedelta(hours=1))
+        self.employee.agency = "DENR"
+        self.employee.save(update_fields=["agency"])
+        project = Project.objects.create(
+            name="Updated contributor form project",
+            implementing_agency="DENR",
+            municipality="NCR",
+            status="ongoing",
+            validated=True,
+            cost=100000,
+            latitude=14.5,
+            agency="DENR",
+            budget=100000,
+            created_by=self.employee,
+            profile_data={
+                "submission_type": "simplified",
+                "form_schema": {"key": "simplified-rdip", "version": 6},
+                "simplified_form": {"projectActivity": "Current project", "status": "Ongoing"},
+            },
+        )
+        draft = ProjectRevision.objects.create(
+            project=project,
+            revision_number=2,
+            revision_type="progress_update",
+            state="draft",
+            created_by=self.employee,
+            profile_data_snapshot={
+                "submission_type": "simplified",
+                "form_schema": {"key": "simplified-rdip", "version": 1},
+                "simplified_form": {"projectActivity": "Preserved draft response"},
+            },
+        )
+
+        self._as(self.employee)
+        opened = self.client.post(f"/api/employee/projects/{project.id}/start-update/", {}, format="json")
+        self.assertEqual(opened.status_code, status.HTTP_200_OK, opened.data)
+        self.assertEqual(opened.data["profile_data_snapshot"]["form_schema"]["version"], 6)
+        draft.refresh_from_db()
+        self.assertEqual(draft.profile_data_snapshot["form_schema"]["version"], 6)
+        self.assertEqual(
+            draft.profile_data_snapshot["simplified_form"]["projectActivity"],
+            "Preserved draft response",
+        )
+        self.assertTrue(UserActivity.objects.filter(
+            user=self.employee,
+            project=project,
+            event="project_revision_updated",
+            details__operation="progress_draft_form_version_sync",
+        ).exists())
+
     def test_needs_revision_requires_comment_unlocks_edit_and_notifies(self):
         self._as(self.employee)
         create_res = self.client.post(
@@ -806,7 +859,7 @@ class PortalWorkflowTests(APITestCase):
         analysis_list = self.client.get(f"/api/validator/projects/{project.id}/priority-analysis/")
         self.assertEqual(analysis_list.status_code, status.HTTP_200_OK)
         enriched_scores = analysis_list.data["analyses"][0]["suggested_scores"]
-        self.assertEqual(enriched_scores["guidance_version"], "expanded-explanations-v2")
+        self.assertEqual(enriched_scores["guidance_version"], "contextual-explanations-v3")
         self.assertIn("reasoning", enriched_scores)
         self.assertIn("recommendations", enriched_scores)
         self.assertIn("revision_fields", enriched_scores)
@@ -830,6 +883,94 @@ class PortalWorkflowTests(APITestCase):
         filtered = self.client.get("/api/validator/projects/?workflow=priority")
         self.assertEqual(filtered.status_code, status.HTTP_200_OK)
         self.assertTrue(any(item["id"] == project.id for item in filtered.data))
+
+    @override_settings(GROQ_ENABLED=True, GROQ_API_KEY="")
+    def test_confirmed_priority_can_immediately_validate_and_endorse_same_copy(self):
+        profile = {
+            "submission_type": "simplified",
+            "form_schema": {"key": "simplified-rdip", "version": 1, "legacy": True},
+            "simplified_form": {
+                "agencyName": "DPWH",
+                "projectActivity": "Drainage improvement project",
+                "description": "Improve drainage capacity and reduce community flood exposure.",
+                "objective": "Reduce flooding and improve climate resilience.",
+                "developmentSector": "Sectoral Committee on Infrastructure Development (SCID)",
+                "rdpMainChapter": "13 Expand and Upgrade Infrastructure Infrastructure",
+                "location": "NCR",
+                "status": "New",
+                "startYear": "2026",
+                "endYear": "2026",
+                "fundingRequirementByYear": {"2026": "150000000"},
+            },
+        }
+        project = Project.objects.create(
+            name="Priority endorsement regression",
+            implementing_agency="DPWH",
+            municipality="NCR",
+            status="proposed",
+            cost=150_000_000,
+            latitude=14.5,
+            agency="DPWH",
+            budget=150_000_000,
+            created_by=self.employee,
+            profile_data=profile,
+        )
+        self._as(self.validator)
+        run = self.client.post(
+            f"/api/validator/projects/{project.id}/priority-analysis/run/",
+            {
+                "edited_profile_data": profile,
+                "supplements": {
+                    "readinessLevel": "completed_documents",
+                    "gadResponsiveness": "gender_responsive",
+                    "spatialCoverageScope": "region_wide",
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(run.status_code, status.HTTP_200_OK, run.data)
+        analysis = run.data["analysis"]
+        confirmed = self.client.post(
+            f"/api/validator/projects/{project.id}/priority-analysis/{analysis['id']}/confirm/",
+            {"final_priority": analysis["suggested_priority"]},
+            format="json",
+        )
+        self.assertEqual(confirmed.status_code, status.HTTP_200_OK, confirmed.data)
+
+        # A different validator workflow completing in the meantime must not make
+        # this unchanged form copy appear stale before the first controlled rebuild.
+        stored_analysis = ProjectPriorityAnalysis.objects.get(pk=analysis["id"])
+        other_project = Project.objects.create(
+            name="Concurrent confirmed reference",
+            implementing_agency="DENR",
+            municipality="NCR",
+            status="proposed",
+            cost=100_000_000,
+            latitude=14.6,
+            agency="DENR",
+            budget=100_000_000,
+            created_by=self.employee,
+        )
+        other_analysis = ProjectPriorityAnalysis.objects.create(
+            project=other_project,
+            validator=self.validator,
+            rule_set=stored_analysis.rule_set,
+            source_hash="concurrent-reference".ljust(64, "0"),
+            input_snapshot={},
+            suggested_scores={"missing_facts": []},
+            suggested_priority="low",
+            base_score=50,
+        )
+        confirm_analysis(other_analysis, self.validator, {}, "low", "", [])
+
+        endorsed = self.client.post(
+            f"/api/validator/projects/{project.id}/validate/",
+            {"action": "endorse", "edited_profile_data": profile, "editable_fields": []},
+            format="json",
+        )
+
+        self.assertEqual(endorsed.status_code, status.HTTP_200_OK, endorsed.data)
+        self.assertEqual(endorsed.data["review_status"], "endorsed")
 
     def test_validator_can_run_priority_analysis_for_detailed_form(self):
         detailed_profile = {
@@ -907,6 +1048,88 @@ class PortalWorkflowTests(APITestCase):
         self.assertTrue(analysis["regional_scorecard"]["applicable"])
         stored_analysis = ProjectPriorityAnalysis.objects.get(pk=analysis["id"])
         self.assertEqual(stored_analysis.input_snapshot["submission_type"], "detailed")
+
+    @patch("ai_engine.groq_priority.analyze_priority_with_groq")
+    def test_validator_priority_analysis_uses_groq_outcome_assessment(self, groq_analysis):
+        groq_analysis.return_value = {
+            "outcomes": [
+                {
+                    "key": "climate",
+                    "raw_score": 9,
+                    "explanation": "The project describes flood-risk reduction and measurable climate resilience outcomes.",
+                    "evidence": ["reduce flood risk"],
+                    "recommendation": "Add a quantified baseline for households exposed to flooding.",
+                    "revision_fields": ["objective"],
+                }
+            ],
+            "overall_reasoning": "The project provides credible climate adaptation evidence.",
+            "risks": ["The beneficiary baseline should be verified."],
+            "historical_prediction": {
+                "priority": "high",
+                "confidence": 0.82,
+                "explanation": "Comparable validator-confirmed projects were high priority.",
+            },
+            "provider": {
+                "name": "groq",
+                "model": "llama-3.1-8b-instant",
+                "primary_model": "llama-3.1-8b-instant",
+                "used_backup": False,
+                "attempted_models": ["llama-3.1-8b-instant"],
+                "historical_project_count": 0,
+                "dataset_version": "empty",
+            },
+        }
+        profile = {
+            "submission_type": "detailed",
+            "projectTitle": "Regional Flood Resilience Program",
+            "description": "The project will reduce flood risk through restored waterways.",
+            "objective": "Strengthen climate resilience across NCR communities.",
+            "mainPdpChapter": "Climate Action and Disaster Resilience",
+            "developmentSector": "Economic and Environment",
+            "location": "Region-wide",
+            "physicalFinancialStatus": "Proposed project",
+            "totalProjectCost": "400,000,000",
+        }
+        project = Project.objects.create(
+            name=profile["projectTitle"],
+            implementing_agency="DENR",
+            municipality="NCR",
+            status="proposed",
+            cost=400000000,
+            latitude=14.5,
+            agency="DENR",
+            budget=400000000,
+            created_by=self.employee,
+            profile_data=profile,
+        )
+        self._as(self.validator)
+
+        response = self.client.post(
+            f"/api/validator/projects/{project.id}/priority-analysis/run/",
+            {
+                "edited_profile_data": profile,
+                "supplements": {
+                    "readinessLevel": "completed_documents",
+                    "gadResponsiveness": "gender_responsive",
+                    "spatialCoverageScope": "region_wide",
+                    "sceeedTrack": "environment",
+                    "beneficiaryCount": "1000000",
+                    "regionalSpatialCategory": "region_wide",
+                    "contributedOutcomeCount": "3",
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        scores = response.data["analysis"]["suggested_scores"]
+        climate = next(item for item in scores["rdp_outcomes"] if item["key"] == "climate")
+        self.assertEqual(climate["raw"], 9)
+        self.assertEqual(climate["match_mode"], "groq_contextual")
+        self.assertEqual(scores["ai_provider"]["model"], "llama-3.1-8b-instant")
+        climate_reason = next(item for item in scores["reasoning"]["criteria"] if item["key"] == "climate")
+        self.assertIn("Contextual Assessment", climate_reason["explanation"])
+        self.assertTrue(any(item["key"] == "climate" for item in scores["recommendations"]))
 
     def test_role_access_restrictions(self):
         # Employee cannot access admin and validator list endpoints.

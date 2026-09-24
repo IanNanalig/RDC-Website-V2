@@ -31,6 +31,7 @@ const Dashboard = lazy(() => import("./pages/EmployesPortal/Dashboard"));
 const AdminDashboard = lazy(() => import("./pages/EmployesPortal/AdminDashboard"));
 const ValidatorDashboard = lazy(() => import("./pages/EmployesPortal/ValidatorDashboard"));
 const ValidatorReviewHistory = lazy(() => import("./pages/EmployesPortal/ValidatorReviewHistory"));
+const UpdateProjectForms = lazy(() => import("./pages/EmployesPortal/UpdateProjectForms"));
 const ProjectsPage = lazy(() => import("./pages/EmployesPortal/ProjectsPage"));
 const SubmissionFormChooser = lazy(() => import("./pages/EmployesPortal/SubmissionFormChooser"));
 const SimplifiedProjectSubmission = lazy(() => import("./pages/EmployesPortal/SimplifiedProjectSubmission"));
@@ -253,6 +254,12 @@ const ValidatorReviewHistoryPage = () => (
   </PortalPageWrapper>
 );
 
+const UpdateProjectFormsPage = () => (
+  <PortalPageWrapper pageTitle="Update Older Project Forms">
+    <UpdateProjectForms />
+  </PortalPageWrapper>
+);
+
 const ProjectsPageComponent = () => (
   <PortalPageWrapper pageTitle="Projects">
     <ProjectsPage />
@@ -420,6 +427,14 @@ export default function App() {
           element={
             <ProtectedRoute roles={["validator"]}>
               <ValidatorReviewHistoryPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/validator/projects/update-forms"
+          element={
+            <ProtectedRoute roles={["validator"]}>
+              <UpdateProjectFormsPage />
             </ProtectedRoute>
           }
         />
