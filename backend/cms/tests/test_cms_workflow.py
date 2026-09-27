@@ -273,10 +273,41 @@ class CMSWorkflowTests(APITestCase):
             len(json.dumps(detail.data, default=str)),
         )
 
+        editor_update = self.client.put(
+            f"/api/admin/cms/pages/{target.pk}/?view=editor",
+            {"title": "Updated Performance Target", "slug": target.slug},
+            format="json",
+        )
+        self.assertEqual(editor_update.status_code, status.HTTP_200_OK)
+        self.assertNotIn("published_snapshot_json", editor_update.data)
+        self.assertEqual(editor_update.data["title"], "Updated Performance Target")
+
         legacy = self.client.get("/api/admin/cms/pages/")
         self.assertIsInstance(legacy.data, list)
         self.assertIn("published_snapshot_json", legacy.data[0])
         self.assertIn("sections", legacy.data[0])
+
+    def test_review_queue_summary_keeps_event_rows_compact(self):
+        self.authenticate()
+        PublicEvent.objects.create(
+            title="Compact review event",
+            description="x" * 5000,
+            start_at=timezone.now(),
+            status="submitted",
+            created_by=self.editor,
+            submitted_by=self.editor,
+        )
+
+        with CaptureQueriesContext(connection) as captured:
+            response = self.client.get("/api/admin/cms/review-queue/?view=summary")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["events"][0]["title"], "Compact review event")
+        self.assertEqual(
+            set(response.data["events"][0]),
+            {"id", "title", "status", "updated_at"},
+        )
+        self.assertLessEqual(len(captured), 10)
 
     def test_media_summary_does_not_scan_every_cms_document(self):
         self.authenticate()

@@ -348,10 +348,10 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapsh
             <p className="mb-3 text-sm font-semibold text-slate-800">Validator Facts Supplement</p>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               <Select label="Readiness Level" value={supplements.readinessLevel || ""} onChange={(value) => setSupplements((prev) => ({ ...prev, readinessLevel: value }))} options={[
-                ["completed_documents", "Completed supporting documents"],
-                ["ongoing_documents", "Ongoing supporting documents"],
-                ["project_profile", "Comprehensive project profile"],
-                ["concept_only", "Concept paper / none"],
+                ["completed_documents", "With completed documents such as pre-FS/FS/POW and detailed design, where applicable"],
+                ["ongoing_documents", "Ongoing pre-FS/FS/POW and detailed design, where applicable"],
+                ["project_profile", "With Comprehensive Project Profile"],
+                ["concept_only", "With concept paper/none"],
               ]} />
               <Select label="GAD Responsiveness" value={supplements.gadResponsiveness || ""} onChange={(value) => setSupplements((prev) => ({ ...prev, gadResponsiveness: value }))} options={[
                 ["gender_responsive", "Gender-responsive"],

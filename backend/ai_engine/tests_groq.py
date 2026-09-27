@@ -4,12 +4,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase, override_settings
-from rest_framework import status
-from rest_framework.test import APITestCase
-
-from projects.models import PublicContent
-
-from .groq_chat import answer_public_question
 from .groq_client import GroqCompletion, GroqUnavailable, complete_json
 from .groq_priority import analyze_priority_with_groq
 
@@ -143,65 +137,3 @@ class GroqFeatureTests(SimpleTestCase):
         user_payload = json.loads(messages[1]["content"])
         self.assertTrue(user_payload["historical_reference_policy"]["rules_remain_primary"])
         self.assertFalse(user_payload["historical_reference_policy"]["hosted_model_was_fine_tuned"])
-
-    @patch("ai_engine.groq_chat.complete_json")
-    @patch("ai_engine.groq_chat.is_groq_enabled", return_value=True)
-    def test_chat_uses_only_supplied_source_slugs(self, _enabled, completion):
-        completion.return_value = GroqCompletion(
-            data={
-                "answered": True,
-                "answer": "The dashboard contains validated project summaries.",
-                "confidence": 0.9,
-                "source_slugs": ["projects", "invented-source"],
-            },
-            model="primary-model",
-            used_backup=False,
-            attempted_models=("primary-model",),
-        )
-
-        result = answer_public_question(
-            "What is on the projects dashboard?",
-            "en",
-            [{"slug": "projects", "title": "Projects", "url": "/dashboard", "body": "Validated projects."}],
-        )
-
-        self.assertTrue(result["answered"])
-        self.assertEqual(result["source_slugs"], ["projects"])
-        self.assertEqual(result["model"], "primary-model")
-
-
-class GroqPublicChatIntegrationTests(APITestCase):
-    def setUp(self):
-        PublicContent.objects.update_or_create(
-            slug="about-rdc",
-            language="en",
-            defaults={
-                "title": "About RDC-NCR",
-                "summary": "RDC-NCR coordinates regional development planning in Metro Manila.",
-                "body": "The council coordinates and aligns regional development plans and investment programs.",
-                "url": "/about-rdc",
-            },
-        )
-
-    @patch("ai_engine.groq_chat.answer_public_question")
-    def test_public_chat_returns_groq_model_metadata(self, groq_answer):
-        groq_answer.return_value = {
-            "answered": True,
-            "answer": "RDC-NCR coordinates regional development planning in Metro Manila.",
-            "confidence": 0.91,
-            "source_slugs": ["about-rdc"],
-            "model": "llama-3.1-8b-instant",
-            "used_backup": False,
-        }
-
-        response = self.client.post(
-            "/api/public-chat/ask/",
-            {"question": "What does the regional council coordinate?"},
-            format="json",
-        )
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["ai_provider"], "groq")
-        self.assertEqual(response.data["ai_model"], "llama-3.1-8b-instant")
-        self.assertFalse(response.data["used_backup_model"])
-        self.assertEqual(response.data["sources"][0]["url"], "/about-rdc")

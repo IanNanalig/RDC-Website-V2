@@ -9,6 +9,7 @@ import {
   cloneContributorFormSchema,
   contributorFieldApplies,
   DEFAULT_CONTRIBUTOR_FORM_SCHEMA,
+  normalizeReadinessLevelValue,
   type ContributorFormField,
   type ContributorFormSchema,
 } from "../../types/contributorForm";
@@ -1219,7 +1220,8 @@ const SimplifiedProjectSubmission: React.FC = () => {
     if (field.key.startsWith("custom_")) return form.custom_fields[field.key] ?? (field.type === "multiselect" ? [] : "");
     if (field.key.startsWith("priorityAnalysisFacts.")) {
       const key = field.key.split(".")[1] as keyof SimplifiedForm["priorityAnalysisFacts"];
-      return form.priorityAnalysisFacts[key] || "";
+      const value = form.priorityAnalysisFacts[key] || "";
+      return key === "readinessLevel" ? normalizeReadinessLevelValue(value) : value;
     }
     const value = (form as unknown as Record<string, unknown>)[field.key];
     return Array.isArray(value) ? value.map(String) : String(value ?? "");
@@ -1653,11 +1655,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
                 <p className="mt-1 text-xs text-slate-600">These factual inputs help the validator run a more accurate AI-assisted priority recommendation.</p>
               </div>
               <div className="grid gap-4 xl:grid-cols-2">
-                <SelectField label="Readiness Level" value={form.priorityAnalysisFacts.readinessLevel} onChange={(v) => setPriorityFact("readinessLevel", v)} options={[
-                  "Completed supporting documents",
-                  "Ongoing supporting documents",
-                  "Comprehensive project profile",
-                  "Concept paper / none",
+                <SelectField label="Readiness Level" value={normalizeReadinessLevelValue(form.priorityAnalysisFacts.readinessLevel)} onChange={(v) => setPriorityFact("readinessLevel", v)} options={[
+                  "With completed documents such as pre-FS/FS/POW and detailed design, where applicable",
+                  "Ongoing pre-FS/FS/POW and detailed design, where applicable",
+                  "With Comprehensive Project Profile",
+                  "With concept paper/none",
                 ]} />
                 <SelectField label="GAD Responsiveness" value={form.priorityAnalysisFacts.gadResponsiveness} onChange={(v) => setPriorityFact("gadResponsiveness", v)} options={[
                   "Gender-responsive",

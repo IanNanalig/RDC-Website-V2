@@ -5,7 +5,7 @@ import math
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Prefetch, Q
 from django.db.models.fields.json import KeyTextTransform
 from django.http import Http404
 from django.utils import timezone
@@ -36,6 +36,7 @@ from cms.serializers import (
     CMSArticleSerializer,
     CMSArticleSummarySerializer,
     CMSContributorFormSerializer,
+    CMSContributorFormVersionSummarySerializer,
     CMSContributorFormSummarySerializer,
     CMSContributorFormVersionSerializer,
     CMSMediaAssetSerializer,
@@ -49,7 +50,6 @@ from cms.serializers import (
     CMSRevisionSummarySerializer,
     CMSSiteSettingSerializer,
 )
-from cms.services.chatbot_sync import sync_cms_content
 from cms.services.locking import (
     acquire_form_lock,
     acquire_section_lock,
@@ -189,22 +189,6 @@ def _form_editor_recipients(form):
         if user_id
     }
     return User.objects.filter(pk__in=recipient_ids, is_active=True)
-
-
-def _sync_without_blocking(request, obj, operation):
-    try:
-        sync_cms_content(obj)
-    except Exception as exc:  # CMS remains the source of truth if chatbot indexing fails.
-        _log_cms_activity(
-            request,
-            "cms_chatbot_sync_failed",
-            {
-                "content_type": obj._meta.model_name,
-                "id": obj.pk,
-                "operation": operation,
-                "error": str(exc)[:1000],
-            },
-        )
 
 
 def _with_public_cache(request, payload):
@@ -348,9 +332,6 @@ class CMSWorkflowMixin:
             if page.published_at:
                 page.published_snapshot_json = _page_snapshot(page)
                 page.save(update_fields=["published_snapshot_json", "updated_at"])
-                _sync_without_blocking(request, page, "archive_section")
-        else:
-            _sync_without_blocking(request, obj, "archive")
         create_revision(
             self.content_type_key, obj.pk, CMSRevision.ACTION_ARCHIVE, _workflow_snapshot(obj), user=request.user,
             status_before=before, status_after=obj.status,
@@ -374,7 +355,7 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
     content_type_key = CMSRevision.CONTENT_PAGE
 
     def get_serializer_class(self):
-        if self.action == "retrieve" and self.request.query_params.get("view") == "editor":
+        if self.action != "list" and self.request.query_params.get("view") == "editor":
             return CMSPageEditorSerializer
         return super().get_serializer_class()
 
@@ -424,7 +405,6 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
         if page.status == "archived":
             return Response({"detail": "Archived pages cannot be published."}, status=400)
         page = publish_page(page, user=request.user)
-        _sync_without_blocking(request, page, "publish")
         _log_cms_activity(request, "cms_content_published", {"content_type": "page", "id": page.pk, "slug": page.slug})
         return Response(self._serialize(page))
 
@@ -538,7 +518,6 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
         if section.status == "archived":
             return Response({"detail": "Archived sections cannot be published."}, status=400)
         section = publish_section(section, user=request.user)
-        _sync_without_blocking(request, section.page, "publish_section")
         _log_cms_activity(request, "cms_content_published", {"content_type": "section", "id": section.pk})
         return Response(self._serialize(section))
 
@@ -550,7 +529,7 @@ class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.Mod
     content_type_key = CMSRevision.CONTENT_ARTICLE
 
     def get_serializer_class(self):
-        if self.action == "retrieve" and self.request.query_params.get("view") == "editor":
+        if self.action != "list" and self.request.query_params.get("view") == "editor":
             return CMSArticleEditorSerializer
         return super().get_serializer_class()
 
@@ -607,7 +586,6 @@ class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.Mod
         if article.status == "archived":
             return Response({"detail": "Archived articles cannot be published."}, status=400)
         article = publish_article(article, user=request.user)
-        _sync_without_blocking(request, article, "publish")
         _log_cms_activity(request, "cms_content_published", {"content_type": "article", "id": article.pk, "slug": article.slug})
         return Response(self._serialize(article))
 
@@ -619,9 +597,21 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
     http_method_names = ["get", "patch", "put", "post", "head", "options"]
 
     def get_queryset(self):
-        return CMSContributorForm.objects.select_related(
+        queryset = CMSContributorForm.objects.select_related(
             "current_published_version", "created_by", "updated_by", "submitted_by", "reviewed_by", "lock_owner"
-        ).order_by("name")
+        )
+        if self.request.query_params.get("include_versions") == "summary":
+            queryset = queryset.prefetch_related(
+                Prefetch(
+                    "versions",
+                    queryset=CMSContributorFormVersion.objects.select_related("published_by").only(
+                        "id", "form_id", "version_number", "schema_json", "published_by_id", "published_at",
+                        "published_by__username", "published_by__full_name",
+                    ).order_by("-version_number"),
+                    to_attr="cms_version_summaries",
+                )
+            )
+        return queryset.order_by("name")
 
     def create(self, request, *args, **kwargs):
         return Response({"detail": "Contributor form definitions are provisioned by the system."}, status=405)
@@ -740,9 +730,19 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def versions(self, request, pk=None):
         form = self.get_object()
-        return Response(CMSContributorFormVersionSerializer(
-            form.versions.select_related("published_by").all(), many=True
-        ).data)
+        versions = form.versions.select_related("published_by").all()
+        version_id = request.query_params.get("version_id")
+        if version_id:
+            version = versions.filter(pk=version_id).first()
+            if version is None:
+                return Response({"detail": "Published form version not found."}, status=404)
+            return Response(CMSContributorFormVersionSerializer(version).data)
+        serializer_class = (
+            CMSContributorFormVersionSummarySerializer
+            if request.query_params.get("view") == "summary"
+            else CMSContributorFormVersionSerializer
+        )
+        return Response(serializer_class(versions, many=True).data)
 
     @action(
         detail=True,
@@ -1160,10 +1160,6 @@ class AdminCMSRevisionViewSet(CMSSummaryListMixin, viewsets.ReadOnlyModelViewSet
     def restore_revision(self, request, pk=None):
         revision = self.get_object()
         restored = restore_revision(revision, user=request.user)
-        if isinstance(restored, CMSPageSection):
-            _sync_without_blocking(request, restored.page, "restore")
-        elif isinstance(restored, (CMSPage, CMSArticle)):
-            _sync_without_blocking(request, restored, "restore")
         _log_cms_activity(
             request, "cms_content_restored",
             {"revision_id": revision.pk, "content_type": revision.content_type_key, "restored_id": restored.pk},
@@ -1191,29 +1187,42 @@ class AdminCMSReviewQueueView(APIView):
                 published_slug=KeyTextTransform("slug", "published_snapshot_json"),
             )
             articles = articles.annotate(published_slug=KeyTextTransform("slug", "published_snapshot_json"))
+            sections = CMSPageSection.objects.filter(status="submitted")
+            forms = CMSContributorForm.objects.filter(status="submitted").select_related(
+                "current_published_version"
+            )
+            events = list(
+                PublicEvent.objects.filter(status="submitted").values(
+                    "id", "title", "status", "updated_at"
+                )
+            )
         else:
             pages = pages.prefetch_related("sections").select_related(
                 "created_by", "updated_by", "submitted_by", "reviewed_by"
             )
             articles = articles.select_related("created_by", "updated_by", "submitted_by", "reviewed_by")
+            sections = CMSPageSection.objects.filter(status="submitted").select_related("page", "lock_owner")
+            forms = CMSContributorForm.objects.filter(status="submitted").select_related(
+                "current_published_version", "created_by", "updated_by", "submitted_by", "reviewed_by", "lock_owner"
+            )
+            events = PublicEventSerializer(
+                PublicEvent.objects.filter(status="submitted").select_related(
+                    "created_by", "submitted_by", "reviewed_by"
+                ),
+                many=True,
+            ).data
 
         return Response(
             {
                 "pages": page_serializer(pages, many=True, context={"request": request}).data,
                 "sections": section_serializer(
-                    CMSPageSection.objects.filter(status="submitted").select_related("page", "lock_owner"),
+                    sections,
                     many=True,
                     context={"request": request},
                 ).data,
                 "news": article_serializer(articles, many=True, context={"request": request}).data,
-                "forms": form_serializer(
-                    CMSContributorForm.objects.filter(status="submitted").select_related(
-                        "current_published_version", "created_by", "updated_by", "submitted_by", "reviewed_by", "lock_owner"
-                    ),
-                    many=True,
-                    context={"request": request},
-                ).data,
-                "events": PublicEventSerializer(PublicEvent.objects.filter(status="submitted"), many=True).data,
+                "forms": form_serializer(forms, many=True, context={"request": request}).data,
+                "events": events,
             }
         )
 

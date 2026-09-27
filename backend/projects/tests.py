@@ -1433,6 +1433,17 @@ class PortalWorkflowTests(APITestCase):
         self.assertEqual(create_res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("profile_data", create_res.data)
 
+    def test_retired_chatbot_endpoints_are_not_available(self):
+        for path in (
+            "/api/public-chat/ask/",
+            "/api/public-chat/feedback/",
+            "/api/public-chat/faq/",
+            "/api/admin/chat/knowledge-gaps/",
+            "/api/admin/chat/knowledge-gaps/1/approve/",
+            "/api/admin/chat/knowledge-gaps/1/reject/",
+        ):
+            self.assertEqual(self.client.get(path).status_code, status.HTTP_404_NOT_FOUND)
+
 
 class PerformanceApiTests(APITestCase):
     def setUp(self):

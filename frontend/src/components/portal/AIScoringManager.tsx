@@ -181,6 +181,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
   const [changeNote, setChangeNote] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [historyLimit, setHistoryLimit] = useState(50);
   const [saving, setSaving] = useState(false);
   const [training, setTraining] = useState(false);
   const [updatingRecordId, setUpdatingRecordId] = useState<number | null>(null);
@@ -189,7 +190,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const next = await cmsApi.getAIScoringWorkspace();
+      const next = await cmsApi.getAIScoringWorkspace(historyLimit);
       setWorkspace(next);
       setConfig(canEdit
         ? prepareContextualConfig(next.active_rule_set.draft_config || next.active_rule_set.config)
@@ -199,7 +200,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
     } finally {
       setLoading(false);
     }
-  }, [canEdit]);
+  }, [canEdit, historyLimit]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -518,7 +519,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
               </table>
             </div>
           )}
-          {workspace.historical_count > workspace.historical_projects.length && <p className="mt-2 text-xs text-slate-500">Showing the latest {workspace.historical_projects.length} confirmed records.</p>}
+          {workspace.historical_count > workspace.historical_projects.length && <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-slate-500">Showing the latest {workspace.historical_projects.length} confirmed records for faster loading.</p>{historyLimit < 500 ? <button type="button" disabled={loading} className="portal-btn portal-btn-ghost" onClick={() => setHistoryLimit(Math.min(500, workspace.historical_count))}>{loading ? "Loading..." : "Load more records"}</button> : <span className="text-xs text-slate-500">Use search within the latest 500 records.</span>}</div>}
         </div>
       </section>
     </div>

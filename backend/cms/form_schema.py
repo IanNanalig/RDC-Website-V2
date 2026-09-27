@@ -178,8 +178,9 @@ DEFAULT_SIMPLIFIED_FORM_SCHEMA = {
             "admin_only": True,
             "fields": [
                 _field("priorityAnalysisFacts.readinessLevel", "Readiness Level", "select", options=_options([
-                    "Completed supporting documents", "Ongoing supporting documents",
-                    "Comprehensive project profile", "Concept paper / none",
+                    "With completed documents such as pre-FS/FS/POW and detailed design, where applicable",
+                    "Ongoing pre-FS/FS/POW and detailed design, where applicable",
+                    "With Comprehensive Project Profile", "With concept paper/none",
                 ])),
                 _field("priorityAnalysisFacts.gadResponsiveness", "GAD Responsiveness", "select", options=_options([
                     "Gender-responsive", "Gender-sensitive", "Promising GAD prospects", "GAD invisible",
@@ -322,6 +323,7 @@ def validate_form_schema(schema, published_schema=None):
         raise FormSchemaError(f"Protected fields cannot be removed: {', '.join(sorted(missing))}.")
 
     current = _field_map(schema)
+    published_fields = _field_map(published_schema) if isinstance(published_schema, dict) else {}
     section_visible_for_field = {
         str(field.get("key")): section.get("visible") is not False
         for section in sections
@@ -347,7 +349,15 @@ def validate_form_schema(schema, published_schema=None):
         original_values = [option["value"] for option in original.get("options", [])]
         if original_values:
             candidate_values = [option.get("value") for option in candidate.get("options", []) if isinstance(option, dict)]
-            generated_values = set(candidate_values) - set(original_values)
+            # A deployed form can contain an earlier official value set after system wording is revised.
+            # Keep those already-published values valid so ordinary CMS edits are not blocked, while
+            # continuing to require generated keys for genuinely new choices.
+            published_values = {
+                option.get("value")
+                for option in published_fields.get(key, {}).get("options", [])
+                if isinstance(option, dict)
+            }
+            generated_values = set(candidate_values) - set(original_values) - published_values
             if any(not re.fullmatch(r"option_[1-9][0-9]*", str(value)) for value in generated_values):
                 raise FormSchemaError(f"New choices for protected field {key} must use generated option values.")
 
@@ -389,7 +399,6 @@ def validate_form_schema(schema, published_schema=None):
             raise FormSchemaError(
                 "Published sections must be hidden instead of deleted: " + ", ".join(sorted(missing_sections)) + "."
             )
-        published_fields = _field_map(published_schema)
         for key, old_field in published_fields.items():
             new_field = current.get(key)
             if new_field is None:

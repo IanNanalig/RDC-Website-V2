@@ -227,6 +227,40 @@ def publish_contributor_form(form, user=None):
         return locked_form
 
 
+def _field_origin(section, section_index, field_index, field):
+    """Describe where a retired custom field belongs in the contributor form."""
+    return {
+        "section_key": str(section.get("key") or ""),
+        "section_title": str(section.get("title") or "Untitled section"),
+        "section_description": str(section.get("description") or ""),
+        "section_visible": section.get("visible", True) is not False,
+        "section_order": section_index,
+        "field_order": field_index,
+        "field_required": bool(field.get("required")),
+    }
+
+
+def _historical_field_origin(form, field_key):
+    """Recover a legacy retired field's last contributor-facing location."""
+    for historical_version in form.versions.order_by("-version_number"):
+        schema = historical_version.schema_json
+        if not isinstance(schema, dict):
+            continue
+        for section_index, section in enumerate(schema.get("sections", [])):
+            if not isinstance(section, dict) or section.get("admin_only"):
+                continue
+            for field_index, field in enumerate(section.get("fields", [])):
+                if not isinstance(field, dict) or field.get("key") != field_key:
+                    continue
+                saved_origin = field.get("retired_from")
+                if section.get("key") == "retired_fields":
+                    if isinstance(saved_origin, dict) and saved_origin.get("section_key"):
+                        return deepcopy(saved_origin)
+                    continue
+                return _field_origin(section, section_index, field_index, field)
+    return None
+
+
 def restore_contributor_form_version(form, version, user=None):
     form_id = form.pk if isinstance(form, CMSContributorForm) else form
     version_id = version.pk if isinstance(version, CMSContributorFormVersion) else version
@@ -248,21 +282,50 @@ def restore_contributor_form_version(form, version, user=None):
                 for field in section.get("fields", [])
                 if isinstance(field, dict)
             }
-            retired_fields = [
-                {**deepcopy(field), "visible": False, "required": False}
-                for section in published_schema.get("sections", [])
-                if isinstance(section, dict)
-                for field in section.get("fields", [])
-                if isinstance(field, dict) and field.get("key") not in restored_keys and str(field.get("key") or "").startswith("custom_")
-            ]
+            retired_fields = []
+            for section_index, section in enumerate(published_schema.get("sections", [])):
+                if not isinstance(section, dict) or section.get("admin_only"):
+                    continue
+                for field_index, field in enumerate(section.get("fields", [])):
+                    field_key = field.get("key") if isinstance(field, dict) else None
+                    if (
+                        not isinstance(field, dict)
+                        or field_key in restored_keys
+                        or not str(field_key or "").startswith("custom_")
+                    ):
+                        continue
+                    retired_field = deepcopy(field)
+                    origin = retired_field.get("retired_from")
+                    if not isinstance(origin, dict) or not origin.get("section_key"):
+                        origin = (
+                            _historical_field_origin(locked_form, field_key)
+                            if section.get("key") == "retired_fields"
+                            else _field_origin(section, section_index, field_index, field)
+                        )
+                    if origin:
+                        retired_field["retired_from"] = origin
+                    retired_field["visible"] = False
+                    retired_field["required"] = False
+                    retired_fields.append(retired_field)
             if retired_fields:
-                restored_schema.setdefault("sections", []).append({
-                    "key": "retired_fields",
-                    "title": "Retired fields",
-                    "description": "Preserved for historical compatibility.",
-                    "visible": False,
-                    "fields": retired_fields,
-                })
+                restored_sections = restored_schema.setdefault("sections", [])
+                retired_section = next(
+                    (
+                        section for section in restored_sections
+                        if isinstance(section, dict) and section.get("key") == "retired_fields"
+                    ),
+                    None,
+                )
+                if retired_section is None:
+                    retired_section = {
+                        "key": "retired_fields",
+                        "title": "Retired fields",
+                        "description": "Preserved for historical compatibility.",
+                        "visible": False,
+                        "fields": [],
+                    }
+                    restored_sections.append(retired_section)
+                retired_section.setdefault("fields", []).extend(retired_fields)
             restored_schema = normalize_system_managed_sections(restored_schema, published_schema)
         validate_form_schema(restored_schema, published_schema=published_schema)
         status_before = locked_form.status

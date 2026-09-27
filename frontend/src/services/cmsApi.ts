@@ -1,6 +1,10 @@
 import { api } from "./api";
 import { API_BASE_URL } from "../config/api";
-import type { ContributorFormPayload, ContributorFormSchema } from "../types/contributorForm";
+import type {
+  ContributorFormPayload,
+  ContributorFormRetiredOrigin,
+  ContributorFormSchema,
+} from "../types/contributorForm";
 
 export type CMSStatus = "draft" | "submitted" | "published" | "rejected" | "archived";
 
@@ -128,6 +132,8 @@ export type CMSContributorForm = {
   lock_expires_at?: string | null;
   is_locked?: boolean;
   locked_by_me?: boolean;
+  current_published_schema_json?: ContributorFormSchema | null;
+  versions_summary?: CMSContributorFormVersion[];
   updated_at: string;
 };
 
@@ -135,9 +141,15 @@ export type CMSContributorFormVersion = {
   id: number;
   form: number;
   version_number: number;
-  schema_json: ContributorFormSchema;
+  schema_json?: ContributorFormSchema;
   published_by_name?: string;
   published_at: string;
+  schema_summary?: {
+    section_count: number;
+    field_count: number;
+    custom_field_count: number;
+  };
+  field_origins?: Record<string, ContributorFormRetiredOrigin>;
 };
 
 export type CMSReviewQueue = {
@@ -388,13 +400,13 @@ export const cmsApi = {
   listPages: async (search = "", page = 1) =>
     listFromResponse<CMSPage>(await api.get(`admin/cms/pages/?${summaryQuery({ q: search, page })}`)),
   getPage: (id: number) => api.get(`admin/cms/pages/${id}/?view=editor`) as Promise<CMSPage>,
-  createPage: (payload: Pick<CMSPage, "title" | "slug">) => api.post("admin/cms/pages/", payload),
+  createPage: (payload: Pick<CMSPage, "title" | "slug">) => api.post("admin/cms/pages/?view=editor", payload),
   updatePage: (id: number, payload: Pick<CMSPage, "title" | "slug">) =>
-    api.put(`admin/cms/pages/${id}/`, payload),
-  publishPage: (id: number) => api.post(`admin/cms/pages/${id}/publish/`),
-  submitPage: (id: number) => api.post(`admin/cms/pages/${id}/submit/`),
-  rejectPage: (id: number, remarks = "") => api.post(`admin/cms/pages/${id}/reject/`, { remarks }),
-  archivePage: (id: number) => api.post(`admin/cms/pages/${id}/archive/`),
+    api.put(`admin/cms/pages/${id}/?view=editor`, payload),
+  publishPage: (id: number) => api.post(`admin/cms/pages/${id}/publish/?view=editor`),
+  submitPage: (id: number) => api.post(`admin/cms/pages/${id}/submit/?view=editor`),
+  rejectPage: (id: number, remarks = "") => api.post(`admin/cms/pages/${id}/reject/?view=editor`, { remarks }),
+  archivePage: (id: number) => api.post(`admin/cms/pages/${id}/archive/?view=editor`),
   reorderSections: (pageId: number, sectionIds: number[]) =>
     api.post(`admin/cms/pages/${pageId}/reorder_sections/`, { section_ids: sectionIds }),
 
@@ -417,16 +429,16 @@ export const cmsApi = {
   listArticles: async (search = "", page = 1) =>
     listFromResponse<CMSArticle>(await api.get(`admin/cms/articles/?${summaryQuery({ q: search, page })}`)),
   getArticle: (id: number) => api.get(`admin/cms/articles/${id}/?view=editor`) as Promise<CMSArticle>,
-  createArticle: (payload: Partial<CMSArticle>) => api.post("admin/cms/articles/", payload),
+  createArticle: (payload: Partial<CMSArticle>) => api.post("admin/cms/articles/?view=editor", payload),
   updateArticle: (id: number, payload: Partial<CMSArticle>) =>
-    api.put(`admin/cms/articles/${id}/`, payload),
-  publishArticle: (id: number) => api.post(`admin/cms/articles/${id}/publish/`),
-  submitArticle: (id: number) => api.post(`admin/cms/articles/${id}/submit/`),
-  rejectArticle: (id: number, remarks = "") => api.post(`admin/cms/articles/${id}/reject/`, { remarks }),
-  archiveArticle: (id: number) => api.post(`admin/cms/articles/${id}/archive/`),
+    api.put(`admin/cms/articles/${id}/?view=editor`, payload),
+  publishArticle: (id: number) => api.post(`admin/cms/articles/${id}/publish/?view=editor`),
+  submitArticle: (id: number) => api.post(`admin/cms/articles/${id}/submit/?view=editor`),
+  rejectArticle: (id: number, remarks = "") => api.post(`admin/cms/articles/${id}/reject/?view=editor`, { remarks }),
+  archiveArticle: (id: number) => api.post(`admin/cms/articles/${id}/archive/?view=editor`),
 
   listContributorForms: async () =>
-    listFromResponse<CMSContributorForm>(await api.get("admin/cms/forms/")),
+    listFromResponse<CMSContributorForm>(await api.get("admin/cms/forms/?include_versions=summary")),
   updateContributorForm: (
     id: number,
     payload: {
@@ -446,7 +458,9 @@ export const cmsApi = {
   rejectContributorForm: (id: number, remarks = "") =>
     api.post(`admin/cms/forms/${id}/reject/`, { remarks }),
   listContributorFormVersions: async (id: number) =>
-    listFromResponse<CMSContributorFormVersion>(await api.get(`admin/cms/forms/${id}/versions/`)),
+    listFromResponse<CMSContributorFormVersion>(await api.get(`admin/cms/forms/${id}/versions/?view=summary`)),
+  getCMSContributorFormVersion: (id: number, versionId: number) =>
+    api.get(`admin/cms/forms/${id}/versions/?version_id=${versionId}`) as Promise<CMSContributorFormVersion>,
   restoreContributorFormVersion: (id: number, versionId: number) =>
     api.post(`admin/cms/forms/${id}/restore-version/`, { version_id: versionId }),
 
@@ -471,7 +485,7 @@ export const cmsApi = {
     listFromResponse<CMSRevision>(await api.get(`admin/cms/revisions/?${summaryQuery({ q: search, page })}`)),
   restoreRevision: (id: number) => api.post(`admin/cms/revisions/${id}/restore-revision/`),
   getReviewQueue: () => api.get("admin/cms/review-queue/?view=summary") as Promise<CMSReviewQueue>,
-  getAIScoringWorkspace: () => api.get("admin/cms/ai-scoring/?limit=200") as Promise<CMSAIScoringWorkspace>,
+  getAIScoringWorkspace: (limit = 50) => api.get(`admin/cms/ai-scoring/?limit=${limit}`) as Promise<CMSAIScoringWorkspace>,
   activateAIScoringRules: (config: CMSAIRuleConfig, changeNote: string) =>
     api.post("admin/cms/ai-scoring/", { config, change_note: changeNote }) as Promise<CMSAIScoringWorkspace>,
   trainAIModel: () => api.post("admin/ai/models/train/", {}),

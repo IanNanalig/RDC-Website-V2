@@ -64,7 +64,9 @@ class AuditActionMiddleware:
         forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
         ip_address = forwarded.split(",")[0].strip() if forwarded else request.META.get("REMOTE_ADDR", "")
         try:
-            if activity_ids and UserActivity.objects.filter(pk__in=activity_ids).exists():
+            # The post-save signal records IDs only after the activity insert succeeds, so
+            # another database existence check adds latency without improving correctness.
+            if activity_ids:
                 return
             UserActivity.objects.create(
                 user=user,

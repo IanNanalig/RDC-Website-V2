@@ -300,7 +300,6 @@ GROQ_BACKUP_MODEL = os.environ.get("GROQ_BACKUP_MODEL", "llama-3.3-70b-versatile
 GROQ_API_URL = os.environ.get("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions").strip()
 GROQ_TIMEOUT_SECONDS = max(5, env_int("GROQ_TIMEOUT_SECONDS", 30))
 GROQ_MAX_COMPLETION_TOKENS = max(256, env_int("GROQ_MAX_COMPLETION_TOKENS", 4096))
-GROQ_PUBLIC_CHAT_RATE = os.environ.get("GROQ_PUBLIC_CHAT_RATE", "20/min").strip() or "20/min"
 GROQ_ENABLED = bool(GROQ_API_KEY and GROQ_PRIMARY_MODEL)
 
 # Sentry configuration (optional)

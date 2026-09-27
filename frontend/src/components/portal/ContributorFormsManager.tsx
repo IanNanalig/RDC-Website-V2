@@ -8,6 +8,7 @@ import {
   contributorFieldApplies,
   type ContributorFormField,
   type ContributorFormFieldType,
+  type ContributorFormRetiredOrigin,
   type ContributorFormSchema,
   type ContributorFormSection,
 } from "../../types/contributorForm";
@@ -87,7 +88,9 @@ const moveContributorSection = (
   sectionIndex: number,
   direction: -1 | 1,
 ) => {
-  const editableIndexes = sections.flatMap((section, index) => section.admin_only ? [] : [index]);
+  const editableIndexes = sections.flatMap((section, index) => (
+    section.admin_only || section.key === "retired_fields" ? [] : [index]
+  ));
   const position = editableIndexes.indexOf(sectionIndex);
   const targetIndex = editableIndexes[position + direction];
   if (position < 0 || targetIndex === undefined) return sections;
@@ -100,6 +103,13 @@ const schemaSummary = (schema: ContributorFormSchema) => {
   const contributorSections = schema.sections.filter((section) => !section.admin_only);
   const fields = contributorSections.flatMap((section) => section.fields);
   return `${contributorSections.length} sections · ${fields.length} fields · ${fields.filter((field) => field.key.startsWith("custom_")).length} custom`;
+};
+
+const versionSummary = (version: CMSContributorFormVersion) => {
+  if (version.schema_json) return schemaSummary(version.schema_json);
+  const counts = version.schema_summary;
+  if (!counts) return "Version metadata";
+  return `${counts.section_count} sections Â· ${counts.field_count} fields Â· ${counts.custom_field_count} custom`;
 };
 
 const schemaDifferences = (live: ContributorFormSchema, draft: ContributorFormSchema) => {
@@ -228,6 +238,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   const [editMode, setEditMode] = useState<EditMode | null>(null);
   const [preview, setPreview] = useState(false);
   const [compareVersion, setCompareVersion] = useState<CMSContributorFormVersion | null>(null);
+  const [loadingVersionId, setLoadingVersionId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
   const [readOnly, setReadOnly] = useState(false);
@@ -236,7 +247,10 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   selectedKeyRef.current = selected?.key || "";
   editModeRef.current = editMode;
 
-  const dirty = Boolean(schema && baseline && JSON.stringify(schema) !== baseline);
+  const dirty = useMemo(
+    () => Boolean(schema && baseline && JSON.stringify(schema) !== baseline),
+    [baseline, schema],
+  );
   const baselineFieldKeys = useMemo(() => {
     if (!baseline) return new Set<string>();
     try {
@@ -250,13 +264,14 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     () => versions.find((version) => version.version_number === selected?.current_published_version_number),
     [selected?.current_published_version_number, versions],
   );
+  const publishedSchema = selected?.current_published_schema_json || publishedVersion?.schema_json;
   const publishedFieldKeys = useMemo(
-    () => new Set(publishedVersion?.schema_json.sections.flatMap((section) => section.fields.map((field) => field.key)) || []),
-    [publishedVersion],
+    () => new Set(publishedSchema?.sections.flatMap((section) => section.fields.map((field) => field.key)) || []),
+    [publishedSchema],
   );
   const publishedSectionKeys = useMemo(
-    () => new Set(publishedVersion?.schema_json.sections.map((section) => section.key) || []),
-    [publishedVersion],
+    () => new Set(publishedSchema?.sections.map((section) => section.key) || []),
+    [publishedSchema],
   );
   const conditionalOptionValues = useMemo(() => {
     const dependencies = new Map<string, Set<string>>();
@@ -279,7 +294,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
       const next = rows.find((row) => row.key === selectedKeyRef.current) || rows[0] || null;
       setSelected(next);
       if (next) {
-        setVersions(await cmsApi.listContributorFormVersions(next.id));
+        setVersions(next.versions_summary || []);
         if (resetEditor || !editModeRef.current) {
           const nextSchema = normalizeContributorSchema(next.draft_schema_json);
           setSchema(nextSchema);
@@ -350,13 +365,17 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   const closeEditor = async () => {
     if (!selected) return;
     if (dirty && !window.confirm("Discard the unsaved form changes?")) return;
+    let unlocked = selected;
     if (!readOnly) {
-      try { await cmsApi.unlockContributorForm(selected.id); } catch { /* expired locks need no cleanup */ }
+      try { unlocked = await cmsApi.unlockContributorForm(selected.id) as CMSContributorForm; } catch { /* expired locks need no cleanup */ }
     }
+    const restoredSchema = normalizeContributorSchema(unlocked.draft_schema_json);
+    setSelected(unlocked);
+    setSchema(restoredSchema);
+    setBaseline(JSON.stringify(restoredSchema));
     setEditMode(null);
     setReadOnly(false);
     setPreview(false);
-    await load(true);
   };
 
   const updateSection = (sectionIndex: number, updater: (section: ContributorFormSection) => ContributorFormSection) => {
@@ -423,11 +442,107 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
         visible: true,
         fields: [],
     };
-    const firstSystemIndex = schema.sections.findIndex((section) => section.admin_only);
+    const firstSystemIndex = schema.sections.findIndex((section) => section.admin_only || section.key === "retired_fields");
     const insertAt = firstSystemIndex < 0 ? schema.sections.length : firstSystemIndex;
     const sections = [...schema.sections];
     sections.splice(insertAt, 0, nextSection);
     setSchema({ ...schema, sections });
+  };
+
+  const resolveRetiredOrigin = useCallback((field: ContributorFormField): ContributorFormRetiredOrigin | undefined => {
+    if (field.retired_from?.section_key) return field.retired_from;
+    const orderedVersions = [...versions].sort((left, right) => right.version_number - left.version_number);
+    for (const version of orderedVersions) {
+      const summarizedOrigin = version.field_origins?.[field.key];
+      if (summarizedOrigin?.section_key) return summarizedOrigin;
+      if (!version.schema_json) continue;
+      for (const [sectionIndex, versionSection] of version.schema_json.sections.entries()) {
+        if (versionSection.admin_only) continue;
+        const fieldIndex = versionSection.fields.findIndex((candidate) => candidate.key === field.key);
+        if (fieldIndex < 0) continue;
+        const historicalField = versionSection.fields[fieldIndex];
+        if (versionSection.key === "retired_fields") {
+          if (historicalField.retired_from?.section_key) return historicalField.retired_from;
+          continue;
+        }
+        return {
+          section_key: versionSection.key,
+          section_title: versionSection.title,
+          section_description: versionSection.description || "",
+          section_visible: versionSection.visible !== false,
+          section_order: sectionIndex,
+          field_order: fieldIndex,
+          field_required: Boolean(historicalField.required),
+        };
+      }
+    }
+    return undefined;
+  }, [versions]);
+
+  const toggleCompareVersion = async (version: CMSContributorFormVersion) => {
+    if (!selected) return;
+    if (compareVersion?.id === version.id) {
+      setCompareVersion(null);
+      return;
+    }
+    if (version.schema_json) {
+      setCompareVersion(version);
+      return;
+    }
+    setLoadingVersionId(version.id);
+    try {
+      const detailed = await cmsApi.getCMSContributorFormVersion(selected.id, version.id);
+      setVersions((current) => current.map((item) => item.id === detailed.id ? { ...item, ...detailed } : item));
+      setCompareVersion({ ...version, ...detailed });
+    } catch (error) {
+      setNotice(errorDetail(error, "Failed to load the selected form version."));
+    } finally {
+      setLoadingVersionId(null);
+    }
+  };
+
+  const reactivateRetiredField = (sectionIndex: number, fieldIndex: number) => {
+    if (!schema) return;
+    const sourceSection = schema.sections[sectionIndex];
+    const sourceField = sourceSection?.fields[fieldIndex];
+    if (!sourceField || sourceSection.key !== "retired_fields") return;
+    const origin = resolveRetiredOrigin(sourceField);
+    if (!origin) {
+      setNotice(`The former location of "${sourceField.label}" could not be found in the version history.`);
+      return;
+    }
+
+    const sections = schema.sections.map((section) => ({
+      ...section,
+      fields: section.fields.map((field) => ({ ...field })),
+    }));
+    sections[sectionIndex].fields.splice(fieldIndex, 1);
+
+    let targetIndex = sections.findIndex((section) => section.key === origin.section_key && !section.admin_only);
+    if (targetIndex < 0) {
+      const targetSection: ContributorFormSection = {
+        key: origin.section_key,
+        title: origin.section_title || "Restored section",
+        description: origin.section_description || "",
+        visible: origin.section_visible !== false,
+        fields: [],
+      };
+      const firstSystemIndex = sections.findIndex((section) => section.admin_only || section.key === "retired_fields");
+      const maximumIndex = firstSystemIndex < 0 ? sections.length : firstSystemIndex;
+      targetIndex = Math.max(0, Math.min(origin.section_order, maximumIndex));
+      sections.splice(targetIndex, 0, targetSection);
+    } else {
+      sections[targetIndex].visible = true;
+    }
+
+    const restoredField = { ...sourceField };
+    delete restoredField.retired_from;
+    restoredField.visible = true;
+    restoredField.required = Boolean(origin.field_required);
+    const insertAt = Math.max(0, Math.min(origin.field_order, sections[targetIndex].fields.length));
+    sections[targetIndex].fields.splice(insertAt, 0, restoredField);
+    setSchema({ ...schema, sections });
+    setNotice(`"${sourceField.label}" was returned to "${sections[targetIndex].title}" at its former position.`);
   };
 
   const saveDraft = async () => {
@@ -449,7 +564,6 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
       setBaseline(JSON.stringify(savedSchema));
       setSchema(savedSchema);
       setNotice("Contributor form draft saved. Contributors still use the published version.");
-      await load(true);
     } catch (error) {
       setNotice(errorDetail(error, "Failed to save the contributor form draft."));
     } finally {
@@ -464,11 +578,19 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     if (action === "reject" && remarks === null) return;
     setLoading(true);
     try {
-      if (action === "submit") await cmsApi.submitContributorForm(selected.id);
-      if (action === "publish") await cmsApi.publishContributorForm(selected.id);
-      if (action === "reject") await cmsApi.rejectContributorForm(selected.id, remarks || "");
+      let updated: CMSContributorForm | null = null;
+      if (action === "submit") updated = await cmsApi.submitContributorForm(selected.id) as CMSContributorForm;
+      if (action === "publish") updated = await cmsApi.publishContributorForm(selected.id) as CMSContributorForm;
+      if (action === "reject") updated = await cmsApi.rejectContributorForm(selected.id, remarks || "") as CMSContributorForm;
       setNotice(action === "submit" ? "Form submitted for administrator review." : action === "publish" ? "New contributor form version published." : "Form draft returned with review notes.");
-      await load();
+      if (action === "publish") {
+        await load(true);
+      } else if (updated) {
+        const updatedSchema = normalizeContributorSchema(updated.draft_schema_json);
+        setSelected(updated);
+        setSchema(updatedSchema);
+        setBaseline(JSON.stringify(updatedSchema));
+      }
     } catch (error) {
       setNotice(errorDetail(error, `Failed to ${action} the contributor form.`));
     } finally {
@@ -485,10 +607,13 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     if (!window.confirm(prompt)) return;
     setLoading(true);
     try {
-      await cmsApi.restoreContributorFormVersion(selected.id, version.id);
+      const restored = await cmsApi.restoreContributorFormVersion(selected.id, version.id) as CMSContributorForm;
+      const restoredSchema = normalizeContributorSchema(restored.draft_schema_json);
+      setSelected(restored);
+      setSchema(restoredSchema);
+      setBaseline(JSON.stringify(restoredSchema));
       setCompareVersion(null);
       setNotice(resetToLive ? "Draft reset to the live published form." : `Version ${version.version_number} restored as a draft. Review it before publishing.`);
-      await load();
     } catch (error) {
       setNotice(errorDetail(error, "Failed to restore the selected form version."));
     } finally {
@@ -529,7 +654,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
       {(selected.has_unpublished_changes || dirty) && (
         <div className="portal-card overflow-hidden">
           <div className="portal-card-header"><h3 className="font-bold text-slate-900">Draft Changes from Live Form</h3><p className="text-xs text-slate-500">Review every contributor-facing change before publishing.</p></div>
-          <div className="portal-card-body"><ChangeSummary live={publishedVersion?.schema_json} draft={schema} /></div>
+          <div className="portal-card-body"><ChangeSummary live={publishedSchema} draft={schema} /></div>
         </div>
       )}
 
@@ -555,18 +680,24 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                         <span className="font-mono text-xs text-slate-500">{section.key}</span>
                       </div>
                       <div className="grid gap-2 md:grid-cols-2">
-                        <input aria-label="Section title" className="rounded-lg border border-slate-300 px-3 py-2 font-semibold" value={section.title} onChange={(event) => updateSection(sectionIndex, (current) => ({ ...current, title: event.target.value }))} />
-                        <input aria-label="Section description" className="rounded-lg border border-slate-300 px-3 py-2 text-sm" value={section.description || ""} placeholder="Optional section guidance" onChange={(event) => updateSection(sectionIndex, (current) => ({ ...current, description: event.target.value }))} />
+                        <input disabled={section.key === "retired_fields"} aria-label="Section title" className="rounded-lg border border-slate-300 px-3 py-2 font-semibold disabled:bg-slate-100 disabled:text-slate-500" value={section.title} onChange={(event) => updateSection(sectionIndex, (current) => ({ ...current, title: event.target.value }))} />
+                        <input disabled={section.key === "retired_fields"} aria-label="Section description" className="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-500" value={section.description || ""} placeholder="Optional section guidance" onChange={(event) => updateSection(sectionIndex, (current) => ({ ...current, description: event.target.value }))} />
                       </div>
                     </div>
-                    {editMode === "change" && <div className="flex flex-wrap items-center gap-2 text-xs"><button type="button" onClick={() => setSchema({ ...schema, sections: moveContributorSection(schema.sections, sectionIndex, -1) })}>Up</button><button type="button" onClick={() => setSchema({ ...schema, sections: moveContributorSection(schema.sections, sectionIndex, 1) })}>Down</button>{!section.fields.some((field) => field.required || field.condition_required) && <label className="flex items-center gap-1"><input type="checkbox" checked={section.visible !== false} onChange={(event) => updateSection(sectionIndex, (current) => ({ ...current, visible: event.target.checked }))} />Visible</label>}{!publishedSectionKeys.has(section.key) && <button type="button" className="font-semibold text-rose-700" onClick={() => removeSection(sectionIndex)}>Remove section</button>}</div>}
+                    {editMode === "change" && (section.key === "retired_fields" ? (
+                      <span className="rounded-full bg-slate-200 px-2 py-1 text-xs font-semibold text-slate-600">Hidden compatibility section</span>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2 text-xs"><button type="button" onClick={() => setSchema({ ...schema, sections: moveContributorSection(schema.sections, sectionIndex, -1) })}>Up</button><button type="button" onClick={() => setSchema({ ...schema, sections: moveContributorSection(schema.sections, sectionIndex, 1) })}>Down</button>{!section.fields.some((field) => field.required || field.condition_required) && <label className="flex items-center gap-1"><input type="checkbox" checked={section.visible !== false} onChange={(event) => updateSection(sectionIndex, (current) => ({ ...current, visible: event.target.checked }))} />Visible</label>}{!publishedSectionKeys.has(section.key) && <button type="button" className="font-semibold text-rose-700" onClick={() => removeSection(sectionIndex)}>Remove section</button>}</div>
+                    ))}
                   </div>
                   <div className="mt-3 space-y-3">
                     {section.fields.map((item, fieldIndex) => {
                       const isCustom = item.key.startsWith("custom_");
                       const isPublished = publishedFieldKeys.has(item.key);
                       const canRemove = isCustom && !isPublished && (editMode === "change" || !baselineFieldKeys.has(item.key));
-                      const canReorder = editMode === "change" || (isCustom && !baselineFieldKeys.has(item.key));
+                      const isRetired = section.key === "retired_fields";
+                      const retiredOrigin = isRetired ? resolveRetiredOrigin(item) : undefined;
+                      const canReorder = !isRetired && (editMode === "change" || (isCustom && !baselineFieldKeys.has(item.key)));
                       return (
                         <div key={item.key} data-form-field-key={item.key} className="rounded-xl border border-slate-200 bg-white p-3">
                           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -580,7 +711,17 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                             <span className="rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-600">Order {fieldIndex + 1}</span>
                             <span className="font-mono">{item.key}</span>
                             {canReorder && <><button type="button" disabled={fieldIndex === 0} className="font-semibold text-blue-700 disabled:cursor-not-allowed disabled:text-slate-300" aria-label={`Move ${item.label} up`} onClick={() => updateSection(sectionIndex, (current) => ({ ...current, fields: move(current.fields, fieldIndex, -1) }))}>Move up</button><button type="button" disabled={fieldIndex === section.fields.length - 1} className="font-semibold text-blue-700 disabled:cursor-not-allowed disabled:text-slate-300" aria-label={`Move ${item.label} down`} onClick={() => updateSection(sectionIndex, (current) => ({ ...current, fields: move(current.fields, fieldIndex, 1) }))}>Move down</button></>}
-                            {editMode === "change" && <>{(isCustom || !item.required && !item.condition_required) && <label className="flex items-center gap-1"><input type="checkbox" checked={item.visible !== false} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, visible: event.target.checked }))} />{item.visible === false ? "Reactivate" : "Visible"}</label>}{isCustom && <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(item.required)} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, required: event.target.checked }))} />Required</label>}</>}
+                            {editMode === "change" && (isRetired ? (
+                              <button
+                                type="button"
+                                disabled={!retiredOrigin}
+                                className="font-semibold text-blue-700 disabled:cursor-not-allowed disabled:text-slate-400"
+                                title={retiredOrigin ? `Return to ${retiredOrigin.section_title}` : "The original location is unavailable"}
+                                onClick={() => reactivateRetiredField(sectionIndex, fieldIndex)}
+                              >
+                                {retiredOrigin ? `Reactivate in ${retiredOrigin.section_title}` : "Original location unavailable"}
+                              </button>
+                            ) : <>{(isCustom || !item.required && !item.condition_required) && <label className="flex items-center gap-1"><input type="checkbox" checked={item.visible !== false} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, visible: event.target.checked }))} />{item.visible === false ? "Reactivate" : "Visible"}</label>}{isCustom && <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(item.required)} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, required: event.target.checked }))} />Required</label>}</>)}
                             {canRemove && <button type="button" className="font-semibold text-rose-700" onClick={() => removeField(sectionIndex, fieldIndex)}>Remove field</button>}
                           </div>
                           {isCustom && editMode === "update" && !baselineFieldKeys.has(item.key) && <label className="mt-2 flex items-center gap-1 text-xs text-slate-600"><input type="checkbox" checked={Boolean(item.required)} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, required: event.target.checked }))} />Required for submission</label>}
@@ -594,8 +735,9 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                       );
                     })}
                   </div>
-                  <button type="button" className="portal-btn portal-btn-ghost mt-3" onClick={() => addField(sectionIndex)}>Add Optional Field</button>
-                  <p className="mt-2 text-xs text-slate-500">New fields start as optional. Use their Move up and Move down controls to set the order shown to contributors.</p>
+                  {section.key === "retired_fields" ? (
+                    <p className="mt-3 text-xs text-slate-500">These published fields are retained for historical compatibility. Reactivating a field returns it to its former section and order.</p>
+                  ) : <><button type="button" className="portal-btn portal-btn-ghost mt-3" onClick={() => addField(sectionIndex)}>Add Optional Field</button><p className="mt-2 text-xs text-slate-500">New fields start as optional. Use their Move up and Move down controls to set the order shown to contributors.</p></>}
                 </section>
               ))}
               {editMode === "change" && <button type="button" className="portal-btn portal-btn-ghost" onClick={addSection}>Add Section</button>}
@@ -612,8 +754,8 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
             <div className="portal-card-body space-y-3">
               {versions.length === 0 ? <p className="text-sm text-slate-500">No published versions yet.</p> : versions.map((version) => (
                 <div key={version.id} data-form-version={version.version_number} className="rounded-xl border border-slate-200 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-3"><div><strong>Version {version.version_number}</strong><p className="text-xs text-slate-500">{schemaSummary(version.schema_json)} · {version.published_by_name || "system"} · {formatDate(version.published_at)}</p></div><div className="flex flex-wrap gap-2"><button className="text-sm text-blue-700" onClick={() => setCompareVersion(compareVersion?.id === version.id ? null : version)}>Preview changes</button>{isAdmin && version.version_number === selected.current_published_version_number && selected.has_unpublished_changes && <button className="text-sm font-semibold text-rose-700" onClick={() => void restore(version)}>Reset Draft to Live Version</button>}{isAdmin && version.version_number !== selected.current_published_version_number && <button className="text-sm text-amber-700" onClick={() => void restore(version)}>Restore as Draft</button>}</div></div>
-                  {compareVersion?.id === version.id && <div className="mt-3 border-t border-slate-200 pt-3"><p className="mb-2 text-xs font-semibold text-slate-600">Changes from Version {version.version_number} to current draft</p><div className="mb-3"><ChangeSummary live={version.schema_json} draft={schema} /></div><FormPreview schema={version.schema_json} /></div>}
+                  <div className="flex flex-wrap items-center justify-between gap-3"><div><strong>Version {version.version_number}</strong><p className="text-xs text-slate-500">{versionSummary(version)} · {version.published_by_name || "system"} · {formatDate(version.published_at)}</p></div><div className="flex flex-wrap gap-2"><button disabled={loadingVersionId === version.id} className="text-sm text-blue-700 disabled:text-slate-400" onClick={() => void toggleCompareVersion(version)}>{loadingVersionId === version.id ? "Loading preview..." : "Preview changes"}</button>{isAdmin && version.version_number === selected.current_published_version_number && selected.has_unpublished_changes && <button className="text-sm font-semibold text-rose-700" onClick={() => void restore(version)}>Reset Draft to Live Version</button>}{isAdmin && version.version_number !== selected.current_published_version_number && <button className="text-sm text-amber-700" onClick={() => void restore(version)}>Restore as Draft</button>}</div></div>
+                  {compareVersion?.id === version.id && compareVersion.schema_json && <div className="mt-3 border-t border-slate-200 pt-3"><p className="mb-2 text-xs font-semibold text-slate-600">Changes from Version {version.version_number} to current draft</p><div className="mb-3"><ChangeSummary live={compareVersion.schema_json} draft={schema} /></div><FormPreview schema={compareVersion.schema_json} /></div>}
                 </div>
               ))}
             </div>

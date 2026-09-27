@@ -12,7 +12,7 @@ from rest_framework.test import APITestCase
 
 from cms.models import CMSArticle, CMSPage, CMSPageSection, CMSRevision, CMSSiteSetting
 from cms.services.snapshots import build_page_snapshot
-from projects.models import PublicContent, PublicEvent, User, UserActivity
+from projects.models import PublicEvent, User, UserActivity
 
 
 class CMSV2Tests(APITestCase):
@@ -217,7 +217,7 @@ class CMSV2Tests(APITestCase):
         self.assertEqual(public.status_code, status.HTTP_200_OK)
         self.assertIn(event.pk, [row["id"] for row in public.data["results"]])
 
-    def test_review_workflow_preserves_old_public_snapshot_and_syncs_chatbot(self):
+    def test_review_workflow_preserves_old_public_snapshot(self):
         self.authenticate(self.editor)
         created = self.client.post(
             "/api/admin/cms/articles/",
@@ -228,7 +228,6 @@ class CMSV2Tests(APITestCase):
         self.assertEqual(self.client.post(f"/api/admin/cms/articles/{article_id}/submit/").status_code, 200)
         self.authenticate(self.admin)
         self.assertEqual(self.client.post(f"/api/admin/cms/articles/{article_id}/publish/").status_code, 200)
-        self.assertTrue(PublicContent.objects.filter(slug=f"cms-news-{article_id}").exists())
 
         self.authenticate(self.editor)
         self.client.patch(
@@ -250,7 +249,6 @@ class CMSV2Tests(APITestCase):
         )
         self.authenticate(self.admin)
         self.client.post(f"/api/admin/cms/articles/{article_id}/archive/")
-        self.assertFalse(PublicContent.objects.filter(slug=f"cms-news-{article_id}").exists())
         self.client.force_authenticate(user=None)
         self.assertEqual(self.client.get("/api/public/cms/news/workflow-news/").status_code, 404)
 

@@ -42,7 +42,6 @@ function isPublicRequest(path: string, method: string) {
   return (
     path === "analytics/" ||
     (path === "contact/" && m === "POST") ||
-    path.startsWith("public-chat/") ||
     path.startsWith("public/projects/") ||
     path.startsWith("public/events/") ||
     path.startsWith("public/cms/") ||

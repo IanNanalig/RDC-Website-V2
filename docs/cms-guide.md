@@ -120,7 +120,7 @@ Future storage note: the system is designed so media can later move to durable c
 
 ## Site Settings
 
-Global settings cover the logo, footer text, contact details, social links, office address, quick links, chatbot contact fallback, Home announcement banner, and media upload policy. These are presented as grouped visual forms. Only administrators can modify settings.
+Global settings cover the logo, footer text, contact details, social links, office address, quick links, Home announcement banner, and media upload policy. These are presented as grouped visual forms. Only administrators can modify settings.
 
 Raw section, article, and setting source is hidden from the CMS interface. Staff and administrators edit website content only through the visual forms.
 

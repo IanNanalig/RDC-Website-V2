@@ -364,7 +364,6 @@ const friendlySettingNames: Record<string, string> = {
   "social-links": "Social Media Links",
   "office-address": "Office Address",
   "quick-links": "Footer Quick Links",
-  "chatbot-contact-fallback-link": "Chatbot Contact Link",
   "homepage-announcement-banner": "Homepage Announcement",
   "media-upload-allowed-types": "Allowed Upload Types",
   "media-upload-max-bytes": "Upload Size Limits",
@@ -530,19 +529,30 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const loadedTabsRef = useRef<Set<ResourceTab>>(new Set());
   const mediaLoadedRef = useRef(false);
   const mediaLoadPromiseRef = useRef<Promise<CMSMediaAsset[]> | null>(null);
+  const settingsLoadedRef = useRef(false);
+  const settingsLoadPromiseRef = useRef<Promise<CMSSiteSetting[]> | null>(null);
   const tabLoadRequestRef = useRef(0);
   const searchTimerRef = useRef<number | null>(null);
 
   const isAdmin = mode === "admin";
 
-  const sectionFormSerialized = JSON.stringify(sectionForm);
-  const articleFormSerialized = JSON.stringify(articleForm);
-  const settingsHaveChanges = settingsRows.some(
+  const sectionFormSerialized = useMemo(() => JSON.stringify(sectionForm), [sectionForm]);
+  const articleFormSerialized = useMemo(() => JSON.stringify(articleForm), [articleForm]);
+  const settingsHaveChanges = useMemo(() => settingsRows.some(
     (row) => JSON.stringify(settingDrafts[row.id]) !== JSON.stringify(row.value_json),
+  ), [settingDrafts, settingsRows]);
+  const pageFormHasChanges = useMemo(
+    () => JSON.stringify(pageForm) !== pageFormBaseline,
+    [pageForm, pageFormBaseline],
   );
-  const pageFormHasChanges = JSON.stringify(pageForm) !== pageFormBaseline;
-  const sectionFormHasChanges = Boolean(sectionFormBaseline && sectionFormSerialized !== sectionFormBaseline);
-  const articleFormHasChanges = articleFormSerialized !== articleFormBaseline;
+  const sectionFormHasChanges = useMemo(
+    () => Boolean(sectionFormBaseline && sectionFormSerialized !== sectionFormBaseline),
+    [sectionFormBaseline, sectionFormSerialized],
+  );
+  const articleFormHasChanges = useMemo(
+    () => articleFormSerialized !== articleFormBaseline,
+    [articleFormBaseline, articleFormSerialized],
+  );
   const hasUnsavedChanges = pageFormHasChanges || sectionFormHasChanges || articleFormHasChanges || settingsHaveChanges || Boolean(mediaFile);
 
   useEffect(() => setActiveTab(initialTab), [initialTab]);
@@ -708,6 +718,22 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     setSettingSourceDrafts(Object.fromEntries(rows.map((row) => [row.id, JSON.stringify(row.value_json, null, 2)])));
   }, []);
 
+  const loadSettings = useCallback(async (force = false) => {
+    if (!force && settingsLoadedRef.current) return;
+    if (settingsLoadPromiseRef.current) {
+      await settingsLoadPromiseRef.current;
+      return;
+    }
+    const request = cmsApi.listSettings();
+    settingsLoadPromiseRef.current = request;
+    try {
+      applySettingsRows(await request);
+      settingsLoadedRef.current = true;
+    } finally {
+      if (settingsLoadPromiseRef.current === request) settingsLoadPromiseRef.current = null;
+    }
+  }, [applySettingsRows]);
+
   const loadMediaAssets = useCallback(async (force = false) => {
     if (!force && mediaLoadedRef.current) return;
     if (mediaLoadPromiseRef.current) {
@@ -731,6 +757,45 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     const detail = await cmsApi.getPage(pageId);
     setPages((current) => current.map((page) => (page.id === detail.id ? detail : page)));
     return detail;
+  }, []);
+
+  const mergePage = useCallback((nextPage: CMSPage) => {
+    setPages((current) => {
+      const existing = current.find((page) => page.id === nextPage.id);
+      const merged = {
+        ...existing,
+        ...nextPage,
+        sections: Array.isArray(nextPage.sections) ? nextPage.sections : existing?.sections || [],
+        section_count: Array.isArray(nextPage.sections)
+          ? nextPage.sections.length
+          : nextPage.section_count ?? existing?.section_count,
+      } as CMSPage;
+      return existing
+        ? current.map((page) => page.id === nextPage.id ? merged : page)
+        : [merged, ...current];
+    });
+  }, []);
+
+  const mergeSection = useCallback((nextSection: CMSSection) => {
+    setPages((current) => current.map((page) => {
+      if (page.id !== nextSection.page) return page;
+      const sections = Array.isArray(page.sections) ? page.sections : [];
+      const exists = sections.some((section) => section.id === nextSection.id);
+      const mergedSections = (exists
+        ? sections.map((section) => section.id === nextSection.id ? nextSection : section)
+        : [...sections, nextSection]
+      ).sort((left, right) => left.order - right.order || left.id - right.id);
+      return { ...page, sections: mergedSections, section_count: mergedSections.length };
+    }));
+  }, []);
+
+  const mergeArticle = useCallback((nextArticle: CMSArticle) => {
+    setArticles((current) => {
+      const existing = current.some((article) => article.id === nextArticle.id);
+      return existing
+        ? current.map((article) => article.id === nextArticle.id ? { ...article, ...nextArticle } : article)
+        : [nextArticle, ...current];
+    });
   }, []);
 
   const loadTab = useCallback(async (tab: ResourceTab, force = false, search = "") => {
@@ -766,11 +831,10 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         setHasMoreRows((current) => ({ ...current, news: articleRows.length === CMS_LIST_PAGE_SIZE }));
         void loadMediaAssets().catch((error) => console.error("Failed to load CMS media picker.", error));
       } else if (tab === "media") {
-        const [, settingRows] = await Promise.all([
+        await Promise.all([
           loadMediaAssets(force),
-          cmsApi.listSettings(),
+          loadSettings(force),
         ]);
-        applySettingsRows(settingRows);
       } else if (tab === "review") {
         const queue = await cmsApi.getReviewQueue();
         setReviewQueue({ ...queue, forms: Array.isArray(queue.forms) ? queue.forms : [] });
@@ -780,7 +844,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         setListPages((current) => ({ ...current, revisions: 1 }));
         setHasMoreRows((current) => ({ ...current, revisions: revisionRows.length === CMS_LIST_PAGE_SIZE }));
       } else if (tab === "settings") {
-        applySettingsRows(await cmsApi.listSettings());
+        await loadSettings(force);
         void loadMediaAssets().catch((error) => console.error("Failed to load CMS media picker.", error));
       }
       loadedTabsRef.current.add(tab);
@@ -790,7 +854,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     } finally {
       if (tabLoadRequestRef.current === requestId) setLoading(false);
     }
-  }, [applySettingsRows, loadMediaAssets, loadPageDetail]);
+  }, [loadMediaAssets, loadPageDetail, loadSettings]);
 
   const updateSearch = (value: string) => {
     setSearchText(value);
@@ -884,16 +948,18 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     setNotice("");
     try {
       const payload = { title: pageForm.title.trim(), slug: slugify(pageForm.slug) };
+      let saved: CMSPage;
       if (pageForm.id) {
-        await cmsApi.updatePage(pageForm.id, payload);
+        saved = await cmsApi.updatePage(pageForm.id, payload) as CMSPage;
         setNotice("Page draft updated. Publish when ready.");
       } else {
-        await cmsApi.createPage(payload);
+        saved = await cmsApi.createPage(payload) as CMSPage;
         setNotice("Page draft created.");
       }
+      mergePage(saved);
+      setSelectedPageId(saved.id);
       setPageForm(emptyPageForm);
       setPageFormBaseline(JSON.stringify(emptyPageForm));
-      await loadTab("pages", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to save page."));
@@ -921,9 +987,9 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     setLoading(true);
     setNotice("");
     try {
-      await cmsApi.publishPage(page.id);
+      const published = await cmsApi.publishPage(page.id) as CMSPage;
+      mergePage(published);
       setNotice(`Page published. Public site now uses the new snapshot at ${publicPath}.`);
-      await loadTab("pages", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to publish page."));
@@ -959,6 +1025,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     }
     try {
       const locked = (await cmsApi.lockSection(section.id)) as CMSSection;
+      mergeSection(locked);
       populateSectionForm(locked);
       setSectionReadOnly(false);
       setNotice("Section lock acquired for 10 minutes. It will stay active while this editor is open.");
@@ -978,11 +1045,10 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     setSectionReadOnly(false);
     if (sectionId && !sectionReadOnly) {
       try {
-        await cmsApi.unlockSection(sectionId);
+        mergeSection(await cmsApi.unlockSection(sectionId) as CMSSection);
       } catch {
         // An expired lock is already effectively released.
       }
-      await loadTab("pages", true);
     }
   };
 
@@ -1020,18 +1086,19 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         is_visible: sectionForm.is_visible,
         content_json: parsedContent,
       };
+      let saved: CMSSection;
       if (sectionForm.id) {
-        await cmsApi.updateSection(sectionForm.id, payload);
+        saved = await cmsApi.updateSection(sectionForm.id, payload) as CMSSection;
         setNotice("Section updated. Publish the page when ready.");
       } else {
-        await cmsApi.createSection(payload);
+        saved = await cmsApi.createSection(payload) as CMSSection;
         setNotice("Section created. Publish the page when ready.");
       }
+      mergeSection(saved);
       const nextForm = { ...emptySectionForm, page: Number(sectionForm.page) };
       setSectionForm(nextForm);
       setSectionFormBaseline(JSON.stringify(nextForm));
       setSectionReadOnly(false);
-      await loadTab("pages", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to save section."));
@@ -1051,9 +1118,9 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     setLoading(true);
     setNotice("");
     try {
-      await cmsApi.reorderSections(selectedPage.id, swapped.map((item) => item.id));
+      const reordered = await cmsApi.reorderSections(selectedPage.id, swapped.map((item) => item.id)) as CMSPage;
+      mergePage(reordered);
       setNotice("Section order updated. Publish the page when ready.");
-      await loadTab("pages", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to reorder sections."));
@@ -1111,16 +1178,17 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         publication_date: articleForm.publication_date || null,
         featured: articleForm.featured,
       };
+      let saved: CMSArticle;
       if (articleForm.id) {
-        await cmsApi.updateArticle(articleForm.id, payload);
+        saved = await cmsApi.updateArticle(articleForm.id, payload) as CMSArticle;
         setNotice("News draft updated. Publish when ready.");
       } else {
-        await cmsApi.createArticle(payload);
+        saved = await cmsApi.createArticle(payload) as CMSArticle;
         setNotice("News draft created.");
       }
+      mergeArticle(saved);
       setArticleForm(emptyArticleForm);
       setArticleFormBaseline(JSON.stringify(emptyArticleForm));
-      await loadTab("news", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to save article."));
@@ -1148,9 +1216,9 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     setLoading(true);
     setNotice("");
     try {
-      await cmsApi.publishArticle(article.id);
+      const published = await cmsApi.publishArticle(article.id) as CMSArticle;
+      mergeArticle(published);
       setNotice(`News article published at ${publicPath}.`);
-      await loadTab("news", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to publish article."));
@@ -1177,12 +1245,13 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     setLoading(true);
     setNotice("");
     try {
-      await cmsApi.uploadMedia(form);
+      const uploaded = await cmsApi.uploadMedia(form) as CMSMediaAsset;
+      setMedia((current) => [uploaded, ...current.filter((item) => item.id !== uploaded.id)]);
+      mediaLoadedRef.current = true;
       setNotice("Media uploaded.");
       setMediaFile(null);
       setMediaAlt("");
       setMediaCaption("");
-      await loadTab("media", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to upload media."));
@@ -1192,7 +1261,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   };
 
   const archiveMedia = async (item: CMSMediaAsset) => {
-    if (!item.can_archive) {
+    if (item.can_archive === false) {
       setNotice("This media file is still used by CMS content. Remove or replace it before archiving.");
       return;
     }
@@ -1204,8 +1273,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     setNotice("");
     try {
       await cmsApi.archiveMedia(item.id);
+      setMedia((current) => current.filter((mediaItem) => mediaItem.id !== item.id));
       setNotice("Media archived.");
-      await loadTab("media", true);
     } catch (error) {
       console.error(error);
       setNotice(getErrorDetail(error, "Failed to archive media."));
@@ -1235,21 +1304,25 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     setLoading(true);
     setNotice("");
     try {
+      let updated: CMSPage | CMSArticle | CMSSection | null = null;
       if (kind === "page") {
-        if (action === "submit") await cmsApi.submitPage(id);
-        if (action === "publish") await cmsApi.publishPage(id);
-        if (action === "reject") await cmsApi.rejectPage(id, remarks || "");
-        if (action === "archive") await cmsApi.archivePage(id);
+        if (action === "submit") updated = await cmsApi.submitPage(id) as CMSPage;
+        if (action === "publish") updated = await cmsApi.publishPage(id) as CMSPage;
+        if (action === "reject") updated = await cmsApi.rejectPage(id, remarks || "") as CMSPage;
+        if (action === "archive") updated = await cmsApi.archivePage(id) as CMSPage;
+        if (updated) mergePage(updated as CMSPage);
       } else if (kind === "article") {
-        if (action === "submit") await cmsApi.submitArticle(id);
-        if (action === "publish") await cmsApi.publishArticle(id);
-        if (action === "reject") await cmsApi.rejectArticle(id, remarks || "");
-        if (action === "archive") await cmsApi.archiveArticle(id);
+        if (action === "submit") updated = await cmsApi.submitArticle(id) as CMSArticle;
+        if (action === "publish") updated = await cmsApi.publishArticle(id) as CMSArticle;
+        if (action === "reject") updated = await cmsApi.rejectArticle(id, remarks || "") as CMSArticle;
+        if (action === "archive") updated = await cmsApi.archiveArticle(id) as CMSArticle;
+        if (updated) mergeArticle(updated as CMSArticle);
       } else {
-        if (action === "submit") await cmsApi.submitSection(id);
-        if (action === "publish") await cmsApi.publishSection(id);
-        if (action === "reject") await cmsApi.rejectSection(id, remarks || "");
-        if (action === "archive") await cmsApi.archiveSection(id);
+        if (action === "submit") updated = await cmsApi.submitSection(id) as CMSSection;
+        if (action === "publish") updated = await cmsApi.publishSection(id) as CMSSection;
+        if (action === "reject") updated = await cmsApi.rejectSection(id, remarks || "") as CMSSection;
+        if (action === "archive") updated = await cmsApi.archiveSection(id) as CMSSection;
+        if (updated) mergeSection(updated as CMSSection);
       }
       setNotice(`${label}: ${action} completed.`);
       if (kind === "section" && sectionForm.id === id) {
@@ -1258,12 +1331,14 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         setSectionFormBaseline(JSON.stringify(nextForm));
         setSectionReadOnly(false);
       }
-      const refreshTab: ResourceTab = activeTab === "review"
-        ? "review"
-        : kind === "article"
-          ? "news"
-          : "pages";
-      await loadTab(refreshTab, true);
+      if (activeTab === "review") {
+        setReviewQueue((current) => ({
+          ...current,
+          pages: kind === "page" ? current.pages.filter((item) => item.id !== id) : current.pages,
+          sections: kind === "section" ? current.sections.filter((item) => item.id !== id) : current.sections,
+          news: kind === "article" ? current.news.filter((item) => item.id !== id) : current.news,
+        }));
+      }
     } catch (error) {
       setNotice(getErrorDetail(error, `Failed to ${action} ${label}.`));
     } finally {
@@ -1282,13 +1357,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
 
   const releaseOwnSectionLock = async (section: CMSSection) => {
     try {
-      await cmsApi.unlockSection(section.id);
+      mergeSection(await cmsApi.unlockSection(section.id) as CMSSection);
       if (sectionForm.id === section.id) {
         setSectionForm({ ...emptySectionForm, page: selectedPageId || "" });
         setSectionReadOnly(false);
       }
       setNotice(`Editing lock released for ${section.section_key}.`);
-      await loadTab("pages", true);
     } catch (error) {
       setNotice(getErrorDetail(error, "Failed to release the section lock."));
     }
@@ -3107,7 +3181,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         <div className="space-y-5">
           {[
             { title: "Branding and Contact", detail: "Public logo, footer wording, office address, and contact information.", keys: ["site-logo", "footer-text", "contact-details", "office-address"] },
-            { title: "Navigation and Messages", detail: "Public links, homepage announcement, and chatbot contact destination.", keys: ["social-links", "quick-links", "homepage-announcement-banner", "chatbot-contact-fallback-link"] },
+            { title: "Navigation and Messages", detail: "Public links and the homepage announcement.", keys: ["social-links", "quick-links", "homepage-announcement-banner"] },
             { title: "Media Upload Rules", detail: "File types and size limits accepted by the CMS Media Library.", keys: ["media-upload-allowed-types", "media-upload-max-bytes"] },
           ].map((group) => {
             const rows = group.keys.map((key) => settingsRows.find((row) => row.key === key)).filter((row): row is CMSSiteSetting => Boolean(row));
@@ -3300,10 +3374,8 @@ const SiteSettingFields = ({
 
   let fields: React.ReactNode;
 
-  if (["footer-text", "office-address", "chatbot-contact-fallback-link"].includes(row.key)) {
-    fields = row.key === "footer-text" || row.key === "office-address"
-      ? <Area label={friendlySettingNames[row.key]} value={textValue(value)} onChange={onChange} rows={3} />
-      : <Field label="Contact Page Destination" value={textValue(value)} onChange={onChange} helper="Example: /contact" />;
+  if (["footer-text", "office-address"].includes(row.key)) {
+    fields = <Area label={friendlySettingNames[row.key]} value={textValue(value)} onChange={onChange} rows={3} />;
   } else if (row.key === "site-logo") {
     const imageAssets = media.filter((item) => item.file_type === "image");
     const selectedId = stringValue(objectValue.mediaAssetId) || String(imageAssets.find((item) => portableMediaUrl(item.url) === textValue(objectValue.url))?.id || "");

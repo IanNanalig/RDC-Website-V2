@@ -10,6 +10,16 @@ export type ContributorFormFieldType =
 
 export type ContributorFormOption = { value: string; label: string };
 
+export type ContributorFormRetiredOrigin = {
+  section_key: string;
+  section_title: string;
+  section_description?: string;
+  section_visible?: boolean;
+  section_order: number;
+  field_order: number;
+  field_required?: boolean;
+};
+
 export type ContributorFormField = {
   key: string;
   label: string;
@@ -22,6 +32,7 @@ export type ContributorFormField = {
   options?: ContributorFormOption[];
   condition?: { field: string; equals?: string; not_equals?: string };
   condition_required?: boolean;
+  retired_from?: ContributorFormRetiredOrigin;
 };
 
 export type ContributorFormSection = {
@@ -176,7 +187,9 @@ export const DEFAULT_CONTRIBUTOR_FORM_SCHEMA: ContributorFormSchema = {
       admin_only: true,
       fields: [
         field("priorityAnalysisFacts.readinessLevel", "Readiness Level", "select", { options: options([
-          "Completed supporting documents", "Ongoing supporting documents", "Comprehensive project profile", "Concept paper / none",
+          "With completed documents such as pre-FS/FS/POW and detailed design, where applicable",
+          "Ongoing pre-FS/FS/POW and detailed design, where applicable",
+          "With Comprehensive Project Profile", "With concept paper/none",
         ]) }),
         field("priorityAnalysisFacts.gadResponsiveness", "GAD Responsiveness", "select", { options: options([
           "Gender-responsive", "Gender-sensitive", "Promising GAD prospects", "GAD invisible",
@@ -196,6 +209,13 @@ export const cloneContributorFormSchema = (schema: ContributorFormSchema): Contr
 
 export const contributorFieldOptions = (field: ContributorFormField) =>
   (field.options || []).map((option) => option.value);
+
+export const normalizeReadinessLevelValue = (value: string) => ({
+  "Completed supporting documents": "With completed documents such as pre-FS/FS/POW and detailed design, where applicable",
+  "Ongoing supporting documents": "Ongoing pre-FS/FS/POW and detailed design, where applicable",
+  "Comprehensive project profile": "With Comprehensive Project Profile",
+  "Concept paper / none": "With concept paper/none",
+}[value] || value);
 
 export const contributorFieldApplies = (
   field: ContributorFormField,

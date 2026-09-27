@@ -324,6 +324,69 @@ class CMSContributorFormVersionSerializer(serializers.ModelSerializer):
         return _user_display(obj.published_by)
 
 
+class CMSContributorFormVersionSummarySerializer(serializers.ModelSerializer):
+    """Version history metadata without returning every complete form snapshot."""
+
+    published_by_name = serializers.SerializerMethodField()
+    schema_summary = serializers.SerializerMethodField()
+    field_origins = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CMSContributorFormVersion
+        fields = [
+            "id", "form", "version_number", "published_by_name", "published_at",
+            "schema_summary", "field_origins",
+        ]
+        read_only_fields = fields
+
+    def get_published_by_name(self, obj):
+        return _user_display(obj.published_by)
+
+    def get_schema_summary(self, obj):
+        sections = [
+            section for section in (obj.schema_json or {}).get("sections", [])
+            if isinstance(section, dict) and not section.get("admin_only")
+        ]
+        fields = [
+            field for section in sections for field in section.get("fields", [])
+            if isinstance(field, dict)
+        ]
+        return {
+            "section_count": len(sections),
+            "field_count": len(fields),
+            "custom_field_count": sum(
+                1 for field in fields if str(field.get("key") or "").startswith("custom_")
+            ),
+        }
+
+    def get_field_origins(self, obj):
+        origins = {}
+        for section_index, section in enumerate((obj.schema_json or {}).get("sections", [])):
+            if not isinstance(section, dict) or section.get("admin_only"):
+                continue
+            for field_index, field in enumerate(section.get("fields", [])):
+                if not isinstance(field, dict):
+                    continue
+                key = str(field.get("key") or "")
+                if not key.startswith("custom_"):
+                    continue
+                saved_origin = field.get("retired_from")
+                if section.get("key") == "retired_fields":
+                    if isinstance(saved_origin, dict) and saved_origin.get("section_key"):
+                        origins[key] = saved_origin
+                    continue
+                origins[key] = {
+                    "section_key": str(section.get("key") or ""),
+                    "section_title": str(section.get("title") or "Untitled section"),
+                    "section_description": str(section.get("description") or ""),
+                    "section_visible": section.get("visible", True) is not False,
+                    "section_order": section_index,
+                    "field_order": field_index,
+                    "field_required": bool(field.get("required")),
+                }
+        return origins
+
+
 class CMSContributorFormSerializer(serializers.ModelSerializer):
     current_published_version_number = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
@@ -334,6 +397,8 @@ class CMSContributorFormSerializer(serializers.ModelSerializer):
     lock_expires_at = serializers.SerializerMethodField()
     is_locked = serializers.SerializerMethodField()
     locked_by_me = serializers.SerializerMethodField()
+    current_published_schema_json = serializers.SerializerMethodField()
+    versions_summary = serializers.SerializerMethodField()
     expected_updated_at = serializers.DateTimeField(write_only=True, required=False)
     edit_mode = serializers.ChoiceField(choices=["update", "change"], write_only=True, required=False, default="update")
 
@@ -344,13 +409,15 @@ class CMSContributorFormSerializer(serializers.ModelSerializer):
             "current_published_version", "current_published_version_number", "has_unpublished_changes",
             "created_by_name", "updated_by_name", "submitted_by_name", "reviewed_by_name", "review_notes",
             "published_at", "lock_owner", "lock_owner_name", "lock_acquired_at", "lock_expires_at",
-            "is_locked", "locked_by_me", "created_at", "updated_at", "expected_updated_at", "edit_mode",
+            "is_locked", "locked_by_me", "current_published_schema_json", "versions_summary",
+            "created_at", "updated_at", "expected_updated_at", "edit_mode",
         ]
         read_only_fields = [
             "key", "status", "current_published_version", "current_published_version_number",
             "has_unpublished_changes", "created_by_name", "updated_by_name", "submitted_by_name",
             "reviewed_by_name", "review_notes", "published_at", "lock_owner", "lock_owner_name",
             "lock_acquired_at", "lock_expires_at", "is_locked", "locked_by_me", "created_at", "updated_at",
+            "current_published_schema_json", "versions_summary",
         ]
 
     def get_current_published_version_number(self, obj):
@@ -380,6 +447,15 @@ class CMSContributorFormSerializer(serializers.ModelSerializer):
     def get_locked_by_me(self, obj):
         request = self.context.get("request")
         return bool(lock_is_active(obj) and request and request.user.id == obj.lock_owner_id)
+
+    def get_current_published_schema_json(self, obj):
+        return obj.current_published_version.schema_json if obj.current_published_version_id else None
+
+    def get_versions_summary(self, obj):
+        versions = getattr(obj, "cms_version_summaries", None)
+        if versions is None:
+            return []
+        return CMSContributorFormVersionSummarySerializer(versions, many=True).data
 
     def validate(self, attrs):
         attrs = super().validate(attrs)

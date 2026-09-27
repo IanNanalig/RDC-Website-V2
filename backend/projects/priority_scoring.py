@@ -201,10 +201,10 @@ SCORING_FIELD_LABELS = {
 }
 
 FACT_VALUE_LABELS = {
-    "completed_documents": "Completed supporting documents",
-    "ongoing_documents": "Ongoing supporting documents",
-    "project_profile": "Comprehensive project profile",
-    "concept_only": "Concept paper or no completed preparation document",
+    "completed_documents": "With completed documents such as pre-FS/FS/POW and detailed design, where applicable",
+    "ongoing_documents": "Ongoing pre-FS/FS/POW and detailed design, where applicable",
+    "project_profile": "With Comprehensive Project Profile",
+    "concept_only": "With concept paper/none",
     "gender_responsive": "Gender-responsive",
     "gender_sensitive": "Gender-sensitive",
     "promising_prospects": "Promising GAD prospects",
@@ -840,9 +840,13 @@ def _fact_key(value):
     key = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
     return {
         "completed_supporting_documents": "completed_documents",
+        "with_completed_documents_such_as_pre_fs_fs_pow_and_detailed_design_where_applicable": "completed_documents",
         "ongoing_supporting_documents": "ongoing_documents",
+        "ongoing_pre_fs_fs_pow_and_detailed_design_where_applicable": "ongoing_documents",
         "comprehensive_project_profile": "project_profile",
+        "with_comprehensive_project_profile": "project_profile",
         "concept_paper_none": "concept_only",
+        "with_concept_paper_none": "concept_only",
         "gad_invisible": "invisible",
     }.get(key, key)
 

@@ -71,7 +71,6 @@ GROQ_PRIMARY_MODEL=llama-3.1-8b-instant
 GROQ_BACKUP_MODEL=llama-3.3-70b-versatile
 GROQ_TIMEOUT_SECONDS=30
 GROQ_MAX_COMPLETION_TOKENS=4096
-GROQ_PUBLIC_CHAT_RATE=20/min
 ```
 
 Place frontend values in `frontend/.env`:
@@ -162,7 +161,6 @@ GROQ_PRIMARY_MODEL=llama-3.1-8b-instant
 GROQ_BACKUP_MODEL=llama-3.3-70b-versatile
 GROQ_TIMEOUT_SECONDS=30
 GROQ_MAX_COMPLETION_TOKENS=4096
-GROQ_PUBLIC_CHAT_RATE=20/min
 ```
 
 ## Render Backend Commands

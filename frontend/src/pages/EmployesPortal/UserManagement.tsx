@@ -118,8 +118,7 @@ const parseTab = (value: string | null): AdminUsersTab => {
     value === "encoding-window" ||
     value === "password-reset-requests" ||
     value === "system-users" ||
-    value === "system-audit-log" ||
-    value === "chatbot-learning"
+    value === "system-audit-log"
   )
     return value;
   return "create-account";
@@ -1085,13 +1084,6 @@ const UserManagement = () => {
               className={`portal-btn ${activeTab === "system-audit-log" ? "portal-btn-primary" : "portal-btn-ghost"}`}
             >
               System Audit Log
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab("chatbot-learning")}
-              className={`portal-btn ${activeTab === "chatbot-learning" ? "portal-btn-primary" : "portal-btn-ghost"}`}
-            >
-              Chatbot Learning
             </button>
           </div>
         </div>

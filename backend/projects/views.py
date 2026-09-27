@@ -1964,7 +1964,6 @@ class AdminEventViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         self._ensure_editor_can_change(serializer.instance)
         event = serializer.save()
-        _sync_public_event_content_safely(self.request, event, "update")
         _log_activity(
             self.request,
             "cms_event_updated",
@@ -1995,7 +1994,6 @@ class AdminEventViewSet(viewsets.ModelViewSet):
         event.published_at = timezone.now()
         event.review_notes = str(request.data.get("review_notes") or "").strip()
         event.save(update_fields=["status", "reviewed_by", "published_at", "review_notes", "updated_at"])
-        _sync_public_event_content_safely(request, event, "publish")
         _log_activity(request, "cms_event_published", details={"event_id": event.id, "title": event.title})
         return Response(PublicEventSerializer(event).data)
 
@@ -2009,7 +2007,6 @@ class AdminEventViewSet(viewsets.ModelViewSet):
         event.reviewed_by = request.user
         event.review_notes = str(request.data.get("review_notes") or "Rejected by admin review.").strip()
         event.save(update_fields=["status", "reviewed_by", "review_notes", "updated_at"])
-        _sync_public_event_content_safely(request, event, "reject")
         _log_activity(
             request,
             "cms_event_rejected",
@@ -2025,7 +2022,6 @@ class AdminEventViewSet(viewsets.ModelViewSet):
         event.reviewed_by = request.user
         event.archived_at = timezone.now()
         event.save(update_fields=["status", "reviewed_by", "archived_at", "updated_at"])
-        _sync_public_event_content_safely(request, event, "archive")
         _log_activity(request, "cms_event_archived", details={"event_id": event.id, "title": event.title})
         return Response(PublicEventSerializer(event).data)
 
@@ -2042,7 +2038,6 @@ class AdminEventViewSet(viewsets.ModelViewSet):
         event.save(
             update_fields=["status", "reviewed_by", "archived_at", "published_at", "updated_at"]
         )
-        _sync_public_event_content_safely(request, event, "unarchive")
         _log_activity(request, "cms_event_unarchived", details={"event_id": event.id, "title": event.title})
         return Response(PublicEventSerializer(event).data)
 

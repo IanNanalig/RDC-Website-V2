@@ -236,6 +236,124 @@ class ContributorFormWorkflowTests(APITestCase):
         ]
         self.assertEqual(len(retired), 1)
         self.assertFalse(retired[0]["visible"])
+        self.assertEqual(retired[0]["retired_from"]["section_key"], "project_information")
+        self.assertEqual(retired[0]["retired_from"]["section_title"], "Project Information")
+        self.assertEqual(retired[0]["retired_from"]["field_order"], 6)
+
+        reactivated_schema = deepcopy(restored.data["draft_schema_json"])
+        retired_section = next(
+            section for section in reactivated_schema["sections"] if section["key"] == "retired_fields"
+        )
+        reactivated_field = retired_section["fields"].pop()
+        origin = reactivated_field.pop("retired_from")
+        reactivated_field["visible"] = True
+        reactivated_field["required"] = origin["field_required"]
+        original_section = next(
+            section for section in reactivated_schema["sections"] if section["key"] == origin["section_key"]
+        )
+        original_section["fields"].insert(origin["field_order"], reactivated_field)
+
+        reactivated = self._save_draft(reactivated_schema, edit_mode="change")
+        self.assertEqual(reactivated.status_code, status.HTTP_200_OK)
+        restored_project_fields = next(
+            section for section in reactivated.data["draft_schema_json"]["sections"]
+            if section["key"] == "project_information"
+        )["fields"]
+        self.assertEqual(restored_project_fields[6]["key"], "custom_reference_number")
+        self.assertTrue(restored_project_fields[6]["visible"])
+
+    def test_compact_form_workspace_defers_complete_version_snapshots(self):
+        saved = self._save_draft(self._draft_with_custom_field())
+        self.assertEqual(saved.status_code, status.HTTP_200_OK)
+        self.authenticate(self.admin)
+        published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
+        self.assertEqual(published.status_code, status.HTTP_200_OK)
+
+        workspace = self.client.get("/api/admin/cms/forms/?include_versions=summary")
+        self.assertEqual(workspace.status_code, status.HTTP_200_OK)
+        form_row = next(row for row in workspace.data if row["id"] == self.form.id)
+        self.assertIsInstance(form_row["current_published_schema_json"], dict)
+        self.assertGreaterEqual(len(form_row["versions_summary"]), 2)
+        latest = form_row["versions_summary"][0]
+        self.assertNotIn("schema_json", latest)
+        self.assertEqual(latest["schema_summary"]["custom_field_count"], 1)
+        self.assertEqual(
+            latest["field_origins"]["custom_reference_number"]["section_key"],
+            "project_information",
+        )
+
+        compact_history = self.client.get(
+            f"/api/admin/cms/forms/{self.form.id}/versions/?view=summary"
+        )
+        self.assertEqual(compact_history.status_code, status.HTTP_200_OK)
+        self.assertNotIn("schema_json", compact_history.data[0])
+
+        version_detail = self.client.get(
+            f"/api/admin/cms/forms/{self.form.id}/versions/?version_id={latest['id']}"
+        )
+        self.assertEqual(version_detail.status_code, status.HTTP_200_OK)
+        self.assertIsInstance(version_detail.data["schema_json"], dict)
+
+    def test_restore_recovers_legacy_retired_field_origin_from_version_history(self):
+        saved = self._save_draft(self._draft_with_custom_field())
+        self.assertEqual(saved.status_code, status.HTTP_200_OK)
+        self.authenticate(self.admin)
+        self.assertEqual(
+            self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json").status_code,
+            status.HTTP_200_OK,
+        )
+        versions = self.client.get(f"/api/admin/cms/forms/{self.form.id}/versions/")
+        version_one = next(item for item in versions.data if item["version_number"] == 1)
+        self.assertEqual(
+            self.client.post(
+                f"/api/admin/cms/forms/{self.form.id}/restore-version/",
+                {"version_id": version_one["id"]},
+                format="json",
+            ).status_code,
+            status.HTTP_200_OK,
+        )
+        published_retirement = self.client.post(
+            f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json"
+        )
+        self.assertEqual(published_retirement.status_code, status.HTTP_200_OK)
+
+        self.form.refresh_from_db()
+        legacy_version = self.form.current_published_version
+        legacy_schema = deepcopy(legacy_version.schema_json)
+        legacy_field = next(
+            field
+            for section in legacy_schema["sections"]
+            for field in section["fields"]
+            if field["key"] == "custom_reference_number"
+        )
+        legacy_field.pop("retired_from", None)
+        legacy_version.schema_json = legacy_schema
+        legacy_version.save(update_fields=["schema_json"])
+
+        restored = restore_contributor_form_version(self.form, version_one["id"], self.admin)
+        recovered_field = next(
+            field
+            for section in restored.draft_schema_json["sections"]
+            for field in section["fields"]
+            if field["key"] == "custom_reference_number"
+        )
+        self.assertEqual(recovered_field["retired_from"]["section_key"], "project_information")
+        self.assertEqual(recovered_field["retired_from"]["field_order"], 6)
+
+        reactivated_schema = deepcopy(restored.draft_schema_json)
+        retired_section = next(
+            section for section in reactivated_schema["sections"] if section["key"] == "retired_fields"
+        )
+        reactivated_field = retired_section["fields"].pop()
+        origin = reactivated_field.pop("retired_from")
+        reactivated_field["visible"] = True
+        reactivated_field["required"] = origin["field_required"]
+        original_section = next(
+            section for section in reactivated_schema["sections"] if section["key"] == origin["section_key"]
+        )
+        original_section["fields"].insert(origin["field_order"], reactivated_field)
+        reactivated = self._save_draft(reactivated_schema, edit_mode="change")
+        self.assertEqual(reactivated.status_code, status.HTTP_200_OK, reactivated.data)
 
     def test_update_mode_cannot_reorder_existing_fields(self):
         schema = deepcopy(self.form.draft_schema_json)
@@ -246,6 +364,32 @@ class ContributorFormWorkflowTests(APITestCase):
         response = self._save_draft(schema, edit_mode="update")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("Change Form", str(response.data))
+
+    def test_published_legacy_readiness_options_do_not_block_cms_saves(self):
+        legacy_values = [
+            "Completed supporting documents",
+            "Ongoing supporting documents",
+            "Comprehensive project profile",
+            "Concept paper / none",
+        ]
+        legacy_schema = deepcopy(self.form.draft_schema_json)
+        readiness = next(
+            field
+            for section in legacy_schema["sections"]
+            for field in section["fields"]
+            if field["key"] == "priorityAnalysisFacts.readinessLevel"
+        )
+        readiness["options"] = [{"value": value, "label": value} for value in legacy_values]
+        self.form.draft_schema_json = legacy_schema
+        self.form.current_published_version.schema_json = deepcopy(legacy_schema)
+        self.form.current_published_version.save(update_fields=["schema_json"])
+        self.form.save(update_fields=["draft_schema_json", "updated_at"])
+
+        edited_schema = deepcopy(legacy_schema)
+        edited_schema["description"] = "Updated contributor guidance"
+        response = self._save_draft(edited_schema, edit_mode="update")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
 
     def test_system_managed_ai_section_cannot_be_changed_or_exposed(self):
         schema = deepcopy(self.form.draft_schema_json)

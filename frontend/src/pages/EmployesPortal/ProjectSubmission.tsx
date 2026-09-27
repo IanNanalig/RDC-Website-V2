@@ -4,6 +4,7 @@ import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
 import PriorityAnalysisPanel from "../../components/portal/PriorityAnalysisPanel";
 import { useProgressUpdateWindow } from "../../hooks/useEncodingWindow";
+import { normalizeReadinessLevelValue } from "../../types/contributorForm";
 
 type FormAction = "save" | "submit";
 type YesNo = "Yes" | "No";
@@ -3355,11 +3356,11 @@ const ProjectSubmission: React.FC = () => {
                     <p className="mt-1 text-xs text-slate-600">These factual inputs help the validator run a more accurate AI-assisted priority recommendation.</p>
                   </div>
                   <div className="grid gap-4 xl:grid-cols-2">
-                    <SelectField label="Readiness Level" value={form.priorityAnalysisFacts.readinessLevel} onChange={(v) => setPriorityFact("readinessLevel", v)} options={[
-                      "Completed supporting documents",
-                      "Ongoing supporting documents",
-                      "Comprehensive project profile",
-                      "Concept paper / none",
+                    <SelectField label="Readiness Level" value={normalizeReadinessLevelValue(form.priorityAnalysisFacts.readinessLevel)} onChange={(v) => setPriorityFact("readinessLevel", v)} options={[
+                      "With completed documents such as pre-FS/FS/POW and detailed design, where applicable",
+                      "Ongoing pre-FS/FS/POW and detailed design, where applicable",
+                      "With Comprehensive Project Profile",
+                      "With concept paper/none",
                     ]} />
                     <SelectField label="GAD Responsiveness" value={form.priorityAnalysisFacts.gadResponsiveness} onChange={(v) => setPriorityFact("gadResponsiveness", v)} options={[
                       "Gender-responsive",

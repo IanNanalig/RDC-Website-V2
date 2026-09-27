@@ -8,8 +8,6 @@ import {
 import { lazy, Suspense, useEffect, useState } from "react";
 import Navbar from "./components/Navbar";
 import Footer from "./components/Footer";
-import PublicChatbot from "./components/DeferredPublicChatbot";
-import SafeBoundary from "./components/SafeBoundary";
 
 const Home = lazy(() => import("./pages/Home"));
 const NewsPage = lazy(() => import("./pages/News"));
@@ -167,9 +165,6 @@ const withLayout = (Component: React.ElementType) => {
       <Navbar />
       <Component />
       <Footer />
-      <SafeBoundary>
-        <PublicChatbot />
-      </SafeBoundary>
     </>
   );
 };
@@ -180,9 +175,6 @@ const withNavbarOnly = (Component: React.ElementType) => {
     <>
       <Navbar />
       <Component />
-      <SafeBoundary>
-        <PublicChatbot />
-      </SafeBoundary>
     </>
   );
 };
@@ -562,9 +554,6 @@ export default function App() {
               <Navbar />
               <Reports />
               <Footer />
-              <SafeBoundary>
-                <PublicChatbot />
-              </SafeBoundary>
             </ProtectedRoute>
           }
         />
@@ -575,9 +564,6 @@ export default function App() {
               <Navbar />
               <Directory />
               <Footer />
-              <SafeBoundary>
-                <PublicChatbot />
-              </SafeBoundary>
             </ProtectedRoute>
           }
         />
@@ -588,9 +574,6 @@ export default function App() {
               <Navbar />
               <Updates />
               <Footer />
-              <SafeBoundary>
-                <PublicChatbot />
-              </SafeBoundary>
             </ProtectedRoute>
           }
         />
