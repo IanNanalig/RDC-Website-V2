@@ -1,4 +1,5 @@
 from datetime import timedelta
+import string
 from unittest.mock import patch
 
 from django.utils import timezone
@@ -112,6 +113,37 @@ class AccountSetupAgencyTests(APITestCase):
             self.assertFalse(user.must_change_password)
             activity = UserActivity.objects.get(user=user, event="auth_password_setup")
             self.assertEqual(activity.details["agency"], expected)
+
+    def test_setup_accepts_keyboard_symbols_and_rejects_non_symbols(self):
+        self.client.force_authenticate(user=None)
+        for index, symbol in enumerate(string.punctuation):
+            with self.subTest(symbol=symbol):
+                user, token = self.make_pending_user(f"symbol-{index}")
+                password = f"ValidSetup123{symbol}"
+                payload = self.setup_payload(token, "DPWH")
+                payload["new_password"] = password
+
+                response = self.client.post("/api/auth/setup-password/", payload, format="json")
+
+                self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+                user.refresh_from_db()
+                self.assertTrue(user.check_password(password))
+
+        for suffix, password in (
+            ("letter-only", "WordPassword123"),
+            ("space-only", "ValidSetup123 "),
+        ):
+            with self.subTest(password_type=suffix):
+                user, token = self.make_pending_user(suffix)
+                payload = self.setup_payload(token, "DPWH")
+                payload["new_password"] = password
+
+                response = self.client.post("/api/auth/setup-password/", payload, format="json")
+
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertEqual(response.data["detail"], "Password must include a symbol.")
+                user.refresh_from_db()
+                self.assertTrue(user.must_change_password)
 
     def test_setup_rejects_missing_blank_and_unsupported_agencies(self):
         self.client.force_authenticate(user=None)

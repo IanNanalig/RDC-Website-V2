@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import string
 import difflib
 import urllib.parse
 import urllib.request
@@ -2059,7 +2060,7 @@ def _validate_password_policy(password: str):
         return "Password must include a lowercase letter."
     if not re.search(r"[0-9]", password):
         return "Password must include a number."
-    if not re.search(r"[\\W_]", password):
+    if not any(character in string.punctuation for character in password):
         return "Password must include a symbol."
     return ""
 

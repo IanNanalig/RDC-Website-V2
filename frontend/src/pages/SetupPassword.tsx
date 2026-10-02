@@ -45,12 +45,16 @@ const hasAgencySearchMatch = (value: string) => {
   );
 };
 
+const keyboardSymbols = "!\"#$%&'()*+,-./:;<=>?@[\\]^_\x60{|}~";
+const hasKeyboardSymbol = (value: string) =>
+  Array.from(value).some((character) => keyboardSymbols.includes(character));
+
 const passwordRules = [
   { label: "At least 12 characters", test: (v: string) => v.length >= 12 },
   { label: "At least 1 uppercase letter", test: (v: string) => /[A-Z]/.test(v) },
   { label: "At least 1 lowercase letter", test: (v: string) => /[a-z]/.test(v) },
   { label: "At least 1 number", test: (v: string) => /[0-9]/.test(v) },
-  { label: "At least 1 symbol", test: (v: string) => /[\W_]/.test(v) },
+  { label: "At least 1 symbol or special character", test: hasKeyboardSymbol },
 ];
 
 const validatePassword = (value: string) => {
@@ -58,7 +62,7 @@ const validatePassword = (value: string) => {
   if (!/[A-Z]/.test(value)) return "Password must include an uppercase letter.";
   if (!/[a-z]/.test(value)) return "Password must include a lowercase letter.";
   if (!/[0-9]/.test(value)) return "Password must include a number.";
-  if (!/[\W_]/.test(value)) return "Password must include a symbol.";
+  if (!hasKeyboardSymbol(value)) return "Password must include a symbol.";
   return "";
 };
 
