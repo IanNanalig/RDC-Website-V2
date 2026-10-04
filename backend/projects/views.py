@@ -97,6 +97,7 @@ ACCOUNT_AGENCIES = {
     "CHED": "Commission on Higher Education",
     "PSA": "Philippine Statistics Authority",
 }
+INTERNAL_ACCOUNT_ROLES = {"admin", "validator", "content_editor"}
 
 
 def _normalize_account_agency(value):
@@ -110,6 +111,10 @@ def _normalize_account_agency(value):
         ),
         "",
     )
+
+
+def _same_saved_account_agency(left, right):
+    return " ".join(str(left or "").split()).casefold() == " ".join(str(right or "").split()).casefold()
 
 PUBLIC_CHAT_MAX_SUGGESTIONS = 6
 PUBLIC_CHAT_MIN_SCORE = 1.0
@@ -4362,12 +4367,16 @@ class AdminUserViewSet(viewsets.ModelViewSet):
             role = "content_editor"
         if role not in ("admin", "validator", "staff", "content_editor"):
             return Response({"detail": "Invalid role."}, status=400)
+        if role in INTERNAL_ACCOUNT_ROLES and "agency" in request.data:
+            if _normalize_account_agency(request.data.get("agency")) != "RDC-NCR":
+                return Response({"detail": "Agency must be RDC-NCR for this user type."}, status=400)
 
         username = _build_unique_username(email)
         user = User(
             username=username,
             email=email,
             role=role,
+            agency="RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else "",
             is_staff=role == "admin",
             created_by=request.user,
             must_change_password=True,
@@ -4417,6 +4426,7 @@ class AccessRequestViewSet(viewsets.ModelViewSet):
             username=username,
             email=access_request.email,
             role=role,
+            agency="RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else "",
         )
         user.is_staff = role == "admin"
         user.set_unusable_password()
@@ -4949,6 +4959,7 @@ class SetupPasswordView(APIView):
         return Response(
             {
                 "email": user.email,
+                "agency_locked": user.role in INTERNAL_ACCOUNT_ROLES,
                 "profile": {
                     "full_name": user.full_name,
                     "agency": user.agency,
@@ -4972,7 +4983,6 @@ class SetupPasswordView(APIView):
             return Response({"detail": "Token is invalid or expired."}, status=400)
         required_fields = [
             "full_name",
-            "agency",
             "agency_head",
             "office",
             "division",
@@ -4980,19 +4990,24 @@ class SetupPasswordView(APIView):
             "contact_number",
             "phone_number",
         ]
+        user = token.user
+        agency_locked = user.role in INTERNAL_ACCOUNT_ROLES
+        if not agency_locked:
+            required_fields.append("agency")
         missing = [f for f in required_fields if not str(request.data.get(f) or "").strip()]
         if missing:
             return Response({"detail": f"Missing required fields: {', '.join(missing)}"}, status=400)
-        agency = _normalize_account_agency(request.data.get("agency"))
-        if not agency:
-            return Response(
-                {"detail": "This is an invalid Agency"},
-                status=400,
-            )
+        if agency_locked:
+            if "agency" in request.data and not _same_saved_account_agency(request.data.get("agency"), user.agency):
+                return Response({"detail": "Agency is locked to the account's saved agency."}, status=400)
+            agency = user.agency
+        else:
+            agency = _normalize_account_agency(request.data.get("agency"))
+            if not agency:
+                return Response({"detail": "This is an invalid Agency"}, status=400)
         policy_error = _validate_password_policy(new_password)
         if policy_error:
             return Response({"detail": policy_error}, status=400)
-        user = token.user
         user.full_name = str(request.data.get("full_name") or "").strip()
         user.agency = agency
         user.agency_head = str(request.data.get("agency_head") or "").strip()

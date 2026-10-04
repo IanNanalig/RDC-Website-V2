@@ -45,6 +45,16 @@ const hasAgencySearchMatch = (value: string) => {
   );
 };
 
+const searchAgencies = (value: string) => {
+  const normalized = value.trim().replace(/\s+/g, " ").toLowerCase();
+  if (!normalized) return ACCOUNT_AGENCIES;
+  return ACCOUNT_AGENCIES.filter(
+    (agency) =>
+      agency.code.toLowerCase().includes(normalized) ||
+      agency.name.toLowerCase().includes(normalized),
+  );
+};
+
 const keyboardSymbols = "!\"#$%&'()*+,-./:;<=>?@[\\]^_\x60{|}~";
 const hasKeyboardSymbol = (value: string) =>
   Array.from(value).some((character) => keyboardSymbols.includes(character));
@@ -72,6 +82,7 @@ const SetupPassword: React.FC = () => {
   const token = searchParams.get("token") || "";
 
   const [email, setEmail] = useState("");
+  const [agencyLocked, setAgencyLocked] = useState(false);
   const [profile, setProfile] = useState({
     full_name: "",
     agency: "",
@@ -89,6 +100,15 @@ const SetupPassword: React.FC = () => {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
+  const [agencyOpen, setAgencyOpen] = useState(false);
+  const [agencySearchDirty, setAgencySearchDirty] = useState(false);
+  const [agencyTouched, setAgencyTouched] = useState(false);
+  const [agencyActiveIndex, setAgencyActiveIndex] = useState(0);
+  const [agencyListAbove, setAgencyListAbove] = useState(false);
+  const [agencyListHeight, setAgencyListHeight] = useState(224);
+  const agencyPickerRef = React.useRef<HTMLDivElement>(null);
+  const agencyInputRef = React.useRef<HTMLInputElement>(null);
+  const agencyListRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     if (!token) return;
@@ -98,6 +118,7 @@ const SetupPassword: React.FC = () => {
         const data = await res.json();
         if (!res.ok) return;
         setEmail(String(data?.email || ""));
+        setAgencyLocked(data?.agency_locked === true);
         if (data?.profile) {
           setProfile((prev) => ({ ...prev, ...data.profile }));
         }
@@ -113,7 +134,87 @@ const SetupPassword: React.FC = () => {
     () => (confirm && password !== confirm ? "Passwords do not match." : ""),
     [password, confirm],
   );
-  const agencyUnavailable = !hasAgencySearchMatch(profile.agency);
+  const agencyOptions = useMemo(
+    () => searchAgencies(agencySearchDirty ? profile.agency : ""),
+    [agencySearchDirty, profile.agency],
+  );
+  const agencyUnavailable =
+    !hasAgencySearchMatch(profile.agency) ||
+    (agencyTouched && !normalizeAgency(profile.agency));
+
+  React.useEffect(() => {
+    if (!agencyOpen) return;
+    const updatePlacement = () => {
+      const input = agencyInputRef.current;
+      if (!input) return;
+      const rect = input.getBoundingClientRect();
+      const viewport = window.visualViewport;
+      const top = viewport?.offsetTop ?? 0;
+      const bottom = top + (viewport?.height ?? window.innerHeight);
+      const below = bottom - rect.bottom;
+      const above = rect.top - top;
+      const placeAbove = below < 180 && above > below;
+      setAgencyListAbove(placeAbove);
+      setAgencyListHeight(Math.max(80, Math.min(224, (placeAbove ? above : below) - 12)));
+    };
+    const handleViewportResize = () => {
+      const input = agencyInputRef.current;
+      const viewport = window.visualViewport;
+      if (input) {
+        const rect = input.getBoundingClientRect();
+        const top = viewport?.offsetTop ?? 0;
+        const bottom = top + (viewport?.height ?? window.innerHeight);
+        if (rect.top < top || rect.bottom > bottom) {
+          input.scrollIntoView({ block: "center" });
+        }
+      }
+      window.requestAnimationFrame(updatePlacement);
+    };
+    const closeOnOutsideTap = (event: PointerEvent) => {
+      if (!agencyPickerRef.current?.contains(event.target as Node)) {
+        setAgencyOpen(false);
+        setAgencyTouched(true);
+      }
+    };
+    updatePlacement();
+    window.requestAnimationFrame(updatePlacement);
+    document.addEventListener("pointerdown", closeOnOutsideTap);
+    window.addEventListener("resize", handleViewportResize);
+    window.visualViewport?.addEventListener("resize", handleViewportResize);
+    window.visualViewport?.addEventListener("scroll", updatePlacement);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideTap);
+      window.removeEventListener("resize", handleViewportResize);
+      window.visualViewport?.removeEventListener("resize", handleViewportResize);
+      window.visualViewport?.removeEventListener("scroll", updatePlacement);
+    };
+  }, [agencyOpen]);
+
+  React.useEffect(() => {
+    if (!agencyOpen || !agencyListRef.current) return;
+    const active = agencyListRef.current.children[agencyActiveIndex] as HTMLElement | undefined;
+    if (active) {
+      const list = agencyListRef.current;
+      if (active.offsetTop < list.scrollTop) list.scrollTop = active.offsetTop;
+      if (active.offsetTop + active.offsetHeight > list.scrollTop + list.clientHeight) {
+        list.scrollTop = active.offsetTop + active.offsetHeight - list.clientHeight;
+      }
+    }
+  }, [agencyActiveIndex, agencyOpen, agencyOptions]);
+
+  const selectAgency = (code: string) => {
+    setProfile((previous) => ({ ...previous, agency: code }));
+    setAgencyOpen(false);
+    setAgencySearchDirty(false);
+    setAgencyTouched(true);
+    setAgencyActiveIndex(0);
+  };
+
+  const openAgencyList = () => {
+    setAgencySearchDirty(!normalizeAgency(profile.agency) && Boolean(profile.agency.trim()));
+    setAgencyActiveIndex(0);
+    setAgencyOpen(true);
+  };
 
   const profileRequired = [
     { key: "full_name", label: "Full Name" },
@@ -135,14 +236,17 @@ const SetupPassword: React.FC = () => {
       return;
     }
     const missing = profileRequired.filter(
-      (item) => !String((profile as Record<string, string>)[item.key] || "").trim(),
+      (item) =>
+        (item.key !== "agency" || !agencyLocked) &&
+        !String((profile as Record<string, string>)[item.key] || "").trim(),
     );
     if (missing.length > 0) {
       setError(`Please complete: ${missing.map((m) => m.label).join(", ")}.`);
       return;
     }
-    const agency = normalizeAgency(profile.agency);
-    if (!agency) {
+    const agency = agencyLocked ? profile.agency : normalizeAgency(profile.agency);
+    if (!agencyLocked && !agency) {
+      setAgencyTouched(true);
       setError("This is an invalid Agency");
       return;
     }
@@ -220,31 +324,110 @@ const SetupPassword: React.FC = () => {
                   required
                 />
               </label>
-              <label className="block">
-                <span className="text-sm text-slate-700">Agency *</span>
-                <input
-                  type="text"
-                  id="registration-agency"
-                  name="agency"
-                  list="registration-agency-options"
-                  placeholder="Search or select agency"
-                  value={profile.agency}
-                  onChange={(e) => setProfile((p) => ({ ...p, agency: e.target.value }))}
-                  className={`mt-1 w-full rounded-lg border px-3 py-2 ${
-                    agencyUnavailable
-                      ? "border-rose-500 focus:border-rose-500 focus:ring-rose-500"
-                      : ""
-                  }`}
-                  autoComplete="organization"
-                  aria-invalid={agencyUnavailable}
-                  aria-describedby="registration-agency-help"
-                  required
-                />
-                <datalist id="registration-agency-options">
-                  {ACCOUNT_AGENCIES.map((agency) => (
-                    <option key={agency.code} value={agency.code} label={agency.name} />
-                  ))}
-                </datalist>
+              {agencyLocked ? (
+                <div className="block min-w-0">
+                  <label htmlFor="registration-agency" className="text-sm text-slate-700">Agency{profile.agency ? " *" : ""}</label>
+                  <input
+                    id="registration-agency"
+                    name="agency"
+                    type="text"
+                    value={profile.agency}
+                    placeholder="No agency on record"
+                    readOnly
+                    aria-describedby="registration-agency-help"
+                    className="mt-1 w-full min-w-0 rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-slate-700"
+                  />
+                  <p id="registration-agency-help" className="mt-1 text-xs text-slate-500">
+                    {profile.agency
+                      ? "This agency is saved on your account and cannot be changed here."
+                      : "No agency is saved on your account. Contact an administrator to update it."}
+                  </p>
+                </div>
+              ) : (
+              <div className="block min-w-0" ref={agencyPickerRef}>
+                <label htmlFor="registration-agency" className="text-sm text-slate-700">Agency *</label>
+                <div className="relative mt-1">
+                  <input
+                    ref={agencyInputRef}
+                    type="text"
+                    id="registration-agency"
+                    name="agency"
+                    role="combobox"
+                    aria-autocomplete="list"
+                    aria-expanded={agencyOpen}
+                    aria-controls="registration-agency-options"
+                    aria-activedescendant={agencyOpen && agencyOptions.length > 0 ? `registration-agency-option-${agencyOptions[agencyActiveIndex]?.code}` : undefined}
+                    placeholder="Search or select agency"
+                    value={profile.agency}
+                    onFocus={openAgencyList}
+                    onClick={() => { if (!agencyOpen) openAgencyList(); }}
+                    onChange={(e) => {
+                      setProfile((p) => ({ ...p, agency: e.target.value }));
+                      setAgencySearchDirty(true);
+                      setAgencyTouched(false);
+                      setAgencyActiveIndex(0);
+                      setAgencyOpen(true);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                        e.preventDefault();
+                        if (!agencyOpen) {
+                          setAgencyActiveIndex(e.key === "ArrowUp" ? Math.max(0, agencyOptions.length - 1) : 0);
+                          setAgencyOpen(true);
+                        } else if (agencyOptions.length > 0) {
+                          setAgencyActiveIndex((index) => (index + (e.key === "ArrowDown" ? 1 : -1) + agencyOptions.length) % agencyOptions.length);
+                        }
+                      } else if (e.key === "Enter" && agencyOpen && agencyOptions.length > 0) {
+                        e.preventDefault();
+                        selectAgency(agencyOptions[agencyActiveIndex].code);
+                      } else if (e.key === "Escape") {
+                        setAgencyOpen(false);
+                        setAgencyTouched(true);
+                      } else if (e.key === "Tab") {
+                        setAgencyOpen(false);
+                        setAgencyTouched(true);
+                      }
+                    }}
+                    onInvalid={() => setAgencyTouched(true)}
+                    className={`w-full min-w-0 rounded-lg border px-3 py-2 pr-9 ${
+                      agencyUnavailable
+                        ? "border-rose-500 focus:border-rose-500 focus:ring-rose-500"
+                        : ""
+                    }`}
+                    autoComplete="off"
+                    aria-invalid={agencyUnavailable}
+                    aria-describedby="registration-agency-help"
+                    required
+                  />
+                  <span aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-500">▾</span>
+                  {agencyOpen && (
+                    <div
+                      ref={agencyListRef}
+                      id="registration-agency-options"
+                      role="listbox"
+                      aria-label="Approved agencies"
+                      className={`absolute inset-x-0 z-30 overflow-y-auto overscroll-contain rounded-lg border border-slate-300 bg-white shadow-lg ${agencyListAbove ? "bottom-full mb-1" : "top-full mt-1"}`}
+                      style={{ maxHeight: agencyListHeight }}
+                    >
+                      {agencyOptions.length > 0 ? agencyOptions.map((agency, index) => (
+                        <div
+                          key={agency.code}
+                          id={`registration-agency-option-${agency.code}`}
+                          role="option"
+                          aria-selected={index === agencyActiveIndex}
+                          onMouseEnter={() => setAgencyActiveIndex(index)}
+                          onClick={() => selectAgency(agency.code)}
+                          className={`min-h-11 cursor-pointer px-3 py-2 text-sm ${index === agencyActiveIndex ? "bg-blue-50" : "hover:bg-slate-50"}`}
+                        >
+                          <span className="block font-medium text-slate-900">{agency.code}</span>
+                          <span className="block break-words text-slate-600">{agency.name}</span>
+                        </div>
+                      )) : (
+                        <div className="px-3 py-3 text-sm text-slate-600">No approved agencies found.</div>
+                      )}
+                    </div>
+                  )}
+                </div>
                 <p
                   id="registration-agency-help"
                   className={`mt-1 text-xs ${agencyUnavailable ? "text-rose-600" : "text-slate-500"}`}
@@ -254,7 +437,8 @@ const SetupPassword: React.FC = () => {
                     ? "This is an invalid Agency"
                     : "Search using the agency acronym or full name."}
                 </p>
-              </label>
+              </div>
+              )}
               <label className="block md:col-span-2">
                 <span className="text-sm text-slate-700">Current Head of Agency/Local Chief Executive *</span>
                 <input

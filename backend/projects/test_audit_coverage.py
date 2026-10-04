@@ -22,6 +22,7 @@ class AuditCoverageTests(APITestCase):
         self.editor = User.objects.create_user(
             username="audit-editor", email="audit-editor@example.com",
             password="StrongTestPassword123!", role="content_editor", must_change_password=False,
+            agency="RDC-NCR",
         )
         self.contributor = User.objects.create_user(
             username="audit-contributor", email="audit-contributor@example.com",

@@ -6,7 +6,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .models import PasswordSetupToken, User, UserActivity
+from .models import AccessRequest, PasswordSetupToken, User, UserActivity
 
 
 class AccountSetupAgencyTests(APITestCase):
@@ -20,11 +20,12 @@ class AccountSetupAgencyTests(APITestCase):
         )
         self.client.force_authenticate(user=self.admin)
 
-    def make_pending_user(self, suffix):
+    def make_pending_user(self, suffix, *, role="staff", agency=""):
         user = User(
             username=f"pending-{suffix}",
             email=f"pending-{suffix}@example.com",
-            role="staff",
+            role=role,
+            agency=agency,
             must_change_password=True,
         )
         user.set_unusable_password()
@@ -52,7 +53,7 @@ class AccountSetupAgencyTests(APITestCase):
         }
 
     @patch("projects.views._send_setup_email")
-    def test_admin_creates_each_role_without_selecting_an_agency(self, send_setup_email):
+    def test_admin_creates_each_role_with_its_required_agency(self, send_setup_email):
         roles = ("contributor", "validator", "content_editor", "admin")
 
         for role in roles:
@@ -65,9 +66,110 @@ class AccountSetupAgencyTests(APITestCase):
             self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
             user = User.objects.get(email=email)
             self.assertEqual(user.role, "staff" if role == "contributor" else role)
-            self.assertEqual(user.agency, "")
+            self.assertEqual(user.agency, "" if role == "contributor" else "RDC-NCR")
 
         self.assertEqual(send_setup_email.call_count, len(roles))
+
+    @patch("projects.views._send_setup_email")
+    def test_admin_rejects_conflicting_agency_for_internal_roles(self, send_setup_email):
+        for role in ("admin", "validator", "content_editor", "content-editor"):
+            email = f"conflicting-{role}@example.com"
+            response = self.client.post(
+                "/api/admin/users/",
+                {"email": email, "role": role, "agency": "DENR"},
+                format="json",
+            )
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.data)
+            self.assertIn("RDC-NCR", response.data["detail"])
+            self.assertFalse(User.objects.filter(email=email).exists())
+        send_setup_email.assert_not_called()
+
+    @patch("projects.views._send_setup_email")
+    def test_admin_accepts_canonical_or_full_name_rdc_agency(self, send_setup_email):
+        for index, agency in enumerate(("rdc-ncr", "Regional Development Council National Capital Region")):
+            response = self.client.post(
+                "/api/admin/users/",
+                {"email": f"rdc-{index}@example.com", "role": "validator", "agency": agency},
+                format="json",
+            )
+            self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+            self.assertEqual(User.objects.get(email=f"rdc-{index}@example.com").agency, "RDC-NCR")
+        self.assertEqual(send_setup_email.call_count, 2)
+
+    @patch("projects.views._send_setup_email")
+    def test_access_request_approval_assigns_rdc_to_validator(self, send_setup_email):
+        access_request = AccessRequest.objects.create(
+            full_name="New Validator",
+            email="requested-validator@example.com",
+            office_unit="RDC Office",
+            requested_role="validator",
+            justification="Validation work",
+        )
+        response = self.client.post(f"/api/access-requests/{access_request.id}/approve/", {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(User.objects.get(email=access_request.email).agency, "RDC-NCR")
+        send_setup_email.assert_called_once()
+
+    def test_internal_setup_uses_saved_agency_and_rejects_tampering(self):
+        self.client.force_authenticate(user=None)
+        for role in ("admin", "validator", "content_editor"):
+            user, token = self.make_pending_user(f"locked-{role}", role=role, agency="RDC-NCR")
+            prefill = self.client.get(f"/api/auth/setup-password/?token={token.token}")
+            self.assertEqual(prefill.status_code, status.HTTP_200_OK, prefill.data)
+            self.assertTrue(prefill.data["agency_locked"])
+            self.assertEqual(prefill.data["profile"]["agency"], "RDC-NCR")
+
+            changed = self.client.post(
+                "/api/auth/setup-password/", self.setup_payload(token, "DENR"), format="json"
+            )
+            self.assertEqual(changed.status_code, status.HTTP_400_BAD_REQUEST, changed.data)
+            user.refresh_from_db()
+            token.refresh_from_db()
+            self.assertEqual(user.agency, "RDC-NCR")
+            self.assertTrue(user.must_change_password)
+            self.assertIsNone(token.used_at)
+
+            completed = self.client.post(
+                "/api/auth/setup-password/", self.setup_payload(token, "RDC-NCR"), format="json"
+            )
+            self.assertEqual(completed.status_code, status.HTTP_200_OK, completed.data)
+            user.refresh_from_db()
+            self.assertEqual(user.agency, "RDC-NCR")
+            self.assertFalse(user.must_change_password)
+
+    def test_internal_password_reset_preserves_legacy_agency_even_when_blank(self):
+        self.client.force_authenticate(user=None)
+        for suffix, saved_agency in (("legacy-denr", "DENR"), ("legacy-blank", "")):
+            user, token = self.make_pending_user(suffix, role="admin", agency=saved_agency)
+            prefill = self.client.get(f"/api/auth/setup-password/?token={token.token}")
+            self.assertTrue(prefill.data["agency_locked"])
+            self.assertEqual(prefill.data["profile"]["agency"], saved_agency)
+
+            changed = self.client.post(
+                "/api/auth/setup-password/", self.setup_payload(token, "RDC-NCR"), format="json"
+            )
+            if saved_agency != "RDC-NCR":
+                self.assertEqual(changed.status_code, status.HTTP_400_BAD_REQUEST, changed.data)
+
+            payload = self.setup_payload(token, saved_agency)
+            if not saved_agency:
+                payload.pop("agency")
+            completed = self.client.post("/api/auth/setup-password/", payload, format="json")
+            self.assertEqual(completed.status_code, status.HTTP_200_OK, completed.data)
+            user.refresh_from_db()
+            self.assertEqual(user.agency, saved_agency)
+
+    def test_contributor_setup_agency_stays_editable(self):
+        self.client.force_authenticate(user=None)
+        user, token = self.make_pending_user("editable-contributor")
+        prefill = self.client.get(f"/api/auth/setup-password/?token={token.token}")
+        self.assertFalse(prefill.data["agency_locked"])
+        completed = self.client.post(
+            "/api/auth/setup-password/", self.setup_payload(token, "DENR"), format="json"
+        )
+        self.assertEqual(completed.status_code, status.HTTP_200_OK, completed.data)
+        user.refresh_from_db()
+        self.assertEqual(user.agency, "DENR")
 
     def test_setup_accepts_and_normalizes_each_approved_agency(self):
         self.client.force_authenticate(user=None)
