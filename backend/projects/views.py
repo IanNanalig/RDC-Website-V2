@@ -2211,6 +2211,31 @@ def _strip_validator_meta(profile_data):
     }
 
 
+def _validator_review_source(profile_data):
+    contributor_snapshot = profile_data.get("contributor_snapshot")
+    if not isinstance(contributor_snapshot, dict):
+        contributor_snapshot = _strip_validator_meta(profile_data)
+    review = profile_data.get("validator_review")
+    if isinstance(review, dict):
+        # A contributor's resubmission supersedes any older validator working copy.
+        if str(review.get("review_status") or "").lower() == "draft" and review.get("resubmitted_at"):
+            return contributor_snapshot
+        if isinstance(review.get("working_copy"), dict):
+            return review["working_copy"]
+    return contributor_snapshot
+
+
+def _validator_answers_unchanged(incoming, saved):
+    if not isinstance(incoming, dict) or not isinstance(saved, dict):
+        return False
+    received_answers = _strip_validator_meta(incoming)
+    saved_answers = _strip_validator_meta(saved)
+    # A review draft can add this server-side marker to older submissions.
+    if "form_schema" not in received_answers and "form_schema" in saved_answers:
+        received_answers["form_schema"] = saved_answers["form_schema"]
+    return received_answers == saved_answers
+
+
 def _diff_string(value):
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
@@ -2967,12 +2992,14 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             profile_data["contributor_snapshot"] = deepcopy(contributor_snapshot)
 
         incoming_edited = request.data.get("edited_profile_data")
-        if incoming_edited is None:
-            existing_review = profile_data.get("validator_review")
-            if isinstance(existing_review, dict) and isinstance(existing_review.get("working_copy"), dict):
-                edited_profile = existing_review.get("working_copy")
-            else:
-                edited_profile = deepcopy(contributor_snapshot)
+        review_baseline = _validator_review_source(profile_data)
+        if role == "validator" and incoming_edited is not None and not _validator_answers_unchanged(incoming_edited, review_baseline):
+            return Response(
+                {"detail": "Contributor answers are read-only for validators. Request revisions instead."},
+                status=400,
+            )
+        if role == "validator" or incoming_edited is None:
+            edited_profile = deepcopy(review_baseline)
         else:
             if not isinstance(incoming_edited, dict):
                 return Response({"detail": "edited_profile_data must be a JSON object"}, status=400)
@@ -3218,15 +3245,13 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if incoming_snapshot is not None and not isinstance(incoming_snapshot, dict):
             return Response({"detail": "edited_profile_data must be a JSON object."}, status=400)
         profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
-        existing_review = profile_data.get("validator_review")
-        if isinstance(incoming_snapshot, dict):
-            snapshot = incoming_snapshot
-        elif isinstance(existing_review, dict) and isinstance(existing_review.get("working_copy"), dict):
-            snapshot = existing_review["working_copy"]
-        else:
-            snapshot = profile_data.get("contributor_snapshot")
-            if not isinstance(snapshot, dict):
-                snapshot = _strip_validator_meta(profile_data)
+        snapshot = _validator_review_source(profile_data)
+        if incoming_snapshot is not None and not _validator_answers_unchanged(incoming_snapshot, snapshot):
+            return Response(
+                {"detail": "Contributor answers are read-only for validators. Request revisions instead."},
+                status=400,
+            )
+        snapshot = deepcopy(snapshot)
         supplements = request.data.get("supplements")
         if not isinstance(supplements, dict):
             supplements = {}
@@ -3469,6 +3494,8 @@ class ProjectViewSet(BaseProjectViewSet):
         return super().create(request, *args, **kwargs)
 
     def update(self, request, *args, **kwargs):
+        if getattr(request.user, "role", "") == "validator":
+            raise PermissionDenied("Validators cannot edit contributor project fields. Use review actions instead.")
         project = self.get_object()
         error = self._contributor_write_error(request, project)
         if error:
@@ -3476,6 +3503,8 @@ class ProjectViewSet(BaseProjectViewSet):
         return super().update(request, *args, **kwargs)
 
     def partial_update(self, request, *args, **kwargs):
+        if getattr(request.user, "role", "") == "validator":
+            raise PermissionDenied("Validators cannot edit contributor project fields. Use review actions instead.")
         project = self.get_object()
         error = self._contributor_write_error(request, project)
         if error:
@@ -3998,9 +4027,16 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
         if revision.state not in ("submitted", "validator_draft", "reviewed", "endorsed"):
             return Response({"detail": "Only submitted progress updates can be reviewed."}, status=400)
 
+        saved_profile = revision.profile_data_snapshot if isinstance(revision.profile_data_snapshot, dict) else {}
         edited_profile = request.data.get("edited_profile_data")
-        if edited_profile is None:
-            edited_profile = revision.profile_data_snapshot
+        validator_review = getattr(request.user, "role", "") == "validator"
+        if validator_review and edited_profile is not None and not _validator_answers_unchanged(edited_profile, saved_profile):
+            return Response(
+                {"detail": "Contributor answers are read-only for validators. Request revisions instead."},
+                status=400,
+            )
+        if validator_review or edited_profile is None:
+            edited_profile = deepcopy(saved_profile)
         if not isinstance(edited_profile, dict):
             return Response({"detail": "edited_profile_data must be a JSON object."}, status=400)
         base_marker = revision.profile_data_snapshot.get("form_schema") if isinstance(revision.profile_data_snapshot, dict) else None

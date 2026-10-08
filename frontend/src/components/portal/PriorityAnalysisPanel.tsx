@@ -130,7 +130,6 @@ type Analysis = {
 type Props = {
   projectId: string;
   role: "validator" | "admin";
-  currentSnapshot: Record<string, unknown>;
 };
 
 const priorityLabel = (value?: string) => {
@@ -240,7 +239,7 @@ const CriteriaTable: React.FC<{ title: string; criteria?: Criterion[]; total?: n
   </div>
 );
 
-const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapshot }) => {
+const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
   const [eligible, setEligible] = useState(true);
   const [analyses, setAnalyses] = useState<Analysis[]>([]);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
@@ -285,7 +284,6 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapsh
     try {
       const response = await api.post(`validator/projects/${projectId}/priority-analysis/run/`, {
         supplements,
-        edited_profile_data: currentSnapshot,
       });
       const next = response?.analysis as Analysis;
       setAnalysis(next);

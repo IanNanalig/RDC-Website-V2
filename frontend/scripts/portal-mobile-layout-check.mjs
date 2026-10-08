@@ -218,6 +218,56 @@ try {
     await context.close();
     console.log(`PASS validator simplified form ${width}px`);
   }
+
+  for (const [kind, path] of [
+    ["simplified", "/validator/projects/1/review/simplified"],
+    ["detailed", "/validator/projects/2/review"],
+  ]) {
+    const { context, page } = await openPortal({ width: 390, height: 844 }, "validator", path);
+    const submissions = [];
+    await page.route("**/api/validator/projects/*/validate/", async (route) => {
+      submissions.push(JSON.parse(route.request().postData() || "{}"));
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ review_status: "reviewed" }) });
+    });
+    if (kind === "simplified") {
+      await page.getByText("Project Information", { exact: true }).waitFor();
+      const revisionCheckbox = page.getByLabel("Contributor may edit this field").first();
+      assert.equal(await revisionCheckbox.isEnabled(), true, "Revision selection remains editable");
+      await revisionCheckbox.check();
+      const notes = page.getByPlaceholder("Required when requesting revisions or rejecting");
+      assert.equal(await notes.isEnabled(), true, "Validator notes remain editable");
+      await notes.fill("Please update the project description.");
+    } else {
+      const access = page.locator("details").filter({ hasText: "Contributor Revision Access" });
+      const revisionCheckbox = access.locator('input[type="checkbox"]').first();
+      assert.equal(await revisionCheckbox.isEnabled(), true, "Revision selection remains editable");
+      await revisionCheckbox.check();
+      const notes = page.locator("#validator-notes");
+      assert.equal(await notes.isEnabled(), true, "Validator notes remain editable");
+      await notes.fill("Please update the project description.");
+    }
+    assert.equal(await page.locator("form fieldset:disabled input:not([type='checkbox'])").first().isDisabled(), true,
+      `${kind} contributor answers must be read-only`);
+    const requestRevision = page.getByRole("button", { name: "Request Revision" });
+    let warning = "";
+    page.once("dialog", async (dialog) => {
+      warning = dialog.message();
+      await dialog.dismiss();
+    });
+    await requestRevision.click();
+    assert.match(warning, /Request revisions.*contributor will be notified.*Needs Revision/s);
+    assert.equal(submissions.length, 0, `Cancel must not submit a ${kind} revision request`);
+    assert.equal(await requestRevision.isDisabled(), false, "Cancel leaves the revision action available");
+
+    page.on("dialog", (dialog) => dialog.accept());
+    await requestRevision.click();
+    await page.waitForURL("**/validator/projects");
+    assert.equal(submissions.length, 1, `Confirmation submits one ${kind} revision request`);
+    assert.equal(submissions[0].action, "save_reviewed");
+    assert.equal("edited_profile_data" in submissions[0], false, "Validator requests must not send contributor form answers");
+    await context.close();
+    console.log(`PASS ${kind} revision confirmation`);
+  }
 } finally {
   await browser.close();
   await new Promise((resolve, reject) => server.httpServer.close((error) => error ? reject(error) : resolve()));

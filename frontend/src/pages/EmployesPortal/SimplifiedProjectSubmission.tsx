@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import { confirmRevisionRequest } from "../../components/portal/confirmRevisionRequest";
 import PriorityAnalysisPanel from "../../components/portal/PriorityAnalysisPanel";
 import YearOnlyPicker from "../../components/portal/YearOnlyPicker";
 import { useEncodingWindow, useProgressUpdateWindow } from "../../hooks/useEncodingWindow";
@@ -748,8 +749,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
           validatorReview && typeof validatorReview.working_copy === "object"
             ? (validatorReview.working_copy as Record<string, unknown>)
             : contributorSnapshot;
+        const resubmittedForReview = String(validatorReview?.review_status || "").toLowerCase() === "draft" && Boolean(validatorReview?.resubmitted_at);
         const sourceData = isValidator
-          ? workingCopy
+          ? resubmittedForReview ? contributorSnapshot : workingCopy
           : isAdmin
           ? (isDiffMode ? workingCopy : contributorSnapshot)
           : pd;
@@ -1202,6 +1204,17 @@ const SimplifiedProjectSubmission: React.FC = () => {
       alert("Year range is too large. Please keep the span within 15 years.");
       return;
     }
+    if (isValidator && action === "reviewed") {
+      if (!validatorNotes.trim()) {
+        alert("Please add a clear revision request before sending this back to the contributor.");
+        return;
+      }
+      if (editableFields.length === 0) {
+        alert("Select at least one field the contributor may revise.");
+        return;
+      }
+      if (!confirmRevisionRequest(isRevisionMode)) return;
+    }
     if (!isValidator && action === "submit") {
       const formValues = form as unknown as Record<string, unknown>;
       const missing = formSchema.sections
@@ -1239,16 +1252,6 @@ const SimplifiedProjectSubmission: React.FC = () => {
         : prioritySnapshot;
 
       if (isValidator && id) {
-        if (action === "reviewed" && !validatorNotes.trim()) {
-          alert("Please add a clear revision request before sending this back to the contributor.");
-          setLoading(false);
-          return;
-        }
-        if (action === "reviewed" && editableFields.length === 0) {
-          alert("Select at least one field the contributor may revise.");
-          setLoading(false);
-          return;
-        }
         const validatorAction =
           action === "draft"
             ? "save_draft"
@@ -1278,7 +1281,6 @@ const SimplifiedProjectSubmission: React.FC = () => {
           action: validatorAction,
           notes: validatorNotes,
           public_note: validatorNotes,
-          edited_profile_data: normalizedProfileData,
           editable_fields: editableFields,
           },
         );
@@ -1401,7 +1403,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       helpText: field.help_text,
       diffBefore,
       editMeta,
-      disabled: revisionFieldLocked(field.key) || (isEmployee && field.key === "agencyName"),
+      disabled: isValidator || revisionFieldLocked(field.key) || (isEmployee && field.key === "agencyName"),
     };
 
     if (isEmployee && (field.key === "startYear" || field.key === "endYear")) {
@@ -1440,7 +1442,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                     ...previous,
                     [mapKey]: { ...previous[mapKey], [key]: next },
                   }))}
-                  disabled={revisionFieldLocked(field.key) || (isEmployee && mapKey === "actualFundingByYear" && !isEditableActualFundingKey(key))}
+                  disabled={isValidator || revisionFieldLocked(field.key) || (isEmployee && mapKey === "actualFundingByYear" && !isEditableActualFundingKey(key))}
                   diffBefore={diffOf(`${field.key}.${key}`)?.before}
                   editMeta={editMetaOf(`${field.key}.${key}`)}
                   formatMoney
@@ -1477,7 +1479,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       return (
         <label className="block">
           <span className="text-sm text-slate-700">{field.label}{required ? " *" : ""}</span>
-          <input type="date" className="mt-1 w-full rounded border p-2 disabled:bg-slate-100 disabled:text-slate-500" value={String(value)} required={required} disabled={revisionFieldLocked(field.key)} onChange={(event) => setConfiguredFieldValue(field, event.target.value)} />
+          <input type="date" className="mt-1 w-full rounded border p-2 disabled:bg-slate-100 disabled:text-slate-500" value={String(value)} required={required} disabled={isValidator || revisionFieldLocked(field.key)} onChange={(event) => setConfiguredFieldValue(field, event.target.value)} />
           {field.help_text && <p className="mt-1 text-xs text-slate-500">{field.help_text}</p>}
         </label>
       );
@@ -1619,7 +1621,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       )}
       {isValidator && (
         <div className="portal-card p-3 mb-3 border-indigo-200 bg-indigo-50 text-indigo-800 text-sm">
-          You are editing a validator review copy. Contributor original form remains unchanged.
+          Contributor answers are read-only. Use validator notes and the checkboxes to request changes from the contributor.
         </div>
       )}
       {isValidator && normalizedReviewStatus === "endorsed" && (
@@ -1668,7 +1670,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
                             <span className="min-w-0 break-words">Contributor may edit this field</span>
                           </label>
                         )}
-                        {renderConfiguredField(field)}
+                        <fieldset disabled={isValidator} className="min-w-0 border-0 p-0">
+                          {renderConfiguredField(field)}
+                        </fieldset>
                         {!isValidator && field.key !== "agencyName" && revisionFieldLocked(field.key) && (
                           <p className="mt-1 text-xs font-medium text-slate-500">Locked by validator</p>
                         )}
@@ -1680,7 +1684,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
             })}
           {rangeTooLarge && <p className="text-xs text-rose-600">Year range is too large. Please keep the span within 15 years.</p>}
 
-          {formSchema.sections.length === 0 && (<>
+          {formSchema.sections.length === 0 && (<fieldset disabled={isValidator} className="min-w-0 space-y-6 border-0 p-0">
           <div className="rounded-lg border border-slate-200 p-4 space-y-4">
             <TextField label="Agency Name" value={form.agencyName} onChange={(v) => setField("agencyName", v)} required disabled={isEmployee} diffBefore={diffOf("agencyName")?.before} editMeta={editMetaOf("agencyName")} />
             {isEmployee && <p className="text-xs text-slate-500">Agency Name is locked to the account for new projects and preserved for existing projects.</p>}
@@ -1877,7 +1881,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
               <TextAreaField label="Readiness Evidence Notes" value={form.priorityAnalysisFacts.readinessNotes} onChange={(v) => setPriorityFact("readinessNotes", v)} rows={2} />
             </div>
           )}
-          </>)}
+          </fieldset>)}
 
           {isValidator && (
             <div className="rounded-lg border border-slate-200 p-4 space-y-2">
@@ -1898,7 +1902,6 @@ const SimplifiedProjectSubmission: React.FC = () => {
             <PriorityAnalysisPanel
               projectId={id}
               role={isAdmin ? "admin" : "validator"}
-              currentSnapshot={prioritySnapshot}
             />
           )}
 

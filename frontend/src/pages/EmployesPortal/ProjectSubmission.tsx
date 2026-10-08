@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import { confirmRevisionRequest } from "../../components/portal/confirmRevisionRequest";
 import PriorityAnalysisPanel from "../../components/portal/PriorityAnalysisPanel";
 import { useProgressUpdateWindow } from "../../hooks/useEncodingWindow";
 import { normalizeReadinessLevelValue } from "../../types/contributorForm";
@@ -1640,8 +1641,9 @@ const ProjectSubmission: React.FC = () => {
             typeof validatorReview.working_copy === "object"
               ? (validatorReview.working_copy as Record<string, unknown>)
               : contributorSnapshot;
+          const resubmittedForReview = String(validatorReview?.review_status || "").toLowerCase() === "draft" && Boolean(validatorReview?.resubmitted_at);
           const sourceData = isValidator
-            ? workingCopy
+            ? resubmittedForReview ? contributorSnapshot : workingCopy
             : isAdmin
             ? (isDiffMode ? workingCopy : contributorSnapshot)
             : rawProfile;
@@ -2181,7 +2183,7 @@ const ProjectSubmission: React.FC = () => {
   };
 
   const onNextStep = () => {
-    if (!isReadOnly) {
+    if (!isReadOnly && !isValidator) {
       validateCurrentStep();
     }
     setStep((s) => Math.min(stepTitles.length, s + 1));
@@ -2207,6 +2209,13 @@ const ProjectSubmission: React.FC = () => {
       setSaveError("Add validator notes explaining the required revisions before sending the project back to the contributor.");
       document.getElementById("validator-notes")?.focus();
       return;
+    }
+    if (isValidator && action === "save") {
+      if (editableFields.length === 0) {
+        setSaveError("Select at least one field the contributor may revise.");
+        return;
+      }
+      if (!confirmRevisionRequest(isRevisionMode)) return;
     }
     if (!isValidator && action === "submit") {
       const missing = requiredForSubmit.filter((key) => !String(form[key] ?? "").trim());
@@ -2286,17 +2295,12 @@ const ProjectSubmission: React.FC = () => {
       const normalizedProfileData = prioritySnapshot;
 
       if (isValidator && id) {
-        if (action === "save" && editableFields.length === 0) {
-          setSaveError("Select at least one field the contributor may revise.");
-          return;
-        }
         await api.post(isRevisionMode && revisionId
           ? `project-revisions/${revisionId}/review/`
           : `validator/projects/${id}/validate/`, {
           action: action === "save" ? "save_reviewed" : "validate",
           notes: validatorNotes,
           public_note: validatorNotes,
-          edited_profile_data: normalizedProfileData,
           editable_fields: editableFields,
         });
         localStorage.setItem("projects_last_update", Date.now().toString());
@@ -2508,7 +2512,7 @@ const ProjectSubmission: React.FC = () => {
         )}
         {isValidator && (
           <div className="mb-4 p-3 rounded-lg bg-indigo-50 text-indigo-800 border border-indigo-200 text-sm">
-            You are editing a validator review copy. Contributor original form remains unchanged.
+            Contributor answers are read-only. Use validator notes and the revision-access checkboxes to request changes from the contributor.
           </div>
         )}
         {isAdmin && (
@@ -2594,7 +2598,7 @@ const ProjectSubmission: React.FC = () => {
               </div>
             </details>
           )}
-          <fieldset disabled={isReadOnly} className="space-y-8">
+          <fieldset disabled={isReadOnly || isValidator} className="space-y-8">
           {step === 1 && (
             <Section title="Program/Project Identity">
               <div className="grid xl:grid-cols-2 gap-4">
@@ -3404,6 +3408,8 @@ const ProjectSubmission: React.FC = () => {
             </Section>
           )}
 
+          </fieldset>
+          <div className="space-y-8">
           {isValidator && (
             <label className="block">
               <span className="text-sm text-slate-700">Validator Notes</span>
@@ -3412,6 +3418,7 @@ const ProjectSubmission: React.FC = () => {
                 className="mt-1 w-full border rounded p-2"
                 rows={3}
                 value={validatorNotes}
+                disabled={isReadOnly}
                 onChange={(e) => {
                   setValidatorNotes(e.target.value);
                   if (saveError) setSaveError("");
@@ -3422,11 +3429,12 @@ const ProjectSubmission: React.FC = () => {
           )}
 
           {(step === 5 || step === stepTitles.length) && id && (isValidator || isAdmin) && (
-            <PriorityAnalysisPanel
-              projectId={id}
-              role={isAdmin ? "admin" : "validator"}
-              currentSnapshot={prioritySnapshot}
-            />
+            <fieldset disabled={isReadOnly} className="min-w-0 border-0 p-0">
+              <PriorityAnalysisPanel
+                projectId={id}
+                role={isAdmin ? "admin" : "validator"}
+              />
+            </fieldset>
           )}
 
           {saveError && (
@@ -3462,7 +3470,7 @@ const ProjectSubmission: React.FC = () => {
               )}
             </div>
           </div>
-          </fieldset>
+          </div>
         </form>
         </DetailedRevisionLockContext.Provider>
         </div>
