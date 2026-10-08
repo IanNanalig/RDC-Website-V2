@@ -6,6 +6,7 @@ import PortalLayout from "../../components/portal/PortalLayout";
 type UserRow = {
   id: number;
   username: string;
+  full_name?: string;
   email: string;
   role: string;
   agency?: string;
@@ -1049,39 +1050,39 @@ const UserManagement = () => {
 
       <div className="portal-card mb-4">
         <div className="portal-card-body">
-          <div className="flex flex-wrap gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
             <button
               type="button"
               onClick={() => setActiveTab("create-account")}
-              className={`portal-btn ${activeTab === "create-account" ? "portal-btn-primary" : "portal-btn-ghost"}`}
+              className={`portal-btn min-h-11 min-w-0 whitespace-normal sm:min-h-0 ${activeTab === "create-account" ? "portal-btn-primary" : "portal-btn-ghost"}`}
             >
               Create Account
             </button>
             <button
               type="button"
               onClick={() => setActiveTab("encoding-window")}
-              className={`portal-btn ${activeTab === "encoding-window" ? "portal-btn-primary" : "portal-btn-ghost"}`}
+              className={`portal-btn min-h-11 min-w-0 whitespace-normal sm:min-h-0 ${activeTab === "encoding-window" ? "portal-btn-primary" : "portal-btn-ghost"}`}
             >
               Encoding Window
             </button>
             <button
               type="button"
               onClick={() => setActiveTab("password-reset-requests")}
-              className={`portal-btn ${activeTab === "password-reset-requests" ? "portal-btn-primary" : "portal-btn-ghost"}`}
+              className={`portal-btn min-h-11 min-w-0 whitespace-normal sm:min-h-0 ${activeTab === "password-reset-requests" ? "portal-btn-primary" : "portal-btn-ghost"}`}
             >
               Password Reset Requests
             </button>
             <button
               type="button"
               onClick={() => setActiveTab("system-users")}
-              className={`portal-btn ${activeTab === "system-users" ? "portal-btn-primary" : "portal-btn-ghost"}`}
+              className={`portal-btn min-h-11 min-w-0 whitespace-normal sm:min-h-0 ${activeTab === "system-users" ? "portal-btn-primary" : "portal-btn-ghost"}`}
             >
               System Users
             </button>
             <button
               type="button"
               onClick={() => setActiveTab("system-audit-log")}
-              className={`portal-btn ${activeTab === "system-audit-log" ? "portal-btn-primary" : "portal-btn-ghost"}`}
+              className={`portal-btn col-span-2 min-h-11 min-w-0 whitespace-normal sm:col-span-1 sm:min-h-0 ${activeTab === "system-audit-log" ? "portal-btn-primary" : "portal-btn-ghost"}`}
             >
               System Audit Log
             </button>
@@ -1514,7 +1515,54 @@ const UserManagement = () => {
               No users found.
             </div>
           ) : (
-            <table className="portal-table">
+            <>
+              <ul className="divide-y divide-slate-100 xl:hidden" aria-label="System users">
+                {users.map((u) => (
+                  <li key={u.id} className="min-w-0 p-4">
+                    <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+                      <p className="min-w-0 break-words font-semibold text-slate-900">
+                        {u.full_name || u.username}
+                      </p>
+                      <span
+                        className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${u.is_active ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-700"}`}
+                      >
+                        {u.is_active ? "Active" : "Inactive"}
+                      </span>
+                    </div>
+                    <dl className="mt-3 grid min-w-0 gap-3 text-sm sm:grid-cols-2">
+                      <div className="min-w-0">
+                        <dt className="text-xs font-medium text-slate-500">Email</dt>
+                        <dd className="break-all text-slate-800">{u.email || "-"}</dd>
+                      </div>
+                      <div className="min-w-0">
+                        <dt className="text-xs font-medium text-slate-500">Agency</dt>
+                        <dd className="break-words text-slate-800">{u.agency || "-"}</dd>
+                      </div>
+                      <div className="min-w-0">
+                        <dt className="text-xs font-medium text-slate-500">Role</dt>
+                        <dd className="break-words text-slate-800">{labelRole(u.role)}</dd>
+                      </div>
+                    </dl>
+                    <div className="mt-4 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setUserActive(u.id, !u.is_active)}
+                        className="portal-btn portal-btn-ghost min-h-11 min-w-0 whitespace-normal text-blue-700"
+                      >
+                        {u.is_active ? "Deactivate" : "Activate"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => resetUserPassword(u.id)}
+                        className="portal-btn portal-btn-ghost min-h-11 min-w-0 whitespace-normal text-indigo-700"
+                      >
+                        Reset Password
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <table className="portal-table hidden xl:table">
               <thead>
                 <tr>
                   <th>Username</th>
@@ -1556,7 +1604,8 @@ const UserManagement = () => {
                   </tr>
                 ))}
               </tbody>
-            </table>
+              </table>
+            </>
           )}
         </div>
       )}

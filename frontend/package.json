@@ -11,6 +11,7 @@
     "test:cms-ui-round-trip": "node scripts/cms-ui-round-trip-check.mjs",
     "test:cms-safety": "node scripts/cms-safety-check.mjs",
     "test:notifications-ui": "node scripts/notification-panel-check.mjs",
+    "test:logout-session": "node scripts/logout-session-check.mjs",
     "test:registration-agency": "node scripts/registration-agency-check.mjs",
     "test:year-picker": "node scripts/year-picker-check.mjs",
     "test:contributor-corrections": "node scripts/contributor-corrections-check.mjs",

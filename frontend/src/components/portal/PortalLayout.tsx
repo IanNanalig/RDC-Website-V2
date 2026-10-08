@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useEncodingWindow } from "../../hooks/useEncodingWindow";
-import { api } from "../../services/api";
+import { api, beginPortalLogout } from "../../services/api";
 
 type Role = "admin" | "validator" | "employee" | "content_editor";
 
@@ -251,6 +251,7 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
   };
 
   const logout = async () => {
+    beginPortalLogout();
     try {
       // Older deployments may not have the audit endpoint yet.
       await api.post("auth/logout/", {});
@@ -263,6 +264,7 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
       localStorage.removeItem("token");
       localStorage.removeItem("accessToken");
       localStorage.removeItem("refreshToken");
+      localStorage.removeItem("sessionMessage");
       navigate("/login");
     }
   };

@@ -3,6 +3,7 @@ import { useNavigate, Link, useLocation } from "react-router-dom";
 import photo1 from "../assets/Photo-Corousel/Photos/photo1.jpg";
 import rdcLogo from "../assets/optimized/rdc-logo-256.webp";
 import { API_BASE_URL } from "../config/api";
+import { completePortalLogin } from "../services/api";
 
 const Login: React.FC = () => {
   const [email, setEmail] = useState("");
@@ -36,6 +37,7 @@ const Login: React.FC = () => {
       }
 
       const user = data.user;
+      completePortalLogin();
       localStorage.setItem("accessToken", data.access);
       localStorage.setItem("refreshToken", data.refresh);
       localStorage.setItem("user", JSON.stringify(user));

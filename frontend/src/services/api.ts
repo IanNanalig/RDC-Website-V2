@@ -69,9 +69,25 @@ function headersToRecord(headers?: HeadersInit): Record<string, string> {
   return { ...headers };
 }
 
-let refreshInFlight: Promise<string | null> | null = null;
+let refreshInFlight: { token: string; promise: Promise<string | null> } | null = null;
 let lastAuthFailureMessage = "";
+let authGeneration = 0;
+let intentionalLogout = false;
 const getRequestsInFlight = new Map<string, ReturnType<typeof request>>();
+
+export function beginPortalLogout() {
+  intentionalLogout = true;
+  authGeneration += 1;
+  lastAuthFailureMessage = "";
+  localStorage.removeItem(SESSION_MESSAGE_KEY);
+}
+
+export function completePortalLogin() {
+  intentionalLogout = false;
+  authGeneration += 1;
+  lastAuthFailureMessage = "";
+  localStorage.removeItem(SESSION_MESSAGE_KEY);
+}
 
 async function errorMessageFromResponse(res: Response) {
   try {
@@ -116,16 +132,16 @@ async function requestErrorMessageFromResponse(res: Response) {
 }
 
 async function refreshAccessToken() {
-  if (refreshInFlight) {
-    return refreshInFlight;
-  }
-
   const refresh = getRefreshToken();
-  if (!refresh) {
+  if (!refresh || intentionalLogout) {
     return null;
   }
+  if (refreshInFlight?.token === refresh) {
+    return refreshInFlight.promise;
+  }
+  const generation = authGeneration;
 
-  refreshInFlight = (async () => {
+  const pending = (async () => {
     try {
       const res = await fetch(`${API_BASE_URL}/token/refresh/`, {
         method: "POST",
@@ -134,12 +150,15 @@ async function refreshAccessToken() {
       });
 
       if (!res.ok) {
-        lastAuthFailureMessage = await errorMessageFromResponse(res);
+        const message = await errorMessageFromResponse(res);
+        if (generation === authGeneration && !intentionalLogout) {
+          lastAuthFailureMessage = message;
+        }
         return null;
       }
 
       const data = await res.json();
-      if (!data?.access) {
+      if (!data?.access || generation !== authGeneration || intentionalLogout || refresh !== getRefreshToken()) {
         return null;
       }
 
@@ -150,12 +169,13 @@ async function refreshAccessToken() {
       return data.access as string;
     } catch {
       return null;
-    } finally {
-      refreshInFlight = null;
     }
   })();
-
-  return refreshInFlight;
+  refreshInFlight = { token: refresh, promise: pending };
+  void pending.finally(() => {
+    if (refreshInFlight?.promise === pending) refreshInFlight = null;
+  });
+  return pending;
 }
 
 function redirectToLoginIfNeeded() {
@@ -170,6 +190,8 @@ function redirectToLoginIfNeeded() {
 async function request(path: string, options: RequestInit = {}, hasRetried = false) {
   const method = options.method || "GET";
   const normalizedPath = normalizePath(path);
+  const isLogoutRequest = normalizedPath === "auth/logout/" && method.toUpperCase() === "POST";
+  const requestGeneration = authGeneration;
   const isFormData =
     typeof FormData !== "undefined" && options.body instanceof FormData;
   const headers: Record<string, string> = headersToRecord(options.headers);
@@ -188,8 +210,20 @@ async function request(path: string, options: RequestInit = {}, hasRetried = fal
   });
 
   if (res.status === 401 && !isPublicRequest(normalizedPath, method) && !hasRetried) {
+    // A deliberate logout invalidates this token. Late responses from that session
+    // must not be reported as a sign-in from another device.
+    if (isLogoutRequest || intentionalLogout || requestGeneration !== authGeneration) {
+      throw new Error(await requestErrorMessageFromResponse(res));
+    }
+    if (token && token !== getToken()) {
+      if (getToken()) return request(normalizedPath, options, true);
+      throw new Error(await requestErrorMessageFromResponse(res));
+    }
     const unauthorizedMessage = await errorMessageFromResponse(res);
     const refreshedAccess = await refreshAccessToken();
+    if (intentionalLogout || requestGeneration !== authGeneration) {
+      throw new Error(unauthorizedMessage);
+    }
     if (refreshedAccess) {
       return request(normalizedPath, options, true);
     }
@@ -205,7 +239,7 @@ async function request(path: string, options: RequestInit = {}, hasRetried = fal
     throw new Error(await requestErrorMessageFromResponse(res));
   }
 
-  if (method.toUpperCase() !== "GET" && typeof window !== "undefined") {
+  if (method.toUpperCase() !== "GET" && !isLogoutRequest && !intentionalLogout && requestGeneration === authGeneration && typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("portal:data-changed", { detail: { path: normalizedPath } }));
   }
 

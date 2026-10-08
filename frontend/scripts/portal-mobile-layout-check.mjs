@@ -24,6 +24,11 @@ const sampleProject = {
   updated_at: "2026-10-08T08:00:00Z",
 };
 
+const sampleUsers = [
+  { id: 11, username: "matt", full_name: "Matt Angelo", email: "matt.angelo@example.com", agency: "DOH", role: "contributor", is_active: true },
+  { id: 12, username: "gabriel", full_name: "Gabriel Cantor", email: "gabriel.cantor@example.com", agency: "DENR", role: "contributor", is_active: false },
+];
+
 const mobileFormSchema = {
   format_version: 1,
   title: "Simplified RDIP Contributor Form",
@@ -66,7 +71,9 @@ async function openPortal(viewport, role = "admin", path) {
       return;
     }
     const url = route.request().url();
-    const body = url.includes("contributor-forms/simplified-rdip/versions/1/")
+    const body = url.includes("/api/admin/users/") && route.request().method() === "GET"
+      ? JSON.stringify(sampleUsers)
+      : url.includes("contributor-forms/simplified-rdip/versions/1/")
       ? JSON.stringify({ key: "simplified-rdip", version: 1, schema: mobileFormSchema })
       : url.includes("/validator/projects/1/") && !url.includes("/comments/")
       ? JSON.stringify({ ...sampleProject, profile_data: { submission_type: "simplified", simplified_form: {
@@ -111,6 +118,48 @@ async function assertSimplifiedReviewFits(page, width) {
 }
 
 try {
+  for (const width of [320, 360, 390, 430, 768, 1024, 1280]) {
+    const { context, page } = await openPortal(
+      { width, height: 844 }, "admin", "/admin/users?tab=system-users",
+    );
+    const users = page.getByRole("list", { name: "System users" });
+    const table = page.locator("table.portal-table").filter({ has: page.getByRole("columnheader", { name: "Username" }) });
+    await page.getByText("Matt Angelo", { exact: true }).first().waitFor({ state: "attached" });
+    if (width < 1280) {
+      assert.equal(await users.isVisible(), true, `User cards are visible at ${width}px`);
+      assert.equal(await table.isVisible(), false, `User table is hidden at ${width}px`);
+      assert.equal(await users.locator("li").count(), 2, "All users appear as mobile cards");
+      const firstCard = users.locator("li").first();
+      assert.match(await firstCard.innerText(), /Email.*matt\.angelo@example\.com.*Agency.*DOH.*Role.*Contributor/s);
+      for (const action of ["Deactivate", "Reset Password"]) {
+        const button = firstCard.getByRole("button", { name: action });
+        const bounds = await button.boundingBox();
+        assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width + 1,
+          `${action} fits within ${width}px: ${JSON.stringify(bounds)}`);
+        assert.ok(bounds.height >= 44, `${action} has a mobile-sized touch target`);
+      }
+      if (width === 320) {
+        let updatePayload;
+        await page.route("**/api/admin/users/11/set_active/", async (route) => {
+          updatePayload = JSON.parse(route.request().postData() || "{}");
+          await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+        });
+        await firstCard.getByRole("button", { name: "Deactivate" }).click();
+        await page.getByText("User deactivated.").waitFor();
+        assert.deepEqual(updatePayload, { active: false }, "Mobile Deactivate uses the existing user action");
+        await firstCard.getByRole("button", { name: "Reset Password" }).click();
+        await page.getByText("Password reset link sent to the user's email.").waitFor();
+      }
+    } else {
+      assert.equal(await users.isVisible(), false, "User cards are hidden on desktop");
+      assert.equal(await table.isVisible(), true, "Desktop user table is visible");
+    }
+    const documentWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+    assert.ok(documentWidth <= width + 1, `Admin System Users has no horizontal overflow at ${width}px: ${documentWidth}`);
+    await context.close();
+    console.log(`PASS admin System Users ${width}px`);
+  }
+
   for (const viewport of [
     { width: 320, height: 568 },
     { width: 360, height: 740 },
