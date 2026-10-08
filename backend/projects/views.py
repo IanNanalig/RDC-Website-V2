@@ -13,12 +13,13 @@ from zoneinfo import ZoneInfo
 from django.conf import settings
 from django.core.cache import cache
 from django.core.mail import send_mail, EmailMessage
+from django.core import signing
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.crypto import get_random_string
 from django.utils.text import slugify
-from django.db import connection, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import Count, Max, Prefetch, Q
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -73,6 +74,8 @@ from .utils import derive_ncr_lgus
 ENCODING_WINDOW_KEY = "portal_encoding_window"
 PROGRESS_UPDATE_WINDOW_KEY = "portal_progress_update_window"
 PASSWORD_SETUP_TTL_HOURS = 24
+REGISTRATION_INVITE_PREFIX = "invite:"
+REGISTRATION_INVITE_SALT = "rdc-registration-invite-v1"
 PASSWORD_RESET_WINDOW_SECONDS = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_WINDOW", 3600))
 PASSWORD_RESET_LIMIT_EMAIL = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_EMAIL", 2))
 PASSWORD_RESET_LIMIT_IP = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_IP", 5))
@@ -1011,6 +1014,77 @@ def _send_setup_email(user: User, token: PasswordSetupToken, purpose: str = "cre
             "If you did not request this account, please contact the RDC Portal administrator."
         )
     send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=False)
+
+
+def _send_registration_invitation(email: str, token: str):
+    frontend_base = getattr(settings, "FRONTEND_BASE_URL", "http://localhost:5173").rstrip("/")
+    link = f"{frontend_base}/setup-password?token={urllib.parse.quote(token, safe='')}"
+    message = (
+        "An RDC Portal administrator invited you to complete your account registration.\n\n"
+        "Complete your profile and set your password using this link (valid for 24 hours):\n"
+        f"{link}\n\n"
+        "Your account will remain inactive until an administrator activates it.\n"
+        "If you did not expect this invitation, please contact the RDC Portal administrator."
+    )
+    delivered = send_mail(
+        "RDC Portal Registration Invitation", message, settings.DEFAULT_FROM_EMAIL,
+        [email], fail_silently=False,
+    )
+    if not delivered:
+        raise RuntimeError("The registration invitation email was not delivered.")
+
+
+def _issue_registration_invitation(request, email: str, role: str):
+    signed = signing.dumps(
+        {"email": email, "role": role, "nonce": get_random_string(32)},
+        salt=REGISTRATION_INVITE_SALT,
+    )
+    token = f"{REGISTRATION_INVITE_PREFIX}{signed}"
+    _send_registration_invitation(email, token)
+    actor = request.user
+    return UserActivity.objects.create(
+        user=actor,
+        actor_username=actor.username,
+        actor_full_name=actor.full_name or actor.get_full_name() or actor.username,
+        role=actor.role,
+        event="registration_invitation_sent",
+        ip_address=_client_ip(request)[:64],
+        location_hint=_location_hint(request)[:255],
+        details={
+            "email": email,
+            "role": role,
+            "token_digest": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        },
+    )
+
+
+def _registration_invitation(token: str):
+    if not token.startswith(REGISTRATION_INVITE_PREFIX):
+        return None
+    try:
+        payload = signing.loads(
+            token[len(REGISTRATION_INVITE_PREFIX):],
+            salt=REGISTRATION_INVITE_SALT,
+            max_age=PASSWORD_SETUP_TTL_HOURS * 3600,
+        )
+    except signing.BadSignature:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    email = str(payload.get("email") or "").strip().lower()
+    role = str(payload.get("role") or "")
+    if not email or role not in ("admin", "validator", "staff", "content_editor") or not payload.get("nonce"):
+        return None
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    invitations = UserActivity.objects.filter(event="registration_invitation_sent", details__email=email)
+    latest = invitations.order_by("-id").first()
+    if not latest or latest.details.get("token_digest") != digest or latest.details.get("role") != role:
+        return None
+    if UserActivity.objects.filter(event="registration_completed", details__invitation_id=latest.id).exists():
+        return None
+    if User.objects.filter(email__iexact=email).exists():
+        return None
+    return payload, latest
 
 
 def _rate_limit(key: str, limit: int, window_seconds: int) -> bool:
@@ -4524,6 +4598,10 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         role = (request.data.get("role") or "").strip().lower()
         if not email:
             return Response({"detail": "Email is required."}, status=400)
+        try:
+            validate_email(email)
+        except ValidationError:
+            return Response({"detail": "Enter a valid email address."}, status=400)
         if User.objects.filter(email__iexact=email).exists():
             return Response({"detail": "Email already exists."}, status=400)
         if role == "contributor":
@@ -4536,34 +4614,16 @@ class AdminUserViewSet(viewsets.ModelViewSet):
             if _normalize_account_agency(request.data.get("agency")) != "RDC-NCR":
                 return Response({"detail": "Agency must be RDC-NCR for this user type."}, status=400)
 
-        username = _build_unique_username(email)
-        user = User(
-            username=username,
-            email=email,
-            role=role,
-            agency="RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else "",
-            is_staff=role == "admin",
-            created_by=request.user,
-            must_change_password=True,
-        )
-        user.set_unusable_password()
-        user.save()
-
-        token = PasswordSetupToken.objects.create(
-            user=user,
-            token=get_random_string(48),
-            expires_at=timezone.now() + timedelta(hours=PASSWORD_SETUP_TTL_HOURS),
-        )
         try:
-            _send_setup_email(user, token, purpose="create")
-        except Exception as exc:
-            token.delete()
-            user.delete()
-            return Response({"detail": f"Failed to send email: {exc}"}, status=500)
+            _issue_registration_invitation(request, email, role)
+        except Exception:
+            return Response({"detail": "Failed to send or record the registration invitation."}, status=500)
 
-        _log_activity(request, "user_create", details={"email": user.email, "role": user.role})
-        serializer = self.get_serializer(user)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(
+            {"detail": "Registration invitation sent.", "email": email,
+             "role": "contributor" if role == "staff" else role, "invitation_sent": True},
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class AccessRequestViewSet(viewsets.ModelViewSet):
@@ -4583,20 +4643,14 @@ class AccessRequestViewSet(viewsets.ModelViewSet):
         access_request = self.get_object()
         if access_request.status != "pending":
             return Response({"detail": "Request already reviewed."}, status=400)
-
-        username = _build_unique_username(access_request.email, access_request.full_name)
+        email = access_request.email.strip().lower()
+        if User.objects.filter(email__iexact=email).exists():
+            return Response({"detail": "Email already exists."}, status=400)
         role = "validator" if access_request.requested_role == "validator" else "staff"
-
-        user = User(
-            username=username,
-            email=access_request.email,
-            role=role,
-            agency="RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else "",
-        )
-        user.is_staff = role == "admin"
-        user.set_unusable_password()
-        user.must_change_password = True
-        user.save()
+        try:
+            _issue_registration_invitation(request, email, role)
+        except Exception:
+            return Response({"detail": "Failed to send or record the registration invitation."}, status=500)
 
         access_request.status = "approved"
         access_request.reviewed_by = request.user
@@ -4604,29 +4658,18 @@ class AccessRequestViewSet(viewsets.ModelViewSet):
         access_request.review_notes = request.data.get("review_notes", "")
         access_request.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_notes"])
 
-        token = PasswordSetupToken.objects.create(
-            user=user,
-            token=get_random_string(48),
-            expires_at=timezone.now() + timedelta(hours=PASSWORD_SETUP_TTL_HOURS),
-        )
-        _send_setup_email(user, token, purpose="reset")
-
         _log_activity(
             request, "access_request_approved",
-            details={"request_id": access_request.id, "email": access_request.email,
-                     "created_user_id": user.id, "role": user.role},
+            details={"request_id": access_request.id, "email": email,
+                     "role": role, "invitation_sent": True},
         )
 
         return Response(
             {
                 "status": "approved",
-                "created_user": {
-                    "id": user.id,
-                    "username": user.username,
-                    "email": user.email,
-                    "role": "contributor" if user.role == "staff" else user.role,
-                    "setup_link_sent": True,
-                },
+                "email": email,
+                "role": "contributor" if role == "staff" else role,
+                "invitation_sent": True,
             }
         )
 
@@ -5108,6 +5151,33 @@ class LogoutView(APIView):
         return Response({"status": "ok"})
 
 
+def _validate_setup_profile(request, role, saved_agency, new_password):
+    required_fields = [
+        "full_name", "agency_head", "office", "division", "position",
+        "contact_number", "phone_number",
+    ]
+    agency_locked = role in INTERNAL_ACCOUNT_ROLES
+    if not agency_locked:
+        required_fields.append("agency")
+    missing = [field for field in required_fields if not str(request.data.get(field) or "").strip()]
+    if missing:
+        return None, Response({"detail": f"Missing required fields: {', '.join(missing)}"}, status=400)
+    if agency_locked:
+        if "agency" in request.data and not _same_saved_account_agency(request.data.get("agency"), saved_agency):
+            return None, Response({"detail": "Agency is locked to the account's saved agency."}, status=400)
+        agency = saved_agency
+    else:
+        agency = _normalize_account_agency(request.data.get("agency"))
+        if not agency:
+            return None, Response({"detail": "This is an invalid Agency"}, status=400)
+    policy_error = _validate_password_policy(new_password)
+    if policy_error:
+        return None, Response({"detail": policy_error}, status=400)
+    profile = {field: str(request.data.get(field) or "").strip() for field in required_fields if field != "agency"}
+    profile["agency"] = agency
+    return profile, None
+
+
 class SetupPasswordView(APIView):
     permission_classes = [AllowAny]
 
@@ -5115,6 +5185,18 @@ class SetupPasswordView(APIView):
         token_value = (request.query_params.get("token") or "").strip()
         if not token_value:
             return Response({"detail": "Token is required."}, status=400)
+        if token_value.startswith(REGISTRATION_INVITE_PREFIX):
+            invitation = _registration_invitation(token_value)
+            if not invitation:
+                return Response({"detail": "Invitation is invalid, expired, or replaced. Ask an administrator to resend it."}, status=400)
+            payload, _ = invitation
+            role = payload["role"]
+            return Response({
+                "email": payload["email"],
+                "setup_type": "invitation",
+                "agency_locked": role in INTERNAL_ACCOUNT_ROLES,
+                "profile": {"agency": "RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else ""},
+            })
         token = PasswordSetupToken.objects.select_related("user").filter(token=token_value).first()
         if not token or not token.is_valid():
             return Response({"detail": "Token is invalid or expired."}, status=400)
@@ -5122,6 +5204,7 @@ class SetupPasswordView(APIView):
         return Response(
             {
                 "email": user.email,
+                "setup_type": "existing_account",
                 "agency_locked": user.role in INTERNAL_ACCOUNT_ROLES,
                 "profile": {
                     "full_name": user.full_name,
@@ -5141,44 +5224,69 @@ class SetupPasswordView(APIView):
         new_password = request.data.get("new_password") or ""
         if not token_value:
             return Response({"detail": "Token is required."}, status=400)
+        if token_value.startswith(REGISTRATION_INVITE_PREFIX):
+            invitation = _registration_invitation(token_value)
+            if not invitation:
+                return Response({"detail": "Invitation is invalid, expired, or replaced. Ask an administrator to resend it."}, status=400)
+            payload, activity = invitation
+            role = payload["role"]
+            profile, error = _validate_setup_profile(
+                request, role, "RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else "", new_password,
+            )
+            if error:
+                return error
+            try:
+                with transaction.atomic():
+                    UserActivity.objects.select_for_update().get(pk=activity.pk)
+                    if not _registration_invitation(token_value):
+                        return Response({"detail": "Invitation is no longer available."}, status=400)
+                    user = User(
+                        username=_build_unique_username(payload["email"], profile["full_name"]),
+                        email=payload["email"],
+                        role=role,
+                        created_by=activity.user,
+                        is_staff=role == "admin",
+                        is_active=False,
+                        must_change_password=False,
+                        last_password_change=timezone.now(),
+                        **profile,
+                    )
+                    user.set_password(new_password)
+                    user.save()
+                    UserActivity.objects.create(
+                        user=user, role=role, event="auth_password_setup",
+                        ip_address=_client_ip(request)[:64],
+                        location_hint=_location_hint(request)[:255],
+                        details={"source": "invitation", "agency": user.agency},
+                    )
+                    UserActivity.objects.create(
+                        user=user, role=role, event="registration_completed",
+                        ip_address=_client_ip(request)[:64],
+                        location_hint=_location_hint(request)[:255],
+                        details={"email": user.email, "role": role, "is_active": False,
+                                 "invitation_id": activity.id},
+                    )
+                    _notify_many(
+                        _admins(),
+                        event_type="registration_awaiting_activation",
+                        title="New account awaiting activation",
+                        message=f"{user.full_name} ({user.email}) completed registration and is awaiting activation.",
+                        actor=user,
+                        link_path="/admin/users?tab=system-users",
+                        dedupe_key=f"account:{user.id}:awaiting-activation",
+                    )
+            except IntegrityError:
+                return Response({"detail": "Email already exists or this invitation has been used."}, status=400)
+            return Response({"status": "ok", "account_status": "inactive", "requires_admin_activation": True})
         token = PasswordSetupToken.objects.select_related("user").filter(token=token_value).first()
         if not token or not token.is_valid():
             return Response({"detail": "Token is invalid or expired."}, status=400)
-        required_fields = [
-            "full_name",
-            "agency_head",
-            "office",
-            "division",
-            "position",
-            "contact_number",
-            "phone_number",
-        ]
         user = token.user
-        agency_locked = user.role in INTERNAL_ACCOUNT_ROLES
-        if not agency_locked:
-            required_fields.append("agency")
-        missing = [f for f in required_fields if not str(request.data.get(f) or "").strip()]
-        if missing:
-            return Response({"detail": f"Missing required fields: {', '.join(missing)}"}, status=400)
-        if agency_locked:
-            if "agency" in request.data and not _same_saved_account_agency(request.data.get("agency"), user.agency):
-                return Response({"detail": "Agency is locked to the account's saved agency."}, status=400)
-            agency = user.agency
-        else:
-            agency = _normalize_account_agency(request.data.get("agency"))
-            if not agency:
-                return Response({"detail": "This is an invalid Agency"}, status=400)
-        policy_error = _validate_password_policy(new_password)
-        if policy_error:
-            return Response({"detail": policy_error}, status=400)
-        user.full_name = str(request.data.get("full_name") or "").strip()
-        user.agency = agency
-        user.agency_head = str(request.data.get("agency_head") or "").strip()
-        user.office = str(request.data.get("office") or "").strip()
-        user.division = str(request.data.get("division") or "").strip()
-        user.position = str(request.data.get("position") or "").strip()
-        user.contact_number = str(request.data.get("contact_number") or "").strip()
-        user.phone_number = str(request.data.get("phone_number") or "").strip()
+        profile, error = _validate_setup_profile(request, user.role, user.agency, new_password)
+        if error:
+            return error
+        for field, value in profile.items():
+            setattr(user, field, value)
         user.set_password(new_password)
         user.must_change_password = False
         user.last_password_change = timezone.now()
@@ -5236,6 +5344,7 @@ class AdminActivityView(APIView):
                 | Q(actor_username__icontains=user_filter)
                 | Q(actor_full_name__icontains=user_filter)
                 | Q(details__attempted_email__icontains=user_filter)
+                | Q(details__email__icontains=user_filter)
             )
         if date_from_raw:
             try:

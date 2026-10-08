@@ -213,6 +213,8 @@ class UserActivity(models.Model):
         ("login_failed", "Login Failed"),
         ("logout", "Logout"),
         ("auth_password_setup", "Password Setup Completed"),
+        ("registration_invitation_sent", "Registration Invitation Sent"),
+        ("registration_completed", "Registration Completed"),
         ("auth_reset_request", "Auth Reset Request"),
         ("auth_reset_approve", "Auth Reset Approve"),
         ("auth_reset_reject", "Auth Reset Reject"),

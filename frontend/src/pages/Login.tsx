@@ -19,6 +19,9 @@ const Login: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const registrationPendingActivation = Boolean(
+    (location.state as { registrationPendingActivation?: boolean } | null)?.registrationPendingActivation,
+  );
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -141,6 +144,11 @@ const Login: React.FC = () => {
 
           {/* Login Card */}
           <div className="bg-white/80 backdrop-blur-sm shadow-lg rounded-xl p-6 animate-slide-up border border-white/40">
+            {registrationPendingActivation && (
+              <div role="status" className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+                Registration complete. Your account is awaiting administrator activation before you can log in.
+              </div>
+            )}
             {/* Error Message */}
             {error && (
               <div className="mb-4 p-3 bg-red-50/90 border border-red-200 rounded-lg animate-shake">

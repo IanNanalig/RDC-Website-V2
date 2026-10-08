@@ -1,5 +1,7 @@
 from datetime import timedelta
 import string
+import re
+from urllib.parse import unquote
 from unittest.mock import patch
 
 from django.utils import timezone
@@ -40,7 +42,7 @@ class AccountSetupAgencyTests(APITestCase):
     @staticmethod
     def setup_payload(token, agency):
         return {
-            "token": token.token,
+            "token": token.token if isinstance(token, PasswordSetupToken) else token,
             "new_password": "ValidSetup123_",
             "full_name": "Agency User",
             "agency": agency,
@@ -52,8 +54,14 @@ class AccountSetupAgencyTests(APITestCase):
             "phone_number": "09170000000",
         }
 
-    @patch("projects.views._send_setup_email")
-    def test_admin_creates_each_role_with_its_required_agency(self, send_setup_email):
+    @staticmethod
+    def invited_token(send_mail):
+        match = re.search(r"token=([^\s]+)", send_mail.call_args.args[1])
+        assert match, "Invitation email must contain a setup link"
+        return unquote(match.group(1))
+
+    @patch("projects.views.send_mail")
+    def test_admin_creates_each_role_with_its_required_agency(self, send_mail):
         roles = ("contributor", "validator", "content_editor", "admin")
 
         for role in roles:
@@ -63,15 +71,24 @@ class AccountSetupAgencyTests(APITestCase):
                 {"email": email, "role": role},
                 format="json",
             )
-            self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+            self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED, response.data)
+            self.assertFalse(User.objects.filter(email=email).exists())
+            token = self.invited_token(send_mail)
+            completed = self.client.post(
+                "/api/auth/setup-password/",
+                self.setup_payload(token, "DENR" if role == "contributor" else "RDC-NCR"),
+                format="json",
+            )
+            self.assertEqual(completed.status_code, status.HTTP_200_OK, completed.data)
             user = User.objects.get(email=email)
             self.assertEqual(user.role, "staff" if role == "contributor" else role)
-            self.assertEqual(user.agency, "" if role == "contributor" else "RDC-NCR")
+            self.assertEqual(user.agency, "DENR" if role == "contributor" else "RDC-NCR")
+            self.assertFalse(user.is_active)
 
-        self.assertEqual(send_setup_email.call_count, len(roles))
+        self.assertEqual(send_mail.call_count, len(roles))
 
-    @patch("projects.views._send_setup_email")
-    def test_admin_rejects_conflicting_agency_for_internal_roles(self, send_setup_email):
+    @patch("projects.views.send_mail")
+    def test_admin_rejects_conflicting_agency_for_internal_roles(self, send_mail):
         for role in ("admin", "validator", "content_editor", "content-editor"):
             email = f"conflicting-{role}@example.com"
             response = self.client.post(
@@ -82,22 +99,27 @@ class AccountSetupAgencyTests(APITestCase):
             self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.data)
             self.assertIn("RDC-NCR", response.data["detail"])
             self.assertFalse(User.objects.filter(email=email).exists())
-        send_setup_email.assert_not_called()
+        send_mail.assert_not_called()
 
-    @patch("projects.views._send_setup_email")
-    def test_admin_accepts_canonical_or_full_name_rdc_agency(self, send_setup_email):
+    @patch("projects.views.send_mail")
+    def test_admin_accepts_canonical_or_full_name_rdc_agency(self, send_mail):
         for index, agency in enumerate(("rdc-ncr", "Regional Development Council National Capital Region")):
             response = self.client.post(
                 "/api/admin/users/",
                 {"email": f"rdc-{index}@example.com", "role": "validator", "agency": agency},
                 format="json",
             )
-            self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+            self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED, response.data)
+            token = self.invited_token(send_mail)
+            completed = self.client.post(
+                "/api/auth/setup-password/", self.setup_payload(token, "RDC-NCR"), format="json"
+            )
+            self.assertEqual(completed.status_code, status.HTTP_200_OK, completed.data)
             self.assertEqual(User.objects.get(email=f"rdc-{index}@example.com").agency, "RDC-NCR")
-        self.assertEqual(send_setup_email.call_count, 2)
+        self.assertEqual(send_mail.call_count, 2)
 
-    @patch("projects.views._send_setup_email")
-    def test_access_request_approval_assigns_rdc_to_validator(self, send_setup_email):
+    @patch("projects.views.send_mail")
+    def test_access_request_approval_assigns_rdc_to_validator(self, send_mail):
         access_request = AccessRequest.objects.create(
             full_name="New Validator",
             email="requested-validator@example.com",
@@ -107,8 +129,14 @@ class AccountSetupAgencyTests(APITestCase):
         )
         response = self.client.post(f"/api/access-requests/{access_request.id}/approve/", {}, format="json")
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertFalse(User.objects.filter(email=access_request.email).exists())
+        token = self.invited_token(send_mail)
+        completed = self.client.post(
+            "/api/auth/setup-password/", self.setup_payload(token, "RDC-NCR"), format="json"
+        )
+        self.assertEqual(completed.status_code, status.HTTP_200_OK, completed.data)
         self.assertEqual(User.objects.get(email=access_request.email).agency, "RDC-NCR")
-        send_setup_email.assert_called_once()
+        send_mail.assert_called_once()
 
     def test_internal_setup_uses_saved_agency_and_rejects_tampering(self):
         self.client.force_authenticate(user=None)
@@ -271,8 +299,8 @@ class AccountSetupAgencyTests(APITestCase):
             self.assertTrue(user.must_change_password)
             self.assertIsNone(token.used_at)
 
-    @patch("projects.views._send_setup_email")
-    def test_duplicate_email_behavior_is_unchanged(self, send_setup_email):
+    @patch("projects.views.send_mail")
+    def test_duplicate_email_behavior_is_unchanged(self, send_mail):
         User.objects.create_user(
             username="existing-agency-user",
             email="existing-agency@example.com",
@@ -289,4 +317,4 @@ class AccountSetupAgencyTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data["detail"], "Email already exists.")
-        send_setup_email.assert_not_called()
+        send_mail.assert_not_called()

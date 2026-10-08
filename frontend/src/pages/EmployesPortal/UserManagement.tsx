@@ -217,6 +217,8 @@ const UserManagement = () => {
     login_failed: "Failed Login Attempt",
     logout: "Auth Logout",
     auth_password_setup: "Password Setup Completed",
+    registration_invitation_sent: "Registration Invitation Sent",
+    registration_completed: "Registration Completed",
     auth_reset_request: "Auth Reset Request",
     auth_reset_approve: "Auth Reset Approved",
     auth_reset_reject: "Auth Reset Rejected",
@@ -284,6 +286,11 @@ const UserManagement = () => {
   };
 
   const activityEventLabel = (item: ActivityItem) => {
+    if (item.event === "registration_invitation_sent") {
+      const email = String(item.details?.email || "");
+      const role = labelRole(String(item.details?.role || ""));
+      return `Admin sent a registration form for ${role} to ${email}`;
+    }
     const label = eventLabels[item.event] || item.event.replaceAll("_", " ");
     if (item.event !== "api_action" && item.event !== "api_action_failed") return label;
     const route = String(item.details?.route || "").replace(/[-_]/g, " ").trim();
@@ -300,6 +307,8 @@ const UserManagement = () => {
     auth_reset_approve: "info",
     auth_reset_reject: "warn",
     user_create: "info",
+    registration_invitation_sent: "info",
+    registration_completed: "info",
     project_create: "info",
     project_update: "info",
     project_submit: "info",
@@ -453,6 +462,7 @@ const UserManagement = () => {
       .filter(
         ([key, value]) =>
           !used.has(key) &&
+          key !== "token_digest" &&
           value !== undefined &&
           value !== null &&
           value !== "",
@@ -663,7 +673,7 @@ const UserManagement = () => {
         role: form.role === "contributor" ? "staff" : form.role,
       });
       setForm({ email: "", role: "contributor" });
-      setNotice("Account created. Setup link sent to email.");
+      setNotice("Registration invitation sent. The account will appear in System Users after registration and remain inactive until an administrator activates it.");
       await load();
     } catch (err) {
       let message = "Failed to create account. Check email/role.";
@@ -1131,7 +1141,7 @@ const UserManagement = () => {
               type="submit"
               className="portal-btn portal-btn-primary xl:col-span-2"
             >
-              Create User
+              Send Registration Form
             </button>
           </form>
         </div>

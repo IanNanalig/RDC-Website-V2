@@ -9,7 +9,7 @@ assert.ok(address && typeof address !== "string");
 const frontendUrl = "http://127.0.0.1:" + address.port;
 const browser = await chromium.launch({ executablePath: browserPath, headless: true });
 
-async function newRegistration(viewport, prefilledAgency = "", agencyLocked = false) {
+async function newRegistration(viewport, prefilledAgency = "", agencyLocked = false, setupType = "existing_account") {
   const context = await browser.newContext({
     viewport,
     isMobile: viewport.width < 600,
@@ -26,14 +26,27 @@ async function newRegistration(viewport, prefilledAgency = "", agencyLocked = fa
     }
     if (request.method() === "POST") {
       posts.push(JSON.parse(request.postData() || "{}"));
-      await route.fulfill({ status: 200, contentType: "application/json", headers, body: "{}" });
+      await route.fulfill({
+        status: 200, contentType: "application/json", headers,
+        body: JSON.stringify({ requires_admin_activation: setupType === "invitation" }),
+      });
+      return;
+    }
+    if (setupType === "invalid") {
+      await route.fulfill({
+        status: 400, contentType: "application/json", headers,
+        body: JSON.stringify({ detail: "Invitation is invalid, expired, or replaced. Ask an administrator to resend it." }),
+      });
       return;
     }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       headers,
-      body: JSON.stringify({ email: "registration@example.com", agency_locked: agencyLocked, profile: { agency: prefilledAgency } }),
+      body: JSON.stringify({
+        email: "registration@example.com", setup_type: setupType,
+        agency_locked: agencyLocked, profile: { agency: prefilledAgency },
+      }),
     });
   });
   await page.goto(frontendUrl + "/setup-password?token=agency-test", { waitUntil: "networkidle" });
@@ -139,6 +152,23 @@ try {
     await context.close();
   }
   console.log("PASS internal agency lock and legacy reset values");
+
+  const invitation = await newRegistration({ width: 390, height: 650 }, "RDC-NCR", true, "invitation");
+  await fillOtherFields(invitation.page);
+  await invitation.page.getByRole("button", { name: "Complete Registration" }).click();
+  await invitation.page.getByText("Registration complete. Your account is inactive until an administrator activates it.").waitFor();
+  assert.equal(invitation.posts.length, 1, "The invitation form submits once");
+  await invitation.page.waitForURL(/\/login$/);
+  await invitation.page.getByText("Registration complete. Your account is awaiting administrator activation before you can log in.").waitFor();
+  await invitation.context.close();
+  console.log("PASS invited account returns to login with activation notice");
+
+  const invalid = await newRegistration({ width: 390, height: 650 }, "", false, "invalid");
+  await invalid.page.getByText("Invitation is invalid, expired, or replaced. Ask an administrator to resend it.").waitFor();
+  assert.equal(await invalid.page.getByRole("button", { name: "Set Password" }).isDisabled(), true);
+  assert.equal(invalid.posts.length, 0);
+  await invalid.context.close();
+  console.log("PASS expired or replaced invitation cannot submit");
 } finally {
   await browser.close();
   await new Promise((resolve, reject) => server.httpServer.close((error) => error ? reject(error) : resolve()));

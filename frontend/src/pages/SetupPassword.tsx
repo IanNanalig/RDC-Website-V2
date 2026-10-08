@@ -83,6 +83,7 @@ const SetupPassword: React.FC = () => {
 
   const [email, setEmail] = useState("");
   const [agencyLocked, setAgencyLocked] = useState(false);
+  const [setupType, setSetupType] = useState("existing_account");
   const [profile, setProfile] = useState({
     full_name: "",
     agency: "",
@@ -98,6 +99,7 @@ const SetupPassword: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [error, setError] = useState("");
+  const [linkInvalid, setLinkInvalid] = useState(false);
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
   const [agencyOpen, setAgencyOpen] = useState(false);
@@ -116,8 +118,14 @@ const SetupPassword: React.FC = () => {
       try {
         const res = await fetch(`${API_BASE_URL}/auth/setup-password/?token=${encodeURIComponent(token)}`);
         const data = await res.json();
-        if (!res.ok) return;
+        if (!res.ok) {
+          setLinkInvalid(true);
+          setError(data?.detail || "This registration link is invalid or expired.");
+          return;
+        }
+        setLinkInvalid(false);
         setEmail(String(data?.email || ""));
+        setSetupType(String(data?.setup_type || "existing_account"));
         setAgencyLocked(data?.agency_locked === true);
         if (data?.profile) {
           setProfile((prev) => ({ ...prev, ...data.profile }));
@@ -235,6 +243,10 @@ const SetupPassword: React.FC = () => {
       setError("Missing setup token. Please use the link from your email.");
       return;
     }
+    if (linkInvalid) {
+      setError("This registration link is invalid or expired. Ask an administrator to resend it.");
+      return;
+    }
     const missing = profileRequired.filter(
       (item) =>
         (item.key !== "agency" || !agencyLocked) &&
@@ -269,8 +281,13 @@ const SetupPassword: React.FC = () => {
       if (!res.ok) {
         throw new Error(data?.detail || "Failed to set password.");
       }
-      setSuccess("Password set successfully. You can now log in.");
-      setTimeout(() => navigate("/login", { replace: true }), 1500);
+      if (data?.requires_admin_activation || setupType === "invitation") {
+        setSuccess("Registration complete. Your account is inactive until an administrator activates it.");
+        setTimeout(() => navigate("/login", { replace: true, state: { registrationPendingActivation: true } }), 1500);
+      } else {
+        setSuccess("Password set successfully. You can now log in.");
+        setTimeout(() => navigate("/login", { replace: true }), 1500);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to set password.";
       setError(message);
@@ -606,10 +623,10 @@ const SetupPassword: React.FC = () => {
 
           <button
             type="submit"
-            disabled={loading || Boolean(policyError) || Boolean(confirmError) || !token}
+            disabled={loading || Boolean(policyError) || Boolean(confirmError) || !token || linkInvalid || Boolean(success)}
             className="w-full portal-btn portal-btn-primary"
           >
-            {loading ? "Saving..." : "Set Password"}
+            {loading ? "Saving..." : setupType === "invitation" ? "Complete Registration" : "Set Password"}
           </button>
           </div>
         </form>
