@@ -15,7 +15,10 @@ interface DashboardStats {
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const [user, setUser] = useState<any>(null);
-  const [stats, setStats] = useState<DashboardStats>({});
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [statsError, setStatsError] = useState("");
+  const [activityError, setActivityError] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
   const [loading, setLoading] = useState(true);
   const [activity, setActivity] = useState<any[]>([]);
   const [activityLoading, setActivityLoading] = useState(true);
@@ -157,9 +160,12 @@ const Dashboard: React.FC = () => {
     const fetchStats = async () => {
       try {
         const data = await api.get("dashboard/");
-        if (mounted) setStats(data);
+        if (mounted) {
+          setStats(data);
+          setStatsError("");
+        }
       } catch {
-        if (mounted) setStats({});
+        if (mounted) setStatsError("Dashboard counts could not be loaded. The figures below may be out of date.");
       } finally {
         if (mounted) setLoading(false);
       }
@@ -174,19 +180,18 @@ const Dashboard: React.FC = () => {
           setActivityCount(Number(data.count || 0));
           setActivityHasPrevious(Boolean(data.has_previous));
           setActivityHasNext(Boolean(data.has_next));
+          setActivityError("");
         } else {
           const legacyRows = Array.isArray(data) ? data : [];
           setActivity(legacyRows);
           setActivityCount(legacyRows.length);
           setActivityHasPrevious(false);
           setActivityHasNext(false);
+          setActivityError("");
         }
       } catch {
         if (mounted) {
-          setActivity([]);
-          setActivityCount(0);
-          setActivityHasPrevious(false);
-          setActivityHasNext(false);
+          setActivityError("Recent activity could not be loaded.");
         }
       } finally {
         if (mounted) setActivityLoading(false);
@@ -217,7 +222,7 @@ const Dashboard: React.FC = () => {
       window.removeEventListener("focus", onRefresh);
       window.removeEventListener("portal:data-changed", onRefresh);
     };
-  }, [navigate, activityLimit, activityOffset]);
+  }, [navigate, activityLimit, activityOffset, refreshKey]);
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   const displayName = user?.full_name || user?.username || "User";
@@ -226,9 +231,9 @@ const Dashboard: React.FC = () => {
   const activityEnd = activityCount > 0 ? Math.min(activityOffset + activity.length, activityCount) : 0;
 
   const funnelData = [
-    { name: "Draft", value: stats.draft_projects || 0 },
-    { name: "Submitted", value: stats.submitted_projects || 0 },
-    { name: "Approved", value: stats.approved_projects || 0 },
+    { name: "Draft", value: stats?.draft_projects || 0 },
+    { name: "Submitted", value: stats?.submitted_projects || 0 },
+    { name: "Approved", value: stats?.approved_projects || 0 },
   ];
 
   return (
@@ -248,6 +253,11 @@ const Dashboard: React.FC = () => {
         </Link>
       }
     >
+      {statsError && (
+        <div className="portal-card mb-3 border-rose-200 bg-rose-50 p-3 text-sm text-rose-800" role="alert">
+          {statsError} <button type="button" className="font-semibold underline" onClick={() => setRefreshKey((key) => key + 1)}>Retry</button>
+        </div>
+      )}
       {!canEncode && (
         <div className="portal-card p-3 mb-3 border-amber-200 bg-amber-50 text-amber-800">
           {encodingWindow.message}
@@ -256,19 +266,19 @@ const Dashboard: React.FC = () => {
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4 mb-4">
         <div className="portal-stat">
           <p className="portal-stat-title">Total Projects</p>
-          <p className="portal-stat-value">{loading ? "..." : stats.my_projects || 0}</p>
+          <p className="portal-stat-value">{loading ? "..." : stats ? stats.my_projects || 0 : "—"}</p>
         </div>
         <div className="portal-stat">
           <p className="portal-stat-title">Drafts</p>
-          <p className="portal-stat-value text-amber-600">{loading ? "..." : stats.draft_projects || 0}</p>
+          <p className="portal-stat-value text-amber-600">{loading ? "..." : stats ? stats.draft_projects || 0 : "—"}</p>
         </div>
         <div className="portal-stat">
           <p className="portal-stat-title">Submitted</p>
-          <p className="portal-stat-value text-blue-600">{loading ? "..." : stats.submitted_projects || 0}</p>
+          <p className="portal-stat-value text-blue-600">{loading ? "..." : stats ? stats.submitted_projects || 0 : "—"}</p>
         </div>
         <div className="portal-stat">
           <p className="portal-stat-title">Approved</p>
-          <p className="portal-stat-value text-emerald-600">{loading ? "..." : stats.approved_projects || 0}</p>
+          <p className="portal-stat-value text-emerald-600">{loading ? "..." : stats ? stats.approved_projects || 0 : "—"}</p>
         </div>
       </div>
 
@@ -306,7 +316,11 @@ const Dashboard: React.FC = () => {
           <h2 className="text-lg font-semibold">Delivery Breakdown</h2>
         </div>
         <div className="portal-card-body h-[190px] md:h-[210px]">
-          <ResponsiveContainer width="100%" height="100%">
+          {!stats ? (
+            <div className="flex h-full items-center justify-center text-sm text-slate-500">
+              {loading ? "Loading breakdown..." : "Breakdown unavailable until dashboard counts load."}
+            </div>
+          ) : <ResponsiveContainer width="100%" height="100%">
             <BarChart data={funnelData} barCategoryGap={18}>
               <defs>
                 <linearGradient id="contribBreakdown" x1="0" y1="0" x2="0" y2="1">
@@ -323,14 +337,14 @@ const Dashboard: React.FC = () => {
               />
               <Bar dataKey="value" fill="url(#contribBreakdown)" radius={[10, 10, 6, 6]} barSize={32} />
             </BarChart>
-          </ResponsiveContainer>
+          </ResponsiveContainer>}
         </div>
       </div>
 
       <div className="portal-card mt-4">
         <div className="portal-card-header">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-lg font-semibold">Recent Agency Activity</h2>
+            <h2 className="text-lg font-semibold">Recent Project Activity</h2>
             <label className="text-xs text-slate-500 flex items-center gap-2">
               Show
               <select
@@ -348,10 +362,11 @@ const Dashboard: React.FC = () => {
             </label>
           </div>
         </div>
+        {activityError && <div className="portal-card-body text-rose-700" role="alert">{activityError}</div>}
         {activityLoading ? (
           <div className="portal-card-body text-slate-500">Loading activity...</div>
-        ) : activity.length === 0 ? (
-          <div className="portal-card-body text-slate-500">No recent activity for your agency.</div>
+        ) : activity.length === 0 && !activityError ? (
+          <div className="portal-card-body text-slate-500">No recent activity for your projects or agency.</div>
         ) : (
           <div className="portal-card-body">
             <div className="space-y-3">

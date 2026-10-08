@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
 import PriorityAnalysisPanel from "../../components/portal/PriorityAnalysisPanel";
+import YearOnlyPicker from "../../components/portal/YearOnlyPicker";
 import { useEncodingWindow, useProgressUpdateWindow } from "../../hooks/useEncodingWindow";
 import cmsApi from "../../services/cmsApi";
 import {
@@ -289,10 +290,10 @@ const TextField: React.FC<{
     : "";
   const showPrevious = hasEditMeta && editMeta?.before !== undefined;
   return (
-  <label className="block">
+  <label className="block min-w-0 max-w-full">
     <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
     <input
-      className={`mt-1 w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
+      className={`mt-1 w-full min-w-0 max-w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       required={required}
@@ -331,10 +332,10 @@ const TextAreaField: React.FC<{
     : "";
   const showPrevious = hasEditMeta && editMeta?.before !== undefined;
   return (
-  <label className="block">
+  <label className="block min-w-0 max-w-full">
     <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
     <textarea
-      className={`mt-1 w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
+      className={`mt-1 w-full min-w-0 max-w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
       rows={rows}
       value={value}
       onChange={(e) => onChange(e.target.value)}
@@ -375,13 +376,13 @@ const NumberField: React.FC<{
   const showPrevious = hasEditMeta && editMeta?.before !== undefined;
   const displayValue = formatMoney ? formatMoneyInput(value) : value;
   return (
-  <label className="block">
+  <label className="block min-w-0 max-w-full">
     <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
     <input
       type={formatMoney ? "text" : "number"}
       inputMode="decimal"
       {...(!formatMoney ? { step: "any", min: "0" } : {})}
-      className={`mt-1 w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-400" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
+      className={`mt-1 w-full min-w-0 max-w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-400" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
       value={displayValue}
       onChange={(e) => onChange(formatMoney ? formatMoneyInput(e.target.value) : e.target.value)}
       required={required}
@@ -399,6 +400,49 @@ const NumberField: React.FC<{
       <p className="text-xs text-cyan-700 mt-1">{metaLabel}</p>
     )}
   </label>
+  );
+};
+
+const manilaFundingYear = () => Number(new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Manila",
+  year: "numeric",
+}).format(new Date()));
+
+const fundingKeysForPeriod = (start: number, end: number) => {
+  const keys = new Set<string>();
+  if (start <= 2022) keys.add("2022_prior");
+  for (let year = Math.max(2023, start); year <= end; year += 1) keys.add(String(year));
+  return keys;
+};
+
+const YearField: React.FC<{
+  label: string;
+  value: string;
+  onChange: (year: string) => void;
+  minYear?: number;
+  maxYear?: number;
+  required?: boolean;
+  disabled?: boolean;
+  helpText?: string;
+  diffBefore?: string;
+  editMeta?: EditMeta;
+  notice?: string;
+}> = ({ label, value, onChange, minYear, maxYear, required, disabled, helpText, diffBefore, editMeta, notice }) => {
+  const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
+  const showPrevious = hasEditMeta && editMeta?.before !== undefined;
+  return (
+    <div className="min-w-0">
+      <YearOnlyPicker label={label} value={value} onChange={onChange} minYear={minYear} maxYear={maxYear} required={required} disabled={disabled} />
+      {helpText && <p className="mt-1 text-xs text-slate-500">{helpText}</p>}
+      {diffBefore !== undefined && <p className="mt-1 text-xs text-amber-700">Original: {diffBefore || "(empty)"}</p>}
+      {showPrevious && <p className="mt-1 text-xs text-cyan-700">Original: {editMeta?.before || "(empty)"}</p>}
+      {hasEditMeta && (
+        <p className="mt-1 text-xs text-cyan-700">
+          Last edited by {editMeta?.name || editMeta?.by || "User"}{editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}
+        </p>
+      )}
+      {notice && <p className="mt-1 text-xs text-blue-700" role="status">{notice}</p>}
+    </div>
   );
 };
 
@@ -474,10 +518,10 @@ const SelectField: React.FC<{
     : "";
   const showPrevious = hasEditMeta && editMeta?.before !== undefined;
   return (
-  <label className="block">
+  <label className="block min-w-0 max-w-full">
     <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
     <select
-      className={`mt-1 w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
+      className={`mt-1 w-full min-w-0 max-w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       required={required}
@@ -515,6 +559,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const userRaw = localStorage.getItem("user");
   const user = userRaw ? JSON.parse(userRaw) : null;
   const [form, setForm] = useState<SimplifiedForm>(initialForm);
+  const [savedProjectAgency, setSavedProjectAgency] = useState("");
+  const [currentFundingYear, setCurrentFundingYear] = useState(manilaFundingYear);
+  const [periodFundingNotice, setPeriodFundingNotice] = useState("");
+  const [yearAdjustmentNotice, setYearAdjustmentNotice] = useState("");
   const [formSchema, setFormSchema] = useState<ContributorFormSchema>(() => cloneContributorFormSchema(DEFAULT_CONTRIBUTOR_FORM_SCHEMA));
   const [formSchemaKey, setFormSchemaKey] = useState("simplified-rdip");
   const [formSchemaVersion, setFormSchemaVersion] = useState(1);
@@ -544,6 +592,16 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const isValidator = user?.role === "validator";
   const isAdmin = user?.role === "admin";
   const isEmployee = user?.role === "employee";
+
+  useEffect(() => {
+    const refreshYear = () => setCurrentFundingYear(manilaFundingYear());
+    const interval = window.setInterval(refreshYear, 60_000);
+    window.addEventListener("focus", refreshYear);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshYear);
+    };
+  }, []);
   const encodingWindow = useEncodingWindow(isEmployee);
   const progressWindow = useProgressUpdateWindow(isEmployee && isRevisionMode);
   const canEncode = encodingWindow.can_encode;
@@ -632,6 +690,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
         } else {
           const base = isValidator ? "validator" : isAdmin ? "admin" : "employee";
           data = await api.get(`${base}/projects/${id}/`);
+          setSavedProjectAgency(String(data?.agency || ""));
           setProjectStatus(data?.status || "planning");
           setWorkflowStatus(String(data?.workflow_status || ""));
           setWorkflowStatusLabel(String(data?.workflow_status_label || ""));
@@ -803,10 +862,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
       }
       setForm((prev) => {
         if (!canReviseSubmitted && !canReviseProgress) {
-          return { ...prev, ...parsed.form };
+          return { ...prev, ...parsed.form, agencyName: prev.agencyName };
         }
         const next = { ...prev };
         editableFields.forEach((field) => {
+          if (field === "agencyName") return;
           if (field.startsWith("custom_") && parsed.form?.custom_fields) {
             next.custom_fields = {
               ...next.custom_fields,
@@ -868,11 +928,12 @@ const SimplifiedProjectSubmission: React.FC = () => {
   }, [id, loadComments]);
 
   useEffect(() => {
-    if (!isEmployee || isEditMode || !formReady) return;
-    if (user?.agency && !form.agencyName.trim()) {
-      updateFormWithLocalDraft((prev) => ({ ...prev, agencyName: String(user.agency || "") }));
+    if (!isEmployee || isEditMode || !formReady || !localDraftHydrated) return;
+    const accountAgency = String(user?.agency || "").trim();
+    if (form.agencyName !== accountAgency) {
+      updateFormWithLocalDraft((prev) => ({ ...prev, agencyName: accountAgency }));
     }
-  }, [form.agencyName, formReady, isEditMode, isEmployee, updateFormWithLocalDraft, user?.agency]);
+  }, [form.agencyName, formReady, isEditMode, isEmployee, localDraftHydrated, updateFormWithLocalDraft, user?.agency]);
 
   useEffect(() => {
     if (!isEmployee || !formReady || !localDraftHydrated || !draftStorageKey) return;
@@ -926,12 +987,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const startYearNum = useMemo(() => parseYear(form.startYear), [form.startYear]);
   const endYearNum = useMemo(() => parseYear(form.endYear), [form.endYear]);
   const fundingRange = useMemo(() => {
-    if (startYearNum === null || endYearNum === null) return null;
+    if (startYearNum === null || endYearNum === null || endYearNum < startYearNum) return null;
     return {
-      start: Math.min(startYearNum, endYearNum),
-      end: Math.max(startYearNum, endYearNum),
+      start: startYearNum,
+      end: endYearNum,
     };
   }, [startYearNum, endYearNum]);
+
+  const reversedYearRange = startYearNum !== null && endYearNum !== null && endYearNum < startYearNum;
 
   const rangeTooLarge = useMemo(() => {
     if (!fundingRange) return false;
@@ -965,6 +1028,19 @@ const SimplifiedProjectSubmission: React.FC = () => {
     return next;
   };
 
+  const isEditableActualFundingKey = useCallback((key: string) => {
+    if (key === "2022_prior") return currentFundingYear >= 2022;
+    const year = parseYear(key);
+    return year !== null && year <= currentFundingYear;
+  }, [currentFundingYear]);
+
+  const wouldDropActualFunding = (start: number, end: number) => {
+    const allowed = fundingKeysForPeriod(start, end);
+    return Object.entries(form.actualFundingByYear).some(([key, value]) =>
+      String(value ?? "").trim() !== "" && !allowed.has(key),
+    );
+  };
+
   const mapsEqual = (a: Record<string, string>, b: Record<string, string>) => {
     const aKeys = Object.keys(a);
     const bKeys = Object.keys(b);
@@ -984,7 +1060,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
         ? pruneMap(prev.fundingRequirementByYear, yearKeys)
         : prev.fundingRequirementByYear;
       const nextAa = canChangeActualFunding
-        ? pruneMap(prev.actualFundingByYear, yearKeys)
+        ? Object.fromEntries(Object.entries(prev.actualFundingByYear).filter(([key]) =>
+            yearKeys.includes(key) || !isEditableActualFundingKey(key),
+          ))
         : prev.actualFundingByYear;
       if (mapsEqual(prev.fundingRequirementByYear, nextFr) && mapsEqual(prev.actualFundingByYear, nextAa)) {
         return prev;
@@ -999,6 +1077,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
     canReviseProgress,
     canReviseSubmitted,
     editableFields,
+    isEditableActualFundingKey,
     updateFormWithLocalDraft,
     yearKeys,
     yearKeysSignature,
@@ -1012,6 +1091,20 @@ const SimplifiedProjectSubmission: React.FC = () => {
     () => yearKeys.reduce((sum, key) => sum + toNumber(form.actualFundingByYear[key] || ""), 0),
     [yearKeys, form.actualFundingByYear],
   );
+  const hasProtectedUnsavedActual = isEmployee && !isEditMode && Object.entries(form.actualFundingByYear).some(
+    ([key, value]) => !isEditableActualFundingKey(key) && String(value ?? "").trim() !== "",
+  );
+
+  const clearProtectedUnsavedActual = () => {
+    if (!window.confirm("Remove read-only Actual/Approved Funding amounts from this unsaved local draft?")) return;
+    updateFormWithLocalDraft((previous) => ({
+      ...previous,
+      actualFundingByYear: Object.fromEntries(Object.entries(previous.actualFundingByYear).filter(([key]) =>
+        isEditableActualFundingKey(key),
+      )),
+    }));
+    setPeriodFundingNotice("");
+  };
   const prioritySnapshot = useMemo(
     () => ({
       submission_type: "simplified",
@@ -1045,7 +1138,39 @@ const SimplifiedProjectSubmission: React.FC = () => {
   };
 
   const setField = <K extends keyof SimplifiedForm>(key: K, value: SimplifiedForm[K]) => {
+    if (isEmployee && key === "agencyName") return;
     if (revisionFieldLocked(String(key))) return;
+    if (isEmployee && key === "startYear") {
+      const nextStart = parseYear(String(value));
+      const existingEnd = parseYear(form.endYear);
+      if (nextStart !== null && existingEnd !== null && revisionFieldLocked("endYear") &&
+          (nextStart > existingEnd || existingEnd - nextStart > 15)) return;
+      const nextEnd = nextStart !== null && existingEnd !== null && !revisionFieldLocked("endYear")
+        ? Math.max(nextStart, Math.min(existingEnd, Math.min(2200, nextStart + 15)))
+        : existingEnd;
+      if (nextStart !== null && nextEnd !== null && wouldDropActualFunding(nextStart, nextEnd)) {
+        setPeriodFundingNotice("This period change would remove existing Actual/Approved Funding. Clear editable amounts first, or ask a validator or administrator to correct read-only future amounts.");
+        return;
+      }
+      setPeriodFundingNotice("");
+      const adjusted = nextEnd !== null && existingEnd !== null && nextEnd !== existingEnd;
+      setYearAdjustmentNotice(adjusted ? `End Year was adjusted to ${nextEnd} to stay within the allowed range.` : "");
+      updateFormWithLocalDraft((previous) => ({
+        ...previous,
+        startYear: String(value),
+        ...(adjusted ? { endYear: String(nextEnd) } : {}),
+      }));
+      return;
+    }
+    if (isEmployee && key === "endYear") {
+      const nextEnd = parseYear(String(value));
+      if (startYearNum !== null && nextEnd !== null && wouldDropActualFunding(startYearNum, nextEnd)) {
+        setPeriodFundingNotice("This period change would remove existing Actual/Approved Funding. Clear editable amounts first, or ask a validator or administrator to correct read-only future amounts.");
+        return;
+      }
+      setPeriodFundingNotice("");
+    }
+    if (isEmployee && key === "endYear") setYearAdjustmentNotice("");
     updateFormWithLocalDraft((prev) => ({ ...prev, [key]: value }));
   };
   const setPriorityFact = (key: keyof SimplifiedForm["priorityAnalysisFacts"], value: string) => {
@@ -1063,6 +1188,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
     }
     if (isValidator && !id) {
       alert("Validator review requires an existing project.");
+      return;
+    }
+    if (reversedYearRange) {
+      alert("End Year must be the same as or later than Start Year.");
+      return;
+    }
+    if (isEmployee && !isEditMode && !String(user?.agency || "").trim()) {
+      alert("Your account has no agency. Ask an administrator to update it before creating a project.");
       return;
     }
     if (rangeTooLarge) {
@@ -1100,7 +1233,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
     setLoading(true);
     try {
-      const normalizedProfileData = prioritySnapshot;
+      const accountAgency = String(user?.agency || "").trim();
+      const normalizedProfileData = isEmployee && !isEditMode
+        ? { ...prioritySnapshot, simplified_form: { ...prioritySnapshot.simplified_form, agencyName: accountAgency } }
+        : prioritySnapshot;
 
       if (isValidator && id) {
         if (action === "reviewed" && !validatorNotes.trim()) {
@@ -1182,7 +1318,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       const payload: Record<string, unknown> = {
         title: form.projectActivity || form.program || "Untitled Project",
         description: form.description || form.objective || form.remarks || form.projectActivity || "",
-        agency: form.agencyName,
+        agency: isEditMode ? savedProjectAgency : accountAgency,
         budget: Math.round(frTotal),
         completion: 0,
         municipality: "NCR",
@@ -1228,6 +1364,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   };
 
   const setConfiguredFieldValue = (field: ContributorFormField, value: string | string[]) => {
+    if (isEmployee && field.key === "agencyName") return;
     if (revisionFieldLocked(field.key)) return;
     if (field.key.startsWith("custom_")) {
       updateFormWithLocalDraft((previous) => ({
@@ -1264,8 +1401,24 @@ const SimplifiedProjectSubmission: React.FC = () => {
       helpText: field.help_text,
       diffBefore,
       editMeta,
-      disabled: revisionFieldLocked(field.key),
+      disabled: revisionFieldLocked(field.key) || (isEmployee && field.key === "agencyName"),
     };
+
+    if (isEmployee && (field.key === "startYear" || field.key === "endYear")) {
+      const isEnd = field.key === "endYear";
+      const endLocked = revisionFieldLocked("endYear");
+      return (
+        <YearField
+          {...common}
+          value={String(value)}
+          onChange={(next) => setConfiguredFieldValue(field, next)}
+          minYear={isEnd ? (startYearNum ?? 1900) : endLocked && endYearNum !== null ? Math.max(1900, endYearNum - 15) : 1900}
+          maxYear={isEnd ? (startYearNum !== null ? Math.min(2200, startYearNum + 15) : 2200) : endLocked && endYearNum !== null ? endYearNum : 2200}
+          disabled={common.disabled || (isEnd && startYearNum === null)}
+          notice={isEnd ? yearAdjustmentNotice : undefined}
+        />
+      );
+    }
 
     if (field.type === "currency_by_year") {
       const mapKey = field.key as "fundingRequirementByYear" | "actualFundingByYear";
@@ -1287,7 +1440,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                     ...previous,
                     [mapKey]: { ...previous[mapKey], [key]: next },
                   }))}
-                  disabled={revisionFieldLocked(field.key)}
+                  disabled={revisionFieldLocked(field.key) || (isEmployee && mapKey === "actualFundingByYear" && !isEditableActualFundingKey(key))}
                   diffBefore={diffOf(`${field.key}.${key}`)?.before}
                   editMeta={editMetaOf(`${field.key}.${key}`)}
                   formatMoney
@@ -1296,6 +1449,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
             </div>
           )}
           <p className="mt-2 text-sm text-slate-600">Total: <strong>{fmtNumber(total)}</strong></p>
+          {isEmployee && mapKey === "actualFundingByYear" && (
+            <p className="mt-1 text-xs text-slate-600">{currentFundingYear} and all earlier project years can be edited, including 2022 &amp; Prior when shown. Future years remain read-only.</p>
+          )}
+          {mapKey === "actualFundingByYear" && hasProtectedUnsavedActual && (
+            <button type="button" className="mt-2 text-xs font-medium text-rose-700 underline" onClick={clearProtectedUnsavedActual}>
+              Clear read-only amounts from this unsaved draft
+            </button>
+          )}
           {field.help_text && <p className="mt-1 text-xs text-slate-500">{field.help_text}</p>}
         </div>
       );
@@ -1319,6 +1480,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
           <input type="date" className="mt-1 w-full rounded border p-2 disabled:bg-slate-100 disabled:text-slate-500" value={String(value)} required={required} disabled={revisionFieldLocked(field.key)} onChange={(event) => setConfiguredFieldValue(field, event.target.value)} />
           {field.help_text && <p className="mt-1 text-xs text-slate-500">{field.help_text}</p>}
         </label>
+      );
+    }
+    if (isEmployee && field.key === "agencyName") {
+      return (
+        <div>
+          <TextField {...common} value={String(value)} placeholder={field.placeholder} onChange={(next) => setConfiguredFieldValue(field, next)} />
+          <p className="mt-1 text-xs text-slate-500">Agency Name is locked to the account for new projects and preserved for existing projects.</p>
+        </div>
       );
     }
     return <TextField {...common} value={String(value)} placeholder={field.placeholder} onChange={(next) => setConfiguredFieldValue(field, next)} />;
@@ -1408,6 +1577,16 @@ const SimplifiedProjectSubmission: React.FC = () => {
           Only the fields selected by the validator are editable. All other fields are locked.
         </div>
       )}
+      {isEmployee && !isEditMode && !String(user?.agency || "").trim() && (
+        <div className="portal-card p-3 mb-3 border-rose-200 bg-rose-50 text-rose-800" role="alert">
+          Your account has no agency. Ask an administrator to update it before creating a project.
+        </div>
+      )}
+      {periodFundingNotice && (
+        <div className="portal-card p-3 mb-3 border-amber-200 bg-amber-50 text-amber-800" role="alert">
+          {periodFundingNotice}
+        </div>
+      )}
       {isEditMode && !isRevisionMode && (
         <div className="portal-card p-3 mb-3 border-slate-200 bg-white text-sm text-slate-700">
           <div className="flex flex-wrap gap-2">
@@ -1455,13 +1634,13 @@ const SimplifiedProjectSubmission: React.FC = () => {
             : "Admin read-only mode. This shows the contributor's original submitted form values."}
         </div>
       )}
-      <form onSubmit={(e) => save(e, "submit")} className="portal-card p-3 sm:p-4 lg:p-6 space-y-6">
-        <fieldset disabled={isReadOnly} className="space-y-6">
+      <form onSubmit={(e) => save(e, "submit")} className="portal-card min-w-0 max-w-full space-y-6 p-3 sm:p-4 lg:p-6">
+        <fieldset disabled={isReadOnly} className="min-w-0 max-w-full space-y-6">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
             <div><h2 className="text-lg font-bold text-slate-900">{formSchema.title}</h2>{formSchema.description && <p className="text-sm text-slate-500">{formSchema.description}</p>}</div>
           </div>
           {isValidator && (
-            <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900" role="alert">
+            <div className="min-w-0 break-words rounded-lg border border-amber-300 bg-amber-50 px-3 py-3 text-sm font-medium text-amber-900 sm:px-4" role="alert">
               If the project needs revisions, please tick the boxes that need revisions before sending it back to the contributor/s.
             </div>
           )}
@@ -1473,23 +1652,24 @@ const SimplifiedProjectSubmission: React.FC = () => {
               );
               if (!fields.length) return null;
               return (
-                <section key={section.key} className={`rounded-lg border p-4 ${section.admin_only ? "border-emerald-200 bg-emerald-50/40" : "border-slate-200"}`}>
+                <section key={section.key} className={`min-w-0 max-w-full break-words rounded-lg border p-3 sm:p-4 ${section.admin_only ? "border-emerald-200 bg-emerald-50/40" : "border-slate-200"}`}>
                   <div className="mb-4"><h3 className="font-semibold text-slate-900">{section.title}</h3>{section.description && <p className="mt-1 text-xs text-slate-600">{section.description}</p>}</div>
-                  <div className="grid gap-4 xl:grid-cols-2">
+                  <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-2">
                     {fields.map((field) => (
-                      <div key={field.key} className={["textarea", "multiselect", "currency_by_year"].includes(field.type) ? "xl:col-span-2" : ""}>
-                        {isValidator && (
-                          <label className="mb-2 flex items-center gap-2 rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-800">
+                      <div key={field.key} className={`min-w-0 ${["textarea", "multiselect", "currency_by_year"].includes(field.type) ? "xl:col-span-2" : ""}`}>
+                        {isValidator && field.key !== "agencyName" && (
+                          <label className="mb-2 flex min-w-0 max-w-full items-start gap-2 rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-800">
                             <input
                               type="checkbox"
+                              className="shrink-0"
                               checked={editableFields.includes(field.key)}
                               onChange={() => toggleEditableField(field.key)}
                             />
-                            Contributor may edit this field
+                            <span className="min-w-0 break-words">Contributor may edit this field</span>
                           </label>
                         )}
                         {renderConfiguredField(field)}
-                        {!isValidator && revisionFieldLocked(field.key) && (
+                        {!isValidator && field.key !== "agencyName" && revisionFieldLocked(field.key) && (
                           <p className="mt-1 text-xs font-medium text-slate-500">Locked by validator</p>
                         )}
                       </div>
@@ -1502,7 +1682,8 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
           {formSchema.sections.length === 0 && (<>
           <div className="rounded-lg border border-slate-200 p-4 space-y-4">
-            <TextField label="Agency Name" value={form.agencyName} onChange={(v) => setField("agencyName", v)} required diffBefore={diffOf("agencyName")?.before} editMeta={editMetaOf("agencyName")} />
+            <TextField label="Agency Name" value={form.agencyName} onChange={(v) => setField("agencyName", v)} required disabled={isEmployee} diffBefore={diffOf("agencyName")?.before} editMeta={editMetaOf("agencyName")} />
+            {isEmployee && <p className="text-xs text-slate-500">Agency Name is locked to the account for new projects and preserved for existing projects.</p>}
             <TextField label="Program" value={form.program} onChange={(v) => setField("program", v)} required diffBefore={diffOf("program")?.before} editMeta={editMetaOf("program")} />
             <TextField label="Project/Activity" value={form.projectActivity} onChange={(v) => setField("projectActivity", v)} required diffBefore={diffOf("projectActivity")?.before} editMeta={editMetaOf("projectActivity")} />
             <TextField label="Location" value={form.location} onChange={(v) => setField("location", v)} required diffBefore={diffOf("location")?.before} editMeta={editMetaOf("location")} />
@@ -1514,8 +1695,17 @@ const SimplifiedProjectSubmission: React.FC = () => {
             <div className="space-y-2">
               <h3 className="font-semibold">Implementation Period</h3>
               <div className="grid sm:grid-cols-2 gap-4">
-                <NumberField label="Start Year" value={form.startYear} onChange={(v) => setField("startYear", v)} required diffBefore={diffOf("startYear")?.before} editMeta={editMetaOf("startYear")} />
-                <NumberField label="End Year" value={form.endYear} onChange={(v) => setField("endYear", v)} required diffBefore={diffOf("endYear")?.before} editMeta={editMetaOf("endYear")} />
+                {isEmployee ? (
+                  <>
+                    <YearField label="Start Year" value={form.startYear} onChange={(v) => setField("startYear", v)} minYear={revisionFieldLocked("endYear") && endYearNum !== null ? Math.max(1900, endYearNum - 15) : 1900} maxYear={revisionFieldLocked("endYear") && endYearNum !== null ? endYearNum : 2200} disabled={revisionFieldLocked("startYear")} required diffBefore={diffOf("startYear")?.before} editMeta={editMetaOf("startYear")} />
+                    <YearField label="End Year" value={form.endYear} onChange={(v) => setField("endYear", v)} minYear={startYearNum ?? 1900} maxYear={startYearNum !== null ? Math.min(2200, startYearNum + 15) : 2200} disabled={revisionFieldLocked("endYear") || startYearNum === null} required diffBefore={diffOf("endYear")?.before} editMeta={editMetaOf("endYear")} notice={yearAdjustmentNotice} />
+                  </>
+                ) : (
+                  <>
+                    <NumberField label="Start Year" value={form.startYear} onChange={(v) => setField("startYear", v)} required diffBefore={diffOf("startYear")?.before} editMeta={editMetaOf("startYear")} />
+                    <NumberField label="End Year" value={form.endYear} onChange={(v) => setField("endYear", v)} required diffBefore={diffOf("endYear")?.before} editMeta={editMetaOf("endYear")} />
+                  </>
+                )}
               </div>
             </div>
 
@@ -1567,12 +1757,21 @@ const SimplifiedProjectSubmission: React.FC = () => {
                         }
                         diffBefore={diffOf(`actualFundingByYear.${key}`)?.before}
                         editMeta={editMetaOf(`actualFundingByYear.${key}`)}
+                        disabled={isEmployee && !isEditableActualFundingKey(key)}
                         formatMoney
                       />
                     ))}
                   </div>
                 )}
                 <p className="text-sm text-slate-600">Total: <strong>{fmtNumber(aaTotal)}</strong></p>
+                {isEmployee && (
+                  <p className="text-xs text-slate-600">{currentFundingYear} and all earlier project years can be edited, including 2022 &amp; Prior when shown. Future years remain read-only.</p>
+                )}
+                {hasProtectedUnsavedActual && (
+                  <button type="button" className="text-xs font-medium text-rose-700 underline" onClick={clearProtectedUnsavedActual}>
+                    Clear read-only amounts from this unsaved draft
+                  </button>
+                )}
               </div>
             </div>
             {rangeTooLarge && (

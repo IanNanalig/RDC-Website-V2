@@ -155,7 +155,30 @@ const ValidatorReviewHistory: React.FC = () => {
         ) : filtered.length === 0 ? (
           <div className="portal-card-body text-slate-500">No reviewed/endorsed projects found yet.</div>
         ) : (
-          <table className="portal-table">
+          <>
+          <div className="space-y-3 p-3 lg:hidden">
+            {filtered.map((p) => (
+              <article key={`mobile-history-${p.id}`} className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                <h2 className="break-words font-semibold text-slate-900">{p.title || p.name || "Untitled"}</h2>
+                <div className="mt-3 grid gap-2 text-sm text-slate-600 sm:grid-cols-2">
+                  <p><span className="font-medium text-slate-800">Contributor:</span> {p.submitted_by_name || p.submitted_by?.username || "Unknown"}</p>
+                  <p><span className="font-medium text-slate-800">Agency:</span> {p.agency || "N/A"}</p>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusBadge(p.status)}`}>{statusLabel(p.status)}</span>
+                  <span className={`rounded-full px-2 py-1 text-xs font-semibold ${reviewStateBadge(p)}`}>{reviewStateLabel(p)}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => navigate(reviewPath(p))}
+                  className="portal-btn portal-btn-primary mt-3 min-h-11 w-full"
+                >
+                  View
+                </button>
+              </article>
+            ))}
+          </div>
+          <table className="portal-table hidden lg:table">
             <thead>
               <tr>
                 <th>Title</th>
@@ -200,6 +223,7 @@ const ValidatorReviewHistory: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </>
         )}
       </div>
     </PortalLayout>

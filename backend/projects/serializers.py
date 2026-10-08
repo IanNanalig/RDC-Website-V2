@@ -564,7 +564,8 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
         end = self._parse_year(simplified.get("endYear"))
         if start is None or end is None:
             raise serializers.ValidationError("Start Year and End Year must be valid years.")
-        start, end = (start, end) if start <= end else (end, start)
+        if end < start:
+            raise serializers.ValidationError("End Year must be the same as or later than Start Year.")
         if end - start > 15:
             raise serializers.ValidationError("Year range is too large (max 15 years).")
         allowed = set()

@@ -117,6 +117,9 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
   const [notifications, setNotifications] = useState<PortalNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const notificationsRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
   const location = useLocation();
   const navigate = useNavigate();
   const navItems = useMemo(() => navByRole[role], [role]);
@@ -210,6 +213,43 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
     return () => media.removeEventListener("change", onChange);
   }, []);
 
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeButtonRef.current?.focus();
+    const handleMenuKeys = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMobileOpen(false);
+        menuButtonRef.current?.focus();
+      } else if (event.key === "Tab") {
+        const focusable = sidebarRef.current?.querySelectorAll<HTMLElement>(
+          'a[href]:not([aria-disabled="true"]), button:not([disabled])',
+        );
+        if (!focusable?.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", handleMenuKeys);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleMenuKeys);
+    };
+  }, [mobileOpen]);
+
+  const closeMobileMenu = () => {
+    setMobileOpen(false);
+    menuButtonRef.current?.focus();
+  };
+
   const logout = async () => {
     try {
       // Older deployments may not have the audit endpoint yet.
@@ -250,19 +290,35 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
   return (
     <div className="portal-bg min-h-screen">
       <div className="portal-shell w-full mx-auto p-2 md:p-4 xl:p-5">
-        {mobileOpen && <div className="fixed inset-0 bg-black/30 z-20 md:hidden" onClick={() => setMobileOpen(false)} />}
+        {mobileOpen && <div className="fixed inset-0 z-50 touch-none bg-slate-950/55 md:hidden" aria-hidden="true" onClick={closeMobileMenu} />}
         <div className="grid grid-cols-1 md:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[240px_minmax(0,1fr)] 2xl:grid-cols-[260px_minmax(0,1fr)] gap-2 md:gap-4">
           <aside
-            className={`portal-sidebar fixed top-2 left-2 bottom-2 w-[84vw] max-w-[300px] z-30 overflow-y-auto ${
+            ref={sidebarRef}
+            id="portal-navigation"
+            aria-label="Portal navigation"
+            role={mobileOpen ? "dialog" : undefined}
+            aria-modal={mobileOpen ? true : undefined}
+            className={`portal-sidebar fixed top-2 left-2 bottom-2 z-[60] w-[84vw] max-w-[300px] max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain ${
               mobileOpen ? "block" : "hidden"
-            } md:static md:w-auto md:max-w-none md:block`}
+            } md:static md:block md:w-auto md:max-w-none md:max-h-none`}
           >
-            <div className="portal-brand">
-              <div className="portal-brand-dot" />
-              <div>
-                <p className="portal-brand-title">RDC Portal</p>
-                <p className="portal-brand-sub">{workspaceLabel}</p>
+            <div className="flex items-start justify-between gap-2">
+              <div className="portal-brand min-w-0">
+                <div className="portal-brand-dot shrink-0" />
+                <div className="min-w-0">
+                  <p className="portal-brand-title">RDC Portal</p>
+                  <p className="portal-brand-sub break-words">{workspaceLabel}</p>
+                </div>
               </div>
+              <button
+                ref={closeButtonRef}
+                type="button"
+                aria-label="Close navigation"
+                onClick={closeMobileMenu}
+                className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg border border-white/20 text-xl text-white md:hidden"
+              >
+                <span aria-hidden="true">×</span>
+              </button>
             </div>
 
             <p className="portal-side-label">Navigation</p>
@@ -313,7 +369,14 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
           <main className="space-y-3 md:space-y-5 min-w-0">
             <header className="portal-topbar relative z-40 overflow-visible">
               <div className="flex items-center gap-2 md:gap-3 min-w-0">
-                <button onClick={() => setMobileOpen((v) => !v)} className="portal-menu-btn md:hidden">
+                <button
+                  ref={menuButtonRef}
+                  type="button"
+                  aria-controls="portal-navigation"
+                  aria-expanded={mobileOpen}
+                  onClick={() => setMobileOpen((v) => !v)}
+                  className="portal-menu-btn min-h-11 shrink-0 md:hidden"
+                >
                   Menu
                 </button>
                 <div className="min-w-0">
@@ -413,7 +476,7 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
               </div>
             </header>
 
-            <section>{children}</section>
+            <section className="min-w-0 max-w-full">{children}</section>
           </main>
         </div>
       </div>

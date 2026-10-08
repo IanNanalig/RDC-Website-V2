@@ -463,6 +463,9 @@ body {
 }
 
 @media (max-width: 767px) {
+  .portal-sidebar.hidden {
+    display: none;
+  }
   .portal-sidebar {
     min-height: auto;
   }

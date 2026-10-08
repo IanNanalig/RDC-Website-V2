@@ -6,7 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
 
-from .models import PriorityRuleSet, ProjectPriorityAnalysis, ProjectPriorityConfirmation
+from .models import PriorityRuleSet, Project, ProjectPriorityAnalysis, ProjectPriorityConfirmation
 from .utils import derive_ncr_lgus
 
 
@@ -1716,13 +1716,17 @@ def has_matching_confirmation(project, snapshot):
 
 
 def confirm_analysis(analysis, validator, adjusted_scores, final_priority, override_rationale, confirmed_flags):
-    missing = analysis.suggested_scores.get("missing_facts") or []
-    if missing:
-        raise ValueError("Supply all missing factual inputs and run the scorer again before confirmation.")
+    project = Project.objects.only("status", "profile_data").get(pk=analysis.project_id)
+    profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+    review = profile.get("validator_review") if isinstance(profile.get("validator_review"), dict) else {}
+    if project.status not in ("proposed", "planning") or str(review.get("review_status") or "").lower() in ("endorsed", "validated"):
+        raise ValueError("Priority decisions are locked after endorsement.")
+    scores = analysis.suggested_scores if isinstance(analysis.suggested_scores, dict) else {}
+    missing = scores.get("missing_facts") or []
     if final_priority not in ("high", "low"):
         raise ValueError("Final priority must be high or low.")
-    if final_priority != analysis.suggested_priority and not str(override_rationale or "").strip():
-        raise ValueError("An override rationale is required when changing the suggested priority.")
+    if (final_priority != analysis.suggested_priority or missing) and not str(override_rationale or "").strip():
+        raise ValueError("An override rationale is required for an incomplete analysis or a changed priority.")
     confirmation = ProjectPriorityConfirmation.objects.create(
         analysis=analysis,
         validator=validator,

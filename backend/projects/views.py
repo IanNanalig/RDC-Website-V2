@@ -8,6 +8,8 @@ import urllib.request
 import hashlib
 from copy import deepcopy
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
+from zoneinfo import ZoneInfo
 from django.conf import settings
 from django.core.cache import cache
 from django.core.mail import send_mail, EmailMessage
@@ -2343,7 +2345,8 @@ def _validate_simplified_funding(profile_data):
     end = _parse_year_value(simplified.get("endYear"))
     if start is None or end is None:
         return "Start Year and End Year must be valid years."
-    start, end = (start, end) if start <= end else (end, start)
+    if end < start:
+        return "End Year must be the same as or later than Start Year."
     if end - start > 15:
         return "Year range is too large (max 15 years)."
     allowed = set()
@@ -2362,6 +2365,79 @@ def _validate_simplified_funding(profile_data):
             key_str = str(key)
             if key_str not in allowed:
                 return f"{field} contains out-of-range key: {key_str}."
+    return None
+
+
+def _manila_funding_year():
+    return timezone.localtime(timezone.now(), ZoneInfo("Asia/Manila")).year
+
+
+def _contributor_project_scope(user, prefix=""):
+    scope = Q(**{f"{prefix}created_by": user})
+    agency = str(getattr(user, "agency", "") or "").strip()
+    if agency:
+        scope |= Q(**{f"{prefix}agency__iexact": agency})
+    return scope
+
+
+def _same_agency_value(left, right):
+    return " ".join(str(left or "").split()).casefold() == " ".join(str(right or "").split()).casefold()
+
+
+def _funding_value(value):
+    raw = str(value if value is not None else "").strip().replace(",", "")
+    if not raw:
+        return ""
+    try:
+        return Decimal(raw)
+    except InvalidOperation:
+        return raw
+
+
+def _validate_contributor_simplified_write(user, incoming_profile, *, project=None, existing_profile=None, incoming_agency=None):
+    existing_simplified = existing_profile.get("simplified_form") if isinstance(existing_profile, dict) else None
+    if project is not None and isinstance(existing_simplified, dict) and not _same_agency_value(incoming_agency, project.agency):
+        return "Project agency is locked and cannot be changed by a contributor."
+    if not isinstance(incoming_profile, dict):
+        return None
+    simplified = incoming_profile.get("simplified_form")
+    if isinstance(existing_simplified, dict) and not isinstance(simplified, dict):
+        return "The simplified form cannot be removed from an existing project."
+    if not isinstance(simplified, dict):
+        return None
+
+    if project is None:
+        account_agency = str(getattr(user, "agency", "") or "").strip()
+        if not account_agency:
+            return "Your account has no agency. Ask an administrator to update it before creating a project."
+        if not _same_agency_value(incoming_agency, account_agency) or not _same_agency_value(simplified.get("agencyName"), account_agency):
+            return "Agency Name must match your account agency."
+        previous = {}
+    else:
+        previous = existing_profile.get("simplified_form") if isinstance(existing_profile, dict) else {}
+        if not isinstance(previous, dict):
+            previous = {}
+        saved_form_agency = previous.get("agencyName") or ""
+        incoming_form_agency = simplified.get("agencyName") or ""
+        unchanged_agency = _same_agency_value(incoming_form_agency, saved_form_agency)
+        legacy_agency_fill = not saved_form_agency and _same_agency_value(incoming_form_agency, project.agency)
+        if not unchanged_agency and not legacy_agency_fill:
+            return "Agency Name is locked and cannot be changed by a contributor."
+
+    incoming_actual = simplified.get("actualFundingByYear") or {}
+    previous_actual = previous.get("actualFundingByYear") or {}
+    if not isinstance(incoming_actual, dict) or not isinstance(previous_actual, dict):
+        return "Actual/Approved Funding must be an object."
+    year = _manila_funding_year()
+    for key in set(incoming_actual) | set(previous_actual):
+        key = str(key)
+        if key == "2022_prior" and year >= 2022:
+            continue
+        if key.isdigit() and int(key) <= year:
+            continue
+        if _funding_value(incoming_actual.get(key)) != _funding_value(previous_actual.get(key)):
+            label = "2022 & Prior" if key == "2022_prior" else key
+            return f"Actual/Approved Funding for {label} is read-only. Only {year} and earlier years may be changed."
     return None
 
 
@@ -3193,6 +3269,10 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         project = self.get_object()
         if getattr(request.user, "role", "") != "validator":
             raise PermissionDenied("Only validators can confirm priority analysis.")
+        profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+        review = profile.get("validator_review") if isinstance(profile.get("validator_review"), dict) else {}
+        if project.status not in ("proposed", "planning") or str(review.get("review_status") or "").lower() in ("endorsed", "validated"):
+            return Response({"detail": "Priority decisions are locked after endorsement."}, status=400)
         try:
             analysis = project.priority_analyses.get(pk=analysis_id)
         except ProjectPriorityAnalysis.DoesNotExist:
@@ -3367,6 +3447,41 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
 class ProjectViewSet(BaseProjectViewSet):
     queryset = Project.objects.all()
 
+    def _contributor_write_error(self, request, project=None):
+        if getattr(request.user, "role", "") not in ("staff", "employee"):
+            return None
+        profile_data = request.data.get("profile_data")
+        if isinstance(profile_data, str):
+            try:
+                profile_data = json.loads(profile_data)
+            except (TypeError, ValueError):
+                profile_data = None
+        return _validate_contributor_simplified_write(
+            request.user, profile_data, project=project,
+            existing_profile=project.profile_data if project is not None else None,
+            incoming_agency=request.data.get("agency", project.agency if project is not None else None),
+        )
+
+    def create(self, request, *args, **kwargs):
+        error = self._contributor_write_error(request)
+        if error:
+            return Response({"detail": error}, status=400)
+        return super().create(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        project = self.get_object()
+        error = self._contributor_write_error(request, project)
+        if error:
+            return Response({"detail": error}, status=400)
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        project = self.get_object()
+        error = self._contributor_write_error(request, project)
+        if error:
+            return Response({"detail": error}, status=400)
+        return super().partial_update(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         super().perform_create(serializer)
         _log_activity(self.request, "project_create", serializer.instance, {"source": "general_api"})
@@ -3381,16 +3496,7 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
     permission_classes = [IsAuthenticated, EmployeeRolePermission, ProjectPermission]
 
     def get_queryset(self):
-        agency = (self.request.user.agency or "").strip()
-        if agency:
-            # A detailed form stores its office/unit separately from the account's
-            # agency. Always include records created by this contributor so an
-            # office label mismatch cannot make a successfully saved draft vanish.
-            qs = Project.objects.filter(
-                Q(created_by=self.request.user) | Q(agency__iexact=agency)
-            ).distinct().order_by("-created_at")
-        else:
-            qs = Project.objects.filter(created_by=self.request.user).order_by("-created_at")
+        qs = Project.objects.filter(_contributor_project_scope(self.request.user)).distinct().order_by("-created_at")
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
         qs = _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
         return _project_queryset_with_related(qs, prefetch_priority=getattr(self, "action", "") == "list")
@@ -3467,6 +3573,11 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             changes = []
         else:
             changes = []
+        contributor_error = _validate_contributor_simplified_write(
+            request.user, profile_data, incoming_agency=data.get("agency")
+        )
+        if contributor_error:
+            return Response({"detail": contributor_error}, status=400)
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
@@ -3498,6 +3609,12 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
                 profile_data = json.loads(profile_data)
             except Exception:
                 profile_data = None
+        contributor_error = _validate_contributor_simplified_write(
+            request.user, profile_data, project=project, existing_profile=project.profile_data,
+            incoming_agency=data.get("agency", project.agency),
+        )
+        if contributor_error:
+            return Response({"detail": contributor_error}, status=400)
         blocked_fields = self._revision_access_violation(project, data, profile_data)
         if blocked_fields:
             return Response(
@@ -3550,6 +3667,12 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
                 profile_data = json.loads(profile_data)
             except Exception:
                 profile_data = None
+        contributor_error = _validate_contributor_simplified_write(
+            request.user, profile_data, project=project, existing_profile=project.profile_data,
+            incoming_agency=data.get("agency", project.agency),
+        )
+        if contributor_error:
+            return Response({"detail": contributor_error}, status=400)
         blocked_fields = self._revision_access_violation(project, data, profile_data)
         if blocked_fields:
             return Response(
@@ -3753,6 +3876,12 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
         if funding_error:
             return Response({"detail": funding_error}, status=400)
         existing_profile = revision.profile_data_snapshot if isinstance(revision.profile_data_snapshot, dict) else {}
+        contributor_error = _validate_contributor_simplified_write(
+            request.user, profile_data, project=revision.project, existing_profile=existing_profile,
+            incoming_agency=revision.project.agency,
+        )
+        if contributor_error:
+            return Response({"detail": contributor_error}, status=400)
         access = existing_profile.get("validator_revision_access")
         if revision.state == "reviewed" and isinstance(access, dict):
             editable_fields = access.get("editable_fields")
@@ -4737,18 +4866,16 @@ class DashboardView(APIView):
                 review_endorsed=Count("id", filter=Q(profile_data__validator_review__review_status="endorsed")),
             )
         else:
-            agency = (user.agency or "").strip()
-            if agency:
-                my = Project.objects.filter(agency__iexact=agency)
-            else:
-                my = Project.objects.filter(created_by=user)
+            my = Project.objects.filter(_contributor_project_scope(user)).distinct()
             data = my.aggregate(
                 my_projects=Count("id"),
                 draft_projects=Count("id", filter=Q(status="planning")),
                 submitted_projects=Count("id", filter=Q(status="proposed")),
                 approved_projects=Count("id", filter=Q(status="completed")),
             )
-        return Response(data)
+        response = Response(data)
+        response["Cache-Control"] = "private, no-store"
+        return response
 
 
 class AnalyticsView(APIView):
@@ -5138,29 +5265,15 @@ class AgencyActivityView(APIView):
             except Exception:
                 offset = 0
 
-        agency = (request.user.agency or "").strip()
-        if not agency:
-            if include_meta:
-                return Response(
-                    {
-                        "results": [],
-                        "count": 0,
-                        "limit": limit,
-                        "offset": offset,
-                        "has_previous": False,
-                        "has_next": False,
-                    }
-                )
-            return Response([])
         project_events = {"project_create", "project_update", "project_submit", "project_comment"}
         qs = UserActivity.objects.select_related("user", "project").filter(
-            project__agency__iexact=agency,
+            _contributor_project_scope(request.user, prefix="project__"),
             event__in=project_events,
-        ).order_by("-created_at", "-id")
+        ).distinct().order_by("-created_at", "-id")
         total = qs.count()
         serializer = UserActivitySerializer(qs[offset : offset + limit], many=True)
         if include_meta:
-            return Response(
+            response = Response(
                 {
                     "results": serializer.data,
                     "count": total,
@@ -5170,7 +5283,10 @@ class AgencyActivityView(APIView):
                     "has_next": offset + limit < total,
                 }
             )
-        return Response(serializer.data)
+        else:
+            response = Response(serializer.data)
+        response["Cache-Control"] = "private, no-store"
+        return response
 
 
 def _get_public_projects_cache_version() -> str:

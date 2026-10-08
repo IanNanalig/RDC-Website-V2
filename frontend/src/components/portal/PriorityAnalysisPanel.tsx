@@ -192,6 +192,16 @@ const explanationPoints = (value?: string) => String(value || "")
   .map((item) => item.trim())
   .filter(Boolean);
 
+const conciseCriterionExplanation = (value?: string) => {
+  const plain = plainLanguageExplanation(value)
+    .replace(/^Contextual Assessment:\s*/i, "")
+    .replace(/^Criterion intent:[\s\S]*?(?=The selected RDP Main Chapter|The project narrative|The scorer found|No context-supported evidence|The RDP Main Chapter|The legacy keyword rule|No relevant wording)/i, "");
+  const points = explanationPoints(plain).filter((point) => !/^(?:Criterion intent:|CMS matching guidance:|The rule assigned a raw rating|With a weight of|Evidence was found in these fields:|Evidence cited from the project:|The result is advisory|These matches show)/i.test(point));
+  const useful = points.length ? points : explanationPoints(plain);
+  const summary = useful.slice(0, /^The validator selected/i.test(useful[0] || "") ? 2 : 1).join(". ");
+  return summary ? `${summary.replace(/[.!?]+$/, "")}.` : "See the full explanation for the evidence behind this score.";
+};
+
 const CriteriaTable: React.FC<{ title: string; criteria?: Criterion[]; total?: number; adjustable?: boolean; adjusted?: Record<string, number>; onAdjust?: (key: string, value: number) => void }> = ({
   title,
   criteria = [],
@@ -316,6 +326,8 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapsh
   const revisionFields = analysis?.suggested_scores?.revision_fields || [];
   const confirmed = analysis?.latest_confirmation;
   const visiblePriority = confirmed?.final_priority || analysis?.suggested_priority;
+  const incompleteResult = analysis?.suggested_priority === "incomplete" || missingFacts.length > 0;
+  const rationaleRequired = incompleteResult || Boolean(finalPriority && finalPriority !== analysis?.suggested_priority);
   const analysisComplete = Boolean(
     analysis
     && analysis.suggested_priority !== "incomplete"
@@ -433,16 +445,17 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapsh
             {scoreReasoning && (
               <section className="rounded-xl border border-blue-200 bg-blue-50/40 p-4">
                 <h3 className="font-semibold text-blue-950">Reasoning and Explanation</h3>
-                {scoreReasoning.overall && (
-                  <div className="mt-3 rounded-lg border border-blue-100 bg-white p-3">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-blue-800">Overall score summary</p>
-                    <ul className="mt-2 list-disc space-y-1.5 pl-5 text-sm leading-6 text-slate-700">
-                      {explanationPoints(binaryPriorityText(scoreReasoning.overall)).map((point, index) => (
-                        <li key={`${index}-${point}`}>{point}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
+                <div className="mt-3 rounded-lg border border-blue-100 bg-white p-3 text-sm text-slate-700">
+                  <p>The AI gave this project <strong>{Number(analysis.base_score).toFixed(2)} out of 100</strong> points and suggested <strong>{priorityLabel(analysis.suggested_priority)}</strong>.</p>
+                  {missingFacts.length > 0 && <p className="mt-1">Some required information is missing, so the AI recommendation is incomplete.</p>}
+                  <p className="mt-1 text-xs text-slate-500">This explains the AI score; the validator's official decision is shown separately.</p>
+                  {scoreReasoning.overall && (
+                    <details className="mt-2 text-xs text-slate-600">
+                      <summary className="cursor-pointer font-medium text-blue-800">View full score calculation</summary>
+                      <p className="mt-2 leading-5">{binaryPriorityText(scoreReasoning.overall)}</p>
+                    </details>
+                  )}
+                </div>
                 <div className="mt-3 grid gap-2 lg:grid-cols-2">
                   {(scoreReasoning.criteria || []).map((item) => (
                     <div key={item.key} className="rounded-lg border border-blue-100 bg-white p-3 text-sm">
@@ -452,22 +465,16 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapsh
                           {Number(item.score || 0).toFixed(2)} / {Number(item.maximum_score || 0).toFixed(2)}
                         </span>
                       </div>
-                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                        <div className="rounded-md bg-slate-50 px-2.5 py-2">
-                          <p className="text-slate-500">Raw rating</p>
-                          <p className="mt-0.5 font-semibold text-slate-800">{Number(item.raw || 0).toFixed(1)} / 10</p>
-                        </div>
-                        <div className="rounded-md bg-slate-50 px-2.5 py-2">
-                          <p className="text-slate-500">Criterion weight</p>
-                          <p className="mt-0.5 font-semibold text-slate-800">{Number(item.weight || 0).toFixed(1)} points</p>
-                        </div>
-                      </div>
-                      <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Why this score was given</p>
-                      <ul className="mt-1.5 list-disc space-y-1.5 pl-5 leading-5 text-slate-600">
-                        {explanationPoints(plainLanguageExplanation(item.explanation)).map((point, index) => (
-                          <li key={`${index}-${point}`}>{point}</li>
-                        ))}
-                      </ul>
+                      <p className="mt-2 leading-5 text-slate-600"><strong className="text-slate-700">Why:</strong> {conciseCriterionExplanation(item.explanation)}</p>
+                      <details className="mt-2 text-xs text-slate-600">
+                        <summary className="cursor-pointer font-medium text-blue-800">View full explanation and scoring details</summary>
+                        <p className="mt-2">Raw rating: {Number(item.raw || 0).toFixed(1)} / 10 · Criterion weight: {Number(item.weight || 0).toFixed(1)} points</p>
+                        <ul className="mt-2 list-disc space-y-1 pl-5 leading-5">
+                          {explanationPoints(plainLanguageExplanation(item.explanation)).map((point, index) => (
+                            <li key={`${index}-${point}`}>{point}</li>
+                          ))}
+                        </ul>
+                      </details>
                     </div>
                   ))}
                 </div>
@@ -528,12 +535,17 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, currentSnapsh
             {role === "validator" && (
               <div className="rounded-xl border border-slate-200 p-3 space-y-3">
                 <p className="text-sm font-semibold">Validator Confirmation</p>
+                {incompleteResult && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                    The AI result is Incomplete. You may still set the official Low or High Priority with a written rationale. Missing facts remain listed above, and this decision is excluded from AI training unless an administrator approves it.
+                  </div>
+                )}
                 <Select label="Final Priority" value={finalPriority} onChange={setFinalPriority} options={[["high", "High Priority"], ["low", "Low Priority"]]} />
-                <label className="block"><span className="text-xs font-medium text-slate-600">Override rationale (required if final priority differs)</span><textarea className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" rows={2} value={overrideRationale} onChange={(e) => setOverrideRationale(e.target.value)} /></label>
-                <div className="flex justify-end"><button type="button" onClick={confirm} disabled={busy || missingFacts.length > 0 || !finalPriority} className="portal-btn portal-btn-primary">{busy ? "Saving..." : "Confirm Priority Analysis"}</button></div>
+                <label className="block"><span className="text-xs font-medium text-slate-600">Override rationale {rationaleRequired ? "(required)" : "(required if final priority differs)"}</span><textarea className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" rows={2} value={overrideRationale} onChange={(e) => setOverrideRationale(e.target.value)} /></label>
+                <div className="flex justify-end"><button type="button" onClick={confirm} disabled={busy || !finalPriority || (rationaleRequired && !overrideRationale.trim())} className="portal-btn portal-btn-primary">{busy ? "Saving..." : "Confirm Priority Analysis"}</button></div>
               </div>
             )}
-            {confirmed && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">Confirmed as <strong>{priorityLabel(confirmed.final_priority)}</strong>{confirmed.validator_name ? ` by ${confirmed.validator_name}` : ""}{confirmed.created_at ? ` on ${new Date(confirmed.created_at).toLocaleString()}` : ""}.</div>}
+            {confirmed && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">Official validator decision: <strong>{priorityLabel(confirmed.final_priority)}</strong> (AI result: {priorityLabel(analysis.suggested_priority)}){confirmed.validator_name ? ` by ${confirmed.validator_name}` : ""}{confirmed.created_at ? ` on ${new Date(confirmed.created_at).toLocaleString()}` : ""}.</div>}
             {history.length > 1 && <p className="text-xs text-slate-500">Stored scorecard versions: {history.length}. Identical inputs reuse an existing version.</p>}
           </>
         )}

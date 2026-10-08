@@ -406,7 +406,45 @@ const ProjectsPage: React.FC = () => {
         ) : filtered.length === 0 ? (
           <div className="portal-card-body text-slate-500">No projects found.</div>
         ) : (
-          <table className="portal-table">
+          <>
+          {role === "validator" && (
+            <div className="space-y-3 p-3 lg:hidden">
+              {filtered.map((p) => (
+                <article
+                  key={p.is_revision ? `mobile-revision-${p.revision_id}` : `mobile-project-${p.id}`}
+                  className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm"
+                >
+                  <h2 className="break-words font-semibold text-slate-900">{p.title || p.name || "Untitled"}</h2>
+                  {p.uses_outdated_form && (
+                    <p className="mt-1 text-xs font-semibold text-amber-700">Uses an older form — may need updating</p>
+                  )}
+                  <div className="mt-3 grid gap-2 text-sm text-slate-600 sm:grid-cols-2">
+                    <p><span className="font-medium text-slate-800">Contributor:</span> {p.submitted_by_name || p.submitted_by?.username || "Unknown"}</p>
+                    <p><span className="font-medium text-slate-800">Agency:</span> {p.agency || "N/A"}</p>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusBadge(p.workflow_status || p.status)}`}>
+                      {statusLabel(p.status, p.workflow_status_label)}
+                    </span>
+                    <span className={`rounded-full px-2 py-1 text-xs font-semibold ${reviewStateBadge(p)}`}>
+                      {reviewStateLabel(p)}
+                    </span>
+                    {p.official_priority_label && (
+                      <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">{p.official_priority_label}</span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigate(validatorReviewPath(p))}
+                    className="portal-btn portal-btn-primary mt-3 min-h-11 w-full"
+                  >
+                    Review
+                  </button>
+                </article>
+              ))}
+            </div>
+          )}
+          <table className={`portal-table ${role === "validator" ? "hidden lg:table" : ""}`}>
             <thead>
               <tr>
                 <th>Title</th>
@@ -522,6 +560,7 @@ const ProjectsPage: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </>
         )}
       </div>
     </PortalLayout>

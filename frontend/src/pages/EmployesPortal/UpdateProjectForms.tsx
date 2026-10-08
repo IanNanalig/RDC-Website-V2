@@ -138,7 +138,29 @@ const UpdateProjectForms: React.FC = () => {
             {query.trim() ? "No matching projects found." : "No projects are using an older contributor form."}
           </div>
         ) : (
-          <table className="portal-table">
+          <>
+          <div className="space-y-3 p-3 lg:hidden">
+            {filteredProjects.map((project) => (
+              <article key={`mobile-update-${project.id}`} className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                <h2 className="break-words font-semibold text-slate-900">{project.title || project.name || "Untitled project"}</h2>
+                <div className="mt-3 grid gap-2 text-sm text-slate-600 sm:grid-cols-2">
+                  <p><span className="font-medium text-slate-800">Contributor:</span> {project.submitted_by_name || "Unknown"}</p>
+                  <p><span className="font-medium text-slate-800">Agency:</span> {project.agency || "N/A"}</p>
+                  <p><span className="font-medium text-slate-800">Current form:</span> Version {project.form_version ?? "-"}</p>
+                  <p><span className="font-medium text-slate-800">Latest form:</span> Version {project.current_form_version ?? "-"}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => updateForm(project)}
+                  disabled={updatingId !== null}
+                  className="portal-btn portal-btn-primary mt-3 min-h-11 w-full disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {updatingId === project.id ? "Updating..." : "Update Form"}
+                </button>
+              </article>
+            ))}
+          </div>
+          <table className="portal-table hidden lg:table">
             <thead>
               <tr>
                 <th>Project</th>
@@ -180,6 +202,7 @@ const UpdateProjectForms: React.FC = () => {
               })}
             </tbody>
           </table>
+          </>
         )}
       </div>
     </PortalLayout>

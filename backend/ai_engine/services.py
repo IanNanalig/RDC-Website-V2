@@ -26,6 +26,8 @@ MINIMUM_TRAINING_PROJECTS = 2
 def sync_training_record(confirmation):
     analysis = confirmation.analysis
     features = extract_feature_snapshot(analysis)
+    scores = analysis.suggested_scores if isinstance(analysis.suggested_scores, dict) else {}
+    incomplete_override = analysis.suggested_priority == "incomplete" or bool(scores.get("missing_facts"))
     defaults = {
         "project": analysis.project,
         "rule_set": analysis.rule_set,
@@ -37,7 +39,14 @@ def sync_training_record(confirmation):
     }
     record, created = AITrainingRecord.objects.get_or_create(
         confirmation=confirmation,
-        defaults=defaults,
+        defaults={
+            **defaults,
+            "is_eligible": not incomplete_override,
+            "exclusion_reason": (
+                "Validator overrode an incomplete AI result; administrator approval is required for AI training."
+                if incomplete_override else ""
+            ),
+        },
     )
     if not created:
         changed = []
