@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import { confirmProjectSubmission } from "../../components/portal/confirmProjectSubmission";
 import { confirmRevisionRequest } from "../../components/portal/confirmRevisionRequest";
 import PriorityAnalysisPanel from "../../components/portal/PriorityAnalysisPanel";
 import { useProgressUpdateWindow } from "../../hooks/useEncodingWindow";
@@ -2290,6 +2291,10 @@ const ProjectSubmission: React.FC = () => {
       alert("Project Title is required to save a draft.");
       return;
     }
+    if (isEmployee && action === "submit" && !confirmProjectSubmission(
+      isRevisionMode ? "progress" : canReviseSubmitted ? "revision" : "project",
+      form.projectTitle,
+    )) return;
     setLoading(true);
     try {
       const normalizedProfileData = prioritySnapshot;

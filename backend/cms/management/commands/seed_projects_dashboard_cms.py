@@ -22,7 +22,7 @@ PROJECTS_DASHBOARD_SECTIONS = [
         "section_type": "text",
         "order": 2,
         "content_json": {
-            "title": "Latest validator-approved project progress",
+            "title": "Latest project progress",
             "subtitle": "Recently Updated",
             "body": "Only endorsed public updates are shown here.",
         },

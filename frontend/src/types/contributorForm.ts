@@ -62,6 +62,8 @@ export type ContributorFormPayload = {
 const options = (values: string[]): ContributorFormOption[] =>
   values.map((value) => ({ value, label: value }));
 
+export const PROJECT_STATUS_OPTIONS = ["Completed", "New", "Ongoing", "Not Implemented"] as const;
+
 const field = (
   key: string,
   label: string,
@@ -155,7 +157,7 @@ export const DEFAULT_CONTRIBUTOR_FORM_SCHEMA: ContributorFormSchema = {
           "16 Accelerate Climate Action and Strengthen Disaster Resilience Climate",
         ]) }),
         field("status", "Status", "select", { required: true, options: options([
-          "Completed", "New", "Updated", "Ongoing", "Discontinued", "Not Implemented", "N/A", "Dropped",
+          ...PROJECT_STATUS_OPTIONS,
         ]) }),
         field("sdgSelections", "Sustainable Development Goals", "multiselect", { options: options([
           "1 - No poverty", "2 - Zero hunger", "3 - Good health and well-being", "4 - Quality education",

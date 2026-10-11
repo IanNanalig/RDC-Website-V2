@@ -61,7 +61,7 @@ async function fillOtherFields(page) {
   await page.getByLabel("Office *").fill("Main Office");
   await page.getByLabel("Division *").fill("Planning");
   await page.getByLabel("Position *").fill("Officer");
-  await page.getByLabel("Contact Number *").fill("09170000000");
+  await page.getByLabel("Office Contact No. *").fill("09170000000");
   await page.getByLabel("Phone Number *").fill("09170000000");
   await page.getByLabel("New Password").fill("ValidSetup123_");
   await page.getByLabel("Confirm Password").fill("ValidSetup123_");
@@ -155,7 +155,19 @@ try {
 
   const invitation = await newRegistration({ width: 390, height: 650 }, "RDC-NCR", true, "invitation");
   await fillOtherFields(invitation.page);
-  await invitation.page.getByRole("button", { name: "Complete Registration" }).click();
+  const cancelDialogPromise = invitation.page.waitForEvent("dialog");
+  const cancelClickPromise = invitation.page.getByRole("button", { name: "Complete Registration" }).click();
+  const cancelDialog = await cancelDialogPromise;
+  assert.match(cancelDialog.message(), /registration@example\.com/);
+  assert.match(cancelDialog.message(), /inactive until an administrator activates it/i);
+  await cancelDialog.dismiss();
+  await cancelClickPromise;
+  assert.equal(invitation.posts.length, 0, "Canceling registration makes no request");
+  const confirmDialogPromise = invitation.page.waitForEvent("dialog");
+  const confirmClickPromise = invitation.page.getByRole("button", { name: "Complete Registration" }).click();
+  const confirmDialog = await confirmDialogPromise;
+  await confirmDialog.accept();
+  await confirmClickPromise;
   await invitation.page.getByText("Registration complete. Your account is inactive until an administrator activates it.").waitFor();
   assert.equal(invitation.posts.length, 1, "The invitation form submits once");
   await invitation.page.waitForURL(/\/login$/);

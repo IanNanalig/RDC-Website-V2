@@ -686,9 +686,9 @@ const Home: React.FC = () => {
       completed: "Completed",
       ongoing: "Ongoing",
       new: "New",
-      updated: "Updated",
-      discontinued: "Discontinued",
-      dropped: "Dropped",
+      updated: "Ongoing",
+      discontinued: "Not Implemented",
+      dropped: "Not Implemented",
       "not implemented": "Not Implemented",
       "n/a": "N/A",
       na: "N/A",
@@ -726,10 +726,12 @@ const Home: React.FC = () => {
 
   const projectStatusData = useMemo(() => {
     const by = (publicStats?.by_status || {}) as Record<string, number>;
-    const entries = Object.entries(by).map(([k, v]) => ({
-      status: canonicalStatus(k),
-      count: Number(v || 0),
-    }));
+    const grouped = new Map<string, number>();
+    Object.entries(by).forEach(([key, value]) => {
+      const status = canonicalStatus(key);
+      grouped.set(status, (grouped.get(status) || 0) + Number(value || 0));
+    });
+    const entries = Array.from(grouped, ([status, count]) => ({ status, count }));
     entries.sort((a, b) => b.count - a.count);
 
     const colorOf = (s: string) => {
@@ -740,8 +742,6 @@ const Home: React.FC = () => {
           return "bg-yellow-500";
         case "New":
           return "bg-blue-500";
-        case "Updated":
-          return "bg-indigo-500";
         default:
           return "bg-slate-500";
       }

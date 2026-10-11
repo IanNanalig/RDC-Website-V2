@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import { confirmProjectSubmission } from "../../components/portal/confirmProjectSubmission";
 import { confirmRevisionRequest } from "../../components/portal/confirmRevisionRequest";
 import PriorityAnalysisPanel from "../../components/portal/PriorityAnalysisPanel";
 import YearOnlyPicker from "../../components/portal/YearOnlyPicker";
@@ -12,6 +13,7 @@ import {
   contributorFieldApplies,
   DEFAULT_CONTRIBUTOR_FORM_SCHEMA,
   normalizeReadinessLevelValue,
+  PROJECT_STATUS_OPTIONS,
   type ContributorFormField,
   type ContributorFormSchema,
 } from "../../types/contributorForm";
@@ -172,7 +174,7 @@ const rdpChapterOptions = [
   "15 Practice Good Governance and Improve Bureaucratic Efficiency Governance",
   "16 Accelerate Climate Action and Strengthen Disaster Resilience Climate",
 ];
-const statusOptions = ["Completed", "New", "Updated", "Ongoing", "Discontinued", "Not Implemented", "N/A", "Dropped"];
+const statusOptions = [...PROJECT_STATUS_OPTIONS];
 const sdgOptions = [
   "1 - No poverty",
   "2 - Zero hunger",
@@ -512,8 +514,12 @@ const SelectField: React.FC<{
   editMeta?: EditMeta;
   helpText?: string;
   disabled?: boolean;
-}> = ({ label, value, onChange, options, required, diffBefore, editMeta, helpText, disabled }) => {
+  showLegacyValue?: boolean;
+}> = ({ label, value, onChange, options, required, diffBefore, editMeta, helpText, disabled, showLegacyValue }) => {
   const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
+  const hasLegacyValue = showLegacyValue && Boolean(value) && !options.some((option) =>
+    (typeof option === "string" ? option : option.value) === value,
+  );
   const metaLabel = hasEditMeta
     ? `Last edited by ${editMeta?.name || editMeta?.by || "User"}${editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}`
     : "";
@@ -529,6 +535,7 @@ const SelectField: React.FC<{
       disabled={disabled}
     >
       <option value="">Choose</option>
+      {hasLegacyValue && <option value={value} disabled>Previously saved: {value} — select a current status</option>}
       {options.map((option) => {
         const optionValue = typeof option === "string" ? option : option.value;
         const optionLabel = typeof option === "string" ? option : option.label;
@@ -1204,6 +1211,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
       alert("Year range is too large. Please keep the span within 15 years.");
       return;
     }
+    if (isEmployee && form.status && !statusOptions.includes(form.status) && !revisionFieldLocked("status")) {
+      alert("This project uses a previous Status choice. Please select Completed, New, Ongoing, or Not Implemented before saving.");
+      return;
+    }
     if (isValidator && action === "reviewed") {
       if (!validatorNotes.trim()) {
         alert("Please add a clear revision request before sending this back to the contributor.");
@@ -1243,6 +1254,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
         return;
       }
     }
+
+    if (isEmployee && action === "submit" && !confirmProjectSubmission(
+      isRevisionMode ? "progress" : canReviseSubmitted ? "revision" : "project",
+      form.projectActivity || form.program,
+    )) return;
 
     setLoading(true);
     try {
@@ -1467,7 +1483,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       return <TextAreaField {...common} value={String(value)} rows={4} placeholder={field.placeholder} onChange={(next) => setConfiguredFieldValue(field, next)} />;
     }
     if (field.type === "select") {
-      return <SelectField {...common} value={String(value)} options={field.options || []} onChange={(next) => setConfiguredFieldValue(field, next)} />;
+      return <SelectField {...common} value={String(value)} options={field.key === "status" ? statusOptions : field.options || []} showLegacyValue={field.key === "status"} onChange={(next) => setConfiguredFieldValue(field, next)} />;
     }
     if (field.type === "multiselect") {
       return <CheckboxGroup {...common} values={Array.isArray(value) ? value : []} options={field.options || []} onChange={(next) => setConfiguredFieldValue(field, next)} />;
@@ -1830,7 +1846,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
               <SelectField label="RDC-NCR Endorsed" value={form.rdcEndorsed} onChange={(v) => setField("rdcEndorsed", v as YesNo)} options={yesNoOptions} required diffBefore={diffOf("rdcEndorsed")?.before} editMeta={editMetaOf("rdcEndorsed")} />
               <SelectField label="RDC-NCR Development Sector" value={form.developmentSector} onChange={(v) => setField("developmentSector", v)} options={developmentSectorOptions} required diffBefore={diffOf("developmentSector")?.before} editMeta={editMetaOf("developmentSector")} />
               <SelectField label="RDP-NCR Main Chapter" value={form.rdpMainChapter} onChange={(v) => setField("rdpMainChapter", v)} options={rdpChapterOptions} required diffBefore={diffOf("rdpMainChapter")?.before} editMeta={editMetaOf("rdpMainChapter")} />
-              <SelectField label="Status" value={form.status} onChange={(v) => setField("status", v)} options={statusOptions} required diffBefore={diffOf("status")?.before} editMeta={editMetaOf("status")} />
+              <SelectField label="Status" value={form.status} onChange={(v) => setField("status", v)} options={statusOptions} showLegacyValue required diffBefore={diffOf("status")?.before} editMeta={editMetaOf("status")} />
             </div>
 
             <CheckboxGroup

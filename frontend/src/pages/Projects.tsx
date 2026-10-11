@@ -46,7 +46,6 @@ const STATUS_ICONS: Record<string, React.ReactNode> = {
   Ongoing: <FaHourglassHalf className="text-yellow-500" />,
   Completed: <FaCheckCircle className="text-green-500" />,
   New: <FaLightbulb className="text-blue-500" />,
-  Updated: <FaRegCalendarAlt className="text-indigo-500" />,
   Unspecified: <FaRegCalendarAlt className="text-slate-400" />,
 };
 
@@ -92,8 +91,10 @@ const asRecord = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 
-const asString = (value: unknown, fallback = "") =>
-  typeof value === "string" && value.trim() ? value.trim() : fallback;
+const asString = (value: unknown, fallback = "") => {
+  const text = typeof value === "string" && value.trim() ? value.trim() : fallback;
+  return text.replace(/\bvalidator-approved\b/gi, "").replace(/\s{2,}/g, " ").trim() || fallback;
+};
 
 const getPageSection = (page: CMSPageSnapshot | null, sectionKey: string) =>
   asRecord(
@@ -123,8 +124,15 @@ const Projects: React.FC = () => {
   const [error, setError] = useState<string>("");
   const [stats, setStats] = useState<PublicProjectsStats | null>(null);
   const [detailProject, setDetailProject] = useState<Project | null>(null);
+  const [detailTab, setDetailTab] = useState<"overview" | "history">("overview");
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
   const requestSequence = useRef(0);
   const detailRequestSequence = useRef(0);
+  const detailTriggerRef = useRef<HTMLElement | null>(null);
+  const overviewTabRef = useRef<HTMLButtonElement | null>(null);
+  const detailScrollRef = useRef<HTMLDivElement | null>(null);
+  const detailProjectId = detailProject?.id;
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 300);
@@ -173,20 +181,55 @@ const Projects: React.FC = () => {
     }
   }, [agencyFilter, debouncedSearch, municipalityFilter, statusFilter, yearFilter]);
 
-  const openProjectDetail = useCallback(async (project: Project) => {
+  const loadProjectDetail = useCallback(async (projectId: number) => {
     const sequence = ++detailRequestSequence.current;
-    setDetailProject(project);
+    setDetailLoading(true);
+    setDetailError("");
     try {
-      const detail = await getPublicProject(project.id);
+      const detail = await getPublicProject(projectId);
       if (sequence === detailRequestSequence.current) setDetailProject(detail);
     } catch {
-      // Keep the summary card open as a compatibility fallback during staggered deploys.
+      if (sequence === detailRequestSequence.current) {
+        setDetailError("Project history could not be loaded. Please try again.");
+      }
+    } finally {
+      if (sequence === detailRequestSequence.current) setDetailLoading(false);
     }
   }, []);
+
+  const openProjectDetail = useCallback((project: Project) => {
+    detailTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setDetailProject(project);
+    setDetailTab("overview");
+    void loadProjectDetail(project.id);
+  }, [loadProjectDetail]);
 
   const closeProjectDetail = () => {
     detailRequestSequence.current += 1;
     setDetailProject(null);
+    setDetailTab("overview");
+    setDetailLoading(false);
+    setDetailError("");
+    window.requestAnimationFrame(() => detailTriggerRef.current?.focus());
+  };
+
+  useEffect(() => {
+    if (detailProjectId !== undefined) overviewTabRef.current?.focus();
+  }, [detailProjectId]);
+
+  useEffect(() => {
+    if (detailScrollRef.current) detailScrollRef.current.scrollTop = 0;
+  }, [detailTab]);
+
+  const handleDetailTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    const current = event.currentTarget.id === "project-detail-tab-history" ? "history" : "overview";
+    const next = event.key === "ArrowRight" || event.key === "ArrowLeft"
+      ? current === "overview" ? "history" : "overview"
+      : event.key === "End" ? "history" : event.key === "Home" ? "overview" : null;
+    if (!next) return;
+    event.preventDefault();
+    setDetailTab(next);
+    document.getElementById(`project-detail-tab-${next}`)?.focus();
   };
 
   useEffect(() => {
@@ -536,7 +579,7 @@ const Projects: React.FC = () => {
                   <h2 className="text-lg font-bold text-slate-900">
                     {asString(
                       updatesContent.title,
-                      "Latest validator-approved project progress",
+                      "Latest project progress",
                     )}
                   </h2>
                   <p className="text-sm text-slate-600">
@@ -669,12 +712,8 @@ const Projects: React.FC = () => {
                     <option value="all">All Status</option>
                     <option value="Completed">Completed</option>
                     <option value="New">New</option>
-                    <option value="Updated">Updated</option>
                     <option value="Ongoing">Ongoing</option>
-                    <option value="Discontinued">Discontinued</option>
                     <option value="Not Implemented">Not Implemented</option>
-                    <option value="N/A">N/A</option>
-                    <option value="Dropped">Dropped</option>
                   </select>
                 </div>
                 <div>
@@ -962,11 +1001,15 @@ const Projects: React.FC = () => {
                 className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
                 role="dialog"
                 aria-modal="true"
+                aria-labelledby="public-project-detail-title"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") closeProjectDetail();
+                }}
               >
                 <div className="w-full max-w-3xl bg-white rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[calc(100vh-2rem)]">
                   <div className="flex items-center justify-between px-5 py-4 border-b">
                     <div className="min-w-0">
-                      <h3 className="font-semibold text-slate-900 truncate">
+                      <h3 id="public-project-detail-title" className="font-semibold text-slate-900 truncate">
                         {detailProject.title}
                       </h3>
                       <p className="text-xs text-slate-500 mt-0.5">
@@ -984,7 +1027,29 @@ const Projects: React.FC = () => {
                       Close
                     </button>
                   </div>
-                  <div className="p-5 space-y-4 overflow-y-auto flex-1 min-h-0">
+                  <div role="tablist" aria-label="Project details" className="grid grid-cols-2 gap-2 border-b px-4 py-2 sm:flex sm:px-5">
+                    {(["overview", "history"] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        ref={tab === "overview" ? overviewTabRef : undefined}
+                        id={`project-detail-tab-${tab}`}
+                        type="button"
+                        role="tab"
+                        aria-selected={detailTab === tab}
+                        aria-controls={`project-detail-panel-${tab}`}
+                        tabIndex={detailTab === tab ? 0 : -1}
+                        onClick={() => setDetailTab(tab)}
+                        onKeyDown={handleDetailTabKeyDown}
+                        className={`rounded-lg px-4 py-2 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${
+                          detailTab === tab ? "bg-blue-700 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                        }`}
+                      >
+                        {tab === "overview" ? "Overview" : "History"}
+                      </button>
+                    ))}
+                  </div>
+                  <div ref={detailScrollRef} className="p-5 space-y-4 overflow-y-auto flex-1 min-h-0">
+                    <div id="project-detail-panel-overview" role="tabpanel" aria-labelledby="project-detail-tab-overview" hidden={detailTab !== "overview"} className="space-y-4">
                     <div className="grid sm:grid-cols-3 gap-3">
                       <div className="border rounded-lg p-3">
                         <p className="text-[11px] text-slate-500">Status</p>
@@ -1029,7 +1094,7 @@ const Projects: React.FC = () => {
                         </div>
                         <p className="mt-3 text-sm text-slate-700 whitespace-pre-wrap break-words">
                           {detailProject.latest_update_headline ||
-                            "A validator-approved progress update is available for this project."}
+                            "A progress update is available for this project."}
                         </p>
                         {Array.isArray(detailProject.latest_update_badges) &&
                           detailProject.latest_update_badges.length > 0 && (
@@ -1162,21 +1227,50 @@ const Projects: React.FC = () => {
                         </div>
                       )}
 
+                    {Array.isArray(detailProject.public_summary_bullets) &&
+                      detailProject.public_summary_bullets.length > 0 && (
+                        <div className="border rounded-lg p-4">
+                          <p className="text-sm font-semibold text-slate-900 mb-2">
+                            Highlights
+                          </p>
+                          <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
+                            {detailProject.public_summary_bullets.map((bullet, index) => (
+                              <li key={`${index}-${bullet}`} className="break-words">
+                                {bullet}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+
+                    <div id="project-detail-panel-history" role="tabpanel" aria-labelledby="project-detail-tab-history" hidden={detailTab !== "history"}>
+                    {detailLoading ? (
+                      <p role="status" className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                        Loading approved project history...
+                      </p>
+                    ) : detailError ? (
+                      <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                        <p>{detailError}</p>
+                        <button type="button" onClick={() => void loadProjectDetail(detailProject.id)} className="mt-2 rounded-lg border border-red-300 px-3 py-1.5 font-semibold hover:bg-red-100">
+                          Retry
+                        </button>
+                      </div>
+                    ) : (
+
                     <div className="border rounded-lg p-4">
                       <div className="flex flex-wrap items-start justify-between gap-2">
                         <div>
                           <p className="text-sm font-semibold text-slate-900">
-                            Approved Progress Timeline
+                            Project History
                           </p>
                           <p className="text-xs text-slate-500 mt-1">
-                            Initial endorsement and validator-approved progress
+                            Initial endorsement and progress
                             updates are shown publicly.
                           </p>
                         </div>
                         <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700">
-                          {publicUpdateCountLabel(
-                            detailProject.public_progress_update_count,
-                          )}
+                          {detailProject.public_update_timeline?.length || 0} approved milestone{detailProject.public_update_timeline?.length === 1 ? "" : "s"}
                         </span>
                       </div>
                       {detailProject.public_update_timeline?.length ? (
@@ -1299,28 +1393,12 @@ const Projects: React.FC = () => {
                         </div>
                       ) : (
                         <p className="mt-3 text-sm text-slate-500">
-                          No endorsed progress updates have been recorded yet.
+                          No approved history has been recorded for this project yet.
                         </p>
                       )}
                     </div>
-
-                    {Array.isArray(detailProject.public_summary_bullets) &&
-                      detailProject.public_summary_bullets.length > 0 && (
-                        <div className="border rounded-lg p-4">
-                          <p className="text-sm font-semibold text-slate-900 mb-2">
-                            Highlights
-                          </p>
-                          <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
-                            {detailProject.public_summary_bullets.map(
-                              (b, i) => (
-                                <li key={`${i}-${b}`} className="break-words">
-                                  {b}
-                                </li>
-                              ),
-                            )}
-                          </ul>
-                        </div>
-                      )}
+                    )}
+                    </div>
                   </div>
                 </div>
               </div>

@@ -231,7 +231,7 @@ const SetupPassword: React.FC = () => {
     { key: "office", label: "Office" },
     { key: "division", label: "Division" },
     { key: "position", label: "Position" },
-    { key: "contact_number", label: "Contact Number" },
+    { key: "contact_number", label: "Office Contact No." },
     { key: "phone_number", label: "Phone Number" },
   ] as const;
 
@@ -270,6 +270,10 @@ const SetupPassword: React.FC = () => {
       setError(confirmError);
       return;
     }
+    if (setupType === "invitation" && !window.confirm(
+      `Complete registration for ${email || "your email address"}?\n\n` +
+      "Your account will remain inactive until an administrator activates it. Continue?",
+    )) return;
     setLoading(true);
     try {
       const res = await fetch(`${API_BASE_URL}/auth/setup-password/`, {
@@ -497,7 +501,7 @@ const SetupPassword: React.FC = () => {
                 />
               </label>
               <label className="block">
-                <span className="text-sm text-slate-700">Contact Number *</span>
+                <span className="text-sm text-slate-700">Office Contact No. *</span>
                 <input
                   type="text"
                   value={profile.contact_number}

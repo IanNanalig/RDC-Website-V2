@@ -67,6 +67,11 @@ from .serializers import (
     ProjectPriorityAnalysisSerializer,
 )
 from .public_summary import build_public_summary
+from .project_status import (
+    NOT_IMPLEMENTED_LEGACY_VALUES,
+    ONGOING_LEGACY_VALUES,
+    canonical_implementation_status,
+)
 from .priority_scoring import analyze_project, confirm_analysis, ensure_analysis_guidance, has_matching_confirmation
 from .utils import derive_ncr_lgus
 
@@ -127,7 +132,7 @@ PUBLIC_CHAT_DIRECT_CONFIDENCE = 0.62
 PUBLIC_CHAT_RELATED_CONFIDENCE = 0.60
 PUBLIC_PROJECTS_CACHE_TTL_SECONDS = 3600
 PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL = "public, no-cache, must-revalidate"
-PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 3
+PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 4
 PUBLIC_PROJECTS_CACHE_VERSION_KEY = "public_projects:version"
 
 
@@ -5470,6 +5475,20 @@ def _hash_query(params: dict) -> str:
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
+def _filter_public_project_status(queryset, status_value):
+    legacy_groups = {
+        "not implemented": NOT_IMPLEMENTED_LEGACY_VALUES,
+        "ongoing": ONGOING_LEGACY_VALUES,
+    }
+    aliases = legacy_groups.get(status_value.casefold())
+    if aliases:
+        selected = Q(profile_data__simplified_form__status__iexact=status_value)
+        for alias in aliases:
+            selected |= Q(profile_data__simplified_form__status__iexact=alias)
+        return queryset.filter(selected)
+    return queryset.filter(profile_data__simplified_form__status__iexact=status_value)
+
+
 class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
     """
     Public read-only projects feed for the public website dashboard.
@@ -5539,7 +5558,7 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
 
         status_raw = (request.query_params.get("status") or "").strip()
         if status_raw and status_raw.lower() != "all":
-            qs = qs.filter(profile_data__simplified_form__status__iexact=status_raw)
+            qs = _filter_public_project_status(qs, status_raw)
 
         # LGU filter is computed (from location text), so filter in Python after serialization.
         lgu_filter = (request.query_params.get("lgu") or "").strip()
@@ -5615,7 +5634,7 @@ class PublicProjectsStatsView(APIView):
 
         status_raw = (request.query_params.get("status") or "").strip()
         if status_raw and status_raw.lower() != "all":
-            qs = qs.filter(profile_data__simplified_form__status__iexact=status_raw)
+            qs = _filter_public_project_status(qs, status_raw)
 
         projects = list(qs)
         lgu_filter = (request.query_params.get("lgu") or "").strip()
@@ -5655,7 +5674,9 @@ class PublicProjectsStatsView(APIView):
             sf = {}
             if isinstance(p.profile_data, dict) and isinstance(p.profile_data.get("simplified_form"), dict):
                 sf = p.profile_data.get("simplified_form") or {}
-            impl_status = str(sf.get("status") or getattr(p, "status", "") or "").strip() or "Unspecified"
+            impl_status = canonical_implementation_status(
+                sf.get("status") or getattr(p, "status", "")
+            ) or "Unspecified"
             agency_name = str(sf.get("agencyName") or getattr(p, "agency", "") or "").strip() or "Other"
             location_raw = str(sf.get("location") or "").strip()
             lgus = derive_ncr_lgus(location_raw)

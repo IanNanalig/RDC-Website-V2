@@ -1,7 +1,8 @@
 from rest_framework import serializers
 from datetime import datetime
 from copy import deepcopy
-from cms.form_schema import FormSchemaError, validate_simplified_answers
+from cms.form_schema import CURRENT_PROJECT_STATUS_VALUES, FormSchemaError, validate_simplified_answers
+from .project_status import canonical_implementation_status
 from .models import (
     AccessRequest,
     Notification,
@@ -440,6 +441,16 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
             raise serializers.ValidationError("profile_data must be a JSON object.")
         simplified = value.get("simplified_form")
         if isinstance(simplified, dict):
+            project_status = str(simplified.get("status") or "").strip()
+            previous_status = ""
+            if self.instance and isinstance(self.instance.profile_data, dict):
+                previous_form = self.instance.profile_data.get("simplified_form")
+                if isinstance(previous_form, dict):
+                    previous_status = str(previous_form.get("status") or "").strip()
+            if project_status and project_status not in CURRENT_PROJECT_STATUS_VALUES and project_status != previous_status:
+                raise serializers.ValidationError(
+                    "Choose a current project status: Completed, New, Ongoing, or Not Implemented."
+                )
             self._validate_simplified_funding(simplified)
             value = deepcopy(value)
             if self.instance and isinstance(self.instance.profile_data, dict):
@@ -457,7 +468,11 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
                     # Old frontends remain pinned to the legacy definition during staggered deploys.
                     value["form_schema"] = {"key": "simplified-rdip", "version": 1, "legacy": True}
             try:
-                validate_simplified_answers(value, require_complete=False)
+                validate_simplified_answers(
+                    value,
+                    require_complete=False,
+                    legacy_status=previous_status if project_status == previous_status else None,
+                )
             except FormSchemaError as exc:
                 raise serializers.ValidationError(str(exc)) from exc
         return value
@@ -692,7 +707,7 @@ class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.Mo
 
     def get_rdip_status(self, obj):
         simplified = self._profile(obj).get("simplified_form")
-        return str(simplified.get("status") or "").strip() if isinstance(simplified, dict) else ""
+        return canonical_implementation_status(simplified.get("status")) if isinstance(simplified, dict) else ""
 
     def get_review_status(self, obj):
         return str(self._review(obj).get("review_status") or "").strip().lower()
@@ -966,11 +981,11 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         return str(getattr(obj, "agency", "") or "").strip()
 
     def get_implementation_status(self, obj):
-        # Prefer RDIP status from simplified form (Completed/New/Updated/Ongoing/etc.).
+        # Prefer RDIP status from the simplified form; keep old names grouped without rewriting history.
         sf = self._simplified(obj)
         value = str(sf.get("status") or "").strip()
         if value:
-            return value
+            return canonical_implementation_status(value)
         return str(getattr(obj, "status", "") or "").strip()
 
     def get_year(self, obj):

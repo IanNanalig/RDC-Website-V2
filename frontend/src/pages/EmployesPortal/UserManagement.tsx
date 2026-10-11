@@ -174,6 +174,8 @@ const UserManagement = () => {
     email: "",
     role: "contributor",
   });
+  const [invitationSending, setInvitationSending] = useState(false);
+  const invitationInFlight = React.useRef(false);
   const [windowForm, setWindowForm] = useState({
     enabled: false,
     start_at: "",
@@ -387,10 +389,41 @@ const UserManagement = () => {
 
   const formatDetailValue = (value: unknown) => {
     if (value === null || value === undefined || value === "") return "-";
-    if (Array.isArray(value)) return value.join(", ");
+    if (Array.isArray(value)) return value.map(formatDetailValue).join(", ");
     if (typeof value === "object") return JSON.stringify(value);
     return String(value);
   };
+
+  const formatChangedField = (value: unknown) => {
+    const field = String(value || "").replace(/^simplified_form\./, "");
+    const [root, ...rest] = field.split(".");
+    const known: Record<string, string> = {
+      actualFundingByYear: "Actual/Approved Funding (PHP)",
+      fundingRequirementByYear: "Funding Requirement (PHP)",
+      sdgSelections: "Sustainable Development Goals",
+      custom_fields: "Custom Field",
+      uacsCode: "UACS Code",
+      rdpMainChapter: "RDP-NCR Main Chapter",
+      rdcEndorsed: "RDC-NCR Endorsed",
+    };
+    const humanize = (part: string) => part
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+    return [known[root] || humanize(root), ...rest.map((part) =>
+      part === "2022_prior" ? "2022 & Prior" : humanize(part),
+    )].join(" · ");
+  };
+
+  const auditChanges = (details?: Record<string, unknown>) =>
+    (Array.isArray(details?.changes) ? details.changes : [])
+      .filter((change): change is Record<string, unknown> =>
+        change !== null && typeof change === "object" && !Array.isArray(change) && Boolean(change.field),
+      );
+
+  const auditChangedFields = (details?: Record<string, unknown>) =>
+    (Array.isArray(details?.changed_fields) ? details.changed_fields : [])
+      .filter((field): field is string => typeof field === "string" && Boolean(field.trim()));
 
   const formatReviewStatus = (value: unknown) => {
     const status = String(value || "").toLowerCase();
@@ -463,6 +496,8 @@ const UserManagement = () => {
         ([key, value]) =>
           !used.has(key) &&
           key !== "token_digest" &&
+          key !== "changed_fields" &&
+          key !== "changes" &&
           value !== undefined &&
           value !== null &&
           value !== "",
@@ -666,11 +701,17 @@ const UserManagement = () => {
 
   const createAccount = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (invitationInFlight.current) return;
     setNotice("");
+    const email = form.email.trim();
+    const role = form.role === "contributor" ? "staff" : form.role;
+    if (!window.confirm(`Send a registration link to ${email} for the ${form.role.replace("_", " ")} role?\n\nContinue?`)) return;
+    invitationInFlight.current = true;
+    setInvitationSending(true);
     try {
       await api.post("admin/users/", {
-        email: form.email.trim(),
-        role: form.role === "contributor" ? "staff" : form.role,
+        email,
+        role,
       });
       setForm({ email: "", role: "contributor" });
       setNotice("Registration invitation sent. The account will appear in System Users after registration and remain inactive until an administrator activates it.");
@@ -686,6 +727,9 @@ const UserManagement = () => {
         }
       }
       setNotice(message);
+    } finally {
+      invitationInFlight.current = false;
+      setInvitationSending(false);
     }
   };
 
@@ -1140,8 +1184,9 @@ const UserManagement = () => {
             <button
               type="submit"
               className="portal-btn portal-btn-primary xl:col-span-2"
+              disabled={invitationSending}
             >
-              Send Registration Form
+              {invitationSending ? "Sending Registration Form..." : "Send Registration Form"}
             </button>
           </form>
         </div>
@@ -2247,7 +2292,7 @@ const UserManagement = () => {
                     <th className="whitespace-nowrap">Event</th>
                     <th className="hidden lg:table-cell">Project</th>
                     <th className="hidden xl:table-cell">IP / Location</th>
-                    <th className="hidden xl:table-cell">Details</th>
+                    <th>Details</th>
                     <th className="whitespace-nowrap">Time</th>
                   </tr>
                 </thead>
@@ -2278,7 +2323,7 @@ const UserManagement = () => {
                           .filter(Boolean)
                           .join(" | ") || "-"}
                       </td>
-                      <td className="hidden xl:table-cell text-xs text-slate-500">
+                      <td className="max-w-[400px] min-w-[240px] text-xs text-slate-500">
                         {item.details &&
                         Object.keys(item.details).length > 0 ? (
                           <div className="space-y-1">
@@ -2288,6 +2333,30 @@ const UserManagement = () => {
                                 <span className="text-slate-700">{value}</span>
                               </div>
                             ))}
+                            {auditChangedFields(item.details).length > 0 && (
+                              <div className="break-words">
+                                <span className="text-slate-500">Changed Fields:</span>{" "}
+                                <span className="text-slate-700">
+                                  {auditChangedFields(item.details).map(formatChangedField).join(", ")}
+                                </span>
+                              </div>
+                            )}
+                            {auditChanges(item.details).length > 0 && (
+                              <details className="rounded border border-slate-200 bg-slate-50 px-2 py-1">
+                                <summary className="cursor-pointer font-medium text-slate-700">
+                                  Changes ({auditChanges(item.details).length})
+                                </summary>
+                                <ul className="mt-2 space-y-2">
+                                  {auditChanges(item.details).map((change, index) => (
+                                    <li key={`${item.id}-change-${index}`} className="break-words border-t border-slate-200 pt-2">
+                                      <span className="font-medium text-slate-700">{formatChangedField(change.field)}</span>
+                                      <div className="whitespace-pre-wrap text-slate-600">Before: {formatDetailValue(change.before)}</div>
+                                      <div className="whitespace-pre-wrap text-slate-700">After: {formatDetailValue(change.after)}</div>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </details>
+                            )}
                           </div>
                         ) : (
                           "-"

@@ -1534,3 +1534,29 @@ class PerformanceApiTests(APITestCase):
         detail = self.client.get(f"/api/public/projects/{project.pk}/")
         self.assertIn("description", detail.data)
         self.assertIn("public_update_timeline", detail.data)
+
+    def test_public_project_history_only_contains_endorsed_revisions(self):
+        project = self._project(validated=True)
+        base_time = timezone.now()
+        ProjectRevision.objects.create(
+            project=project, revision_number=1, revision_type="initial_submission",
+            state="endorsed", endorsed_at=base_time - timedelta(days=2),
+            public_summary_snapshot={"key_facts": {"status": "Ongoing"}},
+        )
+        ProjectRevision.objects.create(
+            project=project, revision_number=2, revision_type="progress_update",
+            state="endorsed", endorsed_at=base_time - timedelta(days=1),
+            public_note="Approved public progress note",
+            public_summary_snapshot={"key_facts": {"status": "Completed"}},
+        )
+        ProjectRevision.objects.create(
+            project=project, revision_number=3, revision_type="progress_update",
+            state="submitted", public_note="Private pending review note",
+        )
+
+        detail = self.client.get(f"/api/public/projects/{project.pk}/")
+        self.assertEqual(detail.status_code, status.HTTP_200_OK)
+        history = detail.data["public_update_timeline"]
+        self.assertEqual([entry["revision_number"] for entry in history], [2, 1])
+        self.assertEqual(history[0]["public_note"], "Approved public progress note")
+        self.assertNotIn("Private pending review note", json.dumps(detail.data, default=str))

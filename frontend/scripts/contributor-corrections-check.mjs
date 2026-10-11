@@ -19,6 +19,7 @@ const schema = {
       { key: "startYear", label: "Start Year", type: "year", required: true, visible: true },
       { key: "endYear", label: "End Year", type: "year", required: true, visible: true },
       { key: "actualFundingByYear", label: "Actual/Approved Funding (PHP)", type: "currency_by_year", visible: true },
+      { key: "status", label: "Status", type: "select", required: true, visible: true, options: ["Completed", "New", "Updated", "Ongoing", "Discontinued", "Not Implemented", "N/A", "Dropped"].map((value) => ({ value, label: value })) },
     ] },
   ],
 };
@@ -43,7 +44,7 @@ async function openForm({ fallback = false, existing = true, agency = "DENR", mo
     if (url.includes("employee/projects/1/")) body = {
       id: 1, agency: "DPWH", status: "planning", workflow_status: "draft", profile_data: {
         simplified_form: {
-          agencyName: "DPWH", startYear: includePrior ? "2022" : String(year - 2), endYear: String(year + 1),
+          agencyName: "DPWH", startYear: includePrior ? "2022" : String(year - 2), endYear: String(year + 1), status: "Dropped",
           actualFundingByYear: {
             ...(includePrior ? { "2022_prior": "50" } : {}),
             [year - 2]: "100", [year - 1]: "200", [year]: "300", [year + 1]: "400",
@@ -64,6 +65,12 @@ try {
     const agency = page.getByLabel("Agency Name *");
     assert.equal(await agency.inputValue(), "DPWH", "Existing form keeps its saved agency, not the current account agency");
     assert.equal(await agency.isDisabled(), true);
+    const status = page.locator("select").filter({ has: page.locator("option[value='Not Implemented']") });
+    await status.waitFor();
+    assert.deepEqual(await status.locator("option").allTextContents(), [
+      "Choose", "Previously saved: Dropped — select a current status", "Completed", "New", "Ongoing", "Not Implemented",
+    ]);
+    assert.equal(await status.locator("option[value='Dropped']").getAttribute("disabled"), "");
     const actualFunding = page.getByRole("heading", { name: "Actual/Approved Funding (PHP)" }).locator("..");
     for (const targetYear of [year - 2, year - 1, year, year + 1]) {
       const amount = actualFunding.getByLabel(String(targetYear));

@@ -69,8 +69,9 @@ RDP_CHAPTER_OPTIONS = _options([
     "16 Accelerate Climate Action and Strengthen Disaster Resilience Climate",
 ])
 STATUS_OPTIONS = _options([
-    "Completed", "New", "Updated", "Ongoing", "Discontinued", "Not Implemented", "N/A", "Dropped",
+    "Completed", "New", "Ongoing", "Not Implemented",
 ])
+CURRENT_PROJECT_STATUS_VALUES = frozenset(option["value"] for option in STATUS_OPTIONS)
 SDG_OPTIONS = _options([
     "1 - No poverty", "2 - Zero hunger", "3 - Good health and well-being", "4 - Quality education",
     "5 - Gender equality", "6- Clean water and sanitation", "7 - Affordable and clean energy",
@@ -448,10 +449,11 @@ def schema_fields(schema):
                 yield field
 
 
-def validate_simplified_answers(profile_data, require_complete=False):
+def validate_simplified_answers(profile_data, require_complete=False, legacy_status=None):
     if not isinstance(profile_data, dict) or not isinstance(profile_data.get("simplified_form"), dict):
         return profile_data
     from cms.models import CMSContributorForm, CMSContributorFormVersion
+    from projects.project_status import canonical_implementation_status
 
     marker = profile_data.get("form_schema") if isinstance(profile_data.get("form_schema"), dict) else {}
     legacy_marker = marker.get("legacy") is True
@@ -476,6 +478,10 @@ def validate_simplified_answers(profile_data, require_complete=False):
     if legacy_marker:
         profile_data["form_schema"]["legacy"] = True
     simplified = profile_data["simplified_form"]
+    saved_status = simplified.get("status")
+    normalized_status = canonical_implementation_status(saved_status)
+    if normalized_status and normalized_status != str(saved_status or "").strip():
+        simplified["status"] = normalized_status
     custom = simplified.get("custom_fields") if isinstance(simplified.get("custom_fields"), dict) else {}
     missing = []
     invalid = []
@@ -517,8 +523,13 @@ def validate_simplified_answers(profile_data, require_complete=False):
                 invalid.append(str(field.get("label") or key))
         elif field_type in {"select", "multiselect"}:
             allowed = {str(option.get("value")) for option in field.get("options", []) if isinstance(option, dict)}
+            if key == "status":
+                allowed.update(CURRENT_PROJECT_STATUS_VALUES)
             selected = value if isinstance(value, list) else [value]
-            if any(str(item) not in allowed for item in selected):
+            if any(
+                str(item) not in allowed and not (key == "status" and str(item) == legacy_status)
+                for item in selected
+            ):
                 invalid.append(str(field.get("label") or key))
     if missing:
         raise FormSchemaError("Complete the required form fields: " + ", ".join(missing) + ".")
