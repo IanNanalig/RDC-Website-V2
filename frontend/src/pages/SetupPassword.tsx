@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { API_BASE_URL } from "../config/api";
+import { passwordRules, validatePassword } from "../utils/passwordPolicy";
 
 const ACCOUNT_AGENCIES = [
   { code: "DPWH", name: "Department of Public Works and Highways" },
@@ -55,27 +56,6 @@ const searchAgencies = (value: string) => {
   );
 };
 
-const keyboardSymbols = "!\"#$%&'()*+,-./:;<=>?@[\\]^_\x60{|}~";
-const hasKeyboardSymbol = (value: string) =>
-  Array.from(value).some((character) => keyboardSymbols.includes(character));
-
-const passwordRules = [
-  { label: "At least 12 characters", test: (v: string) => v.length >= 12 },
-  { label: "At least 1 uppercase letter", test: (v: string) => /[A-Z]/.test(v) },
-  { label: "At least 1 lowercase letter", test: (v: string) => /[a-z]/.test(v) },
-  { label: "At least 1 number", test: (v: string) => /[0-9]/.test(v) },
-  { label: "At least 1 symbol or special character", test: hasKeyboardSymbol },
-];
-
-const validatePassword = (value: string) => {
-  if (value.length < 12) return "Password must be at least 12 characters.";
-  if (!/[A-Z]/.test(value)) return "Password must include an uppercase letter.";
-  if (!/[a-z]/.test(value)) return "Password must include a lowercase letter.";
-  if (!/[0-9]/.test(value)) return "Password must include a number.";
-  if (!hasKeyboardSymbol(value)) return "Password must include a symbol.";
-  return "";
-};
-
 const SetupPassword: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -123,6 +103,10 @@ const SetupPassword: React.FC = () => {
           setError(data?.detail || "This registration link is invalid or expired.");
           return;
         }
+        if (data?.setup_type === "password_reset") {
+          navigate(`/reset-password?token=${encodeURIComponent(token)}`, { replace: true });
+          return;
+        }
         setLinkInvalid(false);
         setEmail(String(data?.email || ""));
         setSetupType(String(data?.setup_type || "existing_account"));
@@ -135,7 +119,7 @@ const SetupPassword: React.FC = () => {
       }
     };
     loadProfile();
-  }, [token]);
+  }, [token, navigate]);
 
   const policyError = useMemo(() => validatePassword(password), [password]);
   const confirmError = useMemo(

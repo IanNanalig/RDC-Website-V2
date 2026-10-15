@@ -269,7 +269,7 @@ const Login: React.FC = () => {
                   <span className="text-xs text-gray-600">Remember me</span>
                 </label>
                 <Link
-                  to="/forgot-password"
+                  to="/request-password-reset"
                   className="text-xs text-blue-600 hover:text-blue-800 transition-colors"
                 >
                   Forgot password?

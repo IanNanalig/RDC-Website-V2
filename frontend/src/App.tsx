@@ -24,6 +24,7 @@ const RegionalProfile = lazy(() => import("./pages/RegionalProfile"));
 const RequestAccess = lazy(() => import("./pages/RequestAccess"));
 const RequestPasswordReset = lazy(() => import("./pages/RequestPasswordReset"));
 const SetupPassword = lazy(() => import("./pages/SetupPassword"));
+const ResetPassword = lazy(() => import("./pages/ResetPassword"));
 
 const Dashboard = lazy(() => import("./pages/EmployesPortal/Dashboard"));
 const AdminDashboard = lazy(() => import("./pages/EmployesPortal/AdminDashboard"));
@@ -328,7 +329,9 @@ export default function App() {
         <Route path="/contact" element={<ContactWithNavbarOnly />} />
         <Route path="/login" element={<Login />} />
         <Route path="/request-password-reset" element={<RequestPasswordReset />} />
+        <Route path="/forgot-password" element={<Navigate to="/request-password-reset" replace />} />
         <Route path="/setup-password" element={<SetupPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/request-access" element={<RequestAccess />} />
 
         {/* ===== EMPLOYEE PORTAL ROUTES (with PortalHeader) ===== */}

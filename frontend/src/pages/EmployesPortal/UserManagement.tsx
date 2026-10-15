@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
@@ -11,6 +11,31 @@ type UserRow = {
   role: string;
   agency?: string;
   is_active: boolean;
+};
+
+type UserSortKey = "username" | "email" | "agency" | "role" | "status";
+const userSortColumns: { key: UserSortKey; label: string }[] = [
+  { key: "username", label: "Username" },
+  { key: "email", label: "Email" },
+  { key: "agency", label: "Agency" },
+  { key: "role", label: "Role" },
+  { key: "status", label: "Status" },
+];
+
+const displayRole = (role: string) => {
+  if (role === "staff" || role === "employee" || role === "contributor") return "Contributor";
+  if (role === "validator") return "Validator";
+  if (role === "admin") return "Admin";
+  if (role === "content_editor") return "Content Editor";
+  if (role === "unauthenticated") return "Unauthenticated";
+  return role;
+};
+
+const userSortValue = (user: UserRow, key: UserSortKey) => {
+  if (key === "username") return user.full_name || user.username;
+  if (key === "role") return displayRole(user.role);
+  if (key === "status") return user.is_active ? "Active" : "Inactive";
+  return user[key] || "";
 };
 
 type ActivityItem = {
@@ -142,6 +167,24 @@ const UserManagement = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = parseTab(searchParams.get("tab"));
   const [users, setUsers] = useState<UserRow[]>([]);
+  const [userSortKey, setUserSortKey] = useState<UserSortKey>("username");
+  const [userSortDirection, setUserSortDirection] = useState<"asc" | "desc">("asc");
+  const sortedUsers = useMemo(() => [...users].sort((left, right) => {
+    const leftValue = userSortValue(left, userSortKey).trim();
+    const rightValue = userSortValue(right, userSortKey).trim();
+    if (!leftValue) return rightValue ? 1 : left.id - right.id;
+    if (!rightValue) return -1;
+    const comparison = leftValue.localeCompare(rightValue, undefined, { sensitivity: "base", numeric: true });
+    return comparison ? comparison * (userSortDirection === "asc" ? 1 : -1) : left.id - right.id;
+  }), [users, userSortKey, userSortDirection]);
+  const changeUserSort = (key: UserSortKey) => {
+    if (key === userSortKey) {
+      setUserSortDirection((direction) => direction === "asc" ? "desc" : "asc");
+    } else {
+      setUserSortKey(key);
+      setUserSortDirection("asc");
+    }
+  };
   const [resetRequests, setResetRequests] = useState<PasswordResetRequestRow[]>(
     [],
   );
@@ -204,15 +247,7 @@ const UserManagement = () => {
   const user = userRaw ? JSON.parse(userRaw) : { username: "admin" };
   const displayName = user?.full_name || user?.username || "Admin";
 
-  const labelRole = (role: string) => {
-    if (role === "staff" || role === "employee" || role === "contributor")
-      return "Contributor";
-    if (role === "validator") return "Validator";
-    if (role === "admin") return "Admin";
-    if (role === "content_editor") return "Content Editor";
-    if (role === "unauthenticated") return "Unauthenticated";
-    return role;
-  };
+  const labelRole = displayRole;
 
   const eventLabels: Record<string, string> = {
     login: "Auth Login",
@@ -387,7 +422,7 @@ const UserManagement = () => {
     return key.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
   };
 
-  const formatDetailValue = (value: unknown) => {
+  const formatDetailValue = (value: unknown): string => {
     if (value === null || value === undefined || value === "") return "-";
     if (Array.isArray(value)) return value.map(formatDetailValue).join(", ");
     if (typeof value === "object") return JSON.stringify(value);
@@ -1571,8 +1606,28 @@ const UserManagement = () => {
             </div>
           ) : (
             <>
+              <div className="flex flex-wrap items-end gap-2 border-b border-slate-200 p-4 xl:hidden">
+                <label className="min-w-0 flex-1 text-sm text-slate-700">
+                  Sort by
+                  <select
+                    value={userSortKey}
+                    onChange={(event) => { setUserSortKey(event.target.value as UserSortKey); setUserSortDirection("asc"); }}
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                  >
+                    {userSortColumns.map((column) => <option key={column.key} value={column.key}>{column.label}</option>)}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setUserSortDirection((direction) => direction === "asc" ? "desc" : "asc")}
+                  className="portal-btn portal-btn-ghost min-h-11"
+                  aria-label={`Sort ${userSortDirection === "asc" ? "descending" : "ascending"}`}
+                >
+                  {userSortDirection === "asc" ? "Ascending ↑" : "Descending ↓"}
+                </button>
+              </div>
               <ul className="divide-y divide-slate-100 xl:hidden" aria-label="System users">
-                {users.map((u) => (
+                {sortedUsers.map((u) => (
                   <li key={u.id} className="min-w-0 p-4">
                     <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
                       <p className="min-w-0 break-words font-semibold text-slate-900">
@@ -1620,16 +1675,19 @@ const UserManagement = () => {
               <table className="portal-table hidden xl:table">
               <thead>
                 <tr>
-                  <th>Username</th>
-                  <th>Email</th>
-                  <th>Agency</th>
-                  <th>Role</th>
-                  <th>Status</th>
+                  {userSortColumns.map((column) => (
+                    <th key={column.key} aria-sort={userSortKey === column.key ? (userSortDirection === "asc" ? "ascending" : "descending") : "none"}>
+                      <button type="button" onClick={() => changeUserSort(column.key)} className="inline-flex items-center gap-1 text-left hover:text-blue-700">
+                        {column.label}
+                        <span aria-hidden="true">{userSortKey === column.key ? (userSortDirection === "asc" ? "↑" : "↓") : "↕"}</span>
+                      </button>
+                    </th>
+                  ))}
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {users.map((u) => (
+                {sortedUsers.map((u) => (
                   <tr key={u.id}>
                     <td>{u.full_name || u.username}</td>
                     <td>{u.email || "-"}</td>

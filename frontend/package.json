@@ -13,6 +13,7 @@
     "test:notifications-ui": "node scripts/notification-panel-check.mjs",
     "test:logout-session": "node scripts/logout-session-check.mjs",
     "test:registration-agency": "node scripts/registration-agency-check.mjs",
+    "test:account-reset-sorting": "node scripts/account-reset-sorting-check.mjs",
     "test:submission-confirmations": "node scripts/submission-confirmations-check.mjs",
     "test:public-project-history": "node scripts/public-project-history-check.mjs",
     "test:audit-log-changes": "node scripts/audit-log-changes-check.mjs",

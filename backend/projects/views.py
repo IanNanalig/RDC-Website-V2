@@ -1001,13 +1001,13 @@ def _resolve_progress_update_window_state():
 
 def _send_setup_email(user: User, token: PasswordSetupToken, purpose: str = "create"):
     frontend_base = getattr(settings, "FRONTEND_BASE_URL", "http://localhost:5173")
-    link = f"{frontend_base}/setup-password?token={token.token}"
     is_reset = purpose == "reset"
+    link = f"{frontend_base.rstrip('/')}/{'reset-password' if is_reset else 'setup-password'}?token={urllib.parse.quote(token.token, safe='')}"
     subject = "RDC Portal Password Reset" if is_reset else "RDC Portal Account Setup"
     if is_reset:
         message = (
             "A password reset was approved for your RDC Portal account.\n\n"
-            "Please click the link below to complete your profile and set a new password (valid for 24 hours):\n"
+            "Please click the link below to set a new password (valid for 24 hours):\n"
             f"{link}\n\n"
             "If you did not request this reset, please contact the RDC Portal administrator immediately."
         )
@@ -1018,7 +1018,20 @@ def _send_setup_email(user: User, token: PasswordSetupToken, purpose: str = "cre
             f"{link}\n\n"
             "If you did not request this account, please contact the RDC Portal administrator."
         )
-    send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=False)
+    delivered = send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=False)
+    if not delivered:
+        raise RuntimeError("The password email was not delivered.")
+
+
+RESET_PASSWORD_TOKEN_PREFIX = "reset_"
+
+
+def _create_password_reset_token(user: User):
+    return PasswordSetupToken.objects.create(
+        user=user,
+        token=f"{RESET_PASSWORD_TOKEN_PREFIX}{get_random_string(48)}",
+        expires_at=timezone.now() + timedelta(hours=PASSWORD_SETUP_TTL_HOURS),
+    )
 
 
 def _send_registration_invitation(email: str, token: str):
@@ -4585,16 +4598,12 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         user = self.get_object()
         if not user.email:
             return Response({"detail": "User has no email set."}, status=400)
-        user.set_unusable_password()
-        user.must_change_password = True
-        user.save(update_fields=["password", "must_change_password"])
-        _advance_user_session(user)
-        token = PasswordSetupToken.objects.create(
-            user=user,
-            token=get_random_string(48),
-            expires_at=timezone.now() + timedelta(hours=PASSWORD_SETUP_TTL_HOURS),
-        )
-        _send_setup_email(user, token)
+        try:
+            with transaction.atomic():
+                token = _create_password_reset_token(user)
+                _send_setup_email(user, token, purpose="reset")
+        except Exception:
+            return Response({"detail": "Failed to send the password reset email. Please try again."}, status=503)
         _log_activity(request, "auth_reset_approve", details={"email": user.email, "source": "admin_reset"})
         return Response({"id": user.id, "setup_link_sent": True})
 
@@ -4740,33 +4749,27 @@ class PasswordResetRequestViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
-        with transaction.atomic():
-            reset_request = PasswordResetRequest.objects.select_for_update().filter(id=pk).first()
-            if not reset_request or reset_request.status != "pending":
-                return Response({"detail": "Request already reviewed."}, status=400)
-            user = reset_request.user
-            if not user or not user.email:
-                reset_request.status = "rejected"
+        try:
+            with transaction.atomic():
+                reset_request = PasswordResetRequest.objects.select_for_update().filter(id=pk).first()
+                if not reset_request or reset_request.status != "pending":
+                    return Response({"detail": "Request already reviewed."}, status=400)
+                user = reset_request.user
+                if not user or not user.email:
+                    reset_request.status = "rejected"
+                    reset_request.reviewed_by = request.user
+                    reset_request.reviewed_at = timezone.now()
+                    reset_request.review_notes = "No matching user/email."
+                    reset_request.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_notes"])
+                    return Response({"detail": "No matching user/email."}, status=400)
+                token = _create_password_reset_token(user)
+                _send_setup_email(user, token, purpose="reset")
+                reset_request.status = "approved"
                 reset_request.reviewed_by = request.user
                 reset_request.reviewed_at = timezone.now()
-                reset_request.review_notes = "No matching user/email."
-                reset_request.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_notes"])
-                return Response({"detail": "No matching user/email."}, status=400)
-
-            user.set_unusable_password()
-            user.must_change_password = True
-            user.save(update_fields=["password", "must_change_password"])
-            _advance_user_session(user)
-            token = PasswordSetupToken.objects.create(
-                user=user,
-                token=get_random_string(48),
-                expires_at=timezone.now() + timedelta(hours=PASSWORD_SETUP_TTL_HOURS),
-            )
-            reset_request.status = "approved"
-            reset_request.reviewed_by = request.user
-            reset_request.reviewed_at = timezone.now()
-            reset_request.save(update_fields=["status", "reviewed_by", "reviewed_at"])
-        _send_setup_email(user, token, purpose="reset")
+                reset_request.save(update_fields=["status", "reviewed_by", "reviewed_at"])
+        except Exception:
+            return Response({"detail": "Failed to send the password reset email. Request remains pending."}, status=503)
         _log_activity(request, "auth_reset_approve", details={"email": reset_request.email})
         return Response({"status": "approved", "setup_link_sent": True})
 
@@ -5206,6 +5209,8 @@ class SetupPasswordView(APIView):
         if not token or not token.is_valid():
             return Response({"detail": "Token is invalid or expired."}, status=400)
         user = token.user
+        if token.token.startswith(RESET_PASSWORD_TOKEN_PREFIX):
+            return Response({"email": user.email, "setup_type": "password_reset"})
         return Response(
             {
                 "email": user.email,
@@ -5286,6 +5291,32 @@ class SetupPasswordView(APIView):
         token = PasswordSetupToken.objects.select_related("user").filter(token=token_value).first()
         if not token or not token.is_valid():
             return Response({"detail": "Token is invalid or expired."}, status=400)
+        if token.token.startswith(RESET_PASSWORD_TOKEN_PREFIX):
+            policy_error = _validate_password_policy(new_password)
+            if policy_error:
+                return Response({"detail": policy_error}, status=400)
+            with transaction.atomic():
+                token = PasswordSetupToken.objects.select_for_update().select_related("user").get(pk=token.pk)
+                if not token.is_valid():
+                    return Response({"detail": "Token is invalid or expired."}, status=400)
+                user = token.user
+                user.set_password(new_password)
+                user.must_change_password = False
+                user.last_password_change = timezone.now()
+                user.save(update_fields=["password", "must_change_password", "last_password_change"])
+                _advance_user_session(user)
+                PasswordSetupToken.objects.filter(
+                    user=user, token__startswith=RESET_PASSWORD_TOKEN_PREFIX, used_at__isnull=True,
+                ).update(used_at=timezone.now())
+                UserActivity.objects.create(
+                    user=user,
+                    role=user.role,
+                    event="auth_password_setup",
+                    ip_address=_client_ip(request)[:64],
+                    location_hint=_location_hint(request)[:255],
+                    details={"source": "password_reset"},
+                )
+            return Response({"status": "ok"})
         user = token.user
         profile, error = _validate_setup_profile(request, user.role, user.agency, new_password)
         if error:
