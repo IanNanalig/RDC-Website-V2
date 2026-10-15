@@ -130,8 +130,8 @@ try {
       assert.equal(await table.isVisible(), false, `User table is hidden at ${width}px`);
       assert.equal(await users.locator("li").count(), 2, "All users appear as mobile cards");
       const firstCard = users.locator("li").first();
-      assert.match(await firstCard.innerText(), /Email.*matt\.angelo@example\.com.*Agency.*DOH.*Role.*Contributor/s);
-      for (const action of ["Deactivate", "Reset Password"]) {
+      assert.match(await firstCard.innerText(), /Email.*gabriel\.cantor@example\.com.*Agency.*DENR.*Role.*Contributor/s);
+      for (const action of ["Activate", "Reset Password"]) {
         const button = firstCard.getByRole("button", { name: action });
         const bounds = await button.boundingBox();
         assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width + 1,
@@ -139,15 +139,16 @@ try {
         assert.ok(bounds.height >= 44, `${action} has a mobile-sized touch target`);
       }
       if (width === 320) {
+        const mattCard = users.locator("li").filter({ hasText: "Matt Angelo" });
         let updatePayload;
         await page.route("**/api/admin/users/11/set_active/", async (route) => {
           updatePayload = JSON.parse(route.request().postData() || "{}");
           await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
         });
-        await firstCard.getByRole("button", { name: "Deactivate" }).click();
+        await mattCard.getByRole("button", { name: "Deactivate" }).click();
         await page.getByText("User deactivated.").waitFor();
         assert.deepEqual(updatePayload, { active: false }, "Mobile Deactivate uses the existing user action");
-        await firstCard.getByRole("button", { name: "Reset Password" }).click();
+        await mattCard.getByRole("button", { name: "Reset Password" }).click();
         await page.getByText("Password reset link sent to the user's email.").waitFor();
       }
     } else {

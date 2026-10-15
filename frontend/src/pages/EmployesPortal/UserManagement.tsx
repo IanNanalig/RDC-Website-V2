@@ -38,6 +38,11 @@ const userSortValue = (user: UserRow, key: UserSortKey) => {
   return user[key] || "";
 };
 
+const userRoleFilterValue = (role: string) =>
+  role === "staff" || role === "employee" || role === "contributor"
+    ? "contributor"
+    : role;
+
 type ActivityItem = {
   id: number;
   username: string;
@@ -167,17 +172,57 @@ const UserManagement = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = parseTab(searchParams.get("tab"));
   const [users, setUsers] = useState<UserRow[]>([]);
+  const [usersRefreshing, setUsersRefreshing] = useState(false);
+  const [usersError, setUsersError] = useState("");
+  const [userFilters, setUserFilters] = useState({
+    search: "",
+    agency: "",
+    role: "",
+    status: "",
+    limit: "10",
+  });
+  const [userPage, setUserPage] = useState(1);
   const [userSortKey, setUserSortKey] = useState<UserSortKey>("username");
   const [userSortDirection, setUserSortDirection] = useState<"asc" | "desc">("asc");
-  const sortedUsers = useMemo(() => [...users].sort((left, right) => {
+  const userAgencies = useMemo(() => [...new Set(users.map((user) => user.agency?.trim() || ""))]
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" })), [users]);
+  const hasUsersWithoutAgency = users.some((user) => !user.agency?.trim());
+  const filteredUsers = useMemo(() => users.filter((user) => {
+    const search = userFilters.search.trim().toLocaleLowerCase();
+    if (search && ![user.full_name, user.username, user.email]
+      .some((value) => String(value || "").toLocaleLowerCase().includes(search))) return false;
+    if (userFilters.agency === "__none__" && user.agency?.trim()) return false;
+    if (userFilters.agency && userFilters.agency !== "__none__" &&
+      user.agency?.trim() !== userFilters.agency) return false;
+    if (userFilters.role && userRoleFilterValue(user.role) !== userFilters.role) return false;
+    if (userFilters.status && (user.is_active ? "active" : "inactive") !== userFilters.status) return false;
+    return true;
+  }), [users, userFilters]);
+  const sortedUsers = useMemo(() => [...filteredUsers].sort((left, right) => {
     const leftValue = userSortValue(left, userSortKey).trim();
     const rightValue = userSortValue(right, userSortKey).trim();
     if (!leftValue) return rightValue ? 1 : left.id - right.id;
     if (!rightValue) return -1;
     const comparison = leftValue.localeCompare(rightValue, undefined, { sensitivity: "base", numeric: true });
     return comparison ? comparison * (userSortDirection === "asc" ? 1 : -1) : left.id - right.id;
-  }), [users, userSortKey, userSortDirection]);
+  }), [filteredUsers, userSortKey, userSortDirection]);
+  const userLimit = Number(userFilters.limit) || 10;
+  const userPageCount = Math.max(1, Math.ceil(sortedUsers.length / userLimit));
+  const currentUserPage = Math.min(userPage, userPageCount);
+  const userStart = sortedUsers.length ? (currentUserPage - 1) * userLimit + 1 : 0;
+  const userEnd = Math.min(currentUserPage * userLimit, sortedUsers.length);
+  const visibleUsers = sortedUsers.slice((currentUserPage - 1) * userLimit, currentUserPage * userLimit);
+  const updateUserFilter = (key: keyof typeof userFilters, value: string) => {
+    setUserPage(1);
+    setUserFilters((previous) => ({ ...previous, [key]: value }));
+  };
+  const clearUserFilters = () => {
+    setUserPage(1);
+    setUserFilters({ search: "", agency: "", role: "", status: "", limit: "10" });
+  };
   const changeUserSort = (key: UserSortKey) => {
+    setUserPage(1);
     if (key === userSortKey) {
       setUserSortDirection((direction) => direction === "asc" ? "desc" : "asc");
     } else {
@@ -185,6 +230,9 @@ const UserManagement = () => {
       setUserSortDirection("asc");
     }
   };
+  useEffect(() => {
+    setUserPage((page) => Math.min(page, userPageCount));
+  }, [userPageCount]);
   const [resetRequests, setResetRequests] = useState<PasswordResetRequestRow[]>(
     [],
   );
@@ -580,35 +628,60 @@ const UserManagement = () => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [usersRes, resetRes, winRes, progressWinRes] = await Promise.all([
+      const [usersResult, resetResult, winResult, progressWinResult] = await Promise.allSettled([
         api.get("admin/users/"),
         api.get("password-reset-requests/"),
         api.get("encoding-window/"),
         api.get("progress-update-window/"),
       ]);
-      setUsers(Array.isArray(usersRes) ? usersRes : []);
-      setResetRequests(Array.isArray(resetRes) ? resetRes : []);
-      setWindowForm({
-        enabled: Boolean(winRes?.enabled),
-        start_at: winRes?.start_at || "",
-        end_at: winRes?.end_at || "",
-      });
-      setWindowState(winRes || null);
-      setProgressWindowForm({
-        enabled: Boolean(progressWinRes?.enabled),
-        start_at: progressWinRes?.start_at || "",
-        end_at: progressWinRes?.end_at || "",
-      });
-      setProgressWindowState(progressWinRes || null);
+      if (usersResult.status === "fulfilled") {
+        setUsers(Array.isArray(usersResult.value) ? usersResult.value : []);
+        setUsersError("");
+      } else {
+        setUsersError("Unable to load system users. Please refresh to try again.");
+      }
+      if (resetResult.status === "fulfilled") {
+        setResetRequests(Array.isArray(resetResult.value) ? resetResult.value : []);
+      }
+      if (winResult.status === "fulfilled") {
+        const winRes = winResult.value;
+        setWindowForm({
+          enabled: Boolean(winRes?.enabled),
+          start_at: winRes?.start_at || "",
+          end_at: winRes?.end_at || "",
+        });
+        setWindowState(winRes || null);
+      }
+      if (progressWinResult.status === "fulfilled") {
+        const progressWinRes = progressWinResult.value;
+        setProgressWindowForm({
+          enabled: Boolean(progressWinRes?.enabled),
+          start_at: progressWinRes?.start_at || "",
+          end_at: progressWinRes?.end_at || "",
+        });
+        setProgressWindowState(progressWinRes || null);
+      }
     } catch (error) {
       console.error(error);
-      setUsers([]);
-      setResetRequests([]);
-      setActivity([]);
+      setUsersError("Unable to load system users. Please refresh to try again.");
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const refreshUsers = async () => {
+    if (usersRefreshing) return;
+    setUsersRefreshing(true);
+    setUsersError("");
+    try {
+      const data = await api.get("admin/users/");
+      setUsers(Array.isArray(data) ? data : []);
+    } catch (error) {
+      setUsersError(getErrorDetail(error, "Unable to refresh system users. Please try again."));
+    } finally {
+      setUsersRefreshing(false);
+    }
+  };
 
   const loadActivity = useCallback(async () => {
     setActivityLoading(true);
@@ -1593,16 +1666,114 @@ const UserManagement = () => {
 
       {activeTab === "system-users" && (
         <div className="portal-card mb-4 portal-table-wrap">
-          <div className="portal-card-header">
-            <h2 className="text-lg font-semibold">System Users</h2>
+          <div className="portal-card-header flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold">System Users</h2>
+              <p className="text-xs text-slate-500">
+                Find accounts, review access, and manage password resets.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void refreshUsers()}
+              disabled={loading || usersRefreshing}
+              className="portal-btn portal-btn-ghost disabled:cursor-wait disabled:opacity-60"
+            >
+              {usersRefreshing ? "Refreshing..." : "Refresh Users"}
+            </button>
           </div>
+          <div className="portal-card-body border-b border-slate-200 bg-slate-50/60">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <label className="block min-w-0">
+                <span className="text-xs font-semibold text-slate-600">Search User</span>
+                <input
+                  type="search"
+                  className="mt-1 w-full rounded-lg border bg-white px-2 py-1.5 text-sm"
+                  placeholder="Name, username, or email"
+                  value={userFilters.search}
+                  onChange={(event) => updateUserFilter("search", event.target.value)}
+                />
+              </label>
+              <label className="block min-w-0">
+                <span className="text-xs font-semibold text-slate-600">Agency</span>
+                <select
+                  aria-label="Agency"
+                  className="mt-1 w-full rounded-lg border bg-white px-2 py-1.5 text-sm"
+                  value={userFilters.agency}
+                  onChange={(event) => updateUserFilter("agency", event.target.value)}
+                >
+                  <option value="">All agencies</option>
+                  {userAgencies.map((agency) => <option key={agency} value={agency}>{agency}</option>)}
+                  {hasUsersWithoutAgency && <option value="__none__">No agency</option>}
+                </select>
+              </label>
+              <label className="block min-w-0">
+                <span className="text-xs font-semibold text-slate-600">Role</span>
+                <select
+                  aria-label="Role"
+                  className="mt-1 w-full rounded-lg border bg-white px-2 py-1.5 text-sm"
+                  value={userFilters.role}
+                  onChange={(event) => updateUserFilter("role", event.target.value)}
+                >
+                  <option value="">All roles</option>
+                  <option value="admin">Admin</option>
+                  <option value="validator">Validator</option>
+                  <option value="contributor">Contributor</option>
+                  <option value="content_editor">Content Editor</option>
+                </select>
+              </label>
+              <label className="block min-w-0">
+                <span className="text-xs font-semibold text-slate-600">Status</span>
+                <select
+                  aria-label="Status"
+                  className="mt-1 w-full rounded-lg border bg-white px-2 py-1.5 text-sm"
+                  value={userFilters.status}
+                  onChange={(event) => updateUserFilter("status", event.target.value)}
+                >
+                  <option value="">All statuses</option>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </label>
+              <label className="block min-w-0">
+                <span className="text-xs font-semibold text-slate-600">Rows Per Page</span>
+                <select
+                  className="mt-1 w-full rounded-lg border bg-white px-2 py-1.5 text-sm"
+                  value={userFilters.limit}
+                  onChange={(event) => updateUserFilter("limit", event.target.value)}
+                >
+                  <option value="10">10</option>
+                  <option value="20">20</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-slate-500">
+                {filteredUsers.length} of {users.length} system users match the filters.
+              </p>
+              <button type="button" onClick={clearUserFilters} className="portal-btn portal-btn-ghost">
+                Clear Filters
+              </button>
+            </div>
+          </div>
+          {usersError && (
+            <div role="alert" className="border-b border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+              {usersError}
+            </div>
+          )}
           {loading ? (
             <div className="portal-card-body text-slate-500">
               Loading users...
             </div>
           ) : users.length === 0 ? (
             <div className="portal-card-body text-slate-500">
-              No users found.
+              {usersError ? "No users to display until the list loads." : "No users found."}
+            </div>
+          ) : filteredUsers.length === 0 ? (
+            <div className="portal-card-body text-slate-500">
+              No users match the selected filters.
             </div>
           ) : (
             <>
@@ -1611,7 +1782,7 @@ const UserManagement = () => {
                   Sort by
                   <select
                     value={userSortKey}
-                    onChange={(event) => { setUserSortKey(event.target.value as UserSortKey); setUserSortDirection("asc"); }}
+                    onChange={(event) => { setUserSortKey(event.target.value as UserSortKey); setUserSortDirection("asc"); setUserPage(1); }}
                     className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
                   >
                     {userSortColumns.map((column) => <option key={column.key} value={column.key}>{column.label}</option>)}
@@ -1619,7 +1790,7 @@ const UserManagement = () => {
                 </label>
                 <button
                   type="button"
-                  onClick={() => setUserSortDirection((direction) => direction === "asc" ? "desc" : "asc")}
+                  onClick={() => { setUserSortDirection((direction) => direction === "asc" ? "desc" : "asc"); setUserPage(1); }}
                   className="portal-btn portal-btn-ghost min-h-11"
                   aria-label={`Sort ${userSortDirection === "asc" ? "descending" : "ascending"}`}
                 >
@@ -1627,7 +1798,7 @@ const UserManagement = () => {
                 </button>
               </div>
               <ul className="divide-y divide-slate-100 xl:hidden" aria-label="System users">
-                {sortedUsers.map((u) => (
+                {visibleUsers.map((u) => (
                   <li key={u.id} className="min-w-0 p-4">
                     <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
                       <p className="min-w-0 break-words font-semibold text-slate-900">
@@ -1687,7 +1858,7 @@ const UserManagement = () => {
                 </tr>
               </thead>
               <tbody>
-                {sortedUsers.map((u) => (
+                {visibleUsers.map((u) => (
                   <tr key={u.id}>
                     <td>{u.full_name || u.username}</td>
                     <td>{u.email || "-"}</td>
@@ -1718,6 +1889,31 @@ const UserManagement = () => {
                 ))}
               </tbody>
               </table>
+              <div className="portal-card-body flex flex-col gap-3 border-t border-slate-200 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-slate-600" aria-live="polite">
+                  Showing <span className="font-semibold">{userStart}</span>–<span className="font-semibold">{userEnd}</span> of {filteredUsers.length} matching users
+                  {filteredUsers.length !== users.length ? ` (${users.length} total)` : ""}
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setUserPage((page) => Math.max(1, page - 1))}
+                    disabled={currentUserPage <= 1}
+                    className="portal-btn portal-btn-ghost disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-sm text-slate-600">Page {currentUserPage} of {userPageCount}</span>
+                  <button
+                    type="button"
+                    onClick={() => setUserPage((page) => Math.min(userPageCount, page + 1))}
+                    disabled={currentUserPage >= userPageCount}
+                    className="portal-btn portal-btn-ghost disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
             </>
           )}
         </div>

@@ -1,15 +1,24 @@
 import React, { useState } from "react";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { API_BASE_URL } from "../config/api";
 import TurnstileWidget from "../components/TurnstileWidget";
 
 const RequestPasswordReset: React.FC = () => {
+  const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [captchaToken, setCaptchaToken] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const hasCaptcha = Boolean(import.meta.env.VITE_TURNSTILE_SITE_KEY);
+
+  const goBack = () => {
+    if (Number(window.history.state?.idx) > 0) {
+      navigate(-1);
+    } else {
+      navigate("/login");
+    }
+  };
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -51,10 +60,10 @@ const RequestPasswordReset: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
-      <div className="w-full max-w-md bg-white rounded-xl shadow-lg border border-slate-200 p-6 space-y-4">
-        <h1 className="text-2xl font-semibold text-slate-900">Request Password Reset</h1>
-        <p className="text-sm text-slate-600">
+    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-8 sm:px-6">
+      <div className="w-full max-w-md space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-lg sm:p-7">
+        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Request Password Reset</h1>
+        <p className="text-sm leading-relaxed text-slate-600">
           Enter your email to request a password reset. An administrator will review the request.
         </p>
 
@@ -69,14 +78,14 @@ const RequestPasswordReset: React.FC = () => {
           </div>
         )}
 
-        <form onSubmit={onSubmit} className="space-y-3">
+        <form onSubmit={onSubmit} className="space-y-4">
           <label className="block">
-            <span className="text-sm text-slate-700">Email</span>
+            <span className="text-sm font-medium text-slate-700">Email</span>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="mt-1 w-full border rounded-lg px-3 py-2"
+              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
               autoComplete="email"
               required
             />
@@ -91,15 +100,15 @@ const RequestPasswordReset: React.FC = () => {
           <button
             type="submit"
             disabled={loading}
-            className="w-full portal-btn portal-btn-primary"
+            className="portal-btn portal-btn-primary min-h-11 w-full disabled:cursor-wait disabled:opacity-60"
           >
             {loading ? "Sending..." : "Send Reset Request"}
           </button>
         </form>
 
-        <div className="text-xs text-slate-500">
-          Back to <Link to="/login" className="text-blue-600 hover:underline">login</Link>
-        </div>
+        <button type="button" onClick={goBack} className="portal-btn portal-btn-ghost min-h-10">
+          <span aria-hidden="true">←</span> Back
+        </button>
       </div>
     </div>
   );
