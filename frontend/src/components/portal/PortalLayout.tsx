@@ -361,11 +361,13 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
                 <div>
                   <p className="portal-account-name">{userName}</p>
                   <span className={`portal-chip ${roleAccent[role]}`}>{roleLabel[role]}</span>
-                  <Link to="/profile" onClick={() => setMobileOpen(false)} className="mt-2 block text-sm text-sky-200 hover:underline">View Profile</Link>
                 </div>
-                <button onClick={logout} className="portal-logout-btn">
-                  Logout
-                </button>
+                <div className="portal-account-actions">
+                  <Link to="/profile" onClick={() => setMobileOpen(false)} className="portal-profile-btn">View Profile</Link>
+                  <button type="button" onClick={logout} className="portal-logout-btn">
+                    Logout
+                  </button>
+                </div>
               </div>
             </div>
           </aside>

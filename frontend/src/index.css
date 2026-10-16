@@ -132,15 +132,42 @@ body {
 .portal-chip-validator { background: #e6f1ff; color: #1f5cbf; }
 .portal-chip-employee { background: #e8f9ef; color: #0b7c51; }
 
-.portal-logout-btn {
+.portal-account-actions {
   margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.portal-profile-btn,
+.portal-logout-btn {
+  display: block;
   width: 100%;
   padding: 8px 10px;
   border-radius: 10px;
-  background: #fef2f2;
-  color: #b42318;
+  text-align: center;
   font-size: 13px;
   font-weight: 600;
+}
+
+.portal-profile-btn {
+  border: 1px solid rgba(186, 205, 244, 0.4);
+  background: rgba(255, 255, 255, 0.08);
+  color: #d9e4ff;
+}
+
+.portal-profile-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(186, 205, 244, 0.62);
+}
+
+.portal-profile-btn:focus-visible {
+  outline: 2px solid #7dd3fc;
+  outline-offset: 2px;
+}
+
+.portal-logout-btn {
+  background: #fef2f2;
+  color: #b42318;
 }
 
 .portal-topbar {

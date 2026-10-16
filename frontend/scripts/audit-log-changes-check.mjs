@@ -30,9 +30,10 @@ try {
     const body = path === "/api/admin/activity/" ? {
       results: [{
         id: 1, username: "contributor", full_name: "Contributor", role: "staff",
-        event: "project_update", project_title: "Sample Project", ip_address: "", location_hint: "",
+        event: "project_update", target_label: "contributor@example.com", project_title: "Sample Project", ip_address: "", location_hint: "",
         created_at: "2026-10-10T10:00:00Z",
         details: {
+          email: "contributor@example.com", session_version: 7, replaced_previous_session: true,
           status: "planning", edited_fields_count: 3,
           changed_fields: ["projectActivity", "actualFundingByYear.2022_prior", "sdgSelections"],
           changes: [
@@ -49,20 +50,13 @@ try {
 
   await page.goto(origin + "/admin/users?tab=system-audit-log", { waitUntil: "networkidle" });
   await page.waitForURL("**/admin/audit-log");
-  const row = page.getByRole("row").filter({ hasText: "Sample Project" });
-  await row.getByText("Changes and details").click();
-  await row.getByText("Changed Fields:").waitFor();
-  assert.match(await row.innerText(), /Project Activity/);
-  assert.match(await row.innerText(), /Actual\/Approved Funding \(PHP\) · 2022 & Prior/);
-  assert.match(await row.innerText(), /Sustainable Development Goals/);
-  assert.equal(await row.getByText("[object Object]").count(), 0);
-  await row.getByText("Changes (3)").click();
-  assert.match(await row.innerText(), /Before: Old title/);
-  assert.match(await row.innerText(), /After: New title/);
-  assert.match(await row.innerText(), /Before: 100/);
-  assert.match(await row.innerText(), /After: 200/);
-  assert.equal(await row.locator("td").nth(2).isVisible(), true, "Audit details are accessible in the mobile table");
-  console.log("PASS audit changed fields and before/after changes on mobile");
+  const row = page.getByRole("row").filter({ hasText: "Contributor" });
+  const target = row.locator("td").nth(2);
+  assert.equal((await target.innerText()).trim(), "contributor@example.com", "Target shows only the human-readable label");
+  assert.equal(await row.getByText("Changes and details").count(), 0);
+  assert.doesNotMatch(await row.innerText(), /session_version|replaced_previous_session|Before:|After:/);
+  assert.equal(await target.isVisible(), true, "Audit target is accessible in the mobile table");
+  console.log("PASS audit target hides raw details on mobile");
   await context.close();
 } finally {
   await browser.close();

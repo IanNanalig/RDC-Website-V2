@@ -210,6 +210,24 @@ try {
     await drawer.getByRole("link", { name: "Projects", exact: true }).click();
     await page.waitForURL("**/admin/projects");
     assert.equal(await drawer.isVisible(), false, "Choosing a route dismisses the drawer");
+    await menu.click();
+    const profileLink = drawer.getByRole("link", { name: "View Profile" });
+    const logoutButton = drawer.getByRole("button", { name: "Logout" });
+    await profileLink.focus();
+    assert.equal(await profileLink.evaluate((element) => element === document.activeElement), true,
+      "View Profile is keyboard focusable");
+    const profileBounds = await profileLink.boundingBox();
+    const logoutBounds = await logoutButton.boundingBox();
+    assert.ok(profileBounds && logoutBounds, "Account actions are visible");
+    assert.ok(Math.abs(profileBounds.width - logoutBounds.width) <= 1, "Account actions use the same width");
+    assert.equal(
+      await profileLink.evaluate((element) => getComputedStyle(element).borderRadius),
+      await logoutButton.evaluate((element) => getComputedStyle(element).borderRadius),
+      "Account actions use the same border radius",
+    );
+    await page.keyboard.press("Enter");
+    await page.waitForURL("**/profile");
+    assert.equal(await drawer.isVisible(), false, "View Profile keeps its route behavior and closes the drawer");
     const documentWidth = await page.evaluate(() => document.documentElement.scrollWidth);
     assert.ok(documentWidth <= viewport.width + 1, `No horizontal overflow at ${viewport.width}px: ${documentWidth}`);
     await context.close();
