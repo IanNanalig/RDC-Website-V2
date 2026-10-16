@@ -4,7 +4,7 @@ import math
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Count, Prefetch, Q
 from django.db.models.fields.json import KeyTextTransform
 from django.http import Http404
@@ -28,7 +28,6 @@ from cms.models import (
     CMSMediaAsset,
     CMSPage,
     CMSPageSection,
-    CMSRevision,
     CMSSiteSetting,
 )
 from cms.serializers import (
@@ -46,8 +45,6 @@ from cms.serializers import (
     CMSPageSectionSummarySerializer,
     CMSPageSerializer,
     CMSPageSummarySerializer,
-    CMSRevisionSerializer,
-    CMSRevisionSummarySerializer,
     CMSSiteSettingSerializer,
 )
 from cms.services.locking import (
@@ -60,14 +57,8 @@ from cms.services.locking import (
     release_section_lock,
 )
 from cms.services.media_usage import get_media_usages
-from cms.services.media_validation import CMSMediaValidationError, validate_media_upload
+from cms.services.media_validation import CMSMediaValidationError, extract_media_metadata, validate_media_upload
 from cms.services.publishing import (
-    content_type_for,
-    contributor_form_snapshot,
-    create_article_update_revision,
-    create_page_update_revision,
-    create_revision,
-    create_section_update_revision,
     mark_article_changed,
     mark_page_changed,
     publish_article,
@@ -75,7 +66,6 @@ from cms.services.publishing import (
     publish_page,
     publish_section,
     reorder_page_sections,
-    restore_revision,
     restore_contributor_form_version,
 )
 from projects.models import (
@@ -125,6 +115,11 @@ class CMSSummaryPagination(PageNumberPagination):
                 "results": data,
             }
         )
+
+
+class CMSMediaPagination(CMSSummaryPagination):
+    page_size = 10
+    page_size_query_param = None
 
 
 class CMSSummaryListMixin:
@@ -218,25 +213,6 @@ def _published_snapshots(queryset):
             yield obj, snapshot
 
 
-def _workflow_snapshot(obj):
-    if isinstance(obj, CMSPage):
-        return {"title": obj.title, "slug": obj.slug, "status": obj.status}
-    if isinstance(obj, CMSArticle):
-        return {"title": obj.title, "slug": obj.slug, "status": obj.status}
-    if isinstance(obj, CMSContributorForm):
-        return contributor_form_snapshot(obj)
-    return {
-        "page": obj.page_id,
-        "sectionKey": obj.section_key,
-        "sectionType": obj.section_type,
-        "order": obj.order,
-        "schemaVersion": obj.schema_version,
-        "isVisible": obj.is_visible,
-        "status": obj.status,
-        "content": obj.content_json or {},
-    }
-
-
 class CMSWorkflowMixin:
     content_type_key = None
 
@@ -248,7 +224,6 @@ class CMSWorkflowMixin:
         obj = self.get_object()
         if obj.status not in {"draft", "rejected", "published"}:
             return Response({"detail": "Only draft, rejected, or edited published content can be submitted."}, status=400)
-        before = obj.status
         obj.status = "submitted"
         if hasattr(obj, "submitted_by"):
             obj.submitted_by = request.user
@@ -262,10 +237,6 @@ class CMSWorkflowMixin:
             mark_page_changed(obj.page, request.user)
         elif isinstance(obj, CMSContributorForm):
             release_form_lock(obj.pk, request.user, force=getattr(request.user, "role", "") == "admin")
-        revision = create_revision(
-            self.content_type_key, obj.pk, CMSRevision.ACTION_SUBMIT, _workflow_snapshot(obj), user=request.user,
-            status_before=before, status_after=obj.status,
-        )
         if isinstance(obj, CMSContributorForm):
             _notify_form_users(
                 User.objects.filter(role="admin", is_active=True),
@@ -274,7 +245,7 @@ class CMSWorkflowMixin:
                 event_type="cms_form_submitted",
                 title="Contributor form awaiting review",
                 message=f"{obj.name} was submitted for administrator review.",
-                dedupe_event=f"submitted:{revision.pk}",
+                dedupe_event=f"submitted:{obj.updated_at.isoformat()}",
             )
         _log_cms_activity(request, "cms_content_submitted", {"content_type": self.content_type_key, "id": obj.pk})
         obj.refresh_from_db()
@@ -285,7 +256,6 @@ class CMSWorkflowMixin:
         obj = self.get_object()
         if obj.status not in {"submitted", "draft"}:
             return Response({"detail": "Only submitted or draft content can be rejected."}, status=400)
-        before = obj.status
         obj.status = "rejected"
         if hasattr(obj, "reviewed_by"):
             obj.reviewed_by = request.user
@@ -298,10 +268,6 @@ class CMSWorkflowMixin:
             release_section_lock(obj.pk, request.user, force=True)
         elif isinstance(obj, CMSContributorForm):
             release_form_lock(obj.pk, request.user, force=True)
-        revision = create_revision(
-            self.content_type_key, obj.pk, CMSRevision.ACTION_REJECT, _workflow_snapshot(obj), user=request.user,
-            status_before=before, status_after=obj.status,
-        )
         if isinstance(obj, CMSContributorForm):
             _notify_form_users(
                 _form_editor_recipients(obj),
@@ -310,7 +276,7 @@ class CMSWorkflowMixin:
                 event_type="cms_form_rejected",
                 title="Contributor form changes requested",
                 message=f"{obj.name} was returned for revision. {obj.review_notes}",
-                dedupe_event=f"rejected:{revision.pk}",
+                dedupe_event=f"rejected:{obj.updated_at.isoformat()}",
             )
         _log_cms_activity(request, "cms_content_rejected", {"content_type": self.content_type_key, "id": obj.pk})
         obj.refresh_from_db()
@@ -319,12 +285,19 @@ class CMSWorkflowMixin:
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
     def archive(self, request, pk=None):
         obj = self.get_object()
-        before = obj.status
+        if obj.status == "archived":
+            return Response({"detail": "Already archived."}, status=400)
         obj.status = "archived"
         fields = ["status", "updated_at"]
         if hasattr(obj, "archived_at"):
             obj.archived_at = timezone.now()
             fields.append("archived_at")
+        if isinstance(obj, (CMSPage, CMSArticle)):
+            obj.published_at = None
+            fields.append("published_at")
+        if isinstance(obj, CMSContributorForm):
+            obj.current_published_version = None
+            fields.append("current_published_version")
         obj.save(update_fields=fields)
         if isinstance(obj, CMSPageSection):
             release_section_lock(obj.pk, request.user, force=True)
@@ -332,12 +305,24 @@ class CMSWorkflowMixin:
             if page.published_at:
                 page.published_snapshot_json = _page_snapshot(page)
                 page.save(update_fields=["published_snapshot_json", "updated_at"])
-        create_revision(
-            self.content_type_key, obj.pk, CMSRevision.ACTION_ARCHIVE, _workflow_snapshot(obj), user=request.user,
-            status_before=before, status_after=obj.status,
-        )
         _log_cms_activity(request, "cms_content_archived", {"content_type": self.content_type_key, "id": obj.pk})
         obj.refresh_from_db()
+        return Response(self._serialize(obj))
+
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
+    def restore(self, request, pk=None):
+        obj = self.get_object()
+        if obj.status != "archived":
+            return Response({"detail": "Only archived items can be restored."}, status=400)
+        obj.status = "draft"
+        fields = ["status", "updated_at"]
+        if hasattr(obj, "archived_at"):
+            obj.archived_at = None
+            fields.append("archived_at")
+        obj.save(update_fields=fields)
+        if isinstance(obj, CMSPageSection):
+            mark_page_changed(obj.page, request.user)
+        _log_cms_activity(request, "cms_content_restored", {"content_type": self.content_type_key, "id": obj.pk})
         return Response(self._serialize(obj))
 
 
@@ -352,7 +337,7 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
     serializer_class = CMSPageSerializer
     summary_serializer_class = CMSPageSummarySerializer
     permission_classes = [permissions.IsAuthenticated, IsCMSUser]
-    content_type_key = CMSRevision.CONTENT_PAGE
+    content_type_key = "page"
 
     def get_serializer_class(self):
         if self.action != "list" and self.request.query_params.get("view") == "editor":
@@ -375,6 +360,8 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
             if self.action == "retrieve" and self.request.query_params.get("view") == "editor":
                 queryset = queryset.defer("published_snapshot_json")
         status_filter = self.request.query_params.get("status")
+        if self.action == "list" and not status_filter:
+            queryset = queryset.filter(status="archived") if self.request.query_params.get("archived") == "1" else queryset.exclude(status="archived")
         search = str(self.request.query_params.get("q") or "").strip()
         if status_filter:
             queryset = queryset.filter(status=status_filter)
@@ -384,7 +371,6 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
 
     def perform_create(self, serializer):
         page = serializer.save(created_by=self.request.user, updated_by=self.request.user, has_unpublished_changes=True)
-        create_revision(self.content_type_key, page.pk, CMSRevision.ACTION_CREATE, _workflow_snapshot(page), user=self.request.user)
         _log_cms_activity(self.request, "cms_content_created", {"content_type": "page", "id": page.pk, "slug": page.slug})
 
     def perform_update(self, serializer):
@@ -393,7 +379,6 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
         if serializer.instance.status == "submitted" and getattr(self.request.user, "role", "") != "admin":
             raise PermissionDenied("Submitted or archived pages can only be changed by an administrator.")
         page = serializer.save(updated_by=self.request.user, has_unpublished_changes=True, status="draft")
-        create_page_update_revision(page, user=self.request.user)
         _log_cms_activity(self.request, "cms_content_updated", {"content_type": "page", "id": page.pk, "slug": page.slug})
 
     def destroy(self, request, *args, **kwargs):
@@ -421,12 +406,14 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
 class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
     serializer_class = CMSPageSectionSerializer
     permission_classes = [permissions.IsAuthenticated, IsCMSUser]
-    content_type_key = CMSRevision.CONTENT_SECTION
+    content_type_key = "section"
 
     def get_queryset(self):
         queryset = CMSPageSection.objects.select_related("page", "lock_owner")
         page_id = self.request.query_params.get("page")
         status_filter = self.request.query_params.get("status")
+        if self.action == "list" and not status_filter:
+            queryset = queryset.filter(status="archived") if self.request.query_params.get("archived") == "1" else queryset.exclude(status="archived")
         if page_id:
             queryset = queryset.filter(page_id=page_id)
         if status_filter:
@@ -436,7 +423,6 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         section = serializer.save(status="draft")
         mark_page_changed(section.page, self.request.user)
-        create_section_update_revision(section, user=self.request.user, action=CMSRevision.ACTION_CREATE)
         _log_cms_activity(self.request, "cms_content_created", {"content_type": "section", "id": section.pk, "page": section.page_id})
 
     def update(self, request, *args, **kwargs):
@@ -455,18 +441,14 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
     def perform_update(self, serializer):
         section = serializer.save(status="draft", lock_owner=None, lock_acquired_at=None)
         mark_page_changed(section.page, self.request.user)
-        create_section_update_revision(section, user=self.request.user)
         _log_cms_activity(self.request, "cms_content_updated", {"content_type": "section", "id": section.pk, "page": section.page_id})
 
     def perform_destroy(self, instance):
         page = instance.page
         section_id = instance.pk
-        snapshot = _workflow_snapshot(instance)
-        snapshot["deleted"] = True
         with transaction.atomic():
             instance.delete()
             mark_page_changed(page, self.request.user)
-            create_revision(self.content_type_key, section_id, CMSRevision.ACTION_UPDATE, snapshot, user=self.request.user)
         _log_cms_activity(self.request, "cms_content_updated", {"content_type": "section", "id": section_id, "action": "delete"})
 
     @action(detail=True, methods=["post"])
@@ -526,7 +508,7 @@ class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.Mod
     serializer_class = CMSArticleSerializer
     summary_serializer_class = CMSArticleSummarySerializer
     permission_classes = [permissions.IsAuthenticated, IsCMSUser]
-    content_type_key = CMSRevision.CONTENT_ARTICLE
+    content_type_key = "article"
 
     def get_serializer_class(self):
         if self.action != "list" and self.request.query_params.get("view") == "editor":
@@ -549,6 +531,8 @@ class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.Mod
             )
             if self.action == "retrieve" and self.request.query_params.get("view") == "editor":
                 queryset = queryset.defer("published_snapshot_json")
+        if self.action == "list" and not self.request.query_params.get("status"):
+            queryset = queryset.filter(status="archived") if self.request.query_params.get("archived") == "1" else queryset.exclude(status="archived")
         for key, lookup in (("status", "status"), ("category", "category__iexact")):
             value = self.request.query_params.get(key)
             if value:
@@ -565,7 +549,6 @@ class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.Mod
 
     def perform_create(self, serializer):
         article = serializer.save(created_by=self.request.user, updated_by=self.request.user, has_unpublished_changes=True)
-        create_revision(self.content_type_key, article.pk, CMSRevision.ACTION_CREATE, _workflow_snapshot(article), user=self.request.user)
         _log_cms_activity(self.request, "cms_content_created", {"content_type": "article", "id": article.pk, "slug": article.slug})
 
     def perform_update(self, serializer):
@@ -574,7 +557,6 @@ class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.Mod
         if serializer.instance.status == "submitted" and getattr(self.request.user, "role", "") != "admin":
             raise PermissionDenied("Submitted or archived articles can only be changed by an administrator.")
         article = serializer.save(updated_by=self.request.user, has_unpublished_changes=True, status="draft")
-        create_article_update_revision(article, user=self.request.user)
         _log_cms_activity(self.request, "cms_content_updated", {"content_type": "article", "id": article.pk, "slug": article.slug})
 
     def destroy(self, request, *args, **kwargs):
@@ -593,13 +575,15 @@ class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.Mod
 class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
     serializer_class = CMSContributorFormSerializer
     permission_classes = [permissions.IsAuthenticated, IsCMSUser]
-    content_type_key = CMSRevision.CONTENT_FORM
+    content_type_key = "form"
     http_method_names = ["get", "patch", "put", "post", "head", "options"]
 
     def get_queryset(self):
         queryset = CMSContributorForm.objects.select_related(
             "current_published_version", "created_by", "updated_by", "submitted_by", "reviewed_by", "lock_owner"
         )
+        if self.action == "list":
+            queryset = queryset.filter(status="archived") if self.request.query_params.get("archived") == "1" else queryset.exclude(status="archived")
         if self.request.query_params.get("include_versions") == "summary":
             queryset = queryset.prefetch_related(
                 Prefetch(
@@ -618,7 +602,6 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
 
     def update(self, request, *args, **kwargs):
         form = self.get_object()
-        self._form_status_before = form.status
         if form.status == CMSContributorForm.STATUS_SUBMITTED and getattr(request.user, "role", "") != "admin":
             raise PermissionDenied("Submitted forms can only be changed by an administrator.")
         if not lock_is_active(form) or form.lock_owner_id != request.user.id:
@@ -639,15 +622,6 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
             lock_owner=None,
             lock_acquired_at=None,
         )
-        create_revision(
-            self.content_type_key,
-            form.pk,
-            CMSRevision.ACTION_UPDATE,
-            contributor_form_snapshot(form),
-            user=self.request.user,
-            status_before=getattr(self, "_form_status_before", ""),
-            status_after=form.status,
-        )
         _log_cms_activity(self.request, "cms_content_updated", {"content_type": "form", "id": form.pk, "key": form.key})
 
     def destroy(self, request, *args, **kwargs):
@@ -655,7 +629,9 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def archive(self, request, pk=None):
-        return Response({"detail": "Contributor forms cannot be archived."}, status=405)
+        if getattr(request.user, "role", "") != "admin":
+            raise PermissionDenied("Only administrators can archive contributor forms.")
+        return CMSWorkflowMixin.archive(self, request, pk)
 
     @action(detail=True, methods=["post"])
     def lock(self, request, pk=None):
@@ -775,6 +751,8 @@ class ContributorFormCurrentView(APIView):
 
     def get(self, request, key):
         form = CMSContributorForm.objects.select_related("current_published_version").filter(key=key).first()
+        if form and form.status == "archived":
+            raise Http404("Contributor form is archived.")
         if not form or not form.current_published_version:
             if key != SIMPLIFIED_FORM_KEY:
                 raise Http404("Published contributor form not found.")
@@ -1035,18 +1013,26 @@ class AdminCMSMediaAssetViewSet(CMSSummaryListMixin, viewsets.ModelViewSet):
     serializer_class = CMSMediaAssetSerializer
     summary_serializer_class = CMSMediaAssetSummarySerializer
     permission_classes = [permissions.IsAuthenticated, IsCMSUser]
+    pagination_class = CMSMediaPagination
 
     def get_queryset(self):
         queryset = CMSMediaAsset.objects.select_related("uploaded_by")
-        if self.request.query_params.get("include_archived") not in {"1", "true", "yes"}:
-            queryset = queryset.filter(is_archived=False)
+        if self.action == "list":
+            queryset = queryset.filter(is_archived=self.request.query_params.get("archived") in {"1", "true", "yes"})
         file_type = self.request.query_params.get("file_type")
         if file_type:
             queryset = queryset.filter(file_type=file_type)
+        category = self.request.query_params.get("category")
+        if category:
+            queryset = queryset.filter(category=category)
+        tag = self.request.query_params.get("tag")
+        if tag:
+            queryset = queryset.filter(tags__contains=[tag]) if connection.vendor == "postgresql" else queryset.filter(tags__icontains=f'"{tag}"')
         search = str(self.request.query_params.get("q") or "").strip()
         if search:
             queryset = queryset.filter(
-                Q(file__icontains=search) | Q(alt_text__icontains=search) | Q(caption__icontains=search)
+                Q(file__icontains=search) | Q(original_filename__icontains=search) |
+                Q(alt_text__icontains=search) | Q(caption__icontains=search)
             )
         return queryset.order_by("-created_at")
 
@@ -1059,31 +1045,24 @@ class AdminCMSMediaAssetViewSet(CMSSummaryListMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         metadata = validate_media_upload(serializer.validated_data["file"])
+        metadata.update(extract_media_metadata(serializer.validated_data["file"], metadata["file_type"]))
         backend = str(getattr(settings, "CMS_STORAGE_BACKEND", "local")).lower()
         media = serializer.save(uploaded_by=self.request.user, storage_backend=backend, **metadata)
         media.storage_key = media.file.name
         if backend == "r2":
             media.public_url = media.file.url
         media.save(update_fields=["storage_key", "public_url"])
-        create_revision(
-            CMSRevision.CONTENT_MEDIA, media.pk, CMSRevision.ACTION_CREATE,
-            {"file": media.file.name, "fileType": media.file_type, "mimeType": media.mime_type, "size": media.size},
-            user=self.request.user,
-        )
         _log_cms_activity(self.request, "cms_content_created", {"content_type": "media", "id": media.pk})
 
     def perform_update(self, serializer):
         extra = validate_media_upload(serializer.validated_data["file"]) if "file" in serializer.validated_data else {}
+        if extra:
+            extra.update(extract_media_metadata(serializer.validated_data["file"], extra["file_type"]))
         media = serializer.save(**extra)
         if "file" in serializer.validated_data:
             media.storage_key = media.file.name
             media.public_url = media.file.url if media.storage_backend == "r2" else ""
             media.save(update_fields=["storage_key", "public_url"])
-        create_revision(
-            CMSRevision.CONTENT_MEDIA, media.pk, CMSRevision.ACTION_UPDATE,
-            {"file": media.file.name, "fileType": media.file_type, "altText": media.alt_text, "caption": media.caption},
-            user=self.request.user,
-        )
         _log_cms_activity(self.request, "cms_content_updated", {"content_type": "media", "id": media.pk})
 
     def destroy(self, request, *args, **kwargs):
@@ -1101,8 +1080,17 @@ class AdminCMSMediaAssetViewSet(CMSSummaryListMixin, viewsets.ModelViewSet):
         media._cms_usage_cache = usages
         media.is_archived = True
         media.save(update_fields=["is_archived"])
-        create_revision(CMSRevision.CONTENT_MEDIA, media.pk, CMSRevision.ACTION_ARCHIVE, {"file": media.file.name}, user=request.user)
         _log_cms_activity(request, "cms_content_archived", {"content_type": "media", "id": media.pk})
+        return Response(self.get_serializer(media).data)
+
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
+    def restore(self, request, pk=None):
+        media = self.get_object()
+        if not media.is_archived:
+            return Response({"detail": "Media is not archived."}, status=400)
+        media.is_archived = False
+        media.save(update_fields=["is_archived"])
+        _log_cms_activity(request, "cms_content_restored", {"content_type": "media", "id": media.pk})
         return Response(self.get_serializer(media).data)
 
 
@@ -1127,46 +1115,6 @@ class AdminCMSSiteSettingViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         return Response({"detail": "CMS settings cannot be deleted; update their value instead."}, status=405)
-
-
-class AdminCMSRevisionViewSet(CMSSummaryListMixin, viewsets.ReadOnlyModelViewSet):
-    serializer_class = CMSRevisionSerializer
-    summary_serializer_class = CMSRevisionSummarySerializer
-    permission_classes = [permissions.IsAuthenticated, IsCMSUser]
-
-    def get_queryset(self):
-        queryset = CMSRevision.objects.select_related("changed_by", "content_type")
-        content_type = self.request.query_params.get("content_type")
-        object_id = self.request.query_params.get("object_id")
-        if content_type:
-            try:
-                queryset = queryset.filter(content_type=content_type_for(content_type))
-            except ValueError:
-                return queryset.none()
-        if object_id:
-            queryset = queryset.filter(object_id=object_id)
-        search = str(self.request.query_params.get("q") or "").strip()
-        if search:
-            queryset = queryset.filter(
-                Q(action__icontains=search)
-                | Q(status_before__icontains=search)
-                | Q(status_after__icontains=search)
-                | Q(changed_by__full_name__icontains=search)
-                | Q(changed_by__username__icontains=search)
-            )
-        return queryset.order_by("-created_at", "-version_number")
-
-    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin], url_path="restore-revision")
-    def restore_revision(self, request, pk=None):
-        revision = self.get_object()
-        restored = restore_revision(revision, user=request.user)
-        _log_cms_activity(
-            request, "cms_content_restored",
-            {"revision_id": revision.pk, "content_type": revision.content_type_key, "restored_id": restored.pk},
-        )
-        return Response(
-            {"detail": "Revision restored.", "content_type": revision.content_type_key, "object_id": restored.pk},
-        )
 
 
 class AdminCMSReviewQueueView(APIView):

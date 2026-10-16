@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
 import { useEncodingWindow, useProgressUpdateWindow } from "../../hooks/useEncodingWindow";
@@ -43,6 +43,7 @@ type ApiProject = {
 };
 
 type WorkflowFilter = "all" | "pending_validation" | "needs_revision" | "validated" | "priority" | "non_priority" | "rejected";
+const PAGE_SIZE = 10;
 
 type ProjectRevisionRow = {
   id: number;
@@ -151,9 +152,23 @@ const reviewStateBadge = (p: ApiProject) => {
 const ProjectsPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const archivedView = location.pathname === "/admin/archived";
   const [projects, setProjects] = useState<ApiProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [archiveTarget, setArchiveTarget] = useState<ApiProject | null>(null);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [archiveError, setArchiveError] = useState("");
+  useEffect(() => {
+    if (!archiveTarget) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !archiveBusy) setArchiveTarget(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [archiveTarget, archiveBusy]);
 
   const user = useMemo(() => {
     const userData = localStorage.getItem("user");
@@ -173,6 +188,7 @@ const ProjectsPage: React.FC = () => {
     const params = new URLSearchParams({ view: "summary" });
     if (selectedWorkflow && selectedWorkflow !== "all") params.set("workflow", selectedWorkflow);
     if (role === "admin") {
+      if (archivedView) params.set("archived", "1");
       return `admin/projects/?${params.toString()}`;
     }
     if (role === "validator") {
@@ -180,14 +196,14 @@ const ProjectsPage: React.FC = () => {
       return `validator/projects/?${params.toString()}`;
     }
     return `employee/projects/?${params.toString()}`;
-  }, [role, selectedWorkflow]);
+  }, [role, selectedWorkflow, archivedView]);
 
   const loadProjects = useCallback(async () => {
     setLoading(true);
     try {
       const data = await api.get(endpoint);
       let rows: ApiProject[] = Array.isArray(data) ? data : [];
-      if (role === "validator" || role === "admin") {
+      if (role === "validator" || (role === "admin" && !archivedView)) {
         const revisionParams = new URLSearchParams({ view: "summary" });
         if (role === "validator") revisionParams.set("scope", "queue");
         const revisions = await api.get(`project-revisions/?${revisionParams.toString()}`);
@@ -222,7 +238,7 @@ const ProjectsPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [endpoint, role]);
+  }, [endpoint, role, archivedView]);
 
   useEffect(() => {
     if (!user) {
@@ -258,6 +274,19 @@ const ProjectsPage: React.FC = () => {
     if (!q) return list;
     return list.filter((p) => `${p.title || p.name || ""} ${p.agency || ""}`.toLowerCase().includes(q));
   }, [projects, selectedWorkflow, query]);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const pageStart = filtered.length ? (currentPage - 1) * PAGE_SIZE + 1 : 0;
+  const pageEnd = Math.min(currentPage * PAGE_SIZE, filtered.length);
+  const visibleProjects = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, pageCount));
+  }, [pageCount]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [selectedWorkflow]);
 
   const handleSubmit = async (id: number) => {
     if (role === "employee" && !canEncode) return;
@@ -266,8 +295,27 @@ const ProjectsPage: React.FC = () => {
     localStorage.setItem("projects_last_update", Date.now().toString());
   };
 
-  const handleArchive = async (id: number) => {
-    await api.post(`admin/projects/${id}/archive/`);
+  const handleArchive = async () => {
+    if (!archiveTarget || archiveBusy) return;
+    setArchiveBusy(true);
+    setArchiveError("");
+    try {
+      await api.post(`admin/projects/${archiveTarget.id}/archive/`, {
+        confirm_archive: true,
+        expected_implementation_status: formStatus(archiveTarget),
+      });
+      setArchiveTarget(null);
+      await loadProjects();
+      localStorage.setItem("projects_last_update", Date.now().toString());
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error.message : "Could not archive project. Refresh and try again.");
+    } finally {
+      setArchiveBusy(false);
+    }
+  };
+
+  const handleRestore = async (id: number) => {
+    await api.post(`admin/projects/${id}/unarchive/`, {});
     await loadProjects();
     localStorage.setItem("projects_last_update", Date.now().toString());
   };
@@ -314,6 +362,7 @@ const ProjectsPage: React.FC = () => {
   };
 
   const setWorkflowFilter = (value: WorkflowFilter) => {
+    setPage(1);
     const next = new URLSearchParams(searchParams);
     next.delete("status");
     if (value === "all") next.delete("workflow");
@@ -341,7 +390,7 @@ const ProjectsPage: React.FC = () => {
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   const displayName = user?.full_name || user?.username || "User";
 
-  const title = role === "admin" ? "Projects Governance" : role === "validator" ? "Validation Queue" : "My Projects";
+  const title = archivedView ? "Archived Projects" : role === "admin" ? "Projects Governance" : role === "validator" ? "Validation Queue" : "My Projects";
   const subtitle =
     role === "admin"
       ? "Review all portal submissions, archive, and manage records"
@@ -357,6 +406,7 @@ const ProjectsPage: React.FC = () => {
       userName={displayName}
       topActions={
         <>
+          {role === "admin" && <Link to={archivedView ? "/admin/projects" : "/admin/archived"} className="portal-btn portal-btn-ghost">{archivedView ? "Active Projects" : "Archived"}</Link>}
           {role === "employee" && (
             <Link
               to={canEncode ? "/employee/projects/new" : "#"}
@@ -380,7 +430,7 @@ const ProjectsPage: React.FC = () => {
         <div className="portal-card-body grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
           <input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => { setQuery(e.target.value); setPage(1); }}
             placeholder={role === "employee" ? "Search by project title" : "Search by project title or agency"}
             className="w-full border border-slate-200 rounded-xl px-3 py-2 bg-white"
           />
@@ -400,7 +450,7 @@ const ProjectsPage: React.FC = () => {
         </div>
       </div>
 
-      <div className="portal-card portal-table-wrap">
+      <div className="portal-card">
         {loading ? (
           <div className="portal-card-body text-slate-500">Loading projects...</div>
         ) : filtered.length === 0 ? (
@@ -409,7 +459,7 @@ const ProjectsPage: React.FC = () => {
           <>
           {role === "validator" && (
             <div className="space-y-3 p-3 lg:hidden">
-              {filtered.map((p) => (
+              {visibleProjects.map((p) => (
                 <article
                   key={p.is_revision ? `mobile-revision-${p.revision_id}` : `mobile-project-${p.id}`}
                   className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm"
@@ -444,6 +494,7 @@ const ProjectsPage: React.FC = () => {
               ))}
             </div>
           )}
+          <div className="portal-table-wrap">
           <table className={`portal-table ${role === "validator" ? "hidden lg:table" : ""}`}>
             <thead>
               <tr>
@@ -461,7 +512,7 @@ const ProjectsPage: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((p) => (
+              {visibleProjects.map((p) => (
                 <tr key={p.is_revision ? `revision-${p.revision_id}` : `project-${p.id}`}>
                   <td className="max-w-[240px]" title={p.title || p.name || "Untitled"}>
                     <div className="truncate">{p.title || p.name || "Untitled"}</div>
@@ -551,7 +602,11 @@ const ProjectsPage: React.FC = () => {
                         >
                           View
                         </button>
-                        <button onClick={() => handleArchive(p.id)} className="text-amber-700 hover:underline whitespace-nowrap">Archive</button>
+                        {archivedView ? (
+                          <button onClick={() => handleRestore(p.id)} className="text-emerald-700 hover:underline whitespace-nowrap">Restore</button>
+                        ) : !p.is_revision && (
+                          <button onClick={() => { setArchiveTarget(p); setArchiveError(""); }} className="text-amber-700 hover:underline whitespace-nowrap">Archive</button>
+                        )}
                       </>
                     )}
                     </div>
@@ -560,9 +615,39 @@ const ProjectsPage: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </div>
+          <div className="portal-card-body flex flex-col gap-3 border-t border-slate-200 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-slate-600" aria-live="polite">
+              Showing <span className="font-semibold">{pageStart}</span>–<span className="font-semibold">{pageEnd}</span> of {filtered.length} matching projects
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={currentPage <= 1} className="portal-btn portal-btn-ghost disabled:cursor-not-allowed disabled:opacity-50">Previous</button>
+              <span className="text-sm text-slate-600">Page {currentPage} of {pageCount}</span>
+              <button type="button" onClick={() => setPage((current) => Math.min(pageCount, current + 1))} disabled={currentPage >= pageCount} className="portal-btn portal-btn-ghost disabled:cursor-not-allowed disabled:opacity-50">Next</button>
+            </div>
+          </div>
           </>
         )}
       </div>
+      {archiveTarget && (() => {
+        const status = formStatus(archiveTarget);
+        const neutral = ["completed", "not implemented"].includes(status.toLowerCase());
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !archiveBusy) setArchiveTarget(null); }}>
+            <div role="alertdialog" aria-modal="true" aria-labelledby="archive-title" aria-describedby="archive-description" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+              <h2 id="archive-title" className="text-lg font-semibold text-slate-900">Archive {archiveTarget.title || archiveTarget.name || "this project"}?</h2>
+              <p id="archive-description" className="mt-3 text-sm text-slate-700">{neutral
+                ? `This project is ${status}. It will be moved to the Archived tab and can be restored later.`
+                : `Current status: ${status || "Not specified"}. This project is still ongoing. Archiving it will remove it from active lists. It can be restored later.`}</p>
+              {archiveError && <p role="alert" className="mt-3 text-sm text-rose-700">{archiveError}</p>}
+              <div className="mt-6 flex justify-end gap-2">
+                <button type="button" autoFocus disabled={archiveBusy} onClick={() => setArchiveTarget(null)} className="portal-btn portal-btn-ghost">Cancel</button>
+                <button type="button" disabled={archiveBusy} onClick={handleArchive} className={`portal-btn ${neutral ? "portal-btn-primary" : "bg-rose-700 text-white hover:bg-rose-800"}`}>{archiveBusy ? "Archiving..." : "Confirm Archive"}</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </PortalLayout>
   );
 };

@@ -39,6 +39,8 @@ const ProjectReview = lazy(() => import("./pages/EmployesPortal/ProjectReview"))
 const AdminProjects = lazy(() => import("./pages/EmployesPortal/AdminProjects"));
 const AdminValidatorDiffs = lazy(() => import("./pages/EmployesPortal/AdminValidatorDiffs"));
 const UserManagement = lazy(() => import("./pages/EmployesPortal/UserManagement"));
+const AuditLog = lazy(() => import("./pages/EmployesPortal/AuditLog"));
+const ProfilePage = lazy(() => import("./pages/EmployesPortal/ProfilePage"));
 const ContentManagement = lazy(() => import("./pages/EmployesPortal/ContentManagement"));
 
 // Interface for user data
@@ -533,6 +535,9 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        <Route path="/admin/audit-log" element={<ProtectedRoute roles={["admin"]}><AuditLog /></ProtectedRoute>} />
+        <Route path="/profile" element={<ProtectedRoute roles={["admin", "validator", "employee", "content_editor"]}><ProfilePage /></ProtectedRoute>} />
+        <Route path="/admin/profiles/:userId" element={<ProtectedRoute roles={["admin"]}><ProfilePage /></ProtectedRoute>} />
         <Route
           path="/employee/cms/*"
           element={

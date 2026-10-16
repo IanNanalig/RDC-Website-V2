@@ -1157,7 +1157,7 @@ class PortalWorkflowTests(APITestCase):
         )
 
         self._as(self.admin)
-        res = self.client.post(f"/api/admin/projects/{project.id}/archive/", {}, format="json")
+        res = self.client.post(f"/api/admin/projects/{project.id}/archive/", {"confirm_archive": True, "expected_implementation_status": ""}, format="json")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         project.refresh_from_db()
         self.assertTrue(project.archived)

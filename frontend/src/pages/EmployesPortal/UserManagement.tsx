@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
 
@@ -13,15 +13,6 @@ type UserRow = {
   is_active: boolean;
 };
 
-type UserSortKey = "username" | "email" | "agency" | "role" | "status";
-const userSortColumns: { key: UserSortKey; label: string }[] = [
-  { key: "username", label: "Username" },
-  { key: "email", label: "Email" },
-  { key: "agency", label: "Agency" },
-  { key: "role", label: "Role" },
-  { key: "status", label: "Status" },
-];
-
 const displayRole = (role: string) => {
   if (role === "staff" || role === "employee" || role === "contributor") return "Contributor";
   if (role === "validator") return "Validator";
@@ -29,13 +20,6 @@ const displayRole = (role: string) => {
   if (role === "content_editor") return "Content Editor";
   if (role === "unauthenticated") return "Unauthenticated";
   return role;
-};
-
-const userSortValue = (user: UserRow, key: UserSortKey) => {
-  if (key === "username") return user.full_name || user.username;
-  if (key === "role") return displayRole(user.role);
-  if (key === "status") return user.is_active ? "Active" : "Inactive";
-  return user[key] || "";
 };
 
 const userRoleFilterValue = (role: string) =>
@@ -167,10 +151,12 @@ const emptyEventForm: PublicEventForm = {
 };
 
 const UserManagement = () => {
+  const navigate = useNavigate();
   const showLegacyEventsPanel =
     import.meta.env.VITE_SHOW_LEGACY_EVENTS_PANEL === "true";
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = parseTab(searchParams.get("tab"));
+  useEffect(() => { if (searchParams.get("tab") === "system-audit-log") navigate("/admin/audit-log", { replace: true }); }, [navigate, searchParams]);
   const [users, setUsers] = useState<UserRow[]>([]);
   const [usersRefreshing, setUsersRefreshing] = useState(false);
   const [usersError, setUsersError] = useState("");
@@ -182,8 +168,6 @@ const UserManagement = () => {
     limit: "10",
   });
   const [userPage, setUserPage] = useState(1);
-  const [userSortKey, setUserSortKey] = useState<UserSortKey>("username");
-  const [userSortDirection, setUserSortDirection] = useState<"asc" | "desc">("asc");
   const userAgencies = useMemo(() => [...new Set(users.map((user) => user.agency?.trim() || ""))]
     .filter(Boolean)
     .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" })), [users]);
@@ -199,20 +183,12 @@ const UserManagement = () => {
     if (userFilters.status && (user.is_active ? "active" : "inactive") !== userFilters.status) return false;
     return true;
   }), [users, userFilters]);
-  const sortedUsers = useMemo(() => [...filteredUsers].sort((left, right) => {
-    const leftValue = userSortValue(left, userSortKey).trim();
-    const rightValue = userSortValue(right, userSortKey).trim();
-    if (!leftValue) return rightValue ? 1 : left.id - right.id;
-    if (!rightValue) return -1;
-    const comparison = leftValue.localeCompare(rightValue, undefined, { sensitivity: "base", numeric: true });
-    return comparison ? comparison * (userSortDirection === "asc" ? 1 : -1) : left.id - right.id;
-  }), [filteredUsers, userSortKey, userSortDirection]);
   const userLimit = Number(userFilters.limit) || 10;
-  const userPageCount = Math.max(1, Math.ceil(sortedUsers.length / userLimit));
+  const userPageCount = Math.max(1, Math.ceil(filteredUsers.length / userLimit));
   const currentUserPage = Math.min(userPage, userPageCount);
-  const userStart = sortedUsers.length ? (currentUserPage - 1) * userLimit + 1 : 0;
-  const userEnd = Math.min(currentUserPage * userLimit, sortedUsers.length);
-  const visibleUsers = sortedUsers.slice((currentUserPage - 1) * userLimit, currentUserPage * userLimit);
+  const userStart = filteredUsers.length ? (currentUserPage - 1) * userLimit + 1 : 0;
+  const userEnd = Math.min(currentUserPage * userLimit, filteredUsers.length);
+  const visibleUsers = filteredUsers.slice((currentUserPage - 1) * userLimit, currentUserPage * userLimit);
   const updateUserFilter = (key: keyof typeof userFilters, value: string) => {
     setUserPage(1);
     setUserFilters((previous) => ({ ...previous, [key]: value }));
@@ -220,15 +196,6 @@ const UserManagement = () => {
   const clearUserFilters = () => {
     setUserPage(1);
     setUserFilters({ search: "", agency: "", role: "", status: "", limit: "10" });
-  };
-  const changeUserSort = (key: UserSortKey) => {
-    setUserPage(1);
-    if (key === userSortKey) {
-      setUserSortDirection((direction) => direction === "asc" ? "desc" : "asc");
-    } else {
-      setUserSortKey(key);
-      setUserSortDirection("asc");
-    }
   };
   useEffect(() => {
     setUserPage((page) => Math.min(page, userPageCount));
@@ -1241,13 +1208,6 @@ const UserManagement = () => {
             >
               System Users
             </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab("system-audit-log")}
-              className={`portal-btn col-span-2 min-h-11 min-w-0 whitespace-normal sm:col-span-1 sm:min-h-0 ${activeTab === "system-audit-log" ? "portal-btn-primary" : "portal-btn-ghost"}`}
-            >
-              System Audit Log
-            </button>
           </div>
         </div>
       </div>
@@ -1777,26 +1737,6 @@ const UserManagement = () => {
             </div>
           ) : (
             <>
-              <div className="flex flex-wrap items-end gap-2 border-b border-slate-200 p-4 xl:hidden">
-                <label className="min-w-0 flex-1 text-sm text-slate-700">
-                  Sort by
-                  <select
-                    value={userSortKey}
-                    onChange={(event) => { setUserSortKey(event.target.value as UserSortKey); setUserSortDirection("asc"); setUserPage(1); }}
-                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
-                  >
-                    {userSortColumns.map((column) => <option key={column.key} value={column.key}>{column.label}</option>)}
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  onClick={() => { setUserSortDirection((direction) => direction === "asc" ? "desc" : "asc"); setUserPage(1); }}
-                  className="portal-btn portal-btn-ghost min-h-11"
-                  aria-label={`Sort ${userSortDirection === "asc" ? "descending" : "ascending"}`}
-                >
-                  {userSortDirection === "asc" ? "Ascending ↑" : "Descending ↓"}
-                </button>
-              </div>
               <ul className="divide-y divide-slate-100 xl:hidden" aria-label="System users">
                 {visibleUsers.map((u) => (
                   <li key={u.id} className="min-w-0 p-4">
@@ -1825,6 +1765,7 @@ const UserManagement = () => {
                       </div>
                     </dl>
                     <div className="mt-4 grid grid-cols-2 gap-2">
+                      <Link to={`/admin/profiles/${u.id}`} className="portal-btn portal-btn-ghost col-span-2 text-center">View Profile</Link>
                       <button
                         type="button"
                         onClick={() => setUserActive(u.id, !u.is_active)}
@@ -1846,14 +1787,11 @@ const UserManagement = () => {
               <table className="portal-table hidden xl:table">
               <thead>
                 <tr>
-                  {userSortColumns.map((column) => (
-                    <th key={column.key} aria-sort={userSortKey === column.key ? (userSortDirection === "asc" ? "ascending" : "descending") : "none"}>
-                      <button type="button" onClick={() => changeUserSort(column.key)} className="inline-flex items-center gap-1 text-left hover:text-blue-700">
-                        {column.label}
-                        <span aria-hidden="true">{userSortKey === column.key ? (userSortDirection === "asc" ? "↑" : "↓") : "↕"}</span>
-                      </button>
-                    </th>
-                  ))}
+                  <th>Username</th>
+                  <th>Email</th>
+                  <th>Agency</th>
+                  <th>Role</th>
+                  <th>Status</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -1872,6 +1810,7 @@ const UserManagement = () => {
                       </span>
                     </td>
                     <td className="space-x-2">
+                      <Link to={`/admin/profiles/${u.id}`} className="text-slate-700 hover:underline">Profile</Link>
                       <button
                         onClick={() => setUserActive(u.id, !u.is_active)}
                         className="text-blue-600 hover:underline"

@@ -2,7 +2,7 @@ from django.contrib import admin
 
 from cms.models import (
     CMSArticle, CMSContributorForm, CMSContributorFormVersion, CMSMediaAsset, CMSPage,
-    CMSPageSection, CMSRevision, CMSSiteSetting,
+    CMSPageSection, CMSSiteSetting,
 )
 
 
@@ -39,14 +39,6 @@ class CMSMediaAssetAdmin(admin.ModelAdmin):
     list_display = ["file", "file_type", "mime_type", "size", "is_archived", "created_at"]
     list_filter = ["file_type", "is_archived"]
     search_fields = ["file", "alt_text", "caption"]
-
-
-@admin.register(CMSRevision)
-class CMSRevisionAdmin(admin.ModelAdmin):
-    list_display = ["content_type", "object_id", "version_number", "action", "changed_by", "created_at"]
-    list_filter = ["content_type", "action"]
-    search_fields = ["object_id", "changed_by__username", "changed_by__full_name"]
-    readonly_fields = ["snapshot_json", "created_at"]
 
 
 class CMSContributorFormVersionInline(admin.TabularInline):

@@ -13,6 +13,7 @@ type OutdatedProject = {
   form_version?: number | null;
   current_form_version?: number | null;
 };
+const PAGE_SIZE = 10;
 
 const statusLabel = (status?: string) => {
   switch (status) {
@@ -35,6 +36,7 @@ const UpdateProjectForms: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [updatingId, setUpdatingId] = useState<number | null>(null);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const user = useMemo(() => {
@@ -73,6 +75,15 @@ const UpdateProjectForms: React.FC = () => {
         .includes(search),
     );
   }, [projects, query]);
+  const pageCount = Math.max(1, Math.ceil(filteredProjects.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const pageStart = filteredProjects.length ? (currentPage - 1) * PAGE_SIZE + 1 : 0;
+  const pageEnd = Math.min(currentPage * PAGE_SIZE, filteredProjects.length);
+  const visibleProjects = filteredProjects.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, pageCount));
+  }, [pageCount]);
 
   const updateForm = async (project: OutdatedProject) => {
     const title = project.title || project.name || "Untitled project";
@@ -123,14 +134,14 @@ const UpdateProjectForms: React.FC = () => {
           {error && <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>}
           <input
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => { setQuery(event.target.value); setPage(1); }}
             placeholder="Search by project title, contributor, or agency"
             className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2"
           />
         </div>
       </div>
 
-      <div className="portal-card portal-table-wrap">
+      <div className="portal-card">
         {loading ? (
           <div className="portal-card-body text-slate-500">Loading projects with older forms...</div>
         ) : filteredProjects.length === 0 ? (
@@ -140,7 +151,7 @@ const UpdateProjectForms: React.FC = () => {
         ) : (
           <>
           <div className="space-y-3 p-3 lg:hidden">
-            {filteredProjects.map((project) => (
+            {visibleProjects.map((project) => (
               <article key={`mobile-update-${project.id}`} className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                 <h2 className="break-words font-semibold text-slate-900">{project.title || project.name || "Untitled project"}</h2>
                 <div className="mt-3 grid gap-2 text-sm text-slate-600 sm:grid-cols-2">
@@ -160,6 +171,7 @@ const UpdateProjectForms: React.FC = () => {
               </article>
             ))}
           </div>
+          <div className="portal-table-wrap">
           <table className="portal-table hidden lg:table">
             <thead>
               <tr>
@@ -173,7 +185,7 @@ const UpdateProjectForms: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {filteredProjects.map((project) => {
+              {visibleProjects.map((project) => {
                 const title = project.title || project.name || "Untitled project";
                 return (
                   <tr key={project.id}>
@@ -202,6 +214,17 @@ const UpdateProjectForms: React.FC = () => {
               })}
             </tbody>
           </table>
+          </div>
+          <div className="portal-card-body flex flex-col gap-3 border-t border-slate-200 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-slate-600" aria-live="polite">
+              Showing <span className="font-semibold">{pageStart}</span>–<span className="font-semibold">{pageEnd}</span> of {filteredProjects.length} matching projects
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={currentPage <= 1} className="portal-btn portal-btn-ghost disabled:cursor-not-allowed disabled:opacity-50">Previous</button>
+              <span className="text-sm text-slate-600">Page {currentPage} of {pageCount}</span>
+              <button type="button" onClick={() => setPage((current) => Math.min(pageCount, current + 1))} disabled={currentPage >= pageCount} className="portal-btn portal-btn-ghost disabled:cursor-not-allowed disabled:opacity-50">Next</button>
+            </div>
+          </div>
           </>
         )}
       </div>

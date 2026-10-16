@@ -39,6 +39,23 @@ class User(AbstractUser):
         return f"{self.username} ({self.role})"
 
 
+class ProfileEditRequest(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CONSUMED = "consumed"
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="profile_edit_requests")
+    status = models.CharField(max_length=20, default=STATUS_PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="reviewed_profile_edit_requests")
+    expires_at = models.DateTimeField(null=True, blank=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
 class Project(models.Model):
     STATUS_CHOICES = [
         ("proposed", "Proposed"),

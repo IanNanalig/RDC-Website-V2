@@ -4,7 +4,6 @@ import cmsApi, {
   type CMSMediaAsset,
   type CMSPage,
   type CMSReviewQueue,
-  type CMSRevision,
   type CMSSection,
   type CMSSiteSetting,
 } from "../../services/cmsApi";
@@ -13,8 +12,8 @@ const RichTextEditor = React.lazy(() => import("./RichTextEditor"));
 const ContributorFormsManager = React.lazy(() => import("./ContributorFormsManager"));
 const AIScoringManager = React.lazy(() => import("./AIScoringManager"));
 
-type ResourceTab = "pages" | "news" | "forms" | "media" | "review" | "revisions" | "settings" | "ai";
-type PaginatedResourceTab = "pages" | "news" | "media" | "revisions";
+type ResourceTab = "pages" | "news" | "forms" | "media" | "review" | "settings" | "ai";
+type PaginatedResourceTab = "pages" | "news" | "media";
 
 const CMS_LIST_PAGE_SIZE = 30;
 
@@ -308,12 +307,43 @@ const CMS_MEDIA_TYPE_LABELS: Record<string, string> = {
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word document",
   "application/vnd.ms-excel": "Excel workbook",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Excel workbook",
+  "audio/mpeg": "MP3 audio",
+  "audio/mp4": "M4A audio",
+  "video/mp4": "MP4 video",
+  "video/webm": "WebM video",
 };
 
-const validateSelectedMediaFile = (file: File, allowedTypes: string[]) =>
-  allowedTypes.includes(file.type)
-    ? ""
-    : "This file type is not allowed by the current database upload policy.";
+type QueuedMediaFile = {
+  id: number;
+  file: File;
+  altText: string;
+  caption: string;
+  error: string;
+};
+
+type MediaUploadResult = {
+  id: number;
+  name: string;
+  uploaded: boolean;
+  detail: string;
+};
+
+const validateSelectedMediaFile = (
+  file: File,
+  allowedTypes: string[],
+  limits: { image: number; document: number; audio: number; video: number },
+) => {
+  if (!allowedTypes.includes(file.type)) {
+    return "This file type is not allowed by the current database upload policy.";
+  }
+  const category = file.type.startsWith("image/") ? "image" : file.type.startsWith("audio/") ? "audio" : file.type.startsWith("video/") ? "video" : "document";
+  if (file.size > limits[category]) {
+    return `This file exceeds the ${category} upload limit of ${formatMediaSize(limits[category])}.`;
+  }
+  return "";
+};
+
+const mediaFileKey = (file: File) => `${file.name}\u0000${file.size}\u0000${file.type}`;
 
 const mediaDisplayName = (item: CMSMediaAsset) =>
   item.caption || item.alt_text || item.file?.split(/[\\/]/).pop() || `Media #${item.id}`;
@@ -330,6 +360,8 @@ const mediaFileTypeLabel = (item: CMSMediaAsset) => {
   if (item.mime_type === "application/pdf") return "PDF";
   if (item.file_type === "image") return "Image";
   if (item.file_type === "document") return "Document";
+  if (item.file_type === "audio") return "Audio";
+  if (item.file_type === "video") return "Video";
   return "File";
 };
 
@@ -493,19 +525,30 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const [pages, setPages] = useState<CMSPage[]>([]);
   const [articles, setArticles] = useState<CMSArticle[]>([]);
   const [media, setMedia] = useState<CMSMediaAsset[]>([]);
+  const [mediaLibrary, setMediaLibrary] = useState<{ results: CMSMediaAsset[]; count: number; total_pages: number }>({ results: [], count: 0, total_pages: 1 });
+  const [mediaLibraryPage, setMediaLibraryPage] = useState(1);
+  const [mediaFilters, setMediaFilters] = useState({ q: "", file_type: "", category: "", tag: "" });
+  const [mediaDetail, setMediaDetail] = useState<CMSMediaAsset | null>(null);
+  const [mediaDetailDraft, setMediaDetailDraft] = useState({ alt_text: "", caption: "", category: "General", tags: "" });
   const [settingsRows, setSettingsRows] = useState<CMSSiteSetting[]>([]);
   const [settingDrafts, setSettingDrafts] = useState<Record<number, unknown>>({});
   const [settingSourceDrafts, setSettingSourceDrafts] = useState<Record<number, string>>({});
-  const [revisions, setRevisions] = useState<CMSRevision[]>([]);
   const [reviewQueue, setReviewQueue] = useState<CMSReviewQueue>({ pages: [], sections: [], news: [], forms: [], events: [] });
   const [selectedPageId, setSelectedPageId] = useState<number | null>(null);
   const [pageForm, setPageForm] = useState<PageForm>(emptyPageForm);
   const [sectionForm, setSectionForm] = useState<SectionForm>(emptySectionForm);
+  const [sectionEditorTab, setSectionEditorTab] = useState<"basics" | "content" | "advanced">("basics");
+  const [sectionErrors, setSectionErrors] = useState<Record<string, string>>({});
   const [sectionReadOnly, setSectionReadOnly] = useState(false);
   const [articleForm, setArticleForm] = useState<ArticleForm>(emptyArticleForm);
-  const [mediaFile, setMediaFile] = useState<File | null>(null);
-  const [mediaAlt, setMediaAlt] = useState("");
-  const [mediaCaption, setMediaCaption] = useState("");
+  const [mediaFiles, setMediaFiles] = useState<QueuedMediaFile[]>([]);
+  const [mediaSelectionErrors, setMediaSelectionErrors] = useState<string[]>([]);
+  const [mediaUploadResults, setMediaUploadResults] = useState<MediaUploadResult[]>([]);
+  const [mediaUploadProgress, setMediaUploadProgress] = useState<{ completed: number; total: number } | null>(null);
+  const [mediaUploading, setMediaUploading] = useState(false);
+  const mediaFileInputRef = useRef<HTMLInputElement | null>(null);
+  const mediaChooseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const nextMediaFileIdRef = useRef(0);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
   const [showGuide, setShowGuide] = useState(false);
@@ -514,13 +557,11 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     pages: 1,
     news: 1,
     media: 1,
-    revisions: 1,
   });
   const [hasMoreRows, setHasMoreRows] = useState<Record<PaginatedResourceTab, boolean>>({
     pages: false,
     news: false,
     media: false,
-    revisions: false,
   });
   const developerMode = false;
   const [pageFormBaseline, setPageFormBaseline] = useState(JSON.stringify(emptyPageForm));
@@ -553,7 +594,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     () => articleFormSerialized !== articleFormBaseline,
     [articleFormBaseline, articleFormSerialized],
   );
-  const hasUnsavedChanges = pageFormHasChanges || sectionFormHasChanges || articleFormHasChanges || settingsHaveChanges || Boolean(mediaFile);
+  const hasUnsavedChanges = pageFormHasChanges || sectionFormHasChanges || articleFormHasChanges || settingsHaveChanges || mediaFiles.length > 0;
 
   useEffect(() => setActiveTab(initialTab), [initialTab]);
   useEffect(() => {
@@ -598,14 +639,20 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     return {
       image: Number(values.image || 5 * 1024 * 1024),
       document: Number(values.document || 20 * 1024 * 1024),
+      audio: Number(values.audio || 20 * 1024 * 1024),
+      video: Number(values.video || 50 * 1024 * 1024),
     };
   }, [settingsRows]);
   const allowedMediaTypes = useMemo(() => {
     const row = settingsRows.find((item) => item.key === "media-upload-allowed-types");
     const values = parseRecord(row?.value_json);
-    const configured = [...(Array.isArray(values.image) ? values.image : []), ...(Array.isArray(values.document) ? values.document : [])]
+    const configured = ["image", "document", "audio", "video"].flatMap((key) => Array.isArray(values[key]) ? values[key] : Object.keys(CMS_MEDIA_TYPE_LABELS).filter((mime) => key === "document" ? mime.startsWith("application/") : mime.startsWith(`${key}/`)))
       .filter((value): value is string => typeof value === "string");
     return configured.length ? configured : Object.keys(CMS_MEDIA_TYPE_LABELS);
+  }, [settingsRows]);
+  const mediaCategories = useMemo(() => {
+    const values = parseRecord(settingsRows.find((item) => item.key === "media-categories")?.value_json);
+    return [...new Set(["General", ...(Array.isArray(values.categories) ? values.categories.filter((item): item is string => typeof item === "string") : [])])];
   }, [settingsRows]);
 
   const setSectionContent = (content: Record<string, unknown>) => {
@@ -746,12 +793,48 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       const rows = await request;
       setMedia(rows);
       setListPages((current) => ({ ...current, media: 1 }));
-      setHasMoreRows((current) => ({ ...current, media: rows.length === CMS_LIST_PAGE_SIZE }));
+      setHasMoreRows((current) => ({ ...current, media: false }));
       mediaLoadedRef.current = true;
     } finally {
       if (mediaLoadPromiseRef.current === request) mediaLoadPromiseRef.current = null;
     }
   }, []);
+
+  useEffect(() => {
+    if (activeTab !== "media") return;
+    let active = true;
+    cmsApi.listMediaPage({ ...mediaFilters, page: mediaLibraryPage }).then((result) => {
+      if (!active) return;
+      setMediaLibrary(result);
+      if (mediaLibraryPage > Math.max(1, result.total_pages)) setMediaLibraryPage(Math.max(1, result.total_pages));
+    }).catch((error) => {
+      if (active) setNotice(getErrorDetail(error, "Could not load Media Library."));
+    });
+    return () => { active = false; };
+  }, [activeTab, mediaFilters, mediaLibraryPage, media.length]);
+
+  const openMediaDetail = async (item: CMSMediaAsset) => {
+    try {
+      const detail = await cmsApi.getMedia(item.id);
+      setMediaDetail(detail);
+      setMediaDetailDraft({ alt_text: detail.alt_text || "", caption: detail.caption || "", category: detail.category || "General", tags: (detail.tags || []).join(", ") });
+    } catch (error) {
+      setNotice(getErrorDetail(error, "Could not open media properties."));
+    }
+  };
+
+  const saveMediaDetail = async () => {
+    if (!mediaDetail) return;
+    try {
+      const updated = await cmsApi.updateMedia(mediaDetail.id, { ...mediaDetailDraft, tags: mediaDetailDraft.tags.split(",").map((tag) => tag.trim()).filter(Boolean) });
+      setMediaDetail(updated);
+      setMedia((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setMediaLibrary((current) => ({ ...current, results: current.results.map((item) => item.id === updated.id ? updated : item) }));
+      setNotice("Media properties saved.");
+    } catch (error) {
+      setNotice(getErrorDetail(error, "Could not save media properties."));
+    }
+  };
 
   const loadPageDetail = useCallback(async (pageId: number) => {
     const detail = await cmsApi.getPage(pageId);
@@ -838,11 +921,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       } else if (tab === "review") {
         const queue = await cmsApi.getReviewQueue();
         setReviewQueue({ ...queue, forms: Array.isArray(queue.forms) ? queue.forms : [] });
-      } else if (tab === "revisions") {
-        const revisionRows = await cmsApi.listRevisions(search);
-        setRevisions(revisionRows);
-        setListPages((current) => ({ ...current, revisions: 1 }));
-        setHasMoreRows((current) => ({ ...current, revisions: revisionRows.length === CMS_LIST_PAGE_SIZE }));
       } else if (tab === "settings") {
         await loadSettings(force);
         void loadMediaAssets().catch((error) => console.error("Failed to load CMS media picker.", error));
@@ -883,13 +961,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         rowCount = rows.length;
         setArticles((current) => [...current, ...rows]);
       } else if (tab === "media") {
-        const rows = await cmsApi.listMedia("", nextPage);
-        rowCount = rows.length;
-        setMedia((current) => [...current, ...rows]);
-      } else {
-        const rows = await cmsApi.listRevisions(searchText.trim(), nextPage);
-        rowCount = rows.length;
-        setRevisions((current) => [...current, ...rows]);
+        rowCount = 0;
       }
       setListPages((current) => ({ ...current, [tab]: nextPage }));
       setHasMoreRows((current) => ({ ...current, [tab]: rowCount === CMS_LIST_PAGE_SIZE }));
@@ -1039,7 +1111,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const closeSectionEditor = async () => {
     if (sectionFormHasChanges && !window.confirm("Discard the unsaved changes in this section?")) return;
     const sectionId = sectionForm.id;
-    const nextForm = { ...emptySectionForm, page: selectedPageId || "" };
+    const nextForm: SectionForm = { ...emptySectionForm, page: selectedPageId ?? "" };
     setSectionForm(nextForm);
     setSectionFormBaseline(JSON.stringify(nextForm));
     setSectionReadOnly(false);
@@ -1054,12 +1126,22 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
 
   const saveSection = async (event: React.FormEvent) => {
     event.preventDefault();
+    const showSectionError = (tab: "basics" | "content" | "advanced", message: string) => {
+      setSectionErrors({ [tab]: message });
+      setSectionEditorTab(tab);
+      setNotice(message);
+      window.requestAnimationFrame(() => Array.from(document.querySelectorAll<HTMLElement>('[data-section-editor] input:not([type="hidden"]), [data-section-editor] select, [data-section-editor] textarea')).find((field) => field.offsetParent !== null)?.focus());
+    };
     if (sectionReadOnly) {
       setNotice("This section is read-only while another editor holds the lock.");
       return;
     }
     if (!sectionForm.page || !sectionForm.section_type.trim()) {
-      setNotice("Choose a page and section type before saving.");
+      showSectionError("basics", "Choose a page and section type before saving.");
+      return;
+    }
+    if (!Number.isInteger(Number(sectionForm.order)) || Number(sectionForm.order) < 1 || !Number.isInteger(Number(sectionForm.schema_version)) || Number(sectionForm.schema_version) < 1) {
+      showSectionError("advanced", "Order and schema version must be positive whole numbers.");
       return;
     }
     let parsedContent: Record<string, unknown>;
@@ -1070,10 +1152,11 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       }
       parsedContent = parsed as Record<string, unknown>;
     } catch {
-      setNotice("Section content must be valid JSON.");
+      showSectionError("content", "Section content must be valid JSON.");
       return;
     }
 
+    setSectionErrors({});
     setLoading(true);
     setNotice("");
     try {
@@ -1101,7 +1184,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       setSectionReadOnly(false);
     } catch (error) {
       console.error(error);
-      setNotice(getErrorDetail(error, "Failed to save section."));
+      const detail = getErrorDetail(error, "Failed to save section.");
+      showSectionError(/order|schema.version|visible/i.test(detail) ? "advanced" : /page|section.type/i.test(detail) ? "basics" : "content", detail);
     } finally {
       setLoading(false);
     }
@@ -1227,35 +1311,85 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     }
   };
 
+  const addMediaFiles = (selectedFiles: FileList | null) => {
+    if (!selectedFiles?.length || mediaUploading) return;
+    const queuedKeys = new Set(mediaFiles.map((item) => mediaFileKey(item.file)));
+    const accepted: QueuedMediaFile[] = [];
+    const rejected: string[] = [];
+    for (const file of Array.from(selectedFiles)) {
+      const fileError = validateSelectedMediaFile(file, allowedMediaTypes, mediaUploadLimits);
+      if (fileError) {
+        rejected.push(`${file.name}: ${fileError}`);
+      } else if (queuedKeys.has(mediaFileKey(file))) {
+        rejected.push(`${file.name}: This file is already in the upload queue.`);
+      } else {
+        queuedKeys.add(mediaFileKey(file));
+        accepted.push({ id: ++nextMediaFileIdRef.current, file, altText: "", caption: "", error: "" });
+      }
+    }
+    if (accepted.length) setMediaFiles((current) => [...current, ...accepted]);
+    setMediaSelectionErrors(rejected);
+    setNotice("");
+  };
+
+  const removeMediaFile = (id: number) => {
+    setMediaFiles((current) => current.filter((item) => item.id !== id));
+    setMediaUploadResults((current) => current.filter((item) => item.id !== id));
+    if (mediaFileInputRef.current) mediaFileInputRef.current.value = "";
+    mediaChooseButtonRef.current?.focus();
+  };
+
   const uploadMedia = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!mediaFile) {
-      setNotice("Choose an image or PDF to upload.");
+    if (loading || mediaUploading) return;
+    if (!mediaFiles.length) {
+      setNotice("Choose at least one image or document to upload.");
       return;
     }
-    const fileError = validateSelectedMediaFile(mediaFile, allowedMediaTypes);
-    if (fileError) {
-      setNotice(fileError);
-      return;
-    }
-    const form = new FormData();
-    form.append("file", mediaFile);
-    form.append("alt_text", mediaAlt);
-    form.append("caption", mediaCaption);
+
+    const queuedFiles = mediaFiles;
+    let uploadedCount = 0;
+    let failedCount = 0;
+    setMediaUploading(true);
     setLoading(true);
     setNotice("");
+    setMediaSelectionErrors([]);
+    setMediaUploadResults([]);
+    setMediaUploadProgress({ completed: 0, total: queuedFiles.length });
+    setMediaFiles((current) => current.map((item) => ({ ...item, error: "" })));
     try {
-      const uploaded = await cmsApi.uploadMedia(form) as CMSMediaAsset;
-      setMedia((current) => [uploaded, ...current.filter((item) => item.id !== uploaded.id)]);
-      mediaLoadedRef.current = true;
-      setNotice("Media uploaded.");
-      setMediaFile(null);
-      setMediaAlt("");
-      setMediaCaption("");
-    } catch (error) {
-      console.error(error);
-      setNotice(getErrorDetail(error, "Failed to upload media."));
+      for (const item of queuedFiles) {
+        const fileError = validateSelectedMediaFile(item.file, allowedMediaTypes, mediaUploadLimits);
+        if (fileError) {
+          failedCount += 1;
+          setMediaFiles((current) => current.map((queued) => queued.id === item.id ? { ...queued, error: fileError } : queued));
+          setMediaUploadResults((current) => [...current, { id: item.id, name: item.file.name, uploaded: false, detail: fileError }]);
+        } else {
+          const form = new FormData();
+          form.append("file", item.file);
+          form.append("alt_text", item.altText);
+          form.append("caption", item.caption);
+          try {
+            const uploaded = await cmsApi.uploadMedia(form) as CMSMediaAsset;
+            setMedia((current) => [uploaded, ...current.filter((asset) => asset.id !== uploaded.id)]);
+            mediaLoadedRef.current = true;
+            setMediaFiles((current) => current.filter((queued) => queued.id !== item.id));
+            setMediaUploadResults((current) => [...current, { id: item.id, name: item.file.name, uploaded: true, detail: "Uploaded" }]);
+            uploadedCount += 1;
+          } catch (error) {
+            console.error(error);
+            const detail = getErrorDetail(error, "Failed to upload this file.");
+            setMediaFiles((current) => current.map((queued) => queued.id === item.id ? { ...queued, error: detail } : queued));
+            setMediaUploadResults((current) => [...current, { id: item.id, name: item.file.name, uploaded: false, detail }]);
+            failedCount += 1;
+          }
+        }
+        setMediaUploadProgress({ completed: uploadedCount + failedCount, total: queuedFiles.length });
+      }
+      setNotice(`${uploadedCount} file${uploadedCount === 1 ? "" : "s"} uploaded.${failedCount ? ` ${failedCount} failed; review the errors below and retry.` : ""}`);
     } finally {
+      setMediaUploadProgress(null);
+      setMediaUploading(false);
       setLoading(false);
     }
   };
@@ -1326,7 +1460,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       }
       setNotice(`${label}: ${action} completed.`);
       if (kind === "section" && sectionForm.id === id) {
-        const nextForm = { ...emptySectionForm, page: selectedPageId || "" };
+        const nextForm: SectionForm = { ...emptySectionForm, page: selectedPageId ?? "" };
         setSectionForm(nextForm);
         setSectionFormBaseline(JSON.stringify(nextForm));
         setSectionReadOnly(false);
@@ -1388,17 +1522,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       setNotice(`Developer source applied to ${friendlySettingNames[row.key] || row.key}. Select Save Setting to keep it.`);
     } catch {
       setNotice("The developer source is not valid JSON. Correct it before applying.");
-    }
-  };
-
-  const restoreRevision = async (revision: CMSRevision) => {
-    if (!isAdmin || !window.confirm(`Restore ${revision.content_type} revision v${revision.version_number}?`)) return;
-    try {
-      await cmsApi.restoreRevision(revision.id);
-      setNotice(`Revision v${revision.version_number} restored.`);
-      await loadTab("revisions", true);
-    } catch (error) {
-      setNotice(getErrorDetail(error, "Failed to restore revision."));
     }
   };
 
@@ -2368,7 +2491,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
             {hasUnsavedChanges && <p className="mt-1 text-xs font-semibold text-amber-700">You have unsaved changes.</p>}
           </div>
           <div className="flex flex-wrap gap-2">
-            {(["pages", "news", "forms", "media", "review", "revisions", "settings", "ai"] as ResourceTab[]).map((tab) => (
+            {(["pages", "news", "forms", "media", "review", "settings", "ai"] as ResourceTab[]).map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -2386,13 +2509,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   forms: "Contributor Forms",
                   media: "Media Library",
                   review: "Review Queue",
-                  revisions: "Revision History",
                   settings: "Site Settings",
                   ai: "AI Scoring",
                 }[tab]}
               </button>
             ))}
-            {["pages", "news", "revisions"].includes(activeTab) && (
+            {["pages", "news"].includes(activeTab) && (
               <input
                 type="search"
                 value={searchText}
@@ -2441,11 +2563,11 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       )}
 
       {activeTab === "pages" && (
-        <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
-          <div className="min-w-0 space-y-4">
-            <form onSubmit={savePage} className="portal-card min-w-0 overflow-hidden">
-              <div className="portal-card-header min-w-0">
-                <h3 className="font-bold text-slate-900">{pageForm.id ? "Edit Page Draft" : "Create Page Draft"}</h3>
+        <div className="flex min-w-0 flex-col gap-4">
+          <div className="contents">
+            <form onSubmit={savePage} className="portal-card order-2 min-w-0 overflow-hidden">
+              <div className="portal-card-header min-w-0 text-left">
+                <h3 className="font-bold text-slate-900">Edit Page Draft</h3>
               </div>
               <div className="portal-card-body min-w-0 space-y-3">
                 <Field
@@ -2485,8 +2607,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               </div>
             </form>
 
-            <div className="portal-card min-w-0 overflow-hidden">
-              <div className="portal-card-header min-w-0">
+            <div className="portal-card order-1 min-w-0 overflow-hidden">
+              <div className="portal-card-header min-w-0 text-left">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h3 className="font-bold text-slate-900">Public Website Pages</h3>
@@ -2537,16 +2659,16 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                           {page.status !== "archived" && (
                             <button type="button" className="text-sm text-blue-600" onClick={() => editPage(page)}>Edit</button>
                           )}
-                          <button
+                          {page.published_at && <button
                             type="button"
                             className="text-sm text-slate-600"
                             onClick={() => window.open(pagePublicPath(publishedSlug(page)), "_blank", "noopener,noreferrer")}
                           >
                             View Published
-                          </button>
-                          <button type="button" className="text-sm text-slate-600" onClick={() => copyPublicUrl(pagePublicPath(publishedSlug(page)))}>
+                          </button>}
+                          {page.published_at && <button type="button" className="text-sm text-slate-600" onClick={() => copyPublicUrl(pagePublicPath(publishedSlug(page)))}>
                             Copy URL
-                          </button>
+                          </button>}
                           {isAdmin && page.status !== "archived" && (
                             <button type="button" className="text-sm text-emerald-700" onClick={() => publishPage(page)}>
                               Publish
@@ -2576,11 +2698,11 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
             </div>
           </div>
 
-          <div className="min-w-0 space-y-4">
-            <form onSubmit={saveSection} className="portal-card min-w-0 overflow-hidden">
+          <div className="contents">
+            <form data-section-editor onSubmit={saveSection} className="portal-card order-4 min-w-0 overflow-hidden">
               <div className="portal-card-header flex min-w-0 items-center justify-between gap-3">
                 <div>
-                  <h3 className="font-bold text-slate-900">{sectionForm.id ? sectionReadOnly ? "View Locked Section" : "Edit Section Block" : "Add Section Block"}</h3>
+                  <h3 className="font-bold text-slate-900">Edit Section</h3>
                   {sectionForm.id && <p className="text-xs text-slate-500">Locks expire after 10 minutes; this editor refreshes them every 2 minutes.</p>}
                 </div>
                 {sectionForm.id && <button type="button" className="portal-btn portal-btn-ghost" onClick={closeSectionEditor}>Close</button>}
@@ -2590,8 +2712,16 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   Another editor currently holds this section lock. Fields are read-only until the lock is released or expires.
                 </div>
               )}
+              <div className="flex flex-wrap gap-2 border-b border-slate-200 px-5 py-3" role="tablist" aria-label="Section editor">
+                {(["basics", "content", "advanced"] as const).map((tab) => (
+                  <button key={tab} type="button" role="tab" aria-selected={sectionEditorTab === tab} onClick={() => setSectionEditorTab(tab)} className={`rounded-lg px-3 py-2 text-sm ${sectionEditorTab === tab ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}>
+                    {tab === "basics" ? "Basics" : tab === "content" ? "Content" : "Visibility / Advanced"}{sectionErrors[tab] ? " •" : ""}
+                  </button>
+                ))}
+              </div>
               <fieldset disabled={sectionReadOnly} className="portal-card-body min-w-0 space-y-4 disabled:opacity-70">
-                <div className="grid min-w-0 gap-3 md:grid-cols-2">
+                {sectionErrors[sectionEditorTab] && <p role="alert" className="text-sm text-rose-700">{sectionErrors[sectionEditorTab]}</p>}
+                <div hidden={sectionEditorTab !== "basics"} className="grid min-w-0 gap-3 md:grid-cols-2">
                   <Select
                     label="Page"
                     value={String(sectionForm.page)}
@@ -2624,22 +2754,22 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     options={sectionTypeOptions}
                   />
                 </div>
-                {developerMode && isAdmin && (
+                {sectionEditorTab === "advanced" && developerMode && isAdmin && (
                   <div className="grid min-w-0 gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 md:grid-cols-3">
                     <Field label="Developer: Section Key" value={sectionForm.section_key} onChange={(value) => setSectionForm((prev) => ({ ...prev, section_key: value }))} helper="Unique internal key for this page." />
                     <Field label="Developer: Order" value={sectionForm.order} onChange={(value) => setSectionForm((prev) => ({ ...prev, order: value }))} />
                     <Field label="Developer: Schema Version" value={sectionForm.schema_version} onChange={(value) => setSectionForm((prev) => ({ ...prev, schema_version: value }))} />
                   </div>
                 )}
-                <label className="flex items-center gap-2 text-sm text-slate-700">
+                {sectionEditorTab === "advanced" && <label className="flex items-center gap-2 text-sm text-slate-700">
                   <input
                     type="checkbox"
                     checked={sectionForm.is_visible}
                     onChange={(event) => setSectionForm((prev) => ({ ...prev, is_visible: event.target.checked }))}
                   />
                   Visible when page is published
-                </label>
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2">
+                </label>}
+                {sectionEditorTab === "content" && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2">
                   <p className="text-sm text-blue-800">
                     Use the form below for normal editing. The public site still updates only after publish.
                   </p>
@@ -2653,8 +2783,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   >
                     Load template
                   </button>
-                </div>
-                <div className="min-w-0 space-y-4">
+                </div>}
+                {sectionEditorTab === "content" && <div className="min-w-0 space-y-4">
                   {renderSectionVisualEditor()}
                   {developerMode && isAdmin && (
                     <details className="overflow-hidden rounded-xl border border-amber-200 bg-white">
@@ -2664,7 +2794,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                       </div>
                     </details>
                   )}
-                </div>
+                </div>}
                 <div className="sticky bottom-0 z-10 flex flex-wrap gap-2 border-t border-slate-200 bg-white/95 py-3 backdrop-blur">
                   <button type="submit" className="portal-btn portal-btn-primary" disabled={loading}>
                     {sectionForm.id ? "Save Section Draft" : "Add Section"}
@@ -2682,9 +2812,9 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               </fieldset>
             </form>
 
-            <div className="portal-card min-w-0 overflow-hidden">
+            <div className="portal-card order-3 min-w-0 overflow-hidden">
               <div className="portal-card-header min-w-0">
-                <h3 className="font-bold text-slate-900">Sections {selectedPage ? `for ${selectedPage.title}` : ""}</h3>
+                <h3 className="font-bold text-slate-900">Sections for Page {selectedPage ? `— ${selectedPage.title}` : ""}</h3>
               </div>
               <div className="portal-card-body min-w-0 space-y-3">
                 {!selectedPage ? (
@@ -2905,16 +3035,16 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                         {article.status !== "archived" && (
                           <button type="button" className="text-blue-600" onClick={() => editArticle(article)}>Edit</button>
                         )}
-                        <button
+                        {article.published_at && <button
                           type="button"
                           className="text-slate-600"
                           onClick={() => window.open(articlePublicPath(publishedSlug(article)), "_blank", "noopener,noreferrer")}
                         >
                           View Published
-                        </button>
-                        <button type="button" className="text-slate-600" onClick={() => copyPublicUrl(articlePublicPath(publishedSlug(article)))}>
+                        </button>}
+                        {article.published_at && <button type="button" className="text-slate-600" onClick={() => copyPublicUrl(articlePublicPath(publishedSlug(article)))}>
                           Copy URL
-                        </button>
+                        </button>}
                         {isAdmin && article.status !== "archived" && (
                           <button type="button" className="text-emerald-700" onClick={() => publishArticle(article)}>
                             Publish
@@ -2953,57 +3083,105 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   Public pages update only after the page is published.
                 </p>
               </div>
-              <label className="block min-w-0">
-                <span className="text-sm font-medium text-slate-700">Image or document</span>
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-slate-700">Images, documents, audio, or video</p>
                 <input
+                  ref={mediaFileInputRef}
                   type="file"
+                  multiple
                   accept={allowedMediaTypes.join(",")}
-                  className="mt-1 block w-full text-sm"
+                  aria-label="Choose media files to upload"
+                  className="hidden"
                   onChange={(event) => {
-                    const nextFile = event.target.files?.[0] || null;
-                    if (!nextFile) {
-                      setMediaFile(null);
-                      return;
-                    }
-                    const fileError = validateSelectedMediaFile(nextFile, allowedMediaTypes);
-                    if (fileError) {
-                      event.target.value = "";
-                      setMediaFile(null);
-                      setNotice(fileError);
-                      return;
-                    }
-                    setNotice("");
-                    setMediaFile(nextFile);
+                    addMediaFiles(event.target.files);
+                    event.target.value = "";
                   }}
                 />
+                <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
+                  <button
+                    ref={mediaChooseButtonRef}
+                    type="button"
+                    className="portal-btn portal-btn-ghost min-h-11 shrink-0 disabled:cursor-wait disabled:opacity-60"
+                    disabled={loading || mediaUploading}
+                    onClick={() => mediaFileInputRef.current?.click()}
+                  >
+                    {mediaFiles.length ? "Add More Files" : "Choose Files"}
+                  </button>
+                  <span className="min-w-0 break-words text-sm text-slate-600" aria-live="polite">
+                    {mediaFiles.length ? `${mediaFiles.length} file${mediaFiles.length === 1 ? "" : "s"} queued` : "No files chosen"}
+                  </span>
+                </div>
                 <span className="mt-1 block text-xs text-slate-500">
                   The current database policy allows {allowedMediaTypes.length} MIME type{allowedMediaTypes.length === 1 ? "" : "s"}.
-                  Image limit: {formatMediaSize(mediaUploadLimits.image)}; document limit: {formatMediaSize(mediaUploadLimits.document)}.
+                  Image limit: {formatMediaSize(mediaUploadLimits.image)}; document limit: {formatMediaSize(mediaUploadLimits.document)}; audio limit: {formatMediaSize(mediaUploadLimits.audio)}; video limit: {formatMediaSize(mediaUploadLimits.video)}.
                   Admins can change the policy in Site Settings.
                 </span>
-              </label>
-              {mediaFile && (
-                <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-                  <p className="font-semibold">Ready to upload: {mediaFile.name}</p>
-                  <p>
-                    {CMS_MEDIA_TYPE_LABELS[mediaFile.type] || mediaFile.type} - {formatMediaSize(mediaFile.size)}
-                  </p>
+              </div>
+              {mediaSelectionErrors.length > 0 && (
+                <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  <p className="font-semibold">These files were not added:</p>
+                  <ul className="mt-1 list-disc space-y-1 pl-5">
+                    {mediaSelectionErrors.map((error, index) => <li key={`${error}-${index}`} className="break-words">{error}</li>)}
+                  </ul>
                 </div>
               )}
-              <Field
-                label="Alt Text"
-                value={mediaAlt}
-                onChange={setMediaAlt}
-                helper="Required for meaningful images; leave blank for decorative files or PDFs."
-              />
-              <Field
-                label="Caption"
-                value={mediaCaption}
-                onChange={setMediaCaption}
-                helper="Use a clear library name so staff can find this asset later."
-              />
-              <button type="submit" className="portal-btn portal-btn-primary" disabled={loading}>
-                Upload Media
+              {mediaFiles.length > 0 && (
+                <>
+                  <p className="text-xs text-slate-500">
+                    Give meaningful images Alt Text; leave it blank for decorative images or documents. Use Caption as a clear library name.
+                  </p>
+                  <ul className="space-y-3" aria-label="Files ready to upload">
+                    {mediaFiles.map((item) => (
+                      <li key={item.id} className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <fieldset disabled={loading || mediaUploading} className="min-w-0">
+                          <legend className="sr-only">Upload details for {item.file.name}</legend>
+                          <div className="flex min-w-0 items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="break-all text-sm font-semibold text-slate-900">{item.file.name}</p>
+                              <p className="text-xs text-slate-500">
+                                {CMS_MEDIA_TYPE_LABELS[item.file.type] || item.file.type} - {formatMediaSize(item.file.size)}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              aria-label={`Remove ${item.file.name} from upload queue`}
+                              title="Remove file"
+                              className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-xl text-slate-600 hover:border-rose-300 hover:text-rose-700 disabled:cursor-wait disabled:opacity-60"
+                              onClick={() => removeMediaFile(item.id)}
+                            >
+                              ×
+                            </button>
+                          </div>
+                          <div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">
+                            <Field label="Alt Text" value={item.altText} onChange={(value) => setMediaFiles((current) => current.map((queued) => queued.id === item.id ? { ...queued, altText: value } : queued))} />
+                            <Field label="Caption" value={item.caption} onChange={(value) => setMediaFiles((current) => current.map((queued) => queued.id === item.id ? { ...queued, caption: value } : queued))} />
+                          </div>
+                          {item.error && <p role="alert" className="mt-2 break-words text-sm text-rose-700">{item.error}</p>}
+                        </fieldset>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {mediaUploadProgress && (
+                <p role="status" className="text-sm font-medium text-blue-700">
+                  Uploading files: {mediaUploadProgress.completed} of {mediaUploadProgress.total} completed.
+                </p>
+              )}
+              {mediaUploadResults.length > 0 && !mediaUploading && (
+                <div role="status" className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
+                  <p className="font-semibold text-slate-900">Last upload results</p>
+                  <ul className="mt-1 space-y-1">
+                    {mediaUploadResults.map((result) => (
+                      <li key={result.id} className={`break-words ${result.uploaded ? "text-emerald-700" : "text-rose-700"}`}>
+                        {result.name}: {result.detail}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <button type="submit" className="portal-btn portal-btn-primary disabled:cursor-not-allowed disabled:opacity-60" disabled={loading || mediaUploading || mediaFiles.length === 0}>
+                {mediaUploading ? "Uploading..." : mediaFiles.length ? `Upload ${mediaFiles.length} File${mediaFiles.length === 1 ? "" : "s"}` : "Upload Media"}
               </button>
             </div>
           </form>
@@ -3015,15 +3193,21 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                 <p className="text-xs text-slate-500">Active CMS assets. Files in use are protected from archiving.</p>
               </div>
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
-                {media.length} active asset{media.length === 1 ? "" : "s"}
+                {mediaLibrary.count} active asset{mediaLibrary.count === 1 ? "" : "s"}
               </span>
             </div>
             <div className="portal-card-body min-w-0">
-              {media.length === 0 ? (
-                <p className="text-sm text-slate-500">No uploaded media yet.</p>
+              <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                <input aria-label="Search media" value={mediaFilters.q} onChange={(event) => { setMediaLibraryPage(1); setMediaFilters((current) => ({ ...current, q: event.target.value })); }} placeholder="Search media" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                <select aria-label="Media type" value={mediaFilters.file_type} onChange={(event) => { setMediaLibraryPage(1); setMediaFilters((current) => ({ ...current, file_type: event.target.value })); }} className="rounded-lg border border-slate-200 px-3 py-2 text-sm"><option value="">All types</option><option value="image">Images</option><option value="document">Documents</option><option value="audio">Audio</option><option value="video">Video</option></select>
+                <select aria-label="Media category" value={mediaFilters.category} onChange={(event) => { setMediaLibraryPage(1); setMediaFilters((current) => ({ ...current, category: event.target.value })); }} className="rounded-lg border border-slate-200 px-3 py-2 text-sm"><option value="">All categories</option>{mediaCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select>
+                <input aria-label="Filter by tag" value={mediaFilters.tag} onChange={(event) => { setMediaLibraryPage(1); setMediaFilters((current) => ({ ...current, tag: event.target.value })); }} placeholder="Tag" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+              </div>
+              {mediaLibrary.results.length === 0 ? (
+                <p className="text-sm text-slate-500">No media matches these filters.</p>
               ) : (
                 <div className="grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  {media.map((item) => {
+                  {mediaLibrary.results.map((item) => {
                     const usageKnown = typeof item.usage_count === "number";
                     const usageCount = item.usage_count || 0;
                     const usedBy = item.used_by || [];
@@ -3033,6 +3217,10 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                         <div className="aspect-video overflow-hidden rounded-lg bg-slate-100">
                           {item.file_type === "image" ? (
                             <img src={item.url} alt={item.alt_text || item.caption || "CMS media"} width={320} height={180} loading="lazy" decoding="async" className="h-full w-full object-cover" />
+                          ) : item.file_type === "video" ? (
+                            <video src={item.url} controls preload="none" className="h-full w-full object-contain" />
+                          ) : item.file_type === "audio" ? (
+                            <audio src={item.url} controls preload="none" className="w-full self-center" />
                           ) : (
                             <div className="flex h-full items-center justify-center text-sm font-semibold text-slate-500">
                               {mediaFileTypeLabel(item)}
@@ -3068,6 +3256,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                         </div>
 
                         <div className="mt-2 flex flex-wrap gap-2 text-sm">
+                          <button type="button" className="text-blue-700" onClick={() => void openMediaDetail(item)}>Properties</button>
                           <a href={item.url} target="_blank" rel="noreferrer" className="text-blue-600">
                             Open
                           </a>
@@ -3100,8 +3289,18 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   })}
                 </div>
               )}
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-4 text-sm text-slate-600">
+                <span>Showing {mediaLibrary.count ? (mediaLibraryPage - 1) * 10 + 1 : 0}–{Math.min(mediaLibraryPage * 10, mediaLibrary.count)} of {mediaLibrary.count} matching media</span>
+                <div className="flex items-center gap-2"><button type="button" disabled={mediaLibraryPage <= 1} onClick={() => setMediaLibraryPage((page) => page - 1)} className="portal-btn portal-btn-ghost disabled:opacity-50">Previous</button><span>Page {mediaLibraryPage} of {Math.max(1, mediaLibrary.total_pages)}</span><button type="button" disabled={mediaLibraryPage >= mediaLibrary.total_pages} onClick={() => setMediaLibraryPage((page) => page + 1)} className="portal-btn portal-btn-ghost disabled:opacity-50">Next</button></div>
+              </div>
             </div>
           </div>
+          {mediaDetail && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setMediaDetail(null); }}><div role="dialog" aria-modal="true" aria-label="Media properties" className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-xl bg-white p-5 shadow-xl">
+            <div className="flex justify-between gap-2"><h3 className="text-lg font-semibold">Media Properties</h3><button type="button" aria-label="Close properties" onClick={() => setMediaDetail(null)}>×</button></div>
+            <dl className="mt-4 grid gap-2 text-sm sm:grid-cols-2"><div><dt className="font-medium">File name</dt><dd className="break-all">{mediaDetail.original_filename || mediaDetail.file?.split("/").pop()}</dd></div><div><dt className="font-medium">Type</dt><dd>{mediaDetail.mime_type}</dd></div><div><dt className="font-medium">Size</dt><dd>{formatMediaSize(mediaDetail.size)}</dd></div><div><dt className="font-medium">Dimensions / duration</dt><dd>{mediaDetail.width && mediaDetail.height ? `${mediaDetail.width} × ${mediaDetail.height}` : "—"}{mediaDetail.duration_seconds ? ` · ${Math.round(mediaDetail.duration_seconds)} seconds` : ""}</dd></div><div><dt className="font-medium">Uploaded by</dt><dd>{mediaDetail.uploaded_by_name || "Unknown"}</dd></div><div><dt className="font-medium">Date uploaded</dt><dd>{formatDate(mediaDetail.created_at)}</dd></div></dl>
+            <div className="mt-4 grid gap-3"><Field label="Alt Text" value={mediaDetailDraft.alt_text} onChange={(value) => setMediaDetailDraft((current) => ({ ...current, alt_text: value }))} /><Field label="Caption" value={mediaDetailDraft.caption} onChange={(value) => setMediaDetailDraft((current) => ({ ...current, caption: value }))} /><Select label="Category" value={mediaDetailDraft.category} options={[...new Set([...mediaCategories, mediaDetailDraft.category])].map((category) => ({ value: category, label: category }))} onChange={(value) => setMediaDetailDraft((current) => ({ ...current, category: value }))} /><Field label="Tags (comma-separated)" value={mediaDetailDraft.tags} onChange={(value) => setMediaDetailDraft((current) => ({ ...current, tags: value }))} /></div>
+            <div className="mt-5 flex justify-end gap-2"><button type="button" className="portal-btn portal-btn-ghost" onClick={() => setMediaDetail(null)}>Cancel</button><button type="button" className="portal-btn portal-btn-primary" onClick={() => void saveMediaDetail()}>Save Properties</button></div>
+          </div></div>}
         </div>
       )}
 
@@ -3163,26 +3362,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         </div>
       )}
 
-      {activeTab === "revisions" && (
-        <div className="portal-card min-w-0 overflow-hidden">
-          <div className="portal-card-header"><h3 className="font-bold text-slate-900">Revision History</h3><p className="text-xs text-slate-500">Historical snapshots remain available after their target is deleted.</p></div>
-          <div className="portal-card-body space-y-3">
-            {revisions.length === 0 ? <p className="text-sm text-slate-500">No CMS revisions yet.</p> : revisions.map((revision) => (
-              <div key={revision.id} className="flex flex-col justify-between gap-3 rounded-xl border border-slate-200 p-3 md:flex-row md:items-center">
-                <div><strong>{revision.content_type === "page" ? "Page" : revision.content_type === "article" ? "News Article" : revision.content_type === "section" ? "Page Section" : revision.content_type === "form" ? "Contributor Form" : "Media File"} · Revision {revision.version_number}{revision.is_target_deleted ? " (deleted)" : ""}</strong><p className="text-xs text-slate-500">{statusLabel(revision.action)} by {revision.changed_by_name || "system"} · {formatDate(revision.created_at)}</p></div>
-                {isAdmin && !["media", "form"].includes(revision.content_type) && <button type="button" className="portal-btn portal-btn-ghost" onClick={() => restoreRevision(revision)}>Restore</button>}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {activeTab === "settings" && (
         <div className="space-y-5">
           {[
             { title: "Branding and Contact", detail: "Public logo, footer wording, office address, and contact information.", keys: ["site-logo", "footer-text", "contact-details", "office-address"] },
             { title: "Navigation and Messages", detail: "Public links and the homepage announcement.", keys: ["social-links", "quick-links", "homepage-announcement-banner"] },
-            { title: "Media Upload Rules", detail: "File types and size limits accepted by the CMS Media Library.", keys: ["media-upload-allowed-types", "media-upload-max-bytes"] },
+            { title: "Media Upload Rules", detail: "File types, size limits, and editorial categories for CMS media.", keys: ["media-upload-allowed-types", "media-upload-max-bytes", "media-categories"] },
           ].map((group) => {
             const rows = group.keys.map((key) => settingsRows.find((row) => row.key === key)).filter((row): row is CMSSiteSetting => Boolean(row));
             if (!rows.length) return null;
@@ -3241,7 +3426,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         </div>
       )}
 
-      {(["pages", "news", "media", "revisions"] as ResourceTab[]).includes(activeTab)
+      {(["pages", "news"] as ResourceTab[]).includes(activeTab)
         && hasMoreRows[activeTab as PaginatedResourceTab] && (
           <div className="flex justify-center">
             <button
@@ -3322,9 +3507,13 @@ const MediaAssetPicker = ({
   helper?: string;
 }) => {
   const selected = assets.find((asset) => String(asset.id) === value);
+  const [pickerSearch, setPickerSearch] = useState("");
+  const pickerId = React.useId();
+  const visibleAssets = assets.filter((asset) => !pickerSearch.trim() || `${mediaDisplayName(asset)} ${asset.original_filename || ""} ${asset.alt_text || ""}`.toLowerCase().includes(pickerSearch.trim().toLowerCase()) || String(asset.id) === value);
   return (
-    <label className="block min-w-0">
-      <span className="text-sm font-medium text-slate-700">{label}</span>
+    <div className="block min-w-0">
+      <label htmlFor={pickerId} className="text-sm font-medium text-slate-700">{label}</label>
+      <input type="search" aria-label={`Search ${label}`} value={pickerSearch} onChange={(event) => setPickerSearch(event.target.value)} placeholder="Search library files" className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
       <div className="mt-1 overflow-hidden rounded-xl border border-slate-300 bg-white">
         {selected && (
           <div className="flex items-center gap-3 border-b border-slate-200 bg-slate-50 p-2">
@@ -3339,15 +3528,15 @@ const MediaAssetPicker = ({
             </div>
           </div>
         )}
-        <select className="min-w-0 w-full px-3 py-2" value={value} onChange={(event) => onChange(event.target.value)}>
+        <select id={pickerId} className="min-w-0 w-full px-3 py-2" value={value} onChange={(event) => onChange(event.target.value)}>
           <option value="">{assets.length ? "No library file selected" : "No matching media uploaded yet"}</option>
-          {assets.map((asset) => (
+          {visibleAssets.map((asset) => (
             <option key={asset.id} value={String(asset.id)}>{mediaDisplayName(asset)}{formatMediaSize(asset.size) ? ` (${formatMediaSize(asset.size)})` : ""}</option>
           ))}
         </select>
       </div>
       {helper && <span className="mt-1 block text-xs text-slate-500">{helper}</span>}
-    </label>
+    </div>
   );
 };
 
@@ -3444,9 +3633,9 @@ const SiteSettingFields = ({
   } else if (row.key === "media-upload-allowed-types") {
     fields = (
       <div className="grid gap-4 sm:grid-cols-2">
-        {(["image", "document"] as const).map((group) => {
-          const configured = Array.isArray(objectValue[group]) ? objectValue[group].filter((item): item is string => typeof item === "string") : [];
-          const known = Object.entries(CMS_MEDIA_TYPE_LABELS).filter(([mime]) => group === "image" ? mime.startsWith("image/") : !mime.startsWith("image/"));
+        {(["image", "document", "audio", "video"] as const).map((group) => {
+          const configured = Array.isArray(objectValue[group]) ? objectValue[group].filter((item): item is string => typeof item === "string") : Object.keys(CMS_MEDIA_TYPE_LABELS).filter((mime) => group === "document" ? mime.startsWith("application/") : mime.startsWith(`${group}/`));
+          const known = Object.entries(CMS_MEDIA_TYPE_LABELS).filter(([mime]) => group === "document" ? mime.startsWith("application/") : mime.startsWith(`${group}/`));
           return (
             <div key={group}>
               <p className="mb-2 text-sm font-semibold capitalize text-slate-800">{group} files</p>
@@ -3474,10 +3663,10 @@ const SiteSettingFields = ({
   } else if (row.key === "media-upload-max-bytes") {
     fields = (
       <div className="grid gap-3 sm:grid-cols-2">
-        {(["image", "document"] as const).map((group) => (
+        {(["image", "document", "audio", "video"] as const).map((group) => (
           <Field
             key={group}
-            label={`${group === "image" ? "Image" : "Document"} Limit (MB)`}
+            label={`${group.charAt(0).toUpperCase() + group.slice(1)} Limit (MB)`}
             value={(Number(objectValue[group] || 0) / (1024 * 1024)).toFixed(1)}
             onChange={(next) => {
               const megabytes = Number(next);
@@ -3488,6 +3677,9 @@ const SiteSettingFields = ({
         ))}
       </div>
     );
+  } else if (row.key === "media-categories") {
+    const categories = Array.isArray(objectValue.categories) ? objectValue.categories.filter((item): item is string => typeof item === "string") : ["General"];
+    fields = <div className="space-y-2"><p className="text-sm text-slate-600">One category per line. General always remains available.</p><Area label="Media Categories" value={categories.join("\n")} onChange={(next) => onChange({ categories: [...new Set(["General", ...next.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)])] })} rows={6} /></div>;
   } else {
     fields = <p className="text-sm text-slate-600">This value is preserved, but it does not have a visual editor yet.</p>;
   }

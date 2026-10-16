@@ -70,11 +70,18 @@ export type CMSMediaAsset = {
   id: number;
   file?: string;
   url: string;
-  file_type: "image" | "document" | "other";
+  file_type: "image" | "document" | "audio" | "video" | "other";
   mime_type: string;
   size: number;
   alt_text: string;
   caption: string;
+  original_filename?: string;
+  width?: number | null;
+  height?: number | null;
+  duration_seconds?: number | null;
+  category?: string;
+  tags?: string[];
+  uploaded_by_name?: string;
   is_archived: boolean;
   used_by?: Array<{
     type: string;
@@ -85,20 +92,6 @@ export type CMSMediaAsset = {
   }>;
   usage_count?: number;
   can_archive?: boolean;
-  created_at: string;
-};
-
-export type CMSRevision = {
-  id: number;
-  content_type: "page" | "article" | "section" | "media" | "form";
-  object_id: number;
-  version_number: number;
-  action: string;
-  status_before: string;
-  status_after: string;
-  snapshot_json: Record<string, unknown>;
-  changed_by_name: string;
-  is_target_deleted: boolean;
   created_at: string;
 };
 
@@ -469,21 +462,39 @@ export const cmsApi = {
   getContributorFormVersion: (key: string, version: number) =>
     api.get(`contributor-forms/${key}/versions/${version}/`) as Promise<ContributorFormPayload>,
 
-  listMedia: async (search = "", page = 1) =>
-    listFromResponse<CMSMediaAsset>(await api.get(`admin/cms/media/?${summaryQuery({ q: search, page })}`)).map((asset) => ({
+  listMediaPage: async (filters: { q?: string; page?: number; file_type?: string; category?: string; tag?: string; archived?: boolean } = {}) => {
+    const query = new URLSearchParams({ view: "summary", page: String(filters.page || 1) });
+    if (filters.q) query.set("q", filters.q);
+    if (filters.file_type) query.set("file_type", filters.file_type);
+    if (filters.category) query.set("category", filters.category);
+    if (filters.tag) query.set("tag", filters.tag);
+    if (filters.archived) query.set("archived", "1");
+    const response = await api.get(`admin/cms/media/?${query.toString()}`) as { results: CMSMediaAsset[]; count: number; page: number; total_pages: number };
+    return { ...response, results: response.results.map((asset) => ({
       ...asset,
       file: resolveCmsMediaUrl(asset.file),
       url: resolveCmsMediaUrl(asset.url),
-    })),
+    })) };
+  },
+  listMedia: async (search = "") => {
+    const rows: CMSMediaAsset[] = [];
+    let page = 1;
+    while (true) {
+      const result = await cmsApi.listMediaPage({ q: search, page });
+      rows.push(...result.results);
+      if (page >= result.total_pages) return rows;
+      page += 1;
+    }
+  },
+  getMedia: (id: number) => api.get(`admin/cms/media/${id}/`) as Promise<CMSMediaAsset>,
+  updateMedia: (id: number, payload: { alt_text: string; caption: string; category: string; tags: string[] }) => api.patch(`admin/cms/media/${id}/`, payload) as Promise<CMSMediaAsset>,
   uploadMedia: (formData: FormData) => api.postForm("admin/cms/media/", formData),
   archiveMedia: (id: number) => api.post(`admin/cms/media/${id}/archive/`),
+  restoreMedia: (id: number) => api.post(`admin/cms/media/${id}/restore/`),
 
   listSettings: async () => listFromResponse<CMSSiteSetting>(await api.get("admin/cms/settings/")),
   updateSetting: (key: string, payload: Pick<CMSSiteSetting, "value_json" | "description">) =>
     api.patch(`admin/cms/settings/${key}/`, payload),
-  listRevisions: async (search = "", page = 1) =>
-    listFromResponse<CMSRevision>(await api.get(`admin/cms/revisions/?${summaryQuery({ q: search, page })}`)),
-  restoreRevision: (id: number) => api.post(`admin/cms/revisions/${id}/restore-revision/`),
   getReviewQueue: () => api.get("admin/cms/review-queue/?view=summary") as Promise<CMSReviewQueue>,
   getAIScoringWorkspace: (limit = 50) => api.get(`admin/cms/ai-scoring/?limit=${limit}`) as Promise<CMSAIScoringWorkspace>,
   activateAIScoringRules: (config: CMSAIRuleConfig, changeNote: string) =>

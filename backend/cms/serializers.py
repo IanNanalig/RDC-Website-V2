@@ -17,7 +17,6 @@ from cms.models import (
     CMSMediaAsset,
     CMSPage,
     CMSPageSection,
-    CMSRevision,
     CMSSiteSetting,
 )
 from cms.services.locking import lock_is_active
@@ -54,11 +53,27 @@ class CMSMediaAssetSerializer(serializers.ModelSerializer):
             "id", "file", "url", "storage_backend", "storage_key", "public_url",
             "file_type", "mime_type", "size", "alt_text", "caption", "uploaded_by",
             "uploaded_by_name", "is_archived", "used_by", "usage_count", "can_archive", "created_at",
+            "original_filename", "width", "height", "duration_seconds", "category", "tags",
         ]
         read_only_fields = [
             "storage_backend", "storage_key", "public_url", "file_type", "mime_type", "size",
             "uploaded_by", "uploaded_by_name", "used_by", "usage_count", "can_archive", "created_at",
+            "original_filename", "width", "height", "duration_seconds",
         ]
+
+    def validate_category(self, value):
+        from cms.models import CMSSiteSetting
+        setting = CMSSiteSetting.objects.filter(key="media-categories").values_list("value_json", flat=True).first() or {}
+        choices = setting.get("categories") if isinstance(setting, dict) else None
+        allowed = ["General"] + (choices if isinstance(choices, list) else [])
+        if value not in allowed and value != getattr(self.instance, "category", None):
+            raise serializers.ValidationError("Choose a category from Site Settings.")
+        return value
+
+    def validate_tags(self, value):
+        if not isinstance(value, list) or len(value) > 10 or any(not isinstance(tag, str) or not tag.strip() or len(tag) > 40 for tag in value):
+            raise serializers.ValidationError("Use up to 10 nonempty tags, 40 characters each.")
+        return list(dict.fromkeys(tag.strip() for tag in value))
 
     def get_url(self, obj):
         url = obj.resolved_public_url
@@ -514,9 +529,15 @@ class CMSMediaAssetSummarySerializer(serializers.ModelSerializer):
         model = CMSMediaAsset
         fields = [
             "id", "file", "url", "file_type", "mime_type", "size", "alt_text", "caption",
-            "is_archived", "created_at",
+            "is_archived", "created_at", "original_filename", "width", "height", "duration_seconds",
+            "category", "tags", "uploaded_by_name",
         ]
         read_only_fields = fields
+
+    uploaded_by_name = serializers.SerializerMethodField()
+
+    def get_uploaded_by_name(self, obj):
+        return _user_display(obj.uploaded_by)
 
     def get_url(self, obj):
         url = obj.resolved_public_url
@@ -526,72 +547,6 @@ class CMSMediaAssetSummarySerializer(serializers.ModelSerializer):
         if request and url.startswith("/"):
             return request.build_absolute_uri(url)
         return url
-
-
-class CMSRevisionSerializer(serializers.ModelSerializer):
-    changed_by_name = serializers.SerializerMethodField()
-    content_type = serializers.SerializerMethodField()
-    is_target_deleted = serializers.SerializerMethodField()
-
-    class Meta:
-        model = CMSRevision
-        fields = [
-            "id", "content_type", "object_id", "version_number", "action", "status_before", "status_after",
-            "snapshot_json", "changed_by", "changed_by_name", "is_target_deleted", "created_at",
-        ]
-        read_only_fields = fields
-
-    def get_changed_by_name(self, obj):
-        return _user_display(obj.changed_by)
-
-    def get_content_type(self, obj):
-        return obj.content_type_key
-
-    def get_is_target_deleted(self, obj):
-        return obj.content_object is None
-
-
-class CMSRevisionSummaryListSerializer(serializers.ListSerializer):
-    """Resolve deleted-target flags in one query per target model, not one per revision."""
-
-    def to_representation(self, data):
-        instances = list(data.all() if hasattr(data, "all") else data)
-        grouped = {}
-        for revision in instances:
-            grouped.setdefault(revision.content_type, set()).add(revision.object_id)
-        for content_type, object_ids in grouped.items():
-            model = content_type.model_class()
-            existing = set(model.objects.filter(pk__in=object_ids).values_list("pk", flat=True)) if model else set()
-            for revision in instances:
-                if revision.content_type_id == content_type.pk:
-                    revision._cms_target_deleted = revision.object_id not in existing
-        return super().to_representation(instances)
-
-
-class CMSRevisionSummarySerializer(serializers.ModelSerializer):
-    changed_by_name = serializers.SerializerMethodField()
-    content_type = serializers.SerializerMethodField()
-    is_target_deleted = serializers.SerializerMethodField()
-
-    class Meta:
-        model = CMSRevision
-        list_serializer_class = CMSRevisionSummaryListSerializer
-        fields = [
-            "id", "content_type", "object_id", "version_number", "action", "status_before",
-            "status_after", "changed_by_name", "is_target_deleted", "created_at",
-        ]
-        read_only_fields = fields
-
-    def get_changed_by_name(self, obj):
-        return _user_display(obj.changed_by)
-
-    def get_content_type(self, obj):
-        return obj.content_type_key
-
-    def get_is_target_deleted(self, obj):
-        if hasattr(obj, "_cms_target_deleted"):
-            return obj._cms_target_deleted
-        return obj.content_object is None
 
 
 class CMSSiteSettingSerializer(serializers.ModelSerializer):

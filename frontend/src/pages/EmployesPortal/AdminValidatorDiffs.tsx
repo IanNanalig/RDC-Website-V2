@@ -24,6 +24,7 @@ type ApiProject = {
 };
 
 type ReviewState = "all" | "draft" | "reviewed" | "endorsed" | "rejected" | "not_reviewed";
+const PAGE_SIZE = 10;
 
 const getValidatorReview = (p: ApiProject): Record<string, unknown> | null => {
   const pd = p.profile_data as Record<string, unknown> | undefined;
@@ -62,6 +63,7 @@ const AdminValidatorDiffs: React.FC = () => {
   const [query, setQuery] = useState("");
   const [reviewState, setReviewState] = useState<ReviewState>("all");
   const [editedOnly, setEditedOnly] = useState(false);
+  const [page, setPage] = useState(1);
 
   const load = async () => {
     setLoading(true);
@@ -112,6 +114,15 @@ const AdminValidatorDiffs: React.FC = () => {
         .includes(q);
     });
   }, [items, query, reviewState, editedOnly]);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const pageStart = filtered.length ? (currentPage - 1) * PAGE_SIZE + 1 : 0;
+  const pageEnd = Math.min(currentPage * PAGE_SIZE, filtered.length);
+  const visibleItems = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, pageCount));
+  }, [pageCount]);
 
   return (
     <PortalLayout
@@ -125,13 +136,13 @@ const AdminValidatorDiffs: React.FC = () => {
         <div className="portal-card-body grid grid-cols-1 lg:grid-cols-4 gap-3">
           <input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => { setQuery(e.target.value); setPage(1); }}
             placeholder="Search by title, contributor, agency, validator"
             className="border border-slate-200 rounded-xl px-3 py-2 lg:col-span-2"
           />
           <select
             value={reviewState}
-            onChange={(e) => setReviewState(e.target.value as ReviewState)}
+            onChange={(e) => { setReviewState(e.target.value as ReviewState); setPage(1); }}
             className="border border-slate-200 rounded-xl px-3 py-2"
           >
             <option value="all">All states</option>
@@ -142,18 +153,20 @@ const AdminValidatorDiffs: React.FC = () => {
             <option value="not_reviewed">Not Reviewed</option>
           </select>
           <label className="inline-flex items-center gap-2 border border-slate-200 rounded-xl px-3 py-2">
-            <input type="checkbox" checked={editedOnly} onChange={(e) => setEditedOnly(e.target.checked)} />
+            <input type="checkbox" checked={editedOnly} onChange={(e) => { setEditedOnly(e.target.checked); setPage(1); }} />
             <span className="text-sm">Edited only</span>
           </label>
         </div>
       </div>
 
-      <div className="portal-card portal-table-wrap">
+      <div className="portal-card">
         {loading ? (
           <div className="portal-card-body text-slate-500">Loading validator diffs...</div>
         ) : filtered.length === 0 ? (
           <div className="portal-card-body text-slate-500">No records matched the current filters.</div>
         ) : (
+          <>
+          <div className="portal-table-wrap">
           <table className="portal-table">
             <thead>
               <tr>
@@ -168,7 +181,7 @@ const AdminValidatorDiffs: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((p) => {
+              {visibleItems.map((p) => {
                 const vr = getValidatorReview(p);
                 const reviewStatus = String(vr?.review_status || "");
                 const editedCount = Number(vr?.edited_fields_count || 0);
@@ -216,6 +229,18 @@ const AdminValidatorDiffs: React.FC = () => {
               })}
             </tbody>
           </table>
+          </div>
+          <div className="portal-card-body flex flex-col gap-3 border-t border-slate-200 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-slate-600" aria-live="polite">
+              Showing <span className="font-semibold">{pageStart}</span>–<span className="font-semibold">{pageEnd}</span> of {filtered.length} matching records
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={currentPage <= 1} className="portal-btn portal-btn-ghost disabled:cursor-not-allowed disabled:opacity-50">Previous</button>
+              <span className="text-sm text-slate-600">Page {currentPage} of {pageCount}</span>
+              <button type="button" onClick={() => setPage((current) => Math.min(pageCount, current + 1))} disabled={currentPage >= pageCount} className="portal-btn portal-btn-ghost disabled:cursor-not-allowed disabled:opacity-50">Next</button>
+            </div>
+          </div>
+          </>
         )}
       </div>
     </PortalLayout>

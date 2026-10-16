@@ -103,7 +103,7 @@ class PublicationCategoryMergeTests(TestCase):
         self.assertEqual(self.section.status, "draft")
         self.assertTrue(self.page.has_unpublished_changes)
         self.assertEqual(self.page.published_snapshot_json, published_before)
-        self.assertTrue(
+        self.assertFalse(
             CMSRevision.objects.filter(
                 object_id=self.section.pk,
                 action=CMSRevision.ACTION_UPDATE,

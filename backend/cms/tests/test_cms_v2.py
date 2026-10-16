@@ -1,5 +1,6 @@
 import shutil
 import tempfile
+from io import BytesIO
 from datetime import timedelta
 from importlib import import_module
 
@@ -9,10 +10,17 @@ from django.test import override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
+from PIL import Image
 
 from cms.models import CMSArticle, CMSPage, CMSPageSection, CMSRevision, CMSSiteSetting
 from cms.services.snapshots import build_page_snapshot
 from projects.models import PublicEvent, User, UserActivity
+
+
+def valid_png():
+    output = BytesIO()
+    Image.new("RGB", (1, 1), "blue").save(output, format="PNG")
+    return output.getvalue()
 
 
 class CMSV2Tests(APITestCase):
@@ -150,7 +158,7 @@ class CMSV2Tests(APITestCase):
 
         limit.value_json = {"image": 100, "document": 20 * 1024 * 1024}
         limit.save()
-        accepted = SimpleUploadedFile("accepted.png", b"\x89PNG\r\n\x1a\nmore", content_type="image/png")
+        accepted = SimpleUploadedFile("accepted.png", valid_png(), content_type="image/png")
         self.assertEqual(
             self.client.post("/api/admin/cms/media/", {"file": accepted}, format="multipart").status_code,
             status.HTTP_201_CREATED,
@@ -206,7 +214,7 @@ class CMSV2Tests(APITestCase):
         response = self.client.post(f"/api/admin/events/{event.pk}/unarchive/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         event.refresh_from_db()
-        self.assertEqual(event.status, "published")
+        self.assertEqual(event.status, "draft")
         self.assertIsNone(event.archived_at)
         self.assertTrue(
             UserActivity.objects.filter(event="cms_event_unarchived", details__event_id=event.pk).exists()
@@ -215,7 +223,7 @@ class CMSV2Tests(APITestCase):
         self.client.force_authenticate(user=None)
         public = self.client.get("/api/public/events/")
         self.assertEqual(public.status_code, status.HTTP_200_OK)
-        self.assertIn(event.pk, [row["id"] for row in public.data["results"]])
+        self.assertNotIn(event.pk, [row["id"] for row in public.data["results"]])
 
     def test_review_workflow_preserves_old_public_snapshot(self):
         self.authenticate(self.editor)
@@ -315,7 +323,7 @@ class CMSV2Tests(APITestCase):
             "New Publication Document",
         )
 
-    def test_deleted_section_revision_recreates_target_and_missing_parent_is_clear(self):
+    def test_cms_revision_history_route_is_retired(self):
         self.authenticate(self.admin)
         page = CMSPage.objects.create(title="Restore page", slug="restore-page")
         created = self.client.post(
@@ -324,26 +332,10 @@ class CMSV2Tests(APITestCase):
             format="json",
         )
         old_id = created.data["id"]
-        revision = CMSRevision.objects.filter(content_type__model="cmspagesection", object_id=old_id).first()
         self.client.delete(f"/api/admin/cms/sections/{old_id}/")
-        response = self.client.post(f"/api/admin/cms/revisions/{revision.pk}/restore-revision/")
-        self.assertEqual(response.status_code, 200)
-        self.assertNotEqual(response.data["object_id"], old_id)
-        restored = CMSPageSection.objects.get(pk=response.data["object_id"])
-        self.assertEqual(restored.page_id, page.pk)
-        self.assertEqual(restored.content_json["title"], "Return")
-
-        doomed = CMSPage.objects.create(title="Doomed", slug="doomed")
-        doomed_section = CMSPageSection.objects.create(
-            page=doomed, section_key="gone", section_type="text", order=1, content_json={"title": "Gone"}
-        )
-        from cms.services.publishing import create_section_update_revision
-
-        doomed_revision = create_section_update_revision(doomed_section, user=self.admin)
-        doomed.delete()
-        response = self.client.post(f"/api/admin/cms/revisions/{doomed_revision.pk}/restore-revision/")
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("parent page", str(response.data["detail"]).lower())
+        self.assertFalse(CMSRevision.objects.filter(content_type__model="cmspagesection", object_id=old_id).exists())
+        self.assertEqual(self.client.get("/api/admin/cms/revisions/").status_code, 404)
+        self.assertEqual(self.client.post("/api/admin/cms/revisions/1/restore-revision/").status_code, 404)
 
     def test_public_site_settings_hide_upload_governance(self):
         response = self.client.get("/api/public/cms/site-settings/")

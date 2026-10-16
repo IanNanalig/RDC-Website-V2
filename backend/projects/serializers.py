@@ -1286,6 +1286,7 @@ class UserActivitySerializer(serializers.ModelSerializer):
     username = serializers.SerializerMethodField()
     full_name = serializers.SerializerMethodField()
     project_title = serializers.SerializerMethodField()
+    target_label = serializers.SerializerMethodField()
 
     class Meta:
         model = UserActivity
@@ -1298,6 +1299,7 @@ class UserActivitySerializer(serializers.ModelSerializer):
             "project",
             "project_title",
             "project_id_snapshot",
+            "target_label",
             "ip_address",
             "location_hint",
             "details",
@@ -1306,6 +1308,19 @@ class UserActivitySerializer(serializers.ModelSerializer):
 
     def get_project_title(self, obj):
         return obj.project_title_snapshot or (obj.project.title if obj.project else "")
+
+    def get_target_label(self, obj):
+        if obj.project_title_snapshot or obj.project:
+            return self.get_project_title(obj)
+        details = obj.details if isinstance(obj.details, dict) else {}
+        for key in ("title", "email", "attempted_email", "name", "slug", "key"):
+            value = details.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:160]
+        for key, prefix in (("target_user_id", "User"), ("form_id", "Form"), ("event_id", "Event"), ("id", "Content")):
+            if details.get(key) is not None:
+                return f"{prefix} #{details[key]}"
+        return "—"
 
     def get_username(self, obj):
         return obj.actor_username or (obj.user.username if obj.user else "Deleted user")

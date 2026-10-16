@@ -18,6 +18,7 @@ type ApiProject = {
   submission_type?: string;
   profile_data?: Record<string, unknown>;
 };
+const PAGE_SIZE = 10;
 
 const reviewPath = (project: ApiProject) => {
   const profile = project.profile_data;
@@ -86,6 +87,7 @@ const ValidatorReviewHistory: React.FC = () => {
   const [projects, setProjects] = useState<ApiProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
   const user = useMemo(() => {
     const userData = localStorage.getItem("user");
     return userData ? JSON.parse(userData) : null;
@@ -127,6 +129,15 @@ const ValidatorReviewHistory: React.FC = () => {
         .includes(q),
     );
   }, [projects, query]);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const pageStart = filtered.length ? (currentPage - 1) * PAGE_SIZE + 1 : 0;
+  const pageEnd = Math.min(currentPage * PAGE_SIZE, filtered.length);
+  const visibleProjects = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, pageCount));
+  }, [pageCount]);
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
 
@@ -142,14 +153,14 @@ const ValidatorReviewHistory: React.FC = () => {
         <div className="portal-card-body">
           <input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => { setQuery(e.target.value); setPage(1); }}
             placeholder="Search by title, agency, or contributor"
             className="w-full border border-slate-200 rounded-xl px-3 py-2 bg-white"
           />
         </div>
       </div>
 
-      <div className="portal-card portal-table-wrap">
+      <div className="portal-card">
         {loading ? (
           <div className="portal-card-body text-slate-500">Loading reviewed history...</div>
         ) : filtered.length === 0 ? (
@@ -157,7 +168,7 @@ const ValidatorReviewHistory: React.FC = () => {
         ) : (
           <>
           <div className="space-y-3 p-3 lg:hidden">
-            {filtered.map((p) => (
+            {visibleProjects.map((p) => (
               <article key={`mobile-history-${p.id}`} className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                 <h2 className="break-words font-semibold text-slate-900">{p.title || p.name || "Untitled"}</h2>
                 <div className="mt-3 grid gap-2 text-sm text-slate-600 sm:grid-cols-2">
@@ -178,6 +189,7 @@ const ValidatorReviewHistory: React.FC = () => {
               </article>
             ))}
           </div>
+          <div className="portal-table-wrap">
           <table className="portal-table hidden lg:table">
             <thead>
               <tr>
@@ -192,7 +204,7 @@ const ValidatorReviewHistory: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((p) => (
+              {visibleProjects.map((p) => (
                 <tr key={p.id}>
                   <td className="max-w-[220px] truncate" title={p.title || p.name || "Untitled"}>{p.title || p.name || "Untitled"}</td>
                   <td className="max-w-[180px] truncate" title={p.submitted_by_name || p.submitted_by?.username || "Unknown"}>
@@ -223,6 +235,17 @@ const ValidatorReviewHistory: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </div>
+          <div className="portal-card-body flex flex-col gap-3 border-t border-slate-200 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-slate-600" aria-live="polite">
+              Showing <span className="font-semibold">{pageStart}</span>–<span className="font-semibold">{pageEnd}</span> of {filtered.length} matching projects
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={currentPage <= 1} className="portal-btn portal-btn-ghost disabled:cursor-not-allowed disabled:opacity-50">Previous</button>
+              <span className="text-sm text-slate-600">Page {currentPage} of {pageCount}</span>
+              <button type="button" onClick={() => setPage((current) => Math.min(pageCount, current + 1))} disabled={currentPage >= pageCount} className="portal-btn portal-btn-ghost disabled:cursor-not-allowed disabled:opacity-50">Next</button>
+            </div>
+          </div>
           </>
         )}
       </div>

@@ -132,18 +132,14 @@ try {
     const items = viewport.width < 600 ? cards : rows;
     await items.first().waitFor();
     assert.equal(await items.count(), 10, "System Users defaults to 10 rows per page");
-    assert.match(await items.first().innerText(), /Amy/, "Default username ascending");
+    assert.match(await items.first().innerText(), /Zoe/, "System Users keeps the API order");
     if (viewport.width < 600) {
-      await adminPage.getByLabel("Sort by").selectOption("email");
-      assert.match(await items.first().innerText(), /Zoe/, "Mobile email ascending");
-      await adminPage.getByRole("button", { name: "Sort descending" }).click();
-      assert.match(await items.first().innerText(), /Amy/, "Mobile email descending");
+      assert.equal(await adminPage.getByLabel("Sort by").count(), 0, "Mobile sort controls are removed");
     } else {
-      await adminPage.getByRole("columnheader", { name: /Email/ }).getByRole("button").click();
-      assert.match(await items.first().innerText(), /Zoe/, "Desktop email ascending");
-      await adminPage.getByRole("columnheader", { name: /Email/ }).getByRole("button").click();
-      assert.match(await items.first().innerText(), /Amy/, "Desktop email descending");
-      assert.equal(await adminPage.getByRole("columnheader", { name: "Actions" }).getByRole("button").count(), 0);
+      for (const heading of ["Username", "Email", "Agency", "Role", "Status", "Actions"]) {
+        assert.equal(await adminPage.getByRole("columnheader", { name: heading }).getByRole("button").count(), 0,
+          `${heading} is a plain column heading`);
+      }
     }
 
     await adminPage.getByRole("button", { name: "Next" }).click();
@@ -206,14 +202,14 @@ try {
     assert.equal(await adminPage.getByLabel("Search User").inputValue(), "");
     assert.equal(await adminPage.getByLabel("Rows Per Page").inputValue(), "10");
     assert.equal(await items.count(), 10);
-    assert.match(await items.first().innerText(), /Amy/, "Clear Filters retains the existing email-descending sort");
+    assert.match(await items.first().innerText(), /Zoe/, "Clear Filters keeps the API order");
     await adminPage.getByLabel("Search User").fill("no such user");
     await adminPage.getByText("No users match the selected filters.").waitFor();
     const documentWidth = await adminPage.evaluate(() => document.documentElement.scrollWidth);
     assert.ok(documentWidth <= viewport.width + 1, `System Users fits ${viewport.width}px: ${documentWidth}`);
     await context.close();
   }
-  console.log("PASS password reset and System Users sorting browser checks");
+  console.log("PASS password reset and System Users filter browser checks");
 } finally {
   await browser.close();
   await new Promise((resolve) => server.httpServer.close(resolve));

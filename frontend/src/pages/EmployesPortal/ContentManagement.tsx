@@ -4,6 +4,7 @@ import PortalLayout from "../../components/portal/PortalLayout";
 
 const CmsManager = lazy(() => import("../../components/portal/CmsManager"));
 const PublicEventsManager = lazy(() => import("../../components/portal/PublicEventsManager"));
+const ArchivedContent = lazy(() => import("../../components/portal/ArchivedContent"));
 
 type PortalUser = {
   username?: string;
@@ -24,12 +25,11 @@ const ContentManagement = () => {
     if (path.includes("/forms")) return "forms" as const;
     if (path.includes("/media")) return "media" as const;
     if (path.includes("/settings")) return "settings" as const;
-    if (path.includes("/revisions")) return "revisions" as const;
     if (path.includes("/review")) return "review" as const;
     if (path.includes("/ai-scoring")) return "ai" as const;
     return "pages" as const;
   }, [location.pathname]);
-  const [activeTab, setActiveTab] = useState<"cms" | "events">(routeTab);
+  const [activeTab, setActiveTab] = useState<"cms" | "events" | "archived">(routeTab);
   useEffect(() => setActiveTab(routeTab), [routeTab]);
   const userRaw = localStorage.getItem("user");
   const user: PortalUser = userRaw ? JSON.parse(userRaw) : {};
@@ -59,14 +59,17 @@ const ContentManagement = () => {
           >
             Events Calendar
           </button>
+          <button type="button" onClick={() => setActiveTab("archived")} className={`portal-btn ${activeTab === "archived" ? "portal-btn-primary" : "portal-btn-ghost"}`}>Archived</button>
         </div>
       </div>
 
       <Suspense fallback={<div className="portal-card p-5 text-sm text-slate-600">Loading content workspace...</div>}>
         {activeTab === "cms" ? (
           <CmsManager mode={role === "admin" ? "admin" : "editor"} initialTab={cmsInitialTab} />
-        ) : (
+        ) : activeTab === "events" ? (
           <PublicEventsManager mode={role === "admin" ? "admin" : "editor"} />
+        ) : (
+          <ArchivedContent isAdmin={role === "admin"} />
         )}
       </Suspense>
     </PortalLayout>

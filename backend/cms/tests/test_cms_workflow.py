@@ -1,6 +1,7 @@
 import json
 import shutil
 import tempfile
+from io import BytesIO
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -11,9 +12,16 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
+from PIL import Image
 
 from cms.models import CMSArticle, CMSMediaAsset, CMSPage, CMSPageSection, CMSRevision
 from projects.models import PublicEvent, User
+
+
+def valid_png():
+    output = BytesIO()
+    Image.new("RGB", (1, 1), "blue").save(output, format="PNG")
+    return output.getvalue()
 
 
 class CMSMediaRoutingTests(SimpleTestCase):
@@ -468,11 +476,9 @@ class CMSWorkflowTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         page.refresh_from_db()
         self.assertTrue(page.has_unpublished_changes)
-        revision = CMSRevision.objects.filter(
-            content_type__model="cmspagesection",
-            object_id=section.pk,
-        ).latest("version_number")
-        self.assertTrue(revision.snapshot_json["deleted"])
+        self.assertFalse(CMSRevision.objects.filter(
+            content_type__model="cmspagesection", object_id=section.pk,
+        ).exists())
 
     def test_pages_and_articles_cannot_be_hard_deleted(self):
         page = CMSPage.objects.create(title="Protected Page", slug="protected-page")
@@ -493,7 +499,7 @@ class CMSWorkflowTests(APITestCase):
         self.authenticate()
         upload = SimpleUploadedFile(
             "cover.png",
-            b"\x89PNG\r\n\x1a\nCMS test image",
+            valid_png(),
             content_type="image/png",
         )
         response = self.client.post(

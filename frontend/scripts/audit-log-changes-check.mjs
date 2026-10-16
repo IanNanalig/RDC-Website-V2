@@ -48,7 +48,9 @@ try {
   });
 
   await page.goto(origin + "/admin/users?tab=system-audit-log", { waitUntil: "networkidle" });
+  await page.waitForURL("**/admin/audit-log");
   const row = page.getByRole("row").filter({ hasText: "Sample Project" });
+  await row.getByText("Changes and details").click();
   await row.getByText("Changed Fields:").waitFor();
   assert.match(await row.innerText(), /Project Activity/);
   assert.match(await row.innerText(), /Actual\/Approved Funding \(PHP\) · 2022 & Prior/);
@@ -59,7 +61,7 @@ try {
   assert.match(await row.innerText(), /After: New title/);
   assert.match(await row.innerText(), /Before: 100/);
   assert.match(await row.innerText(), /After: 200/);
-  assert.equal(await row.locator("td").nth(5).isVisible(), true, "Audit details are accessible in the mobile table");
+  assert.equal(await row.locator("td").nth(2).isVisible(), true, "Audit details are accessible in the mobile table");
   console.log("PASS audit changed fields and before/after changes on mobile");
   await context.close();
 } finally {

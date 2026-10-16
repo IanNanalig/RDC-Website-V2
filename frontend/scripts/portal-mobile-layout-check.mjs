@@ -130,9 +130,10 @@ try {
       assert.equal(await table.isVisible(), false, `User table is hidden at ${width}px`);
       assert.equal(await users.locator("li").count(), 2, "All users appear as mobile cards");
       const firstCard = users.locator("li").first();
-      assert.match(await firstCard.innerText(), /Email.*gabriel\.cantor@example\.com.*Agency.*DENR.*Role.*Contributor/s);
+      assert.match(await firstCard.innerText(), /Email.*matt\.angelo@example\.com.*Agency.*DOH.*Role.*Contributor/s);
+      const inactiveCard = users.locator("li").filter({ hasText: "Gabriel Cantor" });
       for (const action of ["Activate", "Reset Password"]) {
-        const button = firstCard.getByRole("button", { name: action });
+        const button = inactiveCard.getByRole("button", { name: action });
         const bounds = await button.boundingBox();
         assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width + 1,
           `${action} fits within ${width}px: ${JSON.stringify(bounds)}`);

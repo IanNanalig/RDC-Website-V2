@@ -38,4 +38,9 @@ urlpatterns = [
     path("auth/logout/", views.LogoutView.as_view(), name="logout"),
     path("auth/setup-password/", views.SetupPasswordView.as_view(), name="setup-password"),
     path("auth/me/", views.MeView.as_view(), name="me"),
+    path("profile/", views.ProfileView.as_view(), name="profile-self"),
+    path("profile/edit-requests/", views.ProfileEditRequestView.as_view(), name="profile-edit-requests"),
+    path("admin/profiles/<int:user_id>/", views.ProfileView.as_view(), name="admin-profile-detail"),
+    path("admin/profile-edit-requests/", views.AdminProfileEditRequestView.as_view(), name="admin-profile-edit-requests"),
+    path("admin/profile-edit-requests/<int:request_id>/<str:decision>/", views.AdminProfileEditDecisionView.as_view(), name="admin-profile-edit-decision"),
 ]

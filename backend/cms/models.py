@@ -21,10 +21,14 @@ CMS_STATUS_CHOICES = [
 class CMSMediaAsset(models.Model):
     FILE_TYPE_IMAGE = "image"
     FILE_TYPE_DOCUMENT = "document"
+    FILE_TYPE_AUDIO = "audio"
+    FILE_TYPE_VIDEO = "video"
     FILE_TYPE_OTHER = "other"
     FILE_TYPE_CHOICES = [
         (FILE_TYPE_IMAGE, "Image"),
         (FILE_TYPE_DOCUMENT, "Document"),
+        (FILE_TYPE_AUDIO, "Audio"),
+        (FILE_TYPE_VIDEO, "Video"),
         (FILE_TYPE_OTHER, "Other"),
     ]
 
@@ -35,6 +39,12 @@ class CMSMediaAsset(models.Model):
     file_type = models.CharField(max_length=30, choices=FILE_TYPE_CHOICES, default=FILE_TYPE_OTHER)
     mime_type = models.CharField(max_length=120, blank=True)
     size = models.PositiveBigIntegerField(default=0)
+    original_filename = models.CharField(max_length=255, blank=True)
+    width = models.PositiveIntegerField(null=True, blank=True)
+    height = models.PositiveIntegerField(null=True, blank=True)
+    duration_seconds = models.FloatField(null=True, blank=True)
+    category = models.CharField(max_length=80, default="General")
+    tags = models.JSONField(default=list, blank=True)
     alt_text = models.CharField(max_length=250, blank=True)
     caption = models.CharField(max_length=250, blank=True)
     uploaded_by = models.ForeignKey(

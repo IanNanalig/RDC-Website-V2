@@ -1,4 +1,8 @@
 import mimetypes
+import json
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 from rest_framework.exceptions import APIException
@@ -18,10 +22,14 @@ DEFAULT_ALLOWED_TYPES = {
         "application/vnd.ms-excel",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ],
+    "audio": ["audio/mpeg", "audio/mp4"],
+    "video": ["video/mp4", "video/webm"],
 }
 DEFAULT_MAX_BYTES = {
     "image": 5 * 1024 * 1024,
     "document": 20 * 1024 * 1024,
+    "audio": 20 * 1024 * 1024,
+    "video": 50 * 1024 * 1024,
 }
 EXTENSION_MIME_TYPES = {
     ".jpg": "image/jpeg",
@@ -33,6 +41,10 @@ EXTENSION_MIME_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xls": "application/vnd.ms-excel",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
 }
 
 
@@ -58,14 +70,8 @@ def get_upload_policy():
     allowed = _setting_value(ALLOWED_TYPES_SETTING, DEFAULT_ALLOWED_TYPES)
     limits = _setting_value(MAX_BYTES_SETTING, DEFAULT_MAX_BYTES)
     return {
-        "allowed_types": {
-            "image": list(allowed.get("image") or DEFAULT_ALLOWED_TYPES["image"]),
-            "document": list(allowed.get("document") or DEFAULT_ALLOWED_TYPES["document"]),
-        },
-        "max_bytes": {
-            "image": int(limits.get("image") or DEFAULT_MAX_BYTES["image"]),
-            "document": int(limits.get("document") or DEFAULT_MAX_BYTES["document"]),
-        },
+        "allowed_types": {key: list(allowed.get(key) or defaults) for key, defaults in DEFAULT_ALLOWED_TYPES.items()},
+        "max_bytes": {key: int(limits.get(key) or default) for key, default in DEFAULT_MAX_BYTES.items()},
     }
 
 
@@ -84,7 +90,8 @@ def validate_media_upload(file_obj):
         content_type = ""
 
     file_type = ""
-    for candidate in (CMSMediaAsset.FILE_TYPE_IMAGE, CMSMediaAsset.FILE_TYPE_DOCUMENT):
+    for candidate in (CMSMediaAsset.FILE_TYPE_IMAGE, CMSMediaAsset.FILE_TYPE_DOCUMENT,
+                      CMSMediaAsset.FILE_TYPE_AUDIO, CMSMediaAsset.FILE_TYPE_VIDEO):
         if content_type in policy["allowed_types"][candidate]:
             file_type = candidate
             break
@@ -113,3 +120,48 @@ def validate_media_upload(file_obj):
         )
 
     return {"file_type": file_type, "mime_type": content_type, "size": size}
+
+
+def extract_media_metadata(file_obj, file_type):
+    """Probe only approved uploads; preserve the stream position for Django storage."""
+    result = {"original_filename": Path(str(file_obj.name)).name[:255]}
+    if file_type == CMSMediaAsset.FILE_TYPE_IMAGE:
+        try:
+            from PIL import Image
+            position = file_obj.tell()
+            file_obj.seek(0)
+            with Image.open(file_obj) as image:
+                result.update(width=image.width, height=image.height)
+            file_obj.seek(position)
+        except Exception as exc:
+            raise CMSMediaValidationError({"detail": "Image dimensions could not be read.", "reason": "invalid_image"}) from exc
+    if file_type in {CMSMediaAsset.FILE_TYPE_AUDIO, CMSMediaAsset.FILE_TYPE_VIDEO}:
+        if not shutil.which("ffprobe"):
+            raise CMSMediaValidationError({"detail": "Audio/video probing is unavailable on this server.", "reason": "probe_unavailable"})
+        position = file_obj.tell()
+        try:
+            file_obj.seek(0)
+            with tempfile.TemporaryDirectory(prefix="rdc-media-probe-") as directory:
+                path = Path(directory) / f"upload{Path(file_obj.name).suffix.lower()}"
+                with path.open("wb") as temporary:
+                    for chunk in file_obj.chunks():
+                        temporary.write(chunk)
+                completed = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
+                    capture_output=True, text=True, timeout=20, check=True,
+                )
+            probe = json.loads(completed.stdout)
+            duration = float((probe.get("format") or {}).get("duration") or 0)
+            if duration <= 0:
+                raise ValueError("Missing duration")
+            result["duration_seconds"] = duration
+            if file_type == CMSMediaAsset.FILE_TYPE_VIDEO:
+                stream = next((item for item in probe.get("streams", []) if item.get("codec_type") == "video"), {})
+                result.update(width=int(stream.get("width") or 0), height=int(stream.get("height") or 0))
+                if not result["width"] or not result["height"]:
+                    raise ValueError("Missing video dimensions")
+        except (subprocess.SubprocessError, ValueError, OSError, json.JSONDecodeError) as exc:
+            raise CMSMediaValidationError({"detail": "Audio/video metadata could not be read.", "reason": "invalid_media"}) from exc
+        finally:
+            file_obj.seek(position)
+    return result

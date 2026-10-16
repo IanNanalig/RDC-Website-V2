@@ -7,7 +7,6 @@ from cms.views import (
     AdminCMSMediaAssetViewSet,
     AdminCMSPageSectionViewSet,
     AdminCMSPageViewSet,
-    AdminCMSRevisionViewSet,
     AdminCMSReviewQueueView,
     AdminAIPriorityCMSView,
     AdminCMSSiteSettingViewSet,
@@ -27,7 +26,6 @@ router.register("admin/cms/articles", AdminCMSArticleViewSet, basename="admin-cm
 router.register("admin/cms/forms", AdminCMSContributorFormViewSet, basename="admin-cms-forms")
 router.register("admin/cms/news", AdminCMSArticleViewSet, basename="admin-cms-news")
 router.register("admin/cms/media", AdminCMSMediaAssetViewSet, basename="admin-cms-media")
-router.register("admin/cms/revisions", AdminCMSRevisionViewSet, basename="admin-cms-revisions")
 router.register("admin/cms/settings", AdminCMSSiteSettingViewSet, basename="admin-cms-settings")
 router.register("admin/cms/events", AdminEventViewSet, basename="admin-cms-events")
 

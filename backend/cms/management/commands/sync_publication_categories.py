@@ -5,8 +5,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from cms.management.commands.seed_publications_cms import PUBLICATION_CATEGORIES
-from cms.models import CMSPageSection, CMSRevision
-from cms.services.publishing import create_section_update_revision, mark_page_changed
+from cms.models import CMSPageSection
+from cms.services.publishing import mark_page_changed
 
 
 def _normalized(value):
@@ -126,7 +126,6 @@ class Command(BaseCommand):
             user = self._default_user()
             with transaction.atomic():
                 section = CMSPageSection.objects.select_for_update().select_related("page").get(pk=section.pk)
-                status_before = section.status
                 merged_content, result = merge_publication_categories(section.content_json)
                 changed = merged_content != section.content_json
                 if changed:
@@ -144,12 +143,6 @@ class Command(BaseCommand):
                         ]
                     )
                     mark_page_changed(section.page, user)
-                    create_section_update_revision(
-                        section,
-                        user=user,
-                        action=CMSRevision.ACTION_UPDATE,
-                        status_before=status_before,
-                    )
 
         self._write_result(result, changed)
 

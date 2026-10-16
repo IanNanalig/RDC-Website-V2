@@ -65,9 +65,13 @@ class AuditCoverageTests(APITestCase):
             f"/api/admin/users/{self.contributor.id}/",
             {"role": "validator", "password": "NewStrongPassword123_"}, format="json",
         )
+        self.assertEqual(edited.status_code, 403)
+        edited = self.client.patch(
+            f"/api/admin/users/{self.contributor.id}/", {"role": "validator"}, format="json",
+        )
         self.assertEqual(edited.status_code, 200)
         edit_activity = UserActivity.objects.get(user=self.admin, event="user_update")
-        self.assertTrue(edit_activity.details["password_changed"])
+        self.assertFalse(edit_activity.details["password_changed"])
         self.assertNotIn("NewStrongPassword123_", str(edit_activity.details))
         status_response = self.client.post(
             f"/api/admin/users/{self.contributor.id}/set_active/", {"active": False}, format="json"

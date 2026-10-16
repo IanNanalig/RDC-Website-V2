@@ -16,6 +16,7 @@ from django.core.mail import send_mail, EmailMessage
 from django.core import signing
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
+from django.http import Http404
 from django.utils import timezone
 from django.utils.crypto import get_random_string
 from django.utils.text import slugify
@@ -35,6 +36,7 @@ from .models import (
     Notification,
     PasswordResetRequest,
     PasswordSetupToken,
+    ProfileEditRequest,
     ProjectPriorityAnalysis,
     ProjectPriorityConfirmation,
     Project,
@@ -2037,7 +2039,11 @@ class AdminEventViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = PublicEvent.objects.all().order_by("-updated_at", "-start_at")
+        if self.action == "list":
+            qs = qs.filter(status="archived") if self.request.query_params.get("archived") == "1" else qs.exclude(status="archived")
         if _is_admin_user(self.request.user):
+            return qs
+        if self.action == "list" and self.request.query_params.get("archived") == "1":
             return qs
         return qs.filter(created_by=self.request.user)
 
@@ -2131,14 +2137,14 @@ class AdminEventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
         if event.status != "archived":
             return Response({"detail": "Only archived events can be unarchived."}, status=400)
-        event.status = "published"
+        event.status = "draft"
         event.reviewed_by = request.user
         event.archived_at = None
-        event.published_at = event.published_at or timezone.now()
+        event.published_at = None
         event.save(
             update_fields=["status", "reviewed_by", "archived_at", "published_at", "updated_at"]
         )
-        _log_activity(request, "cms_event_unarchived", details={"event_id": event.id, "title": event.title})
+        _log_activity(request, "cms_event_unarchived", details={"event_id": event.id, "title": event.title, "status": "draft"})
         return Response(PublicEventSerializer(event).data)
 
     def destroy(self, request, *args, **kwargs):
@@ -3479,11 +3485,33 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if getattr(request.user, "role", "") != "admin":
             raise PermissionDenied("Only admin can archive")
         project = self.get_object()
+        if project.archived:
+            return Response({"detail": "Project is already archived."}, status=400)
+        profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+        simplified = profile.get("simplified_form") if isinstance(profile.get("simplified_form"), dict) else {}
+        implementation_status = canonical_implementation_status(simplified.get("status")) if simplified else ""
+        if request.data.get("confirm_archive") is not True:
+            return Response({"detail": "Archive confirmation is required."}, status=400)
+        if str(request.data.get("expected_implementation_status") or "").strip() != implementation_status:
+            return Response({"detail": "Project status changed. Review the archive warning again.", "implementation_status": implementation_status}, status=409)
         project.archived = True
         project.is_active = False
         project.save(update_fields=["archived", "is_active", "updated_at"])
-        _log_activity(request, "project_archive", project, {"archived": True})
+        _log_activity(request, "project_archive", project, {"archived": True, "implementation_status": implementation_status})
         return Response({"status": "archived"})
+
+    @action(detail=True, methods=["post"])
+    def unarchive(self, request, pk=None):
+        if getattr(request.user, "role", "") != "admin":
+            raise PermissionDenied("Only admin can restore projects")
+        project = self.get_object()
+        if not project.archived:
+            return Response({"detail": "Project is not archived."}, status=400)
+        project.archived = False
+        project.is_active = True
+        project.save(update_fields=["archived", "is_active", "updated_at"])
+        _log_activity(request, "project_unarchive", project, {"archived": False})
+        return Response({"status": "restored"})
 
     @action(detail=True, methods=["get", "post"])
     def comments(self, request, pk=None):
@@ -3617,7 +3645,7 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
     permission_classes = [IsAuthenticated, EmployeeRolePermission, ProjectPermission]
 
     def get_queryset(self):
-        qs = Project.objects.filter(_contributor_project_scope(self.request.user)).distinct().order_by("-created_at")
+        qs = Project.objects.filter(_contributor_project_scope(self.request.user), archived=False).distinct().order_by("-created_at")
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
         qs = _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
         return _project_queryset_with_related(qs, prefetch_priority=getattr(self, "action", "") == "list")
@@ -3935,6 +3963,8 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
             "reviewed_by",
             "endorsed_by",
         ).order_by("-updated_at")
+        if self.action == "list":
+            qs = qs.filter(project__archived=False)
         if role == "admin":
             return qs
         if role == "validator":
@@ -4332,7 +4362,7 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        all_projects = Project.objects.only("id", "status", "profile_data").order_by("-created_at")
+        all_projects = Project.objects.filter(archived=False).only("id", "status", "profile_data").order_by("-created_at")
         scope = (self.request.query_params.get("scope") or "").strip().lower()
         def review_status_for(project):
             pd = project.profile_data if isinstance(project.profile_data, dict) else {}
@@ -4548,6 +4578,8 @@ class AdminProjectViewSet(BaseProjectViewSet):
 
     def get_queryset(self):
         qs = Project.objects.all().order_by("-created_at")
+        if self.action == "list":
+            qs = qs.filter(archived=self.request.query_params.get("archived") in {"1", "true", "yes"})
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
         return _project_queryset_with_related(
             _filter_projects_for_workflow(qs, workflow).order_by("-created_at"),
@@ -4559,6 +4591,12 @@ class AdminUserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all().order_by("username")
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated, AdminOnlyPermission]
+
+    def update(self, request, *args, **kwargs):
+        forbidden = set(request.data) - {"role", "is_active"}
+        if forbidden:
+            return Response({"detail": "Profile fields must be changed by their owner after approval."}, status=403)
+        return super().update(request, *args, **kwargs)
 
     def perform_update(self, serializer):
         before = {"role": serializer.instance.role, "is_active": serializer.instance.is_active}
@@ -4947,13 +4985,13 @@ class DashboardView(APIView):
                 **user_counts,
             }
         elif role == "validator":
-            data = Project.objects.aggregate(
+            data = Project.objects.filter(archived=False).aggregate(
                 review_draft=Count("id", filter=Q(profile_data__validator_review__review_status="draft")),
                 review_reviewed=Count("id", filter=Q(profile_data__validator_review__review_status="reviewed")),
                 review_endorsed=Count("id", filter=Q(profile_data__validator_review__review_status="endorsed")),
             )
         else:
-            my = Project.objects.filter(_contributor_project_scope(user)).distinct()
+            my = Project.objects.filter(_contributor_project_scope(user), archived=False).distinct()
             data = my.aggregate(
                 my_projects=Count("id"),
                 draft_projects=Count("id", filter=Q(status="planning")),
@@ -5355,6 +5393,118 @@ class SetupPasswordView(APIView):
         return Response({"status": "ok"})
 
 
+PROFILE_EDIT_FIELDS = {"full_name", "agency_head", "office", "division", "position", "contact_number", "phone_number"}
+
+
+def _profile_payload(user):
+    activity = UserActivitySerializer(UserActivity.objects.filter(user=user).order_by("-created_at")[:10], many=True).data
+    return {
+        "id": user.id, "username": user.username, "full_name": user.full_name,
+        "email": user.email, "role": _frontend_role(user.role), "agency": user.agency,
+        "agency_head": user.agency_head, "office": user.office, "division": user.division,
+        "position": user.position, "contact_number": user.contact_number,
+        "phone_number": user.phone_number, "date_joined": user.date_joined,
+        "recent_activity": activity,
+    }
+
+
+def _profile_request_payload(item):
+    return {
+        "id": item.pk, "user_id": item.user_id, "user_name": item.user.full_name or item.user.username,
+        "user_email": item.user.email, "status": item.status, "created_at": item.created_at,
+        "reviewed_at": item.reviewed_at, "reviewed_by": item.reviewed_by_id,
+        "expires_at": item.expires_at, "used_at": item.used_at,
+    }
+
+
+class ProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id=None):
+        if user_id and user_id != request.user.pk and request.user.role != "admin":
+            raise PermissionDenied("Only administrators can view other profiles.")
+        user = User.objects.filter(pk=user_id or request.user.pk).first()
+        if not user:
+            raise Http404("Profile not found.")
+        return Response(_profile_payload(user))
+
+    def patch(self, request, user_id=None):
+        if user_id and user_id != request.user.pk:
+            raise PermissionDenied("Only the profile owner can edit it.")
+        fields = set(request.data)
+        if not fields or not fields.issubset(PROFILE_EDIT_FIELDS):
+            return Response({"detail": "Only name, office, and contact fields may be edited."}, status=400)
+        with transaction.atomic():
+            grant = ProfileEditRequest.objects.select_for_update().filter(
+                user=request.user, status=ProfileEditRequest.STATUS_APPROVED,
+                used_at__isnull=True, expires_at__gt=timezone.now(),
+            ).order_by("-reviewed_at").first()
+            if not grant:
+                return Response({"detail": "An active administrator-approved profile edit is required."}, status=403)
+            user = User.objects.select_for_update().get(pk=request.user.pk)
+            for field in fields:
+                value = request.data[field]
+                if not isinstance(value, str) or len(value) > User._meta.get_field(field).max_length:
+                    return Response({field: "Enter a valid value."}, status=400)
+                setattr(user, field, value.strip())
+            user.save(update_fields=list(fields))
+            grant.status = ProfileEditRequest.STATUS_CONSUMED
+            grant.used_at = timezone.now()
+            grant.save(update_fields=["status", "used_at"])
+            _log_activity(request, "profile_updated", details={"target_user_id": user.pk, "changed_fields": sorted(fields), "edit_request_id": grant.pk})
+        return Response(_profile_payload(user))
+
+
+class ProfileEditRequestView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response([_profile_request_payload(item) for item in ProfileEditRequest.objects.filter(user=request.user).select_related("user")[:10]])
+
+    def post(self, request):
+        existing = ProfileEditRequest.objects.filter(user=request.user, status="pending").first()
+        if existing:
+            return Response({"detail": "A profile edit request is already pending."}, status=409)
+        grant = ProfileEditRequest.objects.filter(user=request.user, status="approved", used_at__isnull=True, expires_at__gt=timezone.now()).first()
+        if grant:
+            return Response({"detail": "You already have an unused profile edit approval."}, status=409)
+        item = ProfileEditRequest.objects.create(user=request.user)
+        _log_activity(request, "profile_edit_requested", details={"target_user_id": request.user.pk, "request_id": item.pk})
+        return Response(_profile_request_payload(item), status=201)
+
+
+class AdminProfileEditRequestView(APIView):
+    permission_classes = [IsAuthenticated, AdminOnlyPermission]
+
+    def get(self, request):
+        items = ProfileEditRequest.objects.select_related("user", "reviewed_by").order_by("-created_at")[:100]
+        return Response([_profile_request_payload(item) for item in items])
+
+
+class AdminProfileEditDecisionView(APIView):
+    permission_classes = [IsAuthenticated, AdminOnlyPermission]
+
+    def post(self, request, request_id, decision):
+        if decision not in {"approve", "reject"}:
+            return Response({"detail": "Invalid decision."}, status=400)
+        with transaction.atomic():
+            item = ProfileEditRequest.objects.select_for_update().select_related("user").filter(pk=request_id).first()
+            if not item:
+                raise Http404("Profile edit request not found.")
+            if item.status != ProfileEditRequest.STATUS_PENDING:
+                return Response({"detail": "This request has already been reviewed."}, status=409)
+            emergency = item.user_id == request.user.pk
+            if emergency and User.objects.filter(role="admin", is_active=True).count() != 1:
+                return Response({"detail": "Another administrator must review your request."}, status=403)
+            item.status = ProfileEditRequest.STATUS_APPROVED if decision == "approve" else ProfileEditRequest.STATUS_REJECTED
+            item.reviewed_at = timezone.now()
+            item.reviewed_by = request.user
+            item.expires_at = item.reviewed_at + timedelta(days=7) if decision == "approve" else None
+            item.save(update_fields=["status", "reviewed_at", "reviewed_by", "expires_at"])
+            _log_activity(request, "profile_edit_approved" if decision == "approve" else "profile_edit_rejected", details={"target_user_id": item.user_id, "request_id": item.pk, "emergency_self_approval": emergency})
+        return Response(_profile_request_payload(item))
+
+
 class AdminActivityView(APIView):
     permission_classes = [IsAuthenticated, AdminOnlyPermission]
 
@@ -5420,6 +5570,7 @@ class AdminActivityView(APIView):
                     "offset": offset,
                     "has_previous": offset > 0,
                     "has_next": offset + limit < total,
+                    "event_options": sorted(UserActivity.objects.order_by().values_list("event", flat=True).distinct()),
                 }
             )
         return Response(serializer.data)

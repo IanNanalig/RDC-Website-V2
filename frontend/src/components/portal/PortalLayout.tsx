@@ -62,6 +62,7 @@ const navByRole: Record<Role, NavItem[]> = {
     { label: "Validator Tracker", to: "/admin/validator-diffs" },
     { label: "Content Management", to: "/admin/content" },
     { label: "Users & Access", to: "/admin/users" },
+    { label: "Audit Log", to: "/admin/audit-log" },
   ],
   validator: [
     { label: "Dashboard", to: "/validator/dashboard" },
@@ -360,6 +361,7 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
                 <div>
                   <p className="portal-account-name">{userName}</p>
                   <span className={`portal-chip ${roleAccent[role]}`}>{roleLabel[role]}</span>
+                  <Link to="/profile" onClick={() => setMobileOpen(false)} className="mt-2 block text-sm text-sky-200 hover:underline">View Profile</Link>
                 </div>
                 <button onClick={logout} className="portal-logout-btn">
                   Logout
