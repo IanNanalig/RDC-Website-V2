@@ -20,10 +20,10 @@ def lock_is_active(section, now=None):
     )
 
 
-def acquire_section_lock(section_id, user):
+def acquire_section_lock(section_id, user, force=False):
     with transaction.atomic():
         section = CMSPageSection.objects.select_for_update().select_related("page").get(pk=section_id)
-        if lock_is_active(section) and section.lock_owner_id != user.id:
+        if lock_is_active(section) and section.lock_owner_id != user.id and not force:
             return section, False
         section.lock_owner = user
         section.lock_acquired_at = timezone.now()

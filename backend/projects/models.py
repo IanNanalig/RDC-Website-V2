@@ -281,6 +281,7 @@ class UserActivity(models.Model):
         ("cms_section_lock_acquired", "CMS Section Lock Acquired"),
         ("cms_section_lock_blocked", "CMS Section Lock Blocked"),
         ("cms_section_lock_released", "CMS Section Lock Released"),
+        ("cms_section_lock_overridden", "CMS Section Lock Overridden"),
         ("cms_section_access_requested", "CMS Section Access Requested"),
         ("cms_form_lock_acquired", "CMS Form Lock Acquired"),
         ("cms_form_lock_blocked", "CMS Form Lock Blocked"),
@@ -292,10 +293,6 @@ class UserActivity(models.Model):
         ("access_request_rejected", "Access Request Rejected"),
         ("api_action", "API Action"),
         ("api_action_failed", "API Action Failed"),
-        ("cms_chatbot_sync_failed", "CMS Chatbot Sync Failed"),
-        ("chat_knowledge_approved", "Chat Knowledge Approved"),
-        ("chat_knowledge_rejected", "Chat Knowledge Rejected"),
-        ("chat_content_updated", "Chat Content Updated"),
     ]
 
     user = models.ForeignKey(
@@ -575,132 +572,3 @@ class PublicPageContent(models.Model):
 
     def __str__(self):
         return f"{self.get_page_display()} / {self.section_key} ({self.status})"
-
-
-class PublicContent(models.Model):
-    LANGUAGE_CHOICES = [
-        ("en", "English"),
-        ("tl", "Tagalog"),
-    ]
-
-    slug = models.CharField(max_length=150)
-    title = models.CharField(max_length=200)
-    body = models.TextField(blank=True)
-    summary = models.TextField(blank=True)
-    tags = models.JSONField(default=list, blank=True)
-    url = models.CharField(max_length=200, blank=True)
-    language = models.CharField(max_length=10, choices=LANGUAGE_CHOICES, default="en")
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        unique_together = ("slug", "language")
-        ordering = ["slug", "language"]
-
-    def __str__(self):
-        return f"{self.slug} ({self.language})"
-
-
-class PublicChatFAQ(models.Model):
-    question_normalized = models.CharField(max_length=255, unique=True)
-    question_sample = models.CharField(max_length=255, blank=True)
-    count = models.IntegerField(default=1)
-    last_asked = models.DateTimeField(default=timezone.now)
-    last_matched_content = models.ForeignKey(
-        PublicContent,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="faq_matches",
-    )
-
-    class Meta:
-        ordering = ["-count", "-last_asked"]
-
-    def __str__(self):
-        return f"{self.question_normalized} ({self.count})"
-
-
-class PublicChatInteraction(models.Model):
-    ANSWER_TYPE_CHOICES = [
-        ("direct", "Direct Answer"),
-        ("related", "Possibly Related"),
-        ("fallback", "Fallback"),
-        ("blocked", "Blocked"),
-    ]
-    FEEDBACK_CHOICES = [
-        ("", "No Feedback"),
-        ("up", "Helpful"),
-        ("down", "Not Helpful"),
-    ]
-
-    question_normalized = models.CharField(max_length=255, db_index=True)
-    question_sample = models.CharField(max_length=255, blank=True)
-    language = models.CharField(max_length=10, choices=PublicContent.LANGUAGE_CHOICES, default="en")
-    matched_content = models.ForeignKey(
-        PublicContent,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="chat_interactions",
-    )
-    confidence = models.DecimalField(max_digits=4, decimal_places=2, default=0)
-    answer_type = models.CharField(max_length=20, choices=ANSWER_TYPE_CHOICES, default="fallback")
-    feedback = models.CharField(max_length=10, choices=FEEDBACK_CHOICES, blank=True, default="")
-    ip_address = models.CharField(max_length=64, blank=True)
-    user_agent = models.CharField(max_length=255, blank=True)
-    created_at = models.DateTimeField(default=timezone.now, db_index=True)
-
-    class Meta:
-        ordering = ["-created_at"]
-
-    def __str__(self):
-        return f"{self.answer_type}: {self.question_sample or self.question_normalized}"
-
-
-class PublicChatKnowledgeGap(models.Model):
-    STATUS_CHOICES = [
-        ("pending", "Pending"),
-        ("approved", "Approved"),
-        ("rejected", "Rejected"),
-    ]
-
-    question_normalized = models.CharField(max_length=255, unique=True)
-    question_sample = models.CharField(max_length=255, blank=True)
-    language = models.CharField(max_length=10, choices=PublicContent.LANGUAGE_CHOICES, default="en")
-    count = models.PositiveIntegerField(default=1)
-    last_asked = models.DateTimeField(default=timezone.now)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
-    suggested_title = models.CharField(max_length=200, blank=True)
-    suggested_summary = models.TextField(blank=True)
-    suggested_body = models.TextField(blank=True)
-    suggested_tags = models.JSONField(default=list, blank=True)
-    matched_content = models.ForeignKey(
-        PublicContent,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="knowledge_gap_matches",
-    )
-    approved_content = models.ForeignKey(
-        PublicContent,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="approved_chat_gaps",
-    )
-    reviewed_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="reviewed_chat_gaps",
-    )
-    reviewed_at = models.DateTimeField(null=True, blank=True)
-    review_notes = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["status", "-count", "-last_asked"]
-
-    def __str__(self):
-        return f"{self.question_normalized} ({self.status}, {self.count})"

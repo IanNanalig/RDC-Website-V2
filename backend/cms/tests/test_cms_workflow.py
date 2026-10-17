@@ -189,7 +189,8 @@ class CMSWorkflowTests(APITestCase):
                 self.assertNotIn("First draft value", str(public_before_publish.data))
 
                 self.authenticate()
-                self.client.post(f"/api/admin/cms/sections/{section.pk}/publish/")
+                self.assertEqual(self.client.post(f"/api/admin/cms/sections/{section.pk}/publish/").status_code, 409)
+                self.client.post(f"/api/admin/cms/pages/{page.pk}/publish/")
                 self.client.force_authenticate(user=None)
                 public_after_publish = self.client.get(f"/api/public/cms/pages/{page.slug}/")
                 self.assertIn("First draft value", str(public_after_publish.data))

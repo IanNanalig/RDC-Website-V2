@@ -393,6 +393,7 @@ export const cmsApi = {
   listPages: async (search = "", page = 1) =>
     listFromResponse<CMSPage>(await api.get(`admin/cms/pages/?${summaryQuery({ q: search, page })}`)),
   getPage: (id: number) => api.get(`admin/cms/pages/${id}/?view=editor`) as Promise<CMSPage>,
+  getPageReview: (id: number) => api.get(`admin/cms/pages/${id}/`) as Promise<CMSPage>,
   createPage: (payload: Pick<CMSPage, "title" | "slug">) => api.post("admin/cms/pages/?view=editor", payload),
   updatePage: (id: number, payload: Pick<CMSPage, "title" | "slug">) =>
     api.put(`admin/cms/pages/${id}/?view=editor`, payload),
@@ -410,13 +411,10 @@ export const cmsApi = {
   createSection: (payload: Partial<CMSSection>) => api.post("admin/cms/sections/", payload),
   updateSection: (id: number, payload: Partial<CMSSection>) =>
     api.put(`admin/cms/sections/${id}/`, payload),
-  lockSection: (id: number) => api.post(`admin/cms/sections/${id}/lock/`),
+  lockSection: (id: number, overrideConfirmed = false) => api.post(`admin/cms/sections/${id}/lock/`, { override_confirmed: overrideConfirmed }),
   unlockSection: (id: number) => api.post(`admin/cms/sections/${id}/unlock/`),
   heartbeatSection: (id: number) => api.post(`admin/cms/sections/${id}/heartbeat/`),
   requestSectionAccess: (id: number) => api.post(`admin/cms/sections/${id}/request-access/`),
-  submitSection: (id: number) => api.post(`admin/cms/sections/${id}/submit/`),
-  publishSection: (id: number) => api.post(`admin/cms/sections/${id}/publish/`),
-  rejectSection: (id: number, remarks = "") => api.post(`admin/cms/sections/${id}/reject/`, { remarks }),
   archiveSection: (id: number) => api.post(`admin/cms/sections/${id}/archive/`),
 
   listArticles: async (search = "", page = 1) =>
@@ -476,11 +474,11 @@ export const cmsApi = {
       url: resolveCmsMediaUrl(asset.url),
     })) };
   },
-  listMedia: async (search = "") => {
+  listMedia: async (search = "", archived = false) => {
     const rows: CMSMediaAsset[] = [];
     let page = 1;
     while (true) {
-      const result = await cmsApi.listMediaPage({ q: search, page });
+      const result = await cmsApi.listMediaPage({ q: search, page, archived });
       rows.push(...result.results);
       if (page >= result.total_pages) return rows;
       page += 1;

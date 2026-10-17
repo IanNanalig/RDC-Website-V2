@@ -7,7 +7,6 @@ const browser = await chromium.launch({ executablePath: edgePath, headless: true
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
 const page = await context.newPage();
 const publicOptions = [];
-const chatbotChunks = [];
 
 await page.addInitScript(() => {
   window.__rdcPerformance = { lcp: 0, cls: 0 };
@@ -24,7 +23,6 @@ await page.addInitScript(() => {
 page.on("request", (request) => {
   const url = request.url();
   if (request.method() === "OPTIONS" && /\/api\/public\//.test(url)) publicOptions.push(url);
-  if (/PublicChatbot-.*\.js/.test(url)) chatbotChunks.push(url);
 });
 
 await page.route("**/api/**", async (route) => {
@@ -70,11 +68,7 @@ assert.ok(metrics.initialBytes <= 1.5 * 1024 * 1024, `Initial transfer exceeded 
 assert.ok(metrics.lcp > 0 && metrics.lcp < 2500, `LCP target missed: ${metrics.lcp} ms.`);
 assert.ok(metrics.cls < 0.1, `CLS target missed: ${metrics.cls}.`);
 assert.equal(publicOptions.length, 0, `Public GET triggered OPTIONS: ${publicOptions.join(", ")}`);
-assert.equal(chatbotChunks.length, 0, "Chatbot internals loaded before the launcher was opened.");
-
-await page.getByRole("button", { name: "Open chatbot" }).click();
-await page.getByText("How can I help today?", { exact: true }).waitFor();
-assert.equal(chatbotChunks.length, 1, "Chatbot internals did not load exactly once after opening.");
+assert.equal(await page.getByRole("button", { name: /open chatbot/i }).count(), 0, "A retired chatbot launcher is still visible.");
 
 console.log(`PASS home performance smoke: ${metrics.initialBytes} bytes, LCP ${Math.round(metrics.lcp)} ms, CLS ${metrics.cls.toFixed(3)}`);
 await browser.close();

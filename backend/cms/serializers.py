@@ -559,3 +559,29 @@ class CMSSiteSettingSerializer(serializers.ModelSerializer):
 
     def get_updated_by_name(self, obj):
         return _user_display(obj.updated_by)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        instance = self.instance
+        key = instance.key if instance else attrs.get("key")
+        if key != "media-categories" or "value_json" not in attrs:
+            return attrs
+        value = attrs["value_json"]
+        if not isinstance(value, dict) or not isinstance(value.get("categories", []), list):
+            raise serializers.ValidationError({"value_json": "Media categories must be a list of names."})
+        categories = [str(item).strip() for item in value.get("categories", []) if isinstance(item, str) and str(item).strip()]
+        categories = list(dict.fromkeys(["General", *categories]))
+        old_value = instance.value_json if isinstance(instance.value_json, dict) else {}
+        old_categories = [str(item).strip() for item in old_value.get("categories", []) if isinstance(item, str) and str(item).strip()]
+        removed = set(old_categories) - set(categories)
+        if removed:
+            used = list(
+                CMSMediaAsset.objects.filter(category__in=removed)
+                .values_list("category", flat=True)
+                .distinct()
+            )
+            if used:
+                names = ", ".join(sorted(used))
+                raise serializers.ValidationError({"value_json": f"Reassign media using {names} before removing or renaming those categories."})
+        attrs["value_json"] = {**value, "categories": categories}
+        return attrs

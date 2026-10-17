@@ -140,6 +140,40 @@ class CMSV2Tests(APITestCase):
             status.HTTP_200_OK,
         )
 
+    def test_admin_must_confirm_section_lock_takeover_and_it_is_audited(self):
+        page = CMSPage.objects.create(title="Takeover page", slug="takeover-page")
+        section = CMSPageSection.objects.create(page=page, section_key="hero", section_type="text", order=1)
+        self.authenticate(self.editor)
+        self.assertEqual(self.client.post(f"/api/admin/cms/sections/{section.pk}/lock/").status_code, 200)
+
+        self.authenticate(self.admin)
+        path = f"/api/admin/cms/sections/{section.pk}/lock/"
+        self.assertEqual(self.client.post(path).status_code, 409)
+        taken = self.client.post(path, {"override_confirmed": True}, format="json")
+        self.assertEqual(taken.status_code, 200)
+        self.assertEqual(taken.data["lock_owner"], self.admin.pk)
+        activity = UserActivity.objects.get(event="cms_section_lock_overridden")
+        self.assertEqual(activity.details["previous_lock_owner"], self.editor.pk)
+
+        self.authenticate(self.editor)
+        blocked = self.client.patch(
+            f"/api/admin/cms/sections/{section.pk}/", {"content_json": {"title": "No longer editable"}}, format="json"
+        )
+        self.assertEqual(blocked.status_code, 423)
+
+    def test_page_sections_are_only_submitted_and_reviewed_with_parent(self):
+        page = CMSPage.objects.create(title="Unified page", slug="unified-page")
+        section = CMSPageSection.objects.create(page=page, section_key="intro", section_type="text", order=1)
+        self.authenticate(self.editor)
+        submitted = self.client.post(f"/api/admin/cms/pages/{page.pk}/submit/")
+        self.assertEqual(submitted.status_code, 200)
+        self.assertEqual(self.client.post(f"/api/admin/cms/sections/{section.pk}/submit/").status_code, 409)
+        self.authenticate(self.admin)
+        queue = self.client.get("/api/admin/cms/review-queue/")
+        self.assertEqual([item["id"] for item in queue.data["pages"]], [page.pk])
+        self.assertEqual(queue.data["sections"], [])
+        self.assertEqual(self.client.post(f"/api/admin/cms/sections/{section.pk}/publish/").status_code, 409)
+
     def test_upload_policy_is_database_managed_and_returns_structured_422(self):
         self.authenticate(self.admin)
         limit = CMSSiteSetting.objects.get(key="media-upload-max-bytes")
@@ -312,6 +346,8 @@ class CMSV2Tests(APITestCase):
         )
         self.assertEqual(saved.status_code, status.HTTP_200_OK)
         published = self.client.post(f"/api/admin/cms/sections/{section.pk}/publish/")
+        self.assertEqual(published.status_code, status.HTTP_409_CONFLICT)
+        published = self.client.post(f"/api/admin/cms/pages/{section.page_id}/publish/")
         self.assertEqual(published.status_code, status.HTTP_200_OK)
 
         self.client.force_authenticate(user=None)

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -42,10 +44,6 @@ from .models import (
     Project,
     ProjectComment,
     ProjectRevision,
-    PublicChatFAQ,
-    PublicChatInteraction,
-    PublicChatKnowledgeGap,
-    PublicContent,
     PublicEvent,
     SystemSetting,
     User,
@@ -57,7 +55,6 @@ from .serializers import (
     PasswordResetRequestSerializer,
     ProjectCommentSerializer,
     PublicEventSerializer,
-    PublicChatKnowledgeGapSerializer,
     PublicProjectSerializer,
     PublicProjectSummarySerializer,
     ProjectSerializer,
@@ -1933,56 +1930,6 @@ def _parse_bool_query(value, default=False):
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def _sync_public_event_content(event: PublicEvent):
-    slug = f"event-{event.id}"
-    if event.status != "published":
-        PublicContent.objects.filter(slug=slug).delete()
-        return
-
-    start_local = timezone.localtime(event.start_at)
-    event_date = start_local.strftime("%B %d, %Y")
-    event_time = start_local.strftime("%I:%M %p").lstrip("0")
-    location = event.location or ("Virtual event" if event.is_virtual else "Location to be announced")
-    summary = f"{event.title} is scheduled on {event_date} at {event_time}."
-    body_parts = [
-        summary,
-        f"Event type: {event.get_event_type_display()}.",
-        f"Location: {location}.",
-    ]
-    if event.description:
-        body_parts.append(event.description)
-    if event.meeting_link:
-        body_parts.append(f"Event link: {event.meeting_link}")
-
-    PublicContent.objects.update_or_create(
-        slug=slug,
-        language="en",
-        defaults={
-            "title": event.title[:200],
-            "summary": summary,
-            "body": "\n".join(body_parts),
-            "tags": ["events", "calendar", event.event_type, "rdc"],
-            "url": "/",
-        },
-    )
-
-
-def _sync_public_event_content_safely(request, event: PublicEvent, operation: str):
-    try:
-        _sync_public_event_content(event)
-    except Exception as exc:
-        _log_activity(
-            request,
-            "cms_chatbot_sync_failed",
-            details={
-                "content_type": "event",
-                "id": event.pk,
-                "operation": operation,
-                "error": str(exc)[:1000],
-            },
-        )
 
 
 class PublicEventViewSet(viewsets.ReadOnlyModelViewSet):

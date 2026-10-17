@@ -64,7 +64,6 @@ from cms.services.publishing import (
     publish_article,
     publish_contributor_form,
     publish_page,
-    publish_section,
     reorder_page_sections,
     restore_contributor_form_version,
 )
@@ -222,8 +221,21 @@ class CMSWorkflowMixin:
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
         obj = self.get_object()
+        if isinstance(obj, CMSPageSection):
+            return Response({"detail": "Submit page sections together from the parent page."}, status=409)
         if obj.status not in {"draft", "rejected", "published"}:
             return Response({"detail": "Only draft, rejected, or edited published content can be submitted."}, status=400)
+        if isinstance(obj, CMSPage):
+            locked_elsewhere = [
+                section for section in obj.sections.select_related("lock_owner")
+                if lock_is_active(section) and section.lock_owner_id != request.user.id
+            ]
+            if locked_elsewhere:
+                owners = sorted({section.lock_owner.full_name or section.lock_owner.username for section in locked_elsewhere if section.lock_owner})
+                return Response(
+                    {"detail": f"Cannot submit while page sections are being edited by {', '.join(owners) or 'another editor'}. Save or release those section locks first."},
+                    status=423,
+                )
         obj.status = "submitted"
         if hasattr(obj, "submitted_by"):
             obj.submitted_by = request.user
@@ -232,7 +244,10 @@ class CMSWorkflowMixin:
         fields = ["status", "updated_at"]
         fields += [field for field in ("submitted_by", "review_notes") if hasattr(obj, field)]
         obj.save(update_fields=fields)
-        if isinstance(obj, CMSPageSection):
+        if isinstance(obj, CMSPage):
+            for section_id in obj.sections.values_list("id", flat=True):
+                release_section_lock(section_id, request.user, force=True)
+        elif isinstance(obj, CMSPageSection):
             release_section_lock(obj.pk, request.user, force=getattr(request.user, "role", "") == "admin")
             mark_page_changed(obj.page, request.user)
         elif isinstance(obj, CMSContributorForm):
@@ -254,6 +269,8 @@ class CMSWorkflowMixin:
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
     def reject(self, request, pk=None):
         obj = self.get_object()
+        if isinstance(obj, CMSPageSection):
+            return Response({"detail": "Review page sections together from the parent page."}, status=409)
         if obj.status not in {"submitted", "draft"}:
             return Response({"detail": "Only submitted or draft content can be rejected."}, status=400)
         obj.status = "rejected"
@@ -429,6 +446,8 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
         section = self.get_object()
         if section.status == "archived":
             raise PermissionDenied("Archived sections cannot be edited.")
+        if section.page.status == "submitted" and getattr(request.user, "role", "") != "admin":
+            raise PermissionDenied("Sections in a submitted page can only be changed after the page is returned for revision.")
         if section.status == "submitted" and getattr(request.user, "role", "") != "admin":
             raise PermissionDenied("Submitted sections can only be changed by an administrator.")
         if lock_is_active(section) and section.lock_owner_id != request.user.id:
@@ -453,10 +472,24 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def lock(self, request, pk=None):
-        section, acquired = acquire_section_lock(pk, request.user)
+        section = self.get_object()
+        old_owner_id = section.lock_owner_id if lock_is_active(section) else None
+        old_owner_name = (section.lock_owner.full_name or section.lock_owner.username) if old_owner_id and section.lock_owner else ""
+        is_admin = getattr(request.user, "role", "") == "admin"
+        if old_owner_id and old_owner_id != request.user.id and is_admin and not request.data.get("override_confirmed"):
+            return Response({"detail": "Confirm the section lock override before taking over this section."}, status=409)
+        section, acquired = acquire_section_lock(pk, request.user, force=is_admin)
+        event = "cms_section_lock_overridden" if acquired and old_owner_id and old_owner_id != request.user.id else (
+            "cms_section_lock_acquired" if acquired else "cms_section_lock_blocked"
+        )
         _log_cms_activity(
-            request, "cms_section_lock_acquired" if acquired else "cms_section_lock_blocked",
-            {"section_id": section.pk, "lock_owner": section.lock_owner_id},
+            request, event,
+            {
+                "section_id": section.pk,
+                "lock_owner": section.lock_owner_id,
+                "previous_lock_owner": old_owner_id,
+                "previous_lock_owner_name": old_owner_name,
+            },
         )
         return Response(self.get_serializer(section).data, status=200 if acquired else 423)
 
@@ -496,12 +529,8 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
     def publish(self, request, pk=None):
-        section = self.get_object()
-        if section.status == "archived":
-            return Response({"detail": "Archived sections cannot be published."}, status=400)
-        section = publish_section(section, user=request.user)
-        _log_cms_activity(request, "cms_content_published", {"content_type": "section", "id": section.pk})
-        return Response(self._serialize(section))
+        self.get_object()
+        return Response({"detail": "Publish page sections together from the parent page."}, status=409)
 
 
 class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelViewSet):
@@ -1135,7 +1164,9 @@ class AdminCMSReviewQueueView(APIView):
                 published_slug=KeyTextTransform("slug", "published_snapshot_json"),
             )
             articles = articles.annotate(published_slug=KeyTextTransform("slug", "published_snapshot_json"))
-            sections = CMSPageSection.objects.filter(status="submitted")
+            # Page sections are never an independent review item. Legacy submitted
+            # rows are normalized to drafts by the data migration below.
+            sections = CMSPageSection.objects.none()
             forms = CMSContributorForm.objects.filter(status="submitted").select_related(
                 "current_published_version"
             )
@@ -1149,7 +1180,8 @@ class AdminCMSReviewQueueView(APIView):
                 "created_by", "updated_by", "submitted_by", "reviewed_by"
             )
             articles = articles.select_related("created_by", "updated_by", "submitted_by", "reviewed_by")
-            sections = CMSPageSection.objects.filter(status="submitted").select_related("page", "lock_owner")
+            # Sections are reviewed as part of their parent page, never independently.
+            sections = CMSPageSection.objects.none()
             forms = CMSContributorForm.objects.filter(status="submitted").select_related(
                 "current_published_version", "created_by", "updated_by", "submitted_by", "reviewed_by", "lock_owner"
             )

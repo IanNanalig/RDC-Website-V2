@@ -528,8 +528,10 @@ const SetupPassword: React.FC = () => {
                 type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full border rounded-lg px-3 py-2 pr-10"
+                className={`w-full rounded-lg border px-3 py-2 pr-10 ${password && policyError ? "border-rose-500 focus:ring-rose-200" : ""}`}
                 autoComplete="new-password"
+                aria-invalid={Boolean(password && policyError)}
+                aria-describedby="setup-password-rules setup-password-validity"
                 required
               />
               <button
@@ -587,17 +589,18 @@ const SetupPassword: React.FC = () => {
               </button>
             </div>
           </label>
+          {confirm && confirmError && <p role="alert" className="mt-1 text-xs font-medium text-rose-700">{confirmError}</p>}
 
-          <div className="text-xs text-slate-600 space-y-1">
+          <div id="setup-password-rules" className="text-xs text-slate-600 space-y-1">
             <div className="font-semibold text-slate-700">Password rules:</div>
             <ul className="space-y-1">
               {passwordRules.map((rule) => {
                 const ok = rule.test(password);
                 return (
-                  <li key={rule.label} className={`flex items-center gap-2 ${ok ? "text-emerald-600" : "text-slate-500"}`}>
+                  <li key={rule.label} className={`flex items-center gap-2 ${ok ? "text-emerald-600" : password ? "text-rose-600" : "text-slate-500"}`}>
                     <span
                       className={`inline-flex h-4 w-4 items-center justify-center rounded-full border ${
-                        ok ? "border-emerald-500 bg-emerald-100 text-emerald-700" : "border-slate-300 text-slate-400"
+                        ok ? "border-emerald-500 bg-emerald-100 text-emerald-700" : password ? "border-rose-400 bg-rose-50 text-rose-600" : "border-slate-300 text-slate-400"
                       }`}
                     >
                       {ok ? "✓" : "•"}
@@ -607,6 +610,9 @@ const SetupPassword: React.FC = () => {
                 );
               })}
             </ul>
+            <p id="setup-password-validity" role={password && policyError ? "alert" : "status"} aria-live="polite" className={`pt-1 ${password && policyError ? "font-medium text-rose-700" : password ? "text-emerald-700" : "sr-only"}`}>
+              {password ? (policyError ? `Password is invalid: ${policyError}` : "Password meets all requirements.") : "Enter a password to check its requirements."}
+            </p>
           </div>
 
           <button

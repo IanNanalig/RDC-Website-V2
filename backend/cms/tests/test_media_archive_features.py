@@ -51,6 +51,20 @@ class CMSMediaArchiveFeaturesTests(APITestCase):
         filtered = self.client.get("/api/admin/cms/media/?view=summary&category=Publications&tag=report")
         self.assertEqual(filtered.data["count"], 1)
 
+    def test_media_category_settings_cannot_remove_a_category_in_use(self):
+        setting = CMSSiteSetting.objects.get(key="media-categories")
+        setting.value_json = {"categories": ["General", "Publications"]}
+        setting.save(update_fields=["value_json"])
+        CMSMediaAsset.objects.create(file="cms/archived.pdf", file_type="document", mime_type="application/pdf", category="Publications", is_archived=True)
+        response = self.client.patch(
+            "/api/admin/cms/settings/media-categories/",
+            {"value_json": {"categories": ["General"]}},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        setting.refresh_from_db()
+        self.assertIn("Publications", setting.value_json["categories"])
+
     def test_audio_probe_failure_is_clear_and_video_limit_is_enforced(self):
         with patch("cms.services.media_validation.shutil.which", return_value=None):
             audio = self.client.post("/api/admin/cms/media/", {"file": SimpleUploadedFile("tone.mp3", b"audio", content_type="audio/mpeg")}, format="multipart")

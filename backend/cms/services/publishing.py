@@ -24,7 +24,9 @@ def publish_page(page, user=None):
         locked_page = CMSPage.objects.select_for_update().get(pk=page_id)
         # Publishing a whole page remains a useful V1-compatible admin shortcut:
         # every non-archived section is approved in the same atomic operation.
-        locked_page.sections.exclude(status="archived").update(status="published")
+        locked_page.sections.exclude(status="archived").update(
+            status="published", lock_owner=None, lock_acquired_at=None,
+        )
         snapshot = build_page_snapshot(locked_page)
         published_at = timezone.now()
         locked_page.status = CMSPage.STATUS_PUBLISHED
@@ -41,30 +43,6 @@ def publish_page(page, user=None):
             ]
         )
         return locked_page
-
-
-def publish_section(section, user=None):
-    section_id = section.pk if isinstance(section, CMSPageSection) else section
-    with transaction.atomic():
-        locked_section = CMSPageSection.objects.select_for_update().select_related("page").get(pk=section_id)
-        locked_section.status = "published"
-        locked_section.lock_owner = None
-        locked_section.lock_acquired_at = None
-        locked_section.save(update_fields=["status", "lock_owner", "lock_acquired_at", "updated_at"])
-        page = locked_section.page
-        page.status = CMSPage.STATUS_PUBLISHED
-        page.published_snapshot_json = build_page_snapshot(page)
-        page.published_at = page.published_at or timezone.now()
-        page.has_unpublished_changes = False
-        page.reviewed_by = user if getattr(user, "is_authenticated", False) else page.reviewed_by
-        page.updated_by = user if getattr(user, "is_authenticated", False) else page.updated_by
-        page.save(
-            update_fields=[
-                "status", "published_snapshot_json", "published_at", "has_unpublished_changes", "reviewed_by",
-                "updated_by", "updated_at",
-            ]
-        )
-        return locked_section
 
 
 def publish_article(article, user=None):

@@ -399,6 +399,7 @@ const friendlySettingNames: Record<string, string> = {
   "homepage-announcement-banner": "Homepage Announcement",
   "media-upload-allowed-types": "Allowed Upload Types",
   "media-upload-max-bytes": "Upload Size Limits",
+  "media-categories": "Media Editorial Categories",
 };
 
 const sectionContentSummary = (section: CMSSection) => {
@@ -525,6 +526,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const [pages, setPages] = useState<CMSPage[]>([]);
   const [articles, setArticles] = useState<CMSArticle[]>([]);
   const [media, setMedia] = useState<CMSMediaAsset[]>([]);
+  const [archivedMedia, setArchivedMedia] = useState<CMSMediaAsset[]>([]);
   const [mediaLibrary, setMediaLibrary] = useState<{ results: CMSMediaAsset[]; count: number; total_pages: number }>({ results: [], count: 0, total_pages: 1 });
   const [mediaLibraryPage, setMediaLibraryPage] = useState(1);
   const [mediaFilters, setMediaFilters] = useState({ q: "", file_type: "", category: "", tag: "" });
@@ -534,6 +536,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const [settingDrafts, setSettingDrafts] = useState<Record<number, unknown>>({});
   const [settingSourceDrafts, setSettingSourceDrafts] = useState<Record<number, string>>({});
   const [reviewQueue, setReviewQueue] = useState<CMSReviewQueue>({ pages: [], sections: [], news: [], forms: [], events: [] });
+  const [pageReviewPreview, setPageReviewPreview] = useState<CMSPage | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<number | null>(null);
   const [pageForm, setPageForm] = useState<PageForm>(emptyPageForm);
   const [sectionForm, setSectionForm] = useState<SectionForm>(emptySectionForm);
@@ -922,8 +925,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         const queue = await cmsApi.getReviewQueue();
         setReviewQueue({ ...queue, forms: Array.isArray(queue.forms) ? queue.forms : [] });
       } else if (tab === "settings") {
-        await loadSettings(force);
-        void loadMediaAssets().catch((error) => console.error("Failed to load CMS media picker.", error));
+        await Promise.all([loadSettings(force), loadMediaAssets()]);
+        void cmsApi.listMedia("", true).then(setArchivedMedia).catch((error) => console.error("Failed to load archived media category usage.", error));
       }
       loadedTabsRef.current.add(tab);
     } catch (error) {
@@ -1046,25 +1049,16 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       setNotice("Save or discard the open section changes before publishing this page.");
       return;
     }
-    const publicPath = pagePublicPath(page.slug);
-    const currentPublicPath = pagePublicPath(publishedSlug(page));
-    const slugWarning =
-      page.status === "published" && currentPublicPath !== publicPath
-        ? `\n\nURL change warning: the live URL will change from ${currentPublicPath} to ${publicPath}. Existing saved links may stop working.`
-        : "";
-    const confirmed = window.confirm(
-      `Publish "${page.title}" to the public website?\n\nPublic URL: ${publicPath}\n\nThis will replace the published snapshot visitors see.${slugWarning}`,
-    );
-    if (!confirmed) return;
+    await openPageReviewPreview(page);
+  };
+
+  const openPageReviewPreview = async (page: CMSPage) => {
     setLoading(true);
     setNotice("");
     try {
-      const published = await cmsApi.publishPage(page.id) as CMSPage;
-      mergePage(published);
-      setNotice(`Page published. Public site now uses the new snapshot at ${publicPath}.`);
+      setPageReviewPreview(await cmsApi.getPageReview(page.id));
     } catch (error) {
-      console.error(error);
-      setNotice(getErrorDetail(error, "Failed to publish page."));
+      setNotice(getErrorDetail(error, "Could not load the complete page draft for preview."));
     } finally {
       setLoading(false);
     }
@@ -1090,17 +1084,22 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     if (sectionFormHasChanges && sectionForm.id !== section.id && !window.confirm("Discard the unsaved section changes and open another section?")) return;
     void loadMediaAssets().catch((error) => console.error("Failed to load CMS media picker.", error));
     populateSectionForm(section);
-    if (section.is_locked && !section.locked_by_me) {
+    if (section.is_locked && !section.locked_by_me && !isAdmin) {
       setSectionReadOnly(true);
       setNotice(`Currently being edited by ${section.lock_owner_name || "another editor"}. This section is read-only.`);
       return;
     }
     try {
-      const locked = (await cmsApi.lockSection(section.id)) as CMSSection;
+      const overrideConfirmed = Boolean(isAdmin && section.is_locked && !section.locked_by_me);
+      if (overrideConfirmed && !window.confirm(`This section is currently locked by ${section.lock_owner_name || "another editor"}. Take over the edit lock? The previous editor will become read-only.`)) {
+        setSectionReadOnly(true);
+        return;
+      }
+      const locked = (await cmsApi.lockSection(section.id, overrideConfirmed)) as CMSSection;
       mergeSection(locked);
       populateSectionForm(locked);
       setSectionReadOnly(false);
-      setNotice("Section lock acquired for 10 minutes. It will stay active while this editor is open.");
+      setNotice(overrideConfirmed ? `Edit lock taken over from ${section.lock_owner_name || "the previous editor"}.` : "Section lock acquired for 10 minutes. It will stay active while this editor is open.");
     } catch (error) {
       setSectionReadOnly(true);
       setNotice(getErrorDetail(error, "This section is currently locked by another editor."));
@@ -1423,6 +1422,13 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     action: "submit" | "publish" | "reject" | "archive",
     label: string,
   ) => {
+    if (kind === "page" && action === "submit" && (
+      (pageForm.id === id && pageFormHasChanges)
+      || (Number(sectionForm.page) === id && sectionFormHasChanges)
+    )) {
+      setNotice("Save the page and all open section drafts before submitting this page for review.");
+      return;
+    }
     if (kind === "section" && sectionForm.id === id && sectionFormHasChanges) {
       setNotice("Save or discard the open section changes before continuing with its workflow.");
       return;
@@ -1452,9 +1458,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         if (action === "archive") updated = await cmsApi.archiveArticle(id) as CMSArticle;
         if (updated) mergeArticle(updated as CMSArticle);
       } else {
-        if (action === "submit") updated = await cmsApi.submitSection(id) as CMSSection;
-        if (action === "publish") updated = await cmsApi.publishSection(id) as CMSSection;
-        if (action === "reject") updated = await cmsApi.rejectSection(id, remarks || "") as CMSSection;
         if (action === "archive") updated = await cmsApi.archiveSection(id) as CMSSection;
         if (updated) mergeSection(updated as CMSSection);
       }
@@ -2852,22 +2855,13 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                               Down
                             </button>
                             <button type="button" className="text-blue-600" onClick={() => editSection(section)}>
-                              {section.is_locked && !section.locked_by_me ? "View" : "Edit"}
+                              {section.is_locked && !section.locked_by_me ? (isAdmin ? "Take Over & Edit" : "View") : "Edit"}
                             </button>
-                            {section.is_locked && !section.locked_by_me && (
+                            {section.is_locked && !section.locked_by_me && !isAdmin && (
                               <button type="button" className="text-amber-700" onClick={() => requestSectionAccess(section)}>Request Access</button>
                             )}
                             {section.is_locked && section.locked_by_me && (
                               <button type="button" className="text-amber-700" onClick={() => releaseOwnSectionLock(section)}>Release Edit Lock</button>
-                            )}
-                            {!isAdmin && section.status !== "submitted" && section.status !== "archived" && (
-                              <button type="button" className="text-blue-700" onClick={() => runWorkflowAction("section", section.id, "submit", section.section_key)}>Submit</button>
-                            )}
-                            {isAdmin && section.status !== "archived" && (
-                              <button type="button" className="text-emerald-700" onClick={() => runWorkflowAction("section", section.id, "publish", section.section_key)}>Publish</button>
-                            )}
-                            {isAdmin && section.status === "submitted" && (
-                              <button type="button" className="text-rose-700" onClick={() => runWorkflowAction("section", section.id, "reject", section.section_key)}>Reject</button>
                             )}
                             {isAdmin && section.status !== "archived" && (
                               <button type="button" className="text-slate-600" onClick={() => runWorkflowAction("section", section.id, "archive", section.section_key)}>Archive</button>
@@ -3319,19 +3313,13 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       {activeTab === "review" && (
         <div className="grid min-w-0 gap-4 xl:grid-cols-2">
           <div className="portal-card min-w-0 overflow-hidden">
-            <div className="portal-card-header"><h3 className="font-bold text-slate-900">Pages and Sections Awaiting Review</h3></div>
+            <div className="portal-card-header"><h3 className="font-bold text-slate-900">Pages Awaiting Review</h3></div>
             <div className="portal-card-body space-y-3">
-              {reviewQueue.pages.length === 0 && reviewQueue.sections.length === 0 && <p className="text-sm text-slate-500">No submitted pages or sections.</p>}
+              {reviewQueue.pages.length === 0 && <p className="text-sm text-slate-500">No submitted pages.</p>}
               {reviewQueue.pages.map((page) => (
                 <div key={`page-${page.id}`} className="rounded-xl border border-slate-200 p-3">
                   <strong>{page.title}</strong><p className="text-xs text-slate-500">Page submitted for review</p>
-                  {isAdmin && <div className="mt-2 flex gap-3 text-sm"><button className="text-emerald-700" onClick={() => runWorkflowAction("page", page.id, "publish", page.title)}>Publish</button><button className="text-rose-700" onClick={() => runWorkflowAction("page", page.id, "reject", page.title)}>Reject</button></div>}
-                </div>
-              ))}
-              {reviewQueue.sections.map((section) => (
-                <div key={`section-${section.id}`} className="rounded-xl border border-slate-200 p-3">
-                  <strong>{section.section_key}</strong><p className="text-xs text-slate-500">Page section submitted for review</p>
-                  {isAdmin && <div className="mt-2 flex gap-3 text-sm"><button className="text-emerald-700" onClick={() => runWorkflowAction("section", section.id, "publish", section.section_key)}>Publish</button><button className="text-rose-700" onClick={() => runWorkflowAction("section", section.id, "reject", section.section_key)}>Reject</button></div>}
+                  {isAdmin && <div className="mt-2 flex gap-3 text-sm"><button className="text-blue-700" onClick={() => void openPageReviewPreview(page)}>Preview</button><button className="text-emerald-700" onClick={() => void openPageReviewPreview(page)}>Preview &amp; Publish</button></div>}
                 </div>
               ))}
             </div>
@@ -3362,6 +3350,41 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         </div>
       )}
 
+      {pageReviewPreview && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-3 sm:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPageReviewPreview(null); }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="cms-page-preview-title" className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-4 shadow-2xl sm:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-4">
+              <div><h2 id="cms-page-preview-title" className="text-xl font-bold">Review page draft: {pageReviewPreview.title}</h2><p className="mt-1 text-sm text-slate-600">Page and all non-archived sections are reviewed and published together.</p></div>
+              <button type="button" className="portal-btn portal-btn-ghost" onClick={() => setPageReviewPreview(null)}>Close preview</button>
+            </div>
+            {(() => {
+              const liveSections = Array.isArray(pageReviewPreview.published_snapshot_json?.sections) ? pageReviewPreview.published_snapshot_json.sections as Array<Record<string, unknown>> : [];
+              const draftSections = (pageReviewPreview.sections || []).filter((section) => section.status !== "archived").sort((a, b) => a.order - b.order);
+              const liveByKey = new Map(liveSections.map((section) => [String(section.sectionKey || ""), section]));
+              const draftKeys = new Set(draftSections.map((section) => section.section_key));
+              const changes = draftSections.map((section) => {
+                const live = liveByKey.get(section.section_key);
+                const unchanged = Boolean(live && JSON.stringify(live.content || {}) === JSON.stringify(section.content_json || {}) && Number(live.order) === section.order && String(live.sectionType || "") === section.section_type);
+                return { key: section.section_key, label: !live ? "Added" : unchanged ? "Unchanged" : "Changed", visible: section.is_visible };
+              });
+              for (const live of liveSections) if (!draftKeys.has(String(live.sectionKey || ""))) changes.push({ key: String(live.sectionKey || "(unknown section)"), label: "Removed", visible: false });
+              return <>
+                <div className="my-4 rounded-xl border border-blue-100 bg-blue-50 p-3 text-sm"><strong>Page metadata draft:</strong> {pageReviewPreview.title} · /{pageReviewPreview.slug}<div className="mt-1 text-slate-600">Published version: {String(pageReviewPreview.published_snapshot_json?.title || "No published version")} · /{String(pageReviewPreview.published_snapshot_json?.slug || "—")}{pageReviewPreview.published_snapshot_json && (pageReviewPreview.published_snapshot_json.title !== pageReviewPreview.title || pageReviewPreview.published_snapshot_json.slug !== pageReviewPreview.slug) ? " · Page metadata changed" : ""}</div></div>
+                <div className="mb-4"><h3 className="font-semibold">Changes from published version</h3>{changes.length ? <ul className="mt-2 grid gap-2 sm:grid-cols-2">{changes.map((change) => <li key={change.key} className="rounded-lg border border-slate-200 px-3 py-2 text-sm"><strong>{change.label}</strong> · {change.key}{change.label !== "Removed" && <span className="text-slate-500"> · {change.visible ? "Visible" : "Hidden"}</span>}</li>)}</ul> : <p className="mt-2 text-sm text-slate-600">No sections in this draft.</p>}</div>
+                <h3 className="font-semibold">Read-only draft preview</h3>
+                <div className="mt-2 space-y-3">{draftSections.map((section) => {
+                  const content = section.content_json || {};
+                  const title = textValue(content.title) || sectionTypeLabels.get(section.section_type) || section.section_key;
+                  const summary = textValue(content.subtitle) || textValue(content.description) || textValue(content.body) || textValue(content.text);
+                  return <article key={section.id} className="rounded-xl border border-slate-200 p-4"><div className="flex flex-wrap items-center gap-2"><h4 className="font-semibold">{title}</h4><span className="rounded-full bg-slate-100 px-2 py-1 text-xs">{sectionTypeLabels.get(section.section_type) || section.section_type}</span><span className="text-xs text-slate-500">{section.is_visible ? "Visible" : "Hidden"}</span></div>{summary && <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">{summary}</p>}<details className="mt-3"><summary className="cursor-pointer text-sm text-blue-700">Structured content</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 p-3 text-xs">{JSON.stringify(content, null, 2)}</pre></details></article>;
+                })}</div>
+              </>;
+            })()}
+            <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-4"><button type="button" className="portal-btn portal-btn-ghost" onClick={() => setPageReviewPreview(null)}>Cancel</button>{pageReviewPreview.status === "submitted" && <button type="button" className="portal-btn portal-btn-ghost" onClick={() => { const page = pageReviewPreview; setPageReviewPreview(null); void runWorkflowAction("page", page.id, "reject", page.title); }}>Reject Page</button>}<button type="button" className="portal-btn portal-btn-primary" disabled={loading} onClick={() => { const page = pageReviewPreview; setPageReviewPreview(null); void runWorkflowAction("page", page.id, "publish", page.title); }}>Publish Page and Sections</button></div>
+          </section>
+        </div>
+      )}
+
       {activeTab === "settings" && (
         <div className="space-y-5">
           {[
@@ -3382,7 +3405,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     <div data-cms-setting-key={row.key} key={row.id} className="portal-card min-w-0 overflow-hidden">
                       <div className="portal-card-header"><h4 className="font-bold text-slate-900">{friendlySettingNames[row.key] || row.key}</h4><p className="text-xs text-slate-500">{row.description}</p></div>
                       <div className="portal-card-body space-y-3">
-                        <SiteSettingFields row={row} value={settingDrafts[row.id]} onChange={(value) => setSettingValue(row.id, value)} media={media} disabled={!isAdmin} />
+                        <SiteSettingFields row={row} value={settingDrafts[row.id]} onChange={(value) => setSettingValue(row.id, value)} media={[...media, ...archivedMedia]} disabled={!isAdmin} />
                         {developerMode && isAdmin && (
                           <details className="overflow-hidden rounded-xl border border-amber-200 bg-white">
                             <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-amber-800">Developer: Setting JSON source</summary>
@@ -3553,6 +3576,7 @@ const SiteSettingFields = ({
   media: CMSMediaAsset[];
   disabled: boolean;
 }) => {
+  const [newCategory, setNewCategory] = useState("");
   const objectValue = parseRecord(value);
   const listValue = Array.isArray(value) ? value : [];
   const updateListItem = (index: number, next: Record<string, unknown>) => {
@@ -3678,8 +3702,40 @@ const SiteSettingFields = ({
       </div>
     );
   } else if (row.key === "media-categories") {
-    const categories = Array.isArray(objectValue.categories) ? objectValue.categories.filter((item): item is string => typeof item === "string") : ["General"];
-    fields = <div className="space-y-2"><p className="text-sm text-slate-600">One category per line. General always remains available.</p><Area label="Media Categories" value={categories.join("\n")} onChange={(next) => onChange({ categories: [...new Set(["General", ...next.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)])] })} rows={6} /></div>;
+    const categories = [...new Set(["General", ...(Array.isArray(objectValue.categories) ? objectValue.categories.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map((item) => item.trim()) : [])])];
+    const usage = new Map<string, number>();
+    media.forEach((asset) => usage.set(asset.category || "General", (usage.get(asset.category || "General") || 0) + 1));
+    const updateCategories = (next: string[]) => onChange({ ...objectValue, categories: [...new Set(["General", ...next.map((item) => item.trim()).filter(Boolean)])] });
+    const addCategory = () => {
+      const next = newCategory.trim();
+      if (!next || categories.some((category) => category.toLowerCase() === next.toLowerCase())) return;
+      updateCategories([...categories, next]);
+      setNewCategory("");
+    };
+    fields = (
+      <div className="space-y-3">
+        <p className="text-sm text-slate-600">General is always available. Reassign all media from a category before renaming or removing it.</p>
+        <div className="space-y-2">
+          {categories.map((category) => {
+            const assigned = usage.get(category) || 0;
+            const isGeneral = category === "General";
+            return <div key={category} className="grid min-w-0 gap-2 rounded-lg border border-slate-200 p-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
+              <input aria-label={`Editorial category ${category}`} className="min-w-0 rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50" value={category} disabled={isGeneral || assigned > 0 || disabled} onChange={(event) => {
+                const next = event.target.value.trim();
+                if (next && categories.some((item) => item !== category && item.toLowerCase() === next.toLowerCase())) return;
+                updateCategories(categories.map((item) => item === category ? next : item));
+              }} />
+              <span className="text-xs text-slate-500">{isGeneral ? "Required" : `${assigned} file${assigned === 1 ? "" : "s"} assigned`}</span>
+              {!isGeneral && <button type="button" className="text-sm font-semibold text-rose-700 disabled:cursor-not-allowed disabled:opacity-50" disabled={disabled || assigned > 0} onClick={() => updateCategories(categories.filter((item) => item !== category))}>Remove</button>}
+            </div>;
+          })}
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input aria-label="New media category" className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm" value={newCategory} disabled={disabled} onChange={(event) => setNewCategory(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addCategory(); } }} placeholder="New category name" />
+          <button type="button" className="portal-btn portal-btn-ghost" disabled={disabled || !newCategory.trim()} onClick={addCategory}>Add Category</button>
+        </div>
+      </div>
+    );
   } else {
     fields = <p className="text-sm text-slate-600">This value is preserved, but it does not have a visual editor yet.</p>;
   }

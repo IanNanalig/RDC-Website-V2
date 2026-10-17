@@ -314,12 +314,12 @@ const UserManagement = () => {
     cms_section_lock_acquired: "CMS Section Lock Acquired",
     cms_section_lock_blocked: "CMS Section Lock Blocked",
     cms_section_lock_released: "CMS Section Lock Released",
+    cms_section_lock_overridden: "CMS Section Lock Overridden",
     cms_section_access_requested: "CMS Section Access Requested",
     cms_form_lock_acquired: "CMS Form Lock Acquired",
     cms_form_lock_blocked: "CMS Form Lock Blocked",
     cms_form_lock_released: "CMS Form Lock Released",
     cms_form_access_requested: "CMS Form Access Requested",
-    cms_chatbot_sync_failed: "CMS Chatbot Sync Failed",
     notification_read: "Notification Read",
     notification_read_all: "All Notifications Read",
     access_request_approved: "Access Request Approved",
@@ -332,9 +332,6 @@ const UserManagement = () => {
     project_revision_reviewed: "Project Revision Reviewed",
     project_revision_endorsed: "Project Revision Endorsed",
     project_revision_rejected: "Project Revision Rejected",
-    chat_knowledge_approved: "Chat Knowledge Approved",
-    chat_knowledge_rejected: "Chat Knowledge Rejected",
-    chat_content_updated: "Chat Content Updated",
   };
 
   const activityEventLabel = (item: ActivityItem) => {
@@ -390,9 +387,7 @@ const UserManagement = () => {
     project_revision_reviewed: "info",
     project_revision_endorsed: "info",
     project_revision_rejected: "warn",
-    chat_knowledge_approved: "info",
-    chat_knowledge_rejected: "warn",
-    chat_content_updated: "info",
+    cms_section_lock_overridden: "warn",
   };
 
   const severityClass = (event: string) => {
