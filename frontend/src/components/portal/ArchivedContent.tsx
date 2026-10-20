@@ -10,7 +10,6 @@ const groups: Group[] = [
   { label: "News", endpoint: "admin/cms/articles/?view=summary&archived=1", detail: (id) => `admin/cms/articles/${id}/`, restore: (id) => `admin/cms/articles/${id}/restore/` },
   { label: "Events", endpoint: "admin/cms/events/?archived=1", detail: (id) => `admin/cms/events/${id}/`, restore: (id) => `admin/cms/events/${id}/unarchive/` },
   { label: "Media", endpoint: "admin/cms/media/?view=summary&archived=1", detail: (id) => `admin/cms/media/${id}/`, restore: (id) => `admin/cms/media/${id}/restore/` },
-  { label: "Contributor Forms", endpoint: "admin/cms/forms/?archived=1", detail: (id) => `admin/cms/forms/${id}/`, restore: (id) => `admin/cms/forms/${id}/restore/` },
 ];
 
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};

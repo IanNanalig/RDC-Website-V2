@@ -11,7 +11,7 @@ from .utils import derive_ncr_lgus
 
 
 RULE_VERSION = "rdc-priority-v1"
-ALGORITHM_VERSION = "expert-v1"
+ALGORITHM_VERSION = "expert-v4-regional-eligibility"
 REGIONAL_THRESHOLD = 200_000_000
 ANALYSIS_GUIDANCE_VERSION = "contextual-explanations-v3"
 
@@ -243,9 +243,24 @@ def _scale_rules(values):
 def default_priority_rule_config():
     return {
         "thresholds": {
-            "high": 81,
+            "high": 70,
             "regional_project_cost": REGIONAL_THRESHOLD,
             "pap_weights": {"readiness": 20, "gad_responsiveness": 15, "spatial_coverage": 15},
+            "regional_criteria": {
+                "cost": {
+                    "thresholds": {"at_least_5b": 5_000_000_000, "over_3b": 3_000_000_000, "over_1b": 1_000_000_000, "over_500m": 500_000_000},
+                    "scores": {"at_least_5b": 10, "over_3b": 8, "over_1b": 6, "over_500m": 4, "otherwise": 2},
+                },
+                "spatial_coverage": {"scores": {"interregional": 10, "region_wide": 8, "eight_to_twelve_lgus": 6, "single_city": 4}},
+                "outcome_contribution": {
+                    "thresholds": {"at_least_7": 7, "at_least_5": 5, "at_least_3": 3, "at_least_2": 2, "at_least_1": 1},
+                    "scores": {"at_least_7": 10, "at_least_5": 8, "at_least_3": 6, "at_least_2": 4, "at_least_1": 2, "otherwise": 0},
+                },
+                "beneficiaries": {
+                    "thresholds": {"over_3m": 3_000_000, "over_1m": 1_000_000, "at_least_1": 1},
+                    "scores": {"over_3m": 10, "over_1m": 6, "at_least_1": 3, "otherwise": 0},
+                },
+            },
         },
         "sector_criteria": {
             sector: [_criterion_rule(*criterion) for criterion in criteria]
@@ -380,7 +395,82 @@ def _scale_rule_rows(value, label):
     return rows
 
 
-def validate_priority_rule_config(config):
+def _validate_regional_criteria(value):
+    defaults = default_priority_rule_config()["thresholds"]["regional_criteria"]
+    if not isinstance(value, dict):
+        raise ValueError("Regional prioritization criteria are required.")
+
+    def score_map(group, keys, label):
+        rows = value.get(group)
+        if not isinstance(rows, dict) or not isinstance(rows.get("scores"), dict):
+            raise ValueError(f"{label} scores are required.")
+        scores = {
+            key: _number(rows["scores"].get(key), f"{label} {key.replace('_', ' ')} score", 0, 10)
+            for key in keys
+        }
+        if set(rows["scores"]) != set(keys):
+            raise ValueError(f"{label} must contain exactly the supported score bands.")
+        return scores
+
+    cost = value.get("cost")
+    if not isinstance(cost, dict) or not isinstance(cost.get("thresholds"), dict):
+        raise ValueError("Regional project-cost thresholds are required.")
+    cost_threshold_keys = ("at_least_5b", "over_3b", "over_1b", "over_500m")
+    cost_thresholds = {
+        key: _number(cost["thresholds"].get(key), f"Regional cost {key.replace('_', ' ')} threshold", 0)
+        for key in cost_threshold_keys
+    }
+    if not (cost_thresholds["at_least_5b"] > cost_thresholds["over_3b"] > cost_thresholds["over_1b"] > cost_thresholds["over_500m"]):
+        raise ValueError("Regional cost thresholds must decrease from the highest band to the lowest band.")
+    cost_scores = score_map("cost", (*cost_threshold_keys, "otherwise"), "Regional project-cost")
+    if not (cost_scores["at_least_5b"] >= cost_scores["over_3b"] >= cost_scores["over_1b"] >= cost_scores["over_500m"] >= cost_scores["otherwise"]):
+        raise ValueError("Regional project-cost scores must not increase as project cost decreases.")
+
+    spatial_keys = tuple(defaults["spatial_coverage"]["scores"])
+    spatial_scores = score_map("spatial_coverage", spatial_keys, "Regional spatial coverage")
+    if not (
+        spatial_scores["interregional"] >= spatial_scores["region_wide"]
+        >= spatial_scores["eight_to_twelve_lgus"] >= spatial_scores["single_city"]
+    ):
+        raise ValueError("Regional spatial-coverage scores must not increase as coverage narrows.")
+
+    outcome = value.get("outcome_contribution")
+    if not isinstance(outcome, dict) or not isinstance(outcome.get("thresholds"), dict):
+        raise ValueError("RDP outcome-contribution thresholds are required.")
+    outcome_keys = ("at_least_7", "at_least_5", "at_least_3", "at_least_2", "at_least_1")
+    outcome_thresholds = {
+        key: _number(outcome["thresholds"].get(key), f"RDP outcome {key.replace('_', ' ')} threshold", 0)
+        for key in outcome_keys
+    }
+    if not (outcome_thresholds["at_least_7"] > outcome_thresholds["at_least_5"] > outcome_thresholds["at_least_3"] > outcome_thresholds["at_least_2"] > outcome_thresholds["at_least_1"]):
+        raise ValueError("RDP outcome thresholds must decrease from the highest band to the lowest band.")
+    outcome_scores = score_map("outcome_contribution", (*outcome_keys, "otherwise"), "RDP outcome contribution")
+    if not (outcome_scores["at_least_7"] >= outcome_scores["at_least_5"] >= outcome_scores["at_least_3"] >= outcome_scores["at_least_2"] >= outcome_scores["at_least_1"] >= outcome_scores["otherwise"]):
+        raise ValueError("RDP outcome scores must not increase as outcome contribution decreases.")
+
+    beneficiaries = value.get("beneficiaries")
+    if not isinstance(beneficiaries, dict) or not isinstance(beneficiaries.get("thresholds"), dict):
+        raise ValueError("Beneficiary-magnitude thresholds are required.")
+    beneficiary_keys = ("over_3m", "over_1m", "at_least_1")
+    beneficiary_thresholds = {
+        key: _number(beneficiaries["thresholds"].get(key), f"Beneficiary {key.replace('_', ' ')} threshold", 0)
+        for key in beneficiary_keys
+    }
+    if not (beneficiary_thresholds["over_3m"] > beneficiary_thresholds["over_1m"] > beneficiary_thresholds["at_least_1"]):
+        raise ValueError("Beneficiary thresholds must decrease from the highest band to the lowest band.")
+    beneficiary_scores = score_map("beneficiaries", (*beneficiary_keys, "otherwise"), "Beneficiary magnitude")
+    if not (beneficiary_scores["over_3m"] >= beneficiary_scores["over_1m"] >= beneficiary_scores["at_least_1"] >= beneficiary_scores["otherwise"]):
+        raise ValueError("Beneficiary scores must not increase as beneficiary magnitude decreases.")
+
+    return {
+        "cost": {"thresholds": cost_thresholds, "scores": cost_scores},
+        "spatial_coverage": {"scores": spatial_scores},
+        "outcome_contribution": {"thresholds": outcome_thresholds, "scores": outcome_scores},
+        "beneficiaries": {"thresholds": beneficiary_thresholds, "scores": beneficiary_scores},
+    }
+
+
+def validate_priority_rule_config(config, *, enforce_current_high=False):
     if not isinstance(config, dict):
         raise ValueError("The AI scoring rules must be an object.")
     thresholds = config.get("thresholds")
@@ -390,8 +480,8 @@ def validate_priority_rule_config(config):
         raise ValueError("Thresholds, sector criteria, and keyword dictionaries are required.")
 
     high = _number(thresholds.get("high"), "High-priority threshold", 0, 100)
-    if high != 81:
-        raise ValueError("The high-priority threshold must be 81. Scores from 0 to 80 are low priority.")
+    if enforce_current_high and high != 70:
+        raise ValueError("The high-priority threshold for new rule versions must be 70.")
     pap_weights_value = thresholds.get("pap_weights")
     if not isinstance(pap_weights_value, dict):
         raise ValueError("PAP criterion weights are required.")
@@ -470,11 +560,12 @@ def validate_priority_rule_config(config):
 
     return {
         "thresholds": {
-            "high": 81,
+            "high": high,
             "regional_project_cost": _number(
                 thresholds.get("regional_project_cost"), "Regional-project cost threshold", 0
             ),
             "pap_weights": pap_weights,
+            "regional_criteria": _validate_regional_criteria(thresholds.get("regional_criteria")),
         },
         "sector_criteria": normalized_sectors,
         "keyword_dictionaries": {
@@ -499,6 +590,9 @@ def priority_rule_config(rule_set=None):
         config["thresholds"].update(incoming_thresholds)
         if isinstance(incoming_pap, dict):
             config["thresholds"]["pap_weights"].update(incoming_pap)
+        incoming_regional = incoming_thresholds.get("regional_criteria")
+        if isinstance(incoming_regional, dict):
+            config["thresholds"]["regional_criteria"] = deepcopy(incoming_regional)
     if isinstance(rule_set.sector_criteria, dict) and rule_set.sector_criteria:
         config["sector_criteria"].update(deepcopy(rule_set.sector_criteria))
     if isinstance(rule_set.keyword_dictionaries, dict):
@@ -545,40 +639,9 @@ def _simplified(snapshot):
 
 
 def _scoring_form(snapshot):
-    """Expose detailed and simplified submissions through one scoring shape."""
+    """Return the only supported project form for scoring."""
     form = _simplified(snapshot)
-    if not isinstance(form, dict):
-        return {}
-    if isinstance(snapshot, dict) and isinstance(snapshot.get("simplified_form"), dict):
-        return form
-    if str(form.get("submission_type") or "").lower() != "detailed" and not form.get("projectTitle"):
-        return form
-
-    normalized = dict(form)
-    normalized.setdefault("program", form.get("programOrProject") or "")
-    normalized.setdefault("projectActivity", form.get("projectTitle") or "")
-    normalized.setdefault("rdpMainChapter", form.get("mainPdpChapter") or "")
-    normalized.setdefault("developmentSector", form.get("mainInfrastructureSector") or "")
-    normalized.setdefault(
-        "location",
-        " | ".join(
-            str(value).strip()
-            for value in (
-                form.get("costLocalities"),
-                form.get("costProvinces"),
-                form.get("impactProvinces"),
-                form.get("convergenceLgu"),
-                form.get("spatialCoverageByCost"),
-                form.get("spatialCoverageByImpact"),
-            )
-            if str(value or "").strip()
-        ),
-    )
-    physical_status = str(form.get("physicalFinancialStatus") or "")
-    normalized.setdefault("status", "New" if "proposed" in physical_status.lower() else physical_status)
-    if not isinstance(normalized.get("fundingRequirementByYear"), dict):
-        normalized["fundingRequirementByYear"] = {"total": form.get("totalProjectCost") or 0}
-    return normalized
+    return form if isinstance(form, dict) else {}
 
 
 def _normalized_text(form):
@@ -939,6 +1002,14 @@ def _priority_for(score, thresholds):
     return "low"
 
 
+def _priority_with_regional_budget(score, thresholds, funding_total, missing=False):
+    if missing:
+        return "incomplete"
+    if funding_total < thresholds["regional_project_cost"]:
+        return "low"
+    return _priority_for(score, thresholds)
+
+
 def _scale_rating(rows, value):
     key = _fact_key(value)
     item = next((row for row in rows if row["key"] == key), None)
@@ -951,76 +1022,6 @@ def _guidance_field(key, label, source="contributor"):
 
 def _guidance_field_map(snapshot):
     snapshot = snapshot if isinstance(snapshot, dict) else {}
-    detailed = (
-        str(snapshot.get("submission_type") or "").lower() == "detailed"
-        or "projectTitle" in snapshot
-    )
-    if detailed:
-        outcome_fields = [
-            _guidance_field("objective", "Project Objective"),
-            _guidance_field("description", "Project Description"),
-            _guidance_field("mainPdpChapter", "Main PDP Chapter"),
-            _guidance_field("mainPdpOutcome", "Main PDP Outcome"),
-            _guidance_field("mainPdpSubOutcome", "Main PDP Sub-outcome"),
-            _guidance_field("mainPdpIndicator", "Main PDP Indicator"),
-            _guidance_field("mainInfrastructureSector", "Main Infrastructure Sector"),
-            _guidance_field("mainInfrastructureSubsector", "Main Infrastructure Subsector"),
-            _guidance_field("expectedOutputIndicator", "Expected Output Indicator"),
-            _guidance_field("remarks", "Remarks"),
-        ]
-        return {
-            "readiness": [
-                _guidance_field("supplement.readinessLevel", "Readiness Level", "validator"),
-                _guidance_field("supplement.readinessNotes", "Readiness Evidence Notes", "validator"),
-                _guidance_field("implementationReadinessLevel", "Implementation Readiness Level"),
-                _guidance_field("projectReadinessItems", "Project Readiness Checklist"),
-                _guidance_field("projectReadiness", "Project Readiness"),
-            ],
-            "gad_responsiveness": [
-                _guidance_field("supplement.gadResponsiveness", "GAD Responsiveness", "validator"),
-                _guidance_field("gadResponsiveness", "GAD Responsiveness"),
-                _guidance_field("gadScore", "GAD Score"),
-            ],
-            "spatial_coverage": [
-                _guidance_field("supplement.spatialCoverageScope", "Spatial Coverage", "validator"),
-                _guidance_field("spatialCoverageByCost", "Spatial Coverage by Cost"),
-                _guidance_field("spatialCoverageByImpact", "Spatial Coverage by Impact"),
-                _guidance_field("costLocalities", "Cost Coverage Localities"),
-                _guidance_field("costProvinces", "Cost Coverage Provinces"),
-                _guidance_field("impactProvinces", "Impact Coverage Provinces"),
-            ],
-            "outcomes": outcome_fields,
-            "regional_cost": [
-                _guidance_field("totalProjectCost", "Total Project Cost"),
-                _guidance_field("projectCostRows", "Project Cost Matrix Rows"),
-            ],
-            "regional_spatial": [
-                _guidance_field("supplement.regionalSpatialCategory", "Regional Spatial Category", "validator"),
-                _guidance_field("spatialCoverageByImpact", "Spatial Coverage by Impact"),
-                _guidance_field("impactProvinces", "Impact Coverage Provinces"),
-            ],
-            "regional_outcomes": [
-                _guidance_field("supplement.contributedOutcomeCount", "Contributed RDP Outcomes", "validator"),
-                *outcome_fields,
-            ],
-            "regional_beneficiaries": [
-                _guidance_field("supplement.beneficiaryCount", "Estimated Beneficiaries", "validator"),
-                _guidance_field("objective", "Project Objective"),
-                _guidance_field("description", "Project Description"),
-                _guidance_field("expectedOutputValue", "Expected Output Value"),
-            ],
-            "status": [
-                _guidance_field("physicalFinancialStatus", "Physical and Financial Status"),
-                _guidance_field("updatesAsOf", "Updates as of"),
-            ],
-            "negative": [
-                _guidance_field("projectTitle", "Project Title"),
-                _guidance_field("objective", "Project Objective"),
-                _guidance_field("description", "Project Description"),
-                _guidance_field("remarks", "Remarks"),
-            ],
-        }
-
     outcome_fields = [
         _guidance_field("projectActivity", "Project/Activity"),
         _guidance_field("objective", "Objective"),
@@ -1535,7 +1536,12 @@ def analyze_project(project, validator, snapshot, supplements=None):
     base_score = round(pap_total + outcome_total, 2)
 
     funding_total = _money_total(form.get("fundingRequirementByYear"))
-    regional = {"applicable": funding_total >= thresholds["regional_project_cost"], "total": 0, "criteria": []}
+    regional_rules = thresholds["regional_criteria"]
+    regional = {
+        "applicable": funding_total >= thresholds["regional_project_cost"],
+        "total": 0,
+        "criteria": [],
+    }
     if regional["applicable"]:
         beneficiary_raw = facts.get("beneficiaryCount")
         try:
@@ -1553,10 +1559,45 @@ def analyze_project(project, validator, snapshot, supplements=None):
             missing.append("Regional spatial coverage category")
         if contributed_outcomes is None:
             missing.append("Number of contributed RDP outcomes")
-        cost_raw = 10 if funding_total >= 5_000_000_000 else 8 if funding_total > 3_000_000_000 else 6 if funding_total > 1_000_000_000 else 4 if funding_total > 500_000_000 else 2
-        spatial_raw = {"interregional": 10, "region_wide": 8, "eight_to_twelve_lgus": 6, "single_city": 4}.get(regional_scope, 0)
-        outcome_raw = 10 if (contributed_outcomes or 0) >= 7 else 8 if (contributed_outcomes or 0) >= 5 else 6 if (contributed_outcomes or 0) >= 3 else 4 if contributed_outcomes == 2 else 2 if contributed_outcomes == 1 else 0
-        beneficiary_score = 10 if (beneficiary_count or 0) > 3_000_000 else 6 if (beneficiary_count or 0) > 1_000_000 else 3 if (beneficiary_count or 0) >= 1 else 0
+        cost_thresholds = regional_rules["cost"]["thresholds"]
+        cost_scores = regional_rules["cost"]["scores"]
+        if funding_total >= cost_thresholds["at_least_5b"]:
+            cost_raw = cost_scores["at_least_5b"]
+        elif funding_total > cost_thresholds["over_3b"]:
+            cost_raw = cost_scores["over_3b"]
+        elif funding_total > cost_thresholds["over_1b"]:
+            cost_raw = cost_scores["over_1b"]
+        elif funding_total > cost_thresholds["over_500m"]:
+            cost_raw = cost_scores["over_500m"]
+        else:
+            cost_raw = cost_scores["otherwise"]
+
+        spatial_raw = regional_rules["spatial_coverage"]["scores"].get(regional_scope, 0)
+        outcome_thresholds = regional_rules["outcome_contribution"]["thresholds"]
+        outcome_scores = regional_rules["outcome_contribution"]["scores"]
+        if (contributed_outcomes or 0) >= outcome_thresholds["at_least_7"]:
+            outcome_raw = outcome_scores["at_least_7"]
+        elif (contributed_outcomes or 0) >= outcome_thresholds["at_least_5"]:
+            outcome_raw = outcome_scores["at_least_5"]
+        elif (contributed_outcomes or 0) >= outcome_thresholds["at_least_3"]:
+            outcome_raw = outcome_scores["at_least_3"]
+        elif (contributed_outcomes or 0) >= outcome_thresholds["at_least_2"]:
+            outcome_raw = outcome_scores["at_least_2"]
+        elif (contributed_outcomes or 0) >= outcome_thresholds["at_least_1"]:
+            outcome_raw = outcome_scores["at_least_1"]
+        else:
+            outcome_raw = outcome_scores["otherwise"]
+
+        beneficiary_thresholds = regional_rules["beneficiaries"]["thresholds"]
+        beneficiary_scores = regional_rules["beneficiaries"]["scores"]
+        if (beneficiary_count or 0) > beneficiary_thresholds["over_3m"]:
+            beneficiary_score = beneficiary_scores["over_3m"]
+        elif (beneficiary_count or 0) > beneficiary_thresholds["over_1m"]:
+            beneficiary_score = beneficiary_scores["over_1m"]
+        elif (beneficiary_count or 0) >= beneficiary_thresholds["at_least_1"]:
+            beneficiary_score = beneficiary_scores["at_least_1"]
+        else:
+            beneficiary_score = beneficiary_scores["otherwise"]
         regional["criteria"] = [
             _criterion("regional_cost", "Total Regional Project Cost", cost_raw, 25, f"Funding requirement: PHP {funding_total:,}."),
             _criterion("regional_spatial", "Spatial Coverage", spatial_raw, 25, "Validator-confirmed regional spatial category."),
@@ -1565,7 +1606,9 @@ def analyze_project(project, validator, snapshot, supplements=None):
         ]
         regional["total"] = sum(item["score"] for item in regional["criteria"])
     else:
-        regional["message"] = "Not applicable: classified as a Sectoral Project."
+        regional["message"] = (
+            f"Not applicable: total funding requirement is below PHP {thresholds['regional_project_cost']:,}."
+        )
 
     negative = []
     for negative_rule in dictionaries["negative_rules"]:
@@ -1587,13 +1630,16 @@ def analyze_project(project, validator, snapshot, supplements=None):
             if risk and risk not in risks:
                 risks.append(risk)
 
-    suggested_priority = "incomplete" if missing else _priority_for(base_score, thresholds)
+    below_regional_cutoff = funding_total < thresholds["regional_project_cost"]
+    suggested_priority = _priority_with_regional_budget(base_score, thresholds, funding_total, bool(missing))
     strongest = sorted(pap + outcomes, key=lambda item: item["score"], reverse=True)[:2]
     if missing:
         summary = "Priority analysis is incomplete. Supply the missing factual inputs before confirming an official recommendation."
     else:
         strengths = " and ".join(item["criterion"].lower() for item in strongest if item["score"] > 0)
         summary = f"The project is classified as {PRIORITY_LABELS[suggested_priority].lower()} with a base score of {base_score:.2f}/100."
+        if below_regional_cutoff:
+            summary += " Its total funding requirement is below the regional eligibility cutoff, so the automatic recommendation is Low regardless of its base score."
         if strengths:
             summary += f" Its strongest scoring contributions are {strengths}."
         if risks:
@@ -1607,6 +1653,12 @@ def analyze_project(project, validator, snapshot, supplements=None):
         "rdp_total": round(outcome_total, 2),
         "base_total": base_score,
         "missing_facts": missing,
+        "budget_priority_override": {
+            "applied": below_regional_cutoff and not missing,
+            "cutoff": thresholds["regional_project_cost"],
+            "total_funding_requirement": funding_total,
+            "priority": "low" if below_regional_cutoff and not missing else None,
+        },
     }
     if groq_analysis:
         suggested_scores["ai_provider"] = groq_analysis.get("provider") or {"name": "groq"}

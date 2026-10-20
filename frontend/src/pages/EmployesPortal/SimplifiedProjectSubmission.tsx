@@ -585,6 +585,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const [usesOutdatedForm, setUsesOutdatedForm] = useState(false);
   const [revisionState, setRevisionState] = useState<string>("");
   const [formReady, setFormReady] = useState(false);
+  const [legacyFormError, setLegacyFormError] = useState("");
   const [localDraftHydrated, setLocalDraftHydrated] = useState(false);
   const [restoreNotice, setRestoreNotice] = useState("");
   const [lastLocalSaveAt, setLastLocalSaveAt] = useState("");
@@ -762,6 +763,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
           : isAdmin
           ? (isDiffMode ? workingCopy : contributorSnapshot)
           : pd;
+        if (
+          !sourceData ||
+          (String(sourceData.submission_type || "").toLowerCase() !== "simplified" &&
+            (typeof sourceData.simplified_form !== "object" || sourceData.simplified_form === null))
+        ) {
+          setLegacyFormError("This project was saved using the retired detailed form and cannot be opened in the current project editor. Contact an administrator for assistance.");
+          return;
+        }
         const simplified = (sourceData.simplified_form || sourceData) as Partial<SimplifiedForm> & Record<string, unknown>;
         const fundingRequirementByYear = normalizeFundingMap(
           simplified.fundingRequirementByYear,
@@ -1211,7 +1220,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       alert("Year range is too large. Please keep the span within 15 years.");
       return;
     }
-    if (isEmployee && form.status && !statusOptions.includes(form.status) && !revisionFieldLocked("status")) {
+    if (isEmployee && form.status && !statusOptions.some((status) => status === form.status) && !revisionFieldLocked("status")) {
       alert("This project uses a previous Status choice. Please select Completed, New, Ongoing, or Not Implemented before saving.");
       return;
     }
@@ -1515,6 +1524,19 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const localSavedLabel = lastLocalSaveAt ? new Date(lastLocalSaveAt).toLocaleString() : "";
   const displayName = user?.full_name || user?.username || "User";
 
+  if (isEditMode && !formReady) {
+    return (
+      <PortalLayout
+        title="Loading simplified project"
+        subtitle="Retrieving the saved project details"
+        role={(user.role || "employee") as "admin" | "validator" | "employee"}
+        userName={displayName}
+      >
+        <div className="portal-card p-5 text-sm text-slate-600" role="status">Loading project details…</div>
+      </PortalLayout>
+    );
+  }
+
   if (isEmployee && !isEditMode && !encodingWindow.loading && !canEncode) {
     return (
       <PortalLayout
@@ -1528,6 +1550,23 @@ const SimplifiedProjectSubmission: React.FC = () => {
           <h2 className="text-lg font-semibold">New submissions are currently closed</h2>
           <p className="mt-2 text-sm">{encodeMessage}</p>
           <p className="mt-2 text-sm">You may still view existing projects and post collaboration comments.</p>
+        </div>
+      </PortalLayout>
+    );
+  }
+
+  if (legacyFormError) {
+    return (
+      <PortalLayout
+        title="Project form unavailable"
+        subtitle="This record uses a retired form format"
+        role={(user.role || "employee") as "admin" | "validator" | "employee"}
+        userName={displayName}
+        topActions={<button type="button" onClick={() => navigate(-1)} className="portal-btn portal-btn-ghost">Back</button>}
+      >
+        <div className="portal-card border-amber-200 bg-amber-50 p-5 text-amber-900" role="alert">
+          <h2 className="text-lg font-semibold">Detailed project form is no longer available</h2>
+          <p className="mt-2 text-sm">{legacyFormError}</p>
         </div>
       </PortalLayout>
     );

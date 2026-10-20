@@ -8,6 +8,7 @@ import {
 import { lazy, Suspense, useEffect, useState } from "react";
 import Navbar from "./components/Navbar";
 import Footer from "./components/Footer";
+import PortalLayout from "./components/portal/PortalLayout";
 
 const Home = lazy(() => import("./pages/Home"));
 const NewsPage = lazy(() => import("./pages/News"));
@@ -34,7 +35,6 @@ const UpdateProjectForms = lazy(() => import("./pages/EmployesPortal/UpdateProje
 const ProjectsPage = lazy(() => import("./pages/EmployesPortal/ProjectsPage"));
 const SubmissionFormChooser = lazy(() => import("./pages/EmployesPortal/SubmissionFormChooser"));
 const SimplifiedProjectSubmission = lazy(() => import("./pages/EmployesPortal/SimplifiedProjectSubmission"));
-const ProjectSubmission = lazy(() => import("./pages/EmployesPortal/ProjectSubmission"));
 const ProjectReview = lazy(() => import("./pages/EmployesPortal/ProjectReview"));
 const AdminProjects = lazy(() => import("./pages/EmployesPortal/AdminProjects"));
 const AdminValidatorDiffs = lazy(() => import("./pages/EmployesPortal/AdminValidatorDiffs"));
@@ -42,11 +42,14 @@ const UserManagement = lazy(() => import("./pages/EmployesPortal/UserManagement"
 const AuditLog = lazy(() => import("./pages/EmployesPortal/AuditLog"));
 const ProfilePage = lazy(() => import("./pages/EmployesPortal/ProfilePage"));
 const ContentManagement = lazy(() => import("./pages/EmployesPortal/ContentManagement"));
+const ContributorFormsManager = lazy(() => import("./components/portal/ContributorFormsManager"));
+const AIScoringManager = lazy(() => import("./components/portal/AIScoringManager"));
 
 // Interface for user data
 interface User {
   id: number;
   username: string;
+  full_name?: string;
   email: string;
   role: "admin" | "validator" | "employee" | "content_editor";
   agency?: string | null;
@@ -273,12 +276,6 @@ const SimplifiedProjectSubmissionPage = () => (
   </PortalPageWrapper>
 );
 
-const ProjectSubmissionPage = () => (
-  <PortalPageWrapper pageTitle="Detailed Project Submission">
-    <ProjectSubmission />
-  </PortalPageWrapper>
-);
-
 const ProjectReviewPage = () => (
   <PortalPageWrapper pageTitle="Project Review">
     <ProjectReview />
@@ -307,6 +304,27 @@ const ContentManagementPage = () => (
   <PortalPageWrapper pageTitle="Content Management">
     <ContentManagement />
   </PortalPageWrapper>
+);
+
+const adminDisplayName = () => {
+  try {
+    const user = JSON.parse(localStorage.getItem("user") || "{}") as User;
+    return user.full_name || user.username || "Administrator";
+  } catch {
+    return "Administrator";
+  }
+};
+
+const AdminContributorFormsPage = () => (
+  <PortalLayout title="Contributor Forms" subtitle="Manage, review, and publish contributor submission forms" role="admin" userName={adminDisplayName()}>
+    <ContributorFormsManager mode="admin" />
+  </PortalLayout>
+);
+
+const AdminAIScoringPage = () => (
+  <PortalLayout title="AI Scoring" subtitle="Manage priority scoring rules and review scoring history" role="admin" userName={adminDisplayName()}>
+    <AIScoringManager mode="admin" />
+  </PortalLayout>
 );
 
 export default function App() {
@@ -373,7 +391,7 @@ export default function App() {
           path="/employee/projects/new/detailed"
           element={
             <ProtectedRoute roles={["employee"]}>
-              <ProjectSubmissionPage />
+              <SimplifiedProjectSubmissionPage />
             </ProtectedRoute>
           }
         />
@@ -381,7 +399,7 @@ export default function App() {
           path="/employee/projects/:id/edit"
           element={
             <ProtectedRoute roles={["employee"]}>
-              <ProjectSubmissionPage />
+              <SimplifiedProjectSubmissionPage />
             </ProtectedRoute>
           }
         />
@@ -439,7 +457,7 @@ export default function App() {
           path="/validator/projects/:id/review"
           element={
             <ProtectedRoute roles={["validator"]}>
-              <ProjectSubmissionPage />
+              <SimplifiedProjectSubmissionPage />
             </ProtectedRoute>
           }
         />
@@ -489,7 +507,7 @@ export default function App() {
           path="/admin/projects/:id/view"
           element={
             <ProtectedRoute roles={["admin"]}>
-              <ProjectSubmissionPage />
+              <SimplifiedProjectSubmissionPage />
             </ProtectedRoute>
           }
         />
@@ -517,6 +535,10 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        <Route path="/admin/forms" element={<ProtectedRoute roles={["admin"]}><AdminContributorFormsPage /></ProtectedRoute>} />
+        <Route path="/admin/ai-scoring" element={<ProtectedRoute roles={["admin"]}><AdminAIScoringPage /></ProtectedRoute>} />
+        <Route path="/admin/content/forms/*" element={<ProtectedRoute roles={["admin"]}><Navigate to="/admin/forms" replace /></ProtectedRoute>} />
+        <Route path="/admin/content/ai-scoring/*" element={<ProtectedRoute roles={["admin"]}><Navigate to="/admin/ai-scoring" replace /></ProtectedRoute>} />
         <Route
           path="/admin/archived"
           element={
@@ -538,6 +560,8 @@ export default function App() {
         <Route path="/admin/audit-log" element={<ProtectedRoute roles={["admin"]}><AuditLog /></ProtectedRoute>} />
         <Route path="/profile" element={<ProtectedRoute roles={["admin", "validator", "employee", "content_editor"]}><ProfilePage /></ProtectedRoute>} />
         <Route path="/admin/profiles/:userId" element={<ProtectedRoute roles={["admin"]}><ProfilePage /></ProtectedRoute>} />
+        <Route path="/employee/cms/forms/*" element={<ProtectedRoute roles={["admin"]}><Navigate to="/admin/forms" replace /></ProtectedRoute>} />
+        <Route path="/employee/cms/ai-scoring/*" element={<ProtectedRoute roles={["admin"]}><Navigate to="/admin/ai-scoring" replace /></ProtectedRoute>} />
         <Route
           path="/employee/cms/*"
           element={

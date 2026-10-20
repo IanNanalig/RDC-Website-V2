@@ -20,12 +20,7 @@ type ApiProject = {
 };
 const PAGE_SIZE = 10;
 
-const reviewPath = (project: ApiProject) => {
-  const profile = project.profile_data;
-  const simplified = project.submission_type === "simplified" ||
-    profile?.submission_type === "simplified" || Boolean(profile?.simplified_form);
-  return `/validator/projects/${project.id}/review${simplified ? "/simplified" : ""}`;
-};
+const reviewPath = (project: ApiProject) => `/validator/projects/${project.id}/review/simplified`;
 
 const statusLabel = (status?: string) => {
   switch (status) {

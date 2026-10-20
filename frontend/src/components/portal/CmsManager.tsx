@@ -9,10 +9,8 @@ import cmsApi, {
 } from "../../services/cmsApi";
 import { ORGANIZATION_NODE_DEFAULTS, RESOLUTIONS_BY_YEAR } from "../../pages/About_RDC";
 const RichTextEditor = React.lazy(() => import("./RichTextEditor"));
-const ContributorFormsManager = React.lazy(() => import("./ContributorFormsManager"));
-const AIScoringManager = React.lazy(() => import("./AIScoringManager"));
 
-type ResourceTab = "pages" | "news" | "forms" | "media" | "review" | "settings" | "ai";
+type ResourceTab = "pages" | "news" | "media" | "review" | "settings";
 type PaginatedResourceTab = "pages" | "news" | "media";
 
 const CMS_LIST_PAGE_SIZE = 30;
@@ -886,11 +884,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
 
   const loadTab = useCallback(async (tab: ResourceTab, force = false, search = "") => {
     if (!force && loadedTabsRef.current.has(tab)) return;
-    if (tab === "forms" || tab === "ai") {
-      loadedTabsRef.current.add(tab);
-      return;
-    }
-
     const requestId = ++tabLoadRequestRef.current;
     setLoading(true);
     try {
@@ -923,7 +916,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         ]);
       } else if (tab === "review") {
         const queue = await cmsApi.getReviewQueue();
-        setReviewQueue({ ...queue, forms: Array.isArray(queue.forms) ? queue.forms : [] });
+        setReviewQueue({ ...queue, forms: [] });
       } else if (tab === "settings") {
         await Promise.all([loadSettings(force), loadMediaAssets()]);
         void cmsApi.listMedia("", true).then(setArchivedMedia).catch((error) => console.error("Failed to load archived media category usage.", error));
@@ -2489,12 +2482,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           <div>
             <h2 className="text-xl font-bold text-slate-900">Content CMS</h2>
             <p className="text-sm text-slate-500">
-              Manage public content and contributor form drafts. Live content changes only after Admin publishes.
+              Manage public website content. Live content changes only after Admin publishes.
             </p>
             {hasUnsavedChanges && <p className="mt-1 text-xs font-semibold text-amber-700">You have unsaved changes.</p>}
           </div>
           <div className="flex flex-wrap gap-2">
-            {(["pages", "news", "forms", "media", "review", "settings", "ai"] as ResourceTab[]).map((tab) => (
+            {(["pages", "news", "media", "review", "settings"] as ResourceTab[]).map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -2509,11 +2502,9 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                 {{
                   pages: "Pages",
                   news: "News",
-                  forms: "Contributor Forms",
                   media: "Media Library",
                   review: "Review Queue",
                   settings: "Site Settings",
-                  ai: "AI Scoring",
                 }[tab]}
               </button>
             ))}
@@ -3298,18 +3289,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         </div>
       )}
 
-      {activeTab === "forms" && (
-        <React.Suspense fallback={<div className="portal-card p-5 text-sm text-slate-600">Loading contributor forms...</div>}>
-          <ContributorFormsManager mode={mode} />
-        </React.Suspense>
-      )}
-
-      {activeTab === "ai" && (
-        <React.Suspense fallback={<div className="portal-card p-5 text-sm text-slate-600">Loading AI scoring workspace...</div>}>
-          <AIScoringManager mode={mode} />
-        </React.Suspense>
-      )}
-
       {activeTab === "review" && (
         <div className="grid min-w-0 gap-4 xl:grid-cols-2">
           <div className="portal-card min-w-0 overflow-hidden">
@@ -3325,19 +3304,13 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
             </div>
           </div>
           <div className="portal-card min-w-0 overflow-hidden">
-            <div className="portal-card-header"><h3 className="font-bold text-slate-900">News, Forms, and Events Awaiting Review</h3></div>
+            <div className="portal-card-header"><h3 className="font-bold text-slate-900">News and Events Awaiting Review</h3></div>
             <div className="portal-card-body space-y-3">
-              {reviewQueue.news.length === 0 && reviewQueue.forms.length === 0 && reviewQueue.events.length === 0 && <p className="text-sm text-slate-500">No submitted news, contributor forms, or events.</p>}
+              {reviewQueue.news.length === 0 && reviewQueue.events.length === 0 && <p className="text-sm text-slate-500">No submitted news or events.</p>}
               {reviewQueue.news.map((article) => (
                 <div key={`article-${article.id}`} className="rounded-xl border border-slate-200 p-3">
                   <strong>{article.title}</strong><p className="text-xs text-slate-500">News article submitted for review</p>
                   {isAdmin && <div className="mt-2 flex gap-3 text-sm"><button className="text-emerald-700" onClick={() => runWorkflowAction("article", article.id, "publish", article.title)}>Publish</button><button className="text-rose-700" onClick={() => runWorkflowAction("article", article.id, "reject", article.title)}>Reject</button></div>}
-                </div>
-              ))}
-              {reviewQueue.forms.map((form) => (
-                <div key={`form-${form.id}`} className="rounded-xl border border-slate-200 p-3">
-                  <strong>{form.name}</strong><p className="text-xs text-slate-500">Contributor form submitted for review</p>
-                  {isAdmin && <button type="button" className="mt-2 text-sm font-semibold text-blue-700" onClick={() => setActiveTab("forms")}>Review changes</button>}
                 </div>
               ))}
               {reviewQueue.events.map((event) => (

@@ -9,7 +9,7 @@ from django.utils import timezone
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
-from .priority_scoring import _priority_for, confirm_analysis
+from .priority_scoring import _priority_for, _priority_with_regional_budget, confirm_analysis
 from .models import (
     Notification,
     PriorityRuleSet,
@@ -43,6 +43,17 @@ class PortalWorkflowTests(APITestCase):
     def _as(self, user):
         self.client.force_authenticate(user=user)
 
+    def _simplified_profile(self, title, agency="MMDA"):
+        return {
+            "submission_type": "simplified",
+            "simplified_form": {
+                "agencyName": agency,
+                "projectActivity": title,
+                "startYear": "2026",
+                "endYear": "2026",
+            },
+        }
+
     def _set_encoding_window(self, start_at, end_at, enabled=True):
         SystemSetting.objects.update_or_create(
             key="portal_encoding_window",
@@ -67,14 +78,25 @@ class PortalWorkflowTests(APITestCase):
         )
 
     def test_binary_priority_boundaries(self):
-        thresholds = {"high": 81}
+        thresholds = {"high": 70}
         self.assertEqual(_priority_for(0, thresholds), "low")
-        self.assertEqual(_priority_for(80, thresholds), "low")
-        self.assertEqual(_priority_for(80.99, thresholds), "low")
-        self.assertEqual(_priority_for(81, thresholds), "high")
+        self.assertEqual(_priority_for(69, thresholds), "low")
+        self.assertEqual(_priority_for(69.99, thresholds), "low")
+        self.assertEqual(_priority_for(70, thresholds), "high")
+        self.assertEqual(_priority_for(70.01, thresholds), "high")
         self.assertEqual(_priority_for(100, thresholds), "high")
 
+    def test_regional_budget_override_and_exact_cutoff(self):
+        thresholds = {"high": 70, "regional_project_cost": 200_000_000}
+        self.assertEqual(_priority_with_regional_budget(70, thresholds, 199_999_999), "low")
+        self.assertEqual(_priority_with_regional_budget(100, thresholds, 199_999_999), "low")
+        self.assertEqual(_priority_with_regional_budget(70, thresholds, 200_000_000), "high")
+        self.assertEqual(_priority_with_regional_budget(70, thresholds, 200_000_001), "high")
+        self.assertEqual(_priority_with_regional_budget(100, thresholds, 199_999_999, missing=True), "incomplete")
+
     def test_employee_to_validator_to_admin_flow(self):
+        self.employee.agency = "MMDA"
+        self.employee.save(update_fields=["agency"])
         self._as(self.employee)
         create_res = self.client.post(
             "/api/employee/projects/",
@@ -85,6 +107,7 @@ class PortalWorkflowTests(APITestCase):
                 "completion": 0,
                 "status": "draft",
                 "description": "Integration flow",
+                "profile_data": self._simplified_profile("Workflow Project"),
             },
             format="json",
         )
@@ -120,6 +143,8 @@ class PortalWorkflowTests(APITestCase):
         self.assertGreaterEqual(dashboard.data.get("approved_projects", 0), 1)
 
     def test_general_project_create_notifies_for_contributor_draft_or_direct_submission(self):
+        self.employee.agency = "MMDA"
+        self.employee.save(update_fields=["agency"])
         self._as(self.employee)
         draft = self.client.post(
             "/api/projects/",
@@ -128,7 +153,10 @@ class PortalWorkflowTests(APITestCase):
         )
         submitted = self.client.post(
             "/api/projects/",
-            {"title": "General API Submitted", "agency": "MMDA", "budget": 1, "status": "proposed"},
+            {
+                "title": "General API Submitted", "agency": "MMDA", "budget": 1, "status": "proposed",
+                "profile_data": self._simplified_profile("General API Submitted"),
+            },
             format="json",
         )
         self.assertEqual(draft.status_code, status.HTTP_201_CREATED)
@@ -143,6 +171,8 @@ class PortalWorkflowTests(APITestCase):
         ).count(), 1)
 
     def test_submit_creates_employee_and_validator_notifications_once(self):
+        self.employee.agency = "MMDA"
+        self.employee.save(update_fields=["agency"])
         self._as(self.employee)
         create_res = self.client.post(
             "/api/employee/projects/",
@@ -153,6 +183,7 @@ class PortalWorkflowTests(APITestCase):
                 "completion": 0,
                 "status": "draft",
                 "description": "notification flow",
+                "profile_data": self._simplified_profile("Notify Submit"),
             },
             format="json",
         )
@@ -220,7 +251,7 @@ class PortalWorkflowTests(APITestCase):
         project.profile_data = {"submission_type": "detailed"}
         self.assertEqual(
             _project_link(project, self.validator),
-            f"/validator/projects/{project.id}/review",
+            f"/validator/projects/{project.id}/review/simplified",
         )
 
     def test_validator_draft_and_validation_create_notifications(self):
@@ -243,12 +274,13 @@ class PortalWorkflowTests(APITestCase):
             budget=100000,
             created_by=self.employee,
             priority_analysis_eligible=False,
+            profile_data=self._simplified_profile("Validator Notification Project"),
         )
 
         self._as(self.validator)
         draft = self.client.post(
             f"/api/validator/projects/{project.id}/validate/",
-            {"action": "save_draft", "edited_profile_data": {}},
+            {"action": "save_draft", "edited_profile_data": self._simplified_profile("Validator Notification Project")},
             format="json",
         )
         self.assertEqual(draft.status_code, status.HTTP_200_OK)
@@ -275,7 +307,7 @@ class PortalWorkflowTests(APITestCase):
 
         validated = self.client.post(
             f"/api/validator/projects/{project.id}/validate/",
-            {"action": "validate", "edited_profile_data": {}},
+            {"action": "validate"},
             format="json",
         )
         self.assertEqual(validated.status_code, status.HTTP_200_OK)
@@ -644,10 +676,15 @@ class PortalWorkflowTests(APITestCase):
         ).exists())
 
     def test_needs_revision_requires_comment_unlocks_edit_and_notifies(self):
+        self.employee.agency = "MMDA"
+        self.employee.save(update_fields=["agency"])
         self._as(self.employee)
         create_res = self.client.post(
             "/api/employee/projects/",
-            {"title": "Revision Project", "agency": "MMDA", "budget": 1, "status": "draft"},
+            {
+                "title": "Revision Project", "agency": "MMDA", "budget": 1, "status": "draft",
+                "profile_data": self._simplified_profile("Revision Project"),
+            },
             format="json",
         )
         self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
@@ -695,7 +732,7 @@ class PortalWorkflowTests(APITestCase):
                 "agency": "MMDA",
                 "budget": 2,
                 "status": "draft",
-                "profile_data": {"revision_note": "Proposal attached."},
+                "profile_data": self._simplified_profile("Revision Project"),
             },
             format="json",
         )
@@ -731,59 +768,8 @@ class PortalWorkflowTests(APITestCase):
             },
             format="json",
         )
-        self.assertEqual(created.status_code, status.HTTP_201_CREATED, created.data)
-        project_id = created.data["id"]
-        self.assertEqual(
-            self.client.post(f"/api/employee/projects/{project_id}/submit/", {}, format="json").status_code,
-            status.HTTP_200_OK,
-        )
-
-        self._as(self.validator)
-        requested = self.client.post(
-            f"/api/validator/projects/{project_id}/validate/",
-            {
-                "action": "save_reviewed",
-                "notes": "Update remarks only.",
-                "editable_fields": ["remarks"],
-                "edited_profile_data": original_profile,
-            },
-            format="json",
-        )
-        self.assertEqual(requested.status_code, status.HTTP_200_OK, requested.data)
-        self.assertEqual(requested.data["editable_fields"], ["remarks"])
-
-        self._as(self.employee)
-        blocked_profile = {**original_profile, "description": "Unauthorized", "remarks": "Allowed"}
-        blocked = self.client.put(
-            f"/api/employee/projects/{project_id}/",
-            {
-                "title": "Field Restricted Project",
-                "agency": "MMDA",
-                "budget": 100,
-                "description": "Original project description",
-                "profile_data": blocked_profile,
-            },
-            format="json",
-        )
-        self.assertEqual(blocked.status_code, status.HTTP_400_BAD_REQUEST, blocked.data)
-        self.assertIn("description", blocked.data["restricted_fields"])
-
-        allowed_profile = {**original_profile, "remarks": "Allowed revision"}
-        allowed = self.client.put(
-            f"/api/employee/projects/{project_id}/",
-            {
-                "title": "Field Restricted Project",
-                "agency": "MMDA",
-                "budget": 100,
-                "description": "Original project description",
-                "profile_data": allowed_profile,
-            },
-            format="json",
-        )
-        self.assertEqual(allowed.status_code, status.HTTP_200_OK, allowed.data)
-        project = Project.objects.get(pk=project_id)
-        self.assertEqual(project.profile_data["remarks"], "Allowed revision")
-        self.assertEqual(project.profile_data["description"], "Original profile description")
+        self.assertEqual(created.status_code, status.HTTP_400_BAD_REQUEST, created.data)
+        self.assertIn("Only the simplified project form is supported.", str(created.data))
 
     def test_notification_list_and_mark_read_are_scoped_to_recipient(self):
         project = Project.objects.create(
@@ -870,6 +856,13 @@ class PortalWorkflowTests(APITestCase):
         )
         self.assertEqual(invalid.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("high or low", invalid.data["detail"])
+        missing_override_note = self.client.post(
+            f"/api/validator/projects/{project.id}/priority-analysis/{analysis.id}/confirm/",
+            {"final_priority": "high"},
+            format="json",
+        )
+        self.assertEqual(missing_override_note.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("rationale is required", missing_override_note.data["detail"])
         confirm = self.client.post(
             f"/api/validator/projects/{project.id}/priority-analysis/{analysis.id}/confirm/",
             {"final_priority": "high", "override_rationale": "Official validator decision."},
@@ -972,7 +965,7 @@ class PortalWorkflowTests(APITestCase):
         self.assertEqual(endorsed.status_code, status.HTTP_200_OK, endorsed.data)
         self.assertEqual(endorsed.data["review_status"], "endorsed")
 
-    def test_validator_can_run_priority_analysis_for_detailed_form(self):
+    def test_validator_cannot_run_priority_analysis_for_detailed_form(self):
         detailed_profile = {
             "submission_type": "detailed",
             "projectTitle": "Metro Manila Circular Waste Facilities",
@@ -1018,36 +1011,8 @@ class PortalWorkflowTests(APITestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        analysis = response.data["analysis"]
-        self.assertEqual(analysis["suggested_scores"]["missing_facts"], [])
-        self.assertEqual(analysis["suggested_scores"]["rdp_track"], "environment")
-        reasoning = analysis["suggested_scores"]["reasoning"]
-        self.assertIn("base score", reasoning["overall"].lower())
-        self.assertTrue(reasoning["criteria"])
-        self.assertTrue(all(item.get("explanation") for item in reasoning["criteria"]))
-        explanations = " ".join(item["explanation"] for item in reasoning["criteria"])
-        self.assertNotIn("deterministic text alignment", explanations.lower())
-        self.assertIn("the calculation is", explanations.lower())
-        readiness_reason = next(item for item in reasoning["criteria"] if item["key"] == "readiness")
-        self.assertIn("validator selected", readiness_reason["explanation"].lower())
-        outcome_reasons = [
-            item for item in reasoning["criteria"]
-            if item["key"] not in ("readiness", "gad_responsiveness", "spatial_coverage")
-            and item.get("evidence")
-        ]
-        self.assertTrue(outcome_reasons)
-        self.assertTrue(any("Evidence was found in these fields" in item["explanation"] for item in outcome_reasons))
-        self.assertTrue(any(item.get("evidence_sources") for item in outcome_reasons))
-        recommendations = analysis["suggested_scores"]["recommendations"]
-        self.assertTrue(recommendations)
-        self.assertTrue(any(item.get("fields") for item in recommendations))
-        revision_fields = analysis["suggested_scores"]["revision_fields"]
-        self.assertTrue(revision_fields)
-        self.assertTrue(any(item["source"] == "contributor" for item in revision_fields))
-        self.assertTrue(analysis["regional_scorecard"]["applicable"])
-        stored_analysis = ProjectPriorityAnalysis.objects.get(pk=analysis["id"])
-        self.assertEqual(stored_analysis.input_snapshot["submission_type"], "detailed")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("only for simplified-form projects", response.data["detail"])
 
     @patch("ai_engine.groq_priority.analyze_priority_with_groq")
     def test_validator_priority_analysis_uses_groq_outcome_assessment(self, groq_analysis):
@@ -1121,15 +1086,9 @@ class PortalWorkflowTests(APITestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
-        scores = response.data["analysis"]["suggested_scores"]
-        climate = next(item for item in scores["rdp_outcomes"] if item["key"] == "climate")
-        self.assertEqual(climate["raw"], 9)
-        self.assertEqual(climate["match_mode"], "groq_contextual")
-        self.assertEqual(scores["ai_provider"]["model"], "llama-3.1-8b-instant")
-        climate_reason = next(item for item in scores["reasoning"]["criteria"] if item["key"] == "climate")
-        self.assertIn("Contextual Assessment", climate_reason["explanation"])
-        self.assertTrue(any(item["key"] == "climate" for item in scores["recommendations"]))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.data)
+        self.assertIn("only for simplified-form projects", response.data["detail"])
+        groq_analysis.assert_not_called()
 
     def test_role_access_restrictions(self):
         # Employee cannot access admin and validator list endpoints.
@@ -1263,6 +1222,8 @@ class PortalWorkflowTests(APITestCase):
         )
 
     def test_employee_cannot_edit_after_submit(self):
+        self.employee.agency = "MMDA"
+        self.employee.save(update_fields=["agency"])
         self._as(self.employee)
         create_res = self.client.post(
             "/api/employee/projects/",
@@ -1273,6 +1234,7 @@ class PortalWorkflowTests(APITestCase):
                 "completion": 0,
                 "status": "draft",
                 "description": "before submit",
+                "profile_data": self._simplified_profile("Lock After Submit"),
             },
             format="json",
         )
@@ -1382,14 +1344,10 @@ class PortalWorkflowTests(APITestCase):
             },
         }
         create_res = self.client.post("/api/employee/projects/", payload, format="json")
-        self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
-        project_id = create_res.data["id"]
-        project = Project.objects.get(id=project_id)
-        self.assertIsInstance(project.profile_data, dict)
-        self.assertEqual(project.profile_data.get("projectTitle"), "Profile Data Project")
-        self.assertEqual(len(project.profile_data.get("projectCostRows", [])), 1)
+        self.assertEqual(create_res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Only the simplified project form is supported.", str(create_res.data))
 
-    def test_employee_can_list_own_detailed_draft_when_office_differs_from_account_agency(self):
+    def test_employee_cannot_create_detailed_draft_when_office_differs_from_account_agency(self):
         self.employee.agency = "DENR"
         self.employee.save(update_fields=["agency"])
         self._as(self.employee)
@@ -1409,16 +1367,8 @@ class PortalWorkflowTests(APITestCase):
             },
             format="json",
         )
-        self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
-
-        project_id = create_res.data["id"]
-        list_res = self.client.get("/api/employee/projects/")
-        self.assertEqual(list_res.status_code, status.HTTP_200_OK)
-        self.assertIn(project_id, [project["id"] for project in list_res.data])
-        self.assertEqual(
-            self.client.get(f"/api/employee/projects/{project_id}/").status_code,
-            status.HTTP_200_OK,
-        )
+        self.assertEqual(create_res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Only the simplified project form is supported.", str(create_res.data))
 
     def test_employee_profile_data_must_be_json_object(self):
         self._as(self.employee)

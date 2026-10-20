@@ -344,18 +344,10 @@ const ProjectsPage: React.FC = () => {
     canEncode &&
     p.status === "planning";
 
-  const isSimplifiedProject = (p: ApiProject) => {
-    const pd = p.profile_data as Record<string, any> | undefined;
-    return p.submission_type === "simplified" || pd?.submission_type === "simplified" || Boolean(pd?.simplified_form);
-  };
-
-  const editPath = (p: ApiProject) =>
-    isSimplifiedProject(p)
-      ? `/employee/projects/${p.id}/edit/simplified`
-      : `/employee/projects/${p.id}/edit`;
+  const editPath = (p: ApiProject) => `/employee/projects/${p.id}/edit/simplified`;
 
   const validatorReviewPath = (p: ApiProject) => {
-    const path = `/validator/projects/${p.id}/review${isSimplifiedProject(p) ? "/simplified" : ""}`;
+    const path = `/validator/projects/${p.id}/review/simplified`;
     return p.is_revision && p.revision_id
       ? `${path}?revision=${encodeURIComponent(p.revision_id)}`
       : path;
@@ -594,8 +586,8 @@ const ProjectsPage: React.FC = () => {
                           onClick={() =>
                             navigate(
                               p.is_revision && p.revision_id
-                                ? `/admin/projects/${p.id}/view?revision=${p.revision_id}`
-                                : `/admin/projects/${p.id}/view`,
+                                ? `/admin/projects/${p.id}/view/simplified?revision=${p.revision_id}`
+                                : `/admin/projects/${p.id}/view/simplified`,
                             )
                           }
                           className="text-blue-600 hover:underline whitespace-nowrap"

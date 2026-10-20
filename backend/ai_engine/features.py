@@ -28,21 +28,13 @@ FEATURE_NAMES = [
 
 TEXT_FIELDS = (
     "program",
-    "programOrProject",
     "projectActivity",
-    "projectTitle",
     "location",
     "description",
     "objective",
     "remarks",
     "rdpMainChapter",
-    "mainPdpChapter",
-    "mainPdpOutcome",
-    "mainPdpSubOutcome",
-    "mainPdpIndicator",
     "developmentSector",
-    "mainInfrastructureSector",
-    "mainInfrastructureSubsector",
     "expectedOutputIndicator",
     "expectedOutputValue",
 )
@@ -107,9 +99,6 @@ def extract_feature_snapshot(priority_analysis):
     outcome_raw = [_number(item.get("raw")) for item in outcomes if isinstance(item, dict)]
     track = str(scores.get("rdp_track") or "").strip().lower()
     suggested = str(priority_analysis.suggested_priority or "").strip().lower()
-    is_simplified = isinstance(snapshot.get("simplified_form"), dict) or str(
-        snapshot.get("submission_type") or ""
-    ).lower() == "simplified"
     values = {
         "base_score": _number(priority_analysis.base_score) / 100.0,
         "pap_total": _number(scores.get("pap_total")) / 100.0,
@@ -124,7 +113,7 @@ def extract_feature_snapshot(priority_analysis):
         "negative_match_count": min(len(flags.get("negative_matches") or []), 10) / 10.0,
         "risk_count": min(len(flags.get("risks") or []), 10) / 10.0,
         "budget_log": min(math.log10(_budget_total(form) + 1.0), 12.0) / 12.0,
-        "simplified_submission": 1.0 if is_simplified else 0.0,
+        "simplified_submission": 1.0,
     }
     values.update({f"sector_{name}": 1.0 if track == name else 0.0 for name in SECTOR_TRACKS})
     values.update({f"rule_suggested_{name}": 1.0 if suggested == name else 0.0 for name in PRIORITY_LABELS})
@@ -135,7 +124,7 @@ def extract_feature_snapshot(priority_analysis):
         "context": {
             "sector": track,
             "agency": priority_analysis.project.agency or priority_analysis.project.implementing_agency,
-            "submission_type": "simplified" if is_simplified else "detailed",
+            "submission_type": "simplified",
             "rule_suggested_priority": suggested,
             "rule_version": priority_analysis.rule_set.version,
         },

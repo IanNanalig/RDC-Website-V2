@@ -64,7 +64,7 @@ class ContributorFormWorkflowTests(APITestCase):
 
     def _save_draft(self, schema, edit_mode="update"):
         self.form.refresh_from_db()
-        self.authenticate(self.editor)
+        self.authenticate(self.admin)
         lock = self.client.post(f"/api/admin/cms/forms/{self.form.id}/lock/", {}, format="json")
         self.assertEqual(lock.status_code, status.HTTP_200_OK)
         return self.client.patch(
@@ -79,7 +79,13 @@ class ContributorFormWorkflowTests(APITestCase):
             format="json",
         )
 
-    def test_editor_can_save_and_submit_while_only_admin_publishes(self):
+    def test_admin_can_save_submit_and_publish_form(self):
+        reviewer = User.objects.create_user(
+            username="second-form-admin",
+            email="second-form-admin@example.com",
+            password="StrongTestPassword123!",
+            role="admin",
+        )
         saved = self._save_draft(self._draft_with_custom_field())
         self.assertEqual(saved.status_code, status.HTTP_200_OK)
         self.assertEqual(saved.data["status"], "draft")
@@ -88,14 +94,11 @@ class ContributorFormWorkflowTests(APITestCase):
         self.assertEqual(submitted.status_code, status.HTTP_200_OK)
         self.assertEqual(submitted.data["status"], "submitted")
         self.assertTrue(Notification.objects.filter(
-            recipient=self.admin, event_type="cms_form_submitted",
+            recipient=reviewer, event_type="cms_form_submitted",
         ).exists())
-        self.assertEqual(
-            self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json").status_code,
-            status.HTTP_403_FORBIDDEN,
-        )
-
-        self.authenticate(self.admin)
+        self.form.refresh_from_db()
+        self.form.updated_by = self.editor
+        self.form.save(update_fields=["updated_by", "updated_at"])
         published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
         self.assertEqual(published.status_code, status.HTTP_200_OK)
         self.assertEqual(published.data["current_published_version_number"], 2)
@@ -129,7 +132,7 @@ class ContributorFormWorkflowTests(APITestCase):
         self.assertTrue(lock_queries)
         self.assertNotIn("JOIN", lock_queries[0].upper())
 
-    def test_form_lock_blocks_other_editors_and_admin_can_release_it(self):
+    def test_only_admin_can_acquire_or_release_form_lock(self):
         other_editor = User.objects.create_user(
             username="other-form-editor",
             email="other-form-editor@example.com",
@@ -137,18 +140,25 @@ class ContributorFormWorkflowTests(APITestCase):
             role="content_editor",
         )
         self.authenticate(self.editor)
+        self.assertEqual(self.client.get("/api/admin/cms/forms/").status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.get(f"/api/admin/cms/forms/{self.form.id}/").status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.post(f"/api/admin/cms/forms/{self.form.id}/lock/", {}, format="json").status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.post(f"/api/admin/cms/forms/{self.form.id}/submit/", {}, format="json").status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json").status_code, status.HTTP_403_FORBIDDEN)
+
+        self.authenticate(self.admin)
         acquired = self.client.post(f"/api/admin/cms/forms/{self.form.id}/lock/", {}, format="json")
         self.assertEqual(acquired.status_code, status.HTTP_200_OK)
 
         self.authenticate(other_editor)
         blocked = self.client.post(f"/api/admin/cms/forms/{self.form.id}/lock/", {}, format="json")
-        self.assertEqual(blocked.status_code, status.HTTP_423_LOCKED)
+        self.assertEqual(blocked.status_code, status.HTTP_403_FORBIDDEN)
         save = self.client.patch(
             f"/api/admin/cms/forms/{self.form.id}/",
             {"draft_schema_json": acquired.data["draft_schema_json"], "edit_mode": "update"},
             format="json",
         )
-        self.assertEqual(save.status_code, status.HTTP_423_LOCKED)
+        self.assertEqual(save.status_code, status.HTTP_403_FORBIDDEN)
 
         self.authenticate(self.admin)
         released = self.client.post(f"/api/admin/cms/forms/{self.form.id}/unlock/", {}, format="json")
@@ -158,18 +168,11 @@ class ContributorFormWorkflowTests(APITestCase):
         self.form.lock_owner = self.editor
         self.form.lock_acquired_at = timezone.now() - timedelta(hours=1)
         self.form.save(update_fields=["lock_owner", "lock_acquired_at", "updated_at"])
-        other_editor = User.objects.create_user(
-            username="stale-lock-editor",
-            email="stale-lock-editor@example.com",
-            password="StrongTestPassword123!",
-            role="content_editor",
-        )
-
-        self.authenticate(other_editor)
+        self.authenticate(self.admin)
         response = self.client.post(f"/api/admin/cms/forms/{self.form.id}/lock/", {}, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["lock_owner"], other_editor.id)
+        self.assertEqual(response.data["lock_owner"], self.admin.id)
 
     def test_ordinary_contributors_cannot_access_form_admin_endpoints(self):
         self.authenticate(self.contributor)
@@ -181,6 +184,12 @@ class ContributorFormWorkflowTests(APITestCase):
             self.client.post(f"/api/admin/cms/forms/{self.form.id}/lock/", {}, format="json").status_code,
             status.HTTP_403_FORBIDDEN,
         )
+
+    def test_public_content_review_queue_does_not_expose_contributor_forms(self):
+        self.authenticate(self.editor)
+        response = self.client.get("/api/admin/cms/review-queue/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["forms"], [])
 
     def test_publish_and_restore_lock_queries_do_not_join_nullable_version(self):
         schema = self._draft_with_custom_field()
@@ -458,7 +467,7 @@ class ContributorFormWorkflowTests(APITestCase):
         self.assertIn("controls a conditional field", str(rejected.data))
 
     def test_stale_form_save_returns_conflict(self):
-        self.authenticate(self.editor)
+        self.authenticate(self.admin)
         locked = self.client.post(f"/api/admin/cms/forms/{self.form.id}/lock/", {}, format="json")
         self.assertEqual(locked.status_code, status.HTTP_200_OK)
         self.form.refresh_from_db()
@@ -567,6 +576,9 @@ class ContributorFormWorkflowTests(APITestCase):
 
     def test_rejection_notifies_the_submitting_editor_with_notes(self):
         self.assertEqual(self._save_draft(self._draft_with_custom_field()).status_code, status.HTTP_200_OK)
+        self.form.refresh_from_db()
+        self.form.updated_by = self.editor
+        self.form.save(update_fields=["updated_by", "updated_at"])
         submitted = self.client.post(f"/api/admin/cms/forms/{self.form.id}/submit/", {}, format="json")
         self.assertEqual(submitted.status_code, status.HTTP_200_OK)
         self.authenticate(self.admin)
@@ -578,7 +590,7 @@ class ContributorFormWorkflowTests(APITestCase):
         self.assertEqual(rejected.status_code, status.HTTP_200_OK)
         notification = Notification.objects.get(recipient=self.editor, event_type="cms_form_rejected")
         self.assertIn("Clarify the agency reference label", notification.message)
-        self.assertEqual(notification.link_path, "/employee/cms/forms")
+        self.assertEqual(notification.link_path, "/admin/forms")
 
     def test_current_form_uses_etag_revalidation(self):
         self.authenticate(self.contributor)

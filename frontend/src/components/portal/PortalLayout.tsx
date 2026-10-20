@@ -61,6 +61,8 @@ const navByRole: Record<Role, NavItem[]> = {
     { label: "Projects", to: "/admin/projects" },
     { label: "Validator Tracker", to: "/admin/validator-diffs" },
     { label: "Content Management", to: "/admin/content" },
+    { label: "Contributor Forms", to: "/admin/forms" },
+    { label: "AI Scoring", to: "/admin/ai-scoring" },
     { label: "Users & Access", to: "/admin/users" },
     { label: "Audit Log", to: "/admin/audit-log" },
   ],

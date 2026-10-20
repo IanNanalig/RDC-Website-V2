@@ -355,7 +355,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
         <div className="portal-card-header flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 className="font-bold text-slate-900">Rules and Employee Guidelines</h3>
-            <p className="text-xs text-slate-500">{canEdit ? "Edits become active only after creating a new version." : "Content editors can view these rules; only administrators can activate changes."}</p>
+            <p className="text-xs text-slate-500">{canEdit ? "Edits become active only after creating a new version." : "Only administrators can view or change these scoring rules."}</p>
           </div>
           {!canEdit && <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">Read only</span>}
         </div>
@@ -363,13 +363,79 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
           <div>
             <h4 className="font-semibold text-slate-800">Priority thresholds and PAP weights</h4>
             <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"><span className="block text-xs font-medium text-slate-600">Priority ranges</span><span className="mt-1 block">Low: 0–80 · High: 81–100</span></div>
-              <NumberInput label="Regional scorecard starts at (PHP)" value={config.thresholds.regional_project_cost} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_project_cost = value; })} />
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"><span className="block text-xs font-medium text-slate-600">Priority grade</span><span className="mt-1 block">Low: 0–{config.thresholds.high - 1} · High: {config.thresholds.high}–100</span></div>
+              <NumberInput label="Regional eligibility and automatic-Low cutoff (PHP)" value={config.thresholds.regional_project_cost} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_project_cost = value; })} />
               <NumberInput label="Readiness weight" value={papWeights.readiness} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.readiness = value; })} />
               <NumberInput label="GAD responsiveness weight" value={papWeights.gad_responsiveness} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.gad_responsiveness = value; })} />
               <NumberInput label="Spatial coverage weight" value={papWeights.spatial_coverage} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.spatial_coverage = value; })} />
             </div>
             <p className="mt-2 text-xs text-slate-500">PAP weight total: {papTotal}. PAP + common outcomes ({commonTotal}) + the selected sector outcomes must total 100.</p>
+            <p className="mt-1 text-xs text-slate-500">A project below the regional cutoff skips the regional scorecard and receives an automatic Low recommendation, even with a grade of 70 or higher. Validators may still override it with a rationale. Exactly the cutoff amount qualifies for regional scoring.</p>
+          </div>
+
+          <div className="space-y-3">
+            <div>
+              <h4 className="font-semibold text-slate-800">Regional prioritization criteria</h4>
+              <p className="mt-1 text-xs text-slate-500">This separate 100-point scorecard uses four criteria weighted at 25 points each. Scores are out of 10 before weighting.</p>
+            </div>
+            <div className="grid gap-4 xl:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 p-4">
+                <h5 className="font-semibold text-slate-800">Total Regional Project Cost</h5>
+                <p className="mt-1 text-xs text-slate-500">Cost band cutoffs (PHP) and raw scores.</p>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <NumberInput label="At least: highest band" value={config.thresholds.regional_criteria.cost.thresholds.at_least_5b} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.at_least_5b = value; })} />
+                  <NumberInput label="Highest-band score" value={config.thresholds.regional_criteria.cost.scores.at_least_5b} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.at_least_5b = value; })} />
+                  <NumberInput label="More than: next band" value={config.thresholds.regional_criteria.cost.thresholds.over_3b} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_3b = value; })} />
+                  <NumberInput label="Next-band score" value={config.thresholds.regional_criteria.cost.scores.over_3b} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.over_3b = value; })} />
+                  <NumberInput label="More than: middle band" value={config.thresholds.regional_criteria.cost.thresholds.over_1b} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_1b = value; })} />
+                  <NumberInput label="Middle-band score" value={config.thresholds.regional_criteria.cost.scores.over_1b} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.over_1b = value; })} />
+                  <NumberInput label="More than: lower band" value={config.thresholds.regional_criteria.cost.thresholds.over_500m} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_500m = value; })} />
+                  <NumberInput label="Lower-band score" value={config.thresholds.regional_criteria.cost.scores.over_500m} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.over_500m = value; })} />
+                  <NumberInput label="Otherwise score" value={config.thresholds.regional_criteria.cost.scores.otherwise} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.otherwise = value; })} />
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 p-4">
+                <h5 className="font-semibold text-slate-800">Spatial Coverage</h5>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <NumberInput label="Interregional score" value={config.thresholds.regional_criteria.spatial_coverage.scores.interregional} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.spatial_coverage.scores.interregional = value; })} />
+                  <NumberInput label="Region-wide score" value={config.thresholds.regional_criteria.spatial_coverage.scores.region_wide} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.spatial_coverage.scores.region_wide = value; })} />
+                  <NumberInput label="8–12 LGUs score" value={config.thresholds.regional_criteria.spatial_coverage.scores.eight_to_twelve_lgus} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.spatial_coverage.scores.eight_to_twelve_lgus = value; })} />
+                  <NumberInput label="Single-city score" value={config.thresholds.regional_criteria.spatial_coverage.scores.single_city} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.spatial_coverage.scores.single_city = value; })} />
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 p-4">
+                <h5 className="font-semibold text-slate-800">RDP Sectoral Outcome Contribution</h5>
+                <p className="mt-1 text-xs text-slate-500">Minimum outcome counts and their raw scores.</p>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <NumberInput label="At least 7 outcomes" value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_7} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_7 = value; })} />
+                  <NumberInput label="Score" value={config.thresholds.regional_criteria.outcome_contribution.scores.at_least_7} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.scores.at_least_7 = value; })} />
+                  <NumberInput label="At least 5 outcomes" value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_5} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_5 = value; })} />
+                  <NumberInput label="Score" value={config.thresholds.regional_criteria.outcome_contribution.scores.at_least_5} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.scores.at_least_5 = value; })} />
+                  <NumberInput label="At least 3 outcomes" value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_3} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_3 = value; })} />
+                  <NumberInput label="Score" value={config.thresholds.regional_criteria.outcome_contribution.scores.at_least_3} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.scores.at_least_3 = value; })} />
+                  <NumberInput label="At least 2 outcomes" value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_2} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_2 = value; })} />
+                  <NumberInput label="Score" value={config.thresholds.regional_criteria.outcome_contribution.scores.at_least_2} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.scores.at_least_2 = value; })} />
+                  <NumberInput label="At least 1 outcome" value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_1} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_1 = value; })} />
+                  <NumberInput label="Score" value={config.thresholds.regional_criteria.outcome_contribution.scores.at_least_1} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.scores.at_least_1 = value; })} />
+                  <NumberInput label="Otherwise score" value={config.thresholds.regional_criteria.outcome_contribution.scores.otherwise} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.scores.otherwise = value; })} />
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 p-4">
+                <h5 className="font-semibold text-slate-800">Magnitude of Beneficiaries</h5>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <NumberInput label="More than: highest band" value={config.thresholds.regional_criteria.beneficiaries.thresholds.over_3m} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.thresholds.over_3m = value; })} />
+                  <NumberInput label="Highest-band score" value={config.thresholds.regional_criteria.beneficiaries.scores.over_3m} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.scores.over_3m = value; })} />
+                  <NumberInput label="More than: next band" value={config.thresholds.regional_criteria.beneficiaries.thresholds.over_1m} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.thresholds.over_1m = value; })} />
+                  <NumberInput label="Next-band score" value={config.thresholds.regional_criteria.beneficiaries.scores.over_1m} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.scores.over_1m = value; })} />
+                  <NumberInput label="At least: lowest band" value={config.thresholds.regional_criteria.beneficiaries.thresholds.at_least_1} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.thresholds.at_least_1 = value; })} />
+                  <NumberInput label="Lowest-band score" value={config.thresholds.regional_criteria.beneficiaries.scores.at_least_1} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.scores.at_least_1 = value; })} />
+                  <NumberInput label="Otherwise score" value={config.thresholds.regional_criteria.beneficiaries.scores.otherwise} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.scores.otherwise = value; })} />
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="grid gap-4 xl:grid-cols-2">

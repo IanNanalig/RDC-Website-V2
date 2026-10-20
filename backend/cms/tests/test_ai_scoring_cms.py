@@ -1,4 +1,5 @@
 from copy import deepcopy
+from unittest.mock import patch
 
 from django.test import override_settings
 from rest_framework import status
@@ -83,6 +84,10 @@ class AIPriorityCMSTests(APITestCase):
     @override_settings(GROQ_ENABLED=False)
     def test_cms_explains_controlled_learning_and_lists_training_projects(self):
         self.client.force_authenticate(self.editor)
+        denied = self.client.get("/api/admin/cms/ai-scoring/")
+        self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.client.force_authenticate(self.admin)
         response = self.client.get("/api/admin/cms/ai-scoring/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -259,9 +264,10 @@ class AIPriorityCMSTests(APITestCase):
         self.assertNotEqual(active.pk, self.rule_set.pk)
         self.rule_set.refresh_from_db()
         self.assertFalse(self.rule_set.is_active)
-        self.assertEqual(active.thresholds["high"], 81)
+        self.assertEqual(active.thresholds["high"], 70)
         self.assertEqual(active.thresholds["regional_project_cost"], 300_000_000)
-        self.assertEqual(active.algorithm_version, "expert-v3-contextual")
+        self.assertIn("cost", active.thresholds["regional_criteria"])
+        self.assertEqual(active.algorithm_version, "expert-v4-regional-eligibility")
         stored_common = active.keyword_dictionaries["common_outcomes"][0]
         self.assertEqual(stored_common["match_mode"], "contextual")
         self.assertTrue(stored_common["description"])
@@ -290,6 +296,67 @@ class AIPriorityCMSTests(APITestCase):
                 details__rule_set_id=active.pk,
             ).exists()
         )
+
+    @override_settings(GROQ_ENABLED=False)
+    def test_regional_budget_rule_skips_scorecard_and_forces_low_below_cutoff(self):
+        supplements = {
+            "readinessLevel": "completed_documents",
+            "gadResponsiveness": "gender_responsive",
+            "spatialCoverageScope": "region_wide",
+            "beneficiaryCount": "100",
+            "regionalSpatialCategory": "region_wide",
+            "contributedOutcomeCount": "2",
+        }
+        with patch("projects.priority_scoring._priority_for", return_value="high"):
+            below = deepcopy(self.snapshot)
+            below["simplified_form"]["fundingRequirementByYear"] = {"2026": 199_999_999}
+            below_analysis, _ = analyze_project(self.project, self.validator, below, supplements)
+            self.assertGreaterEqual(float(below_analysis.base_score), 0)
+            self.assertEqual(below_analysis.suggested_priority, "low")
+            self.assertFalse(below_analysis.regional_scorecard["applicable"])
+            self.assertEqual(below_analysis.regional_scorecard["criteria"], [])
+            self.assertTrue(below_analysis.suggested_scores["budget_priority_override"]["applied"])
+
+            at_cutoff = deepcopy(self.snapshot)
+            at_cutoff["simplified_form"]["fundingRequirementByYear"] = {"2026": 200_000_000}
+            exact_analysis, _ = analyze_project(self.project, self.validator, at_cutoff, supplements)
+            self.assertTrue(exact_analysis.regional_scorecard["applicable"])
+            self.assertEqual(exact_analysis.suggested_priority, "high")
+            self.assertFalse(exact_analysis.suggested_scores["budget_priority_override"]["applied"])
+
+            above = deepcopy(self.snapshot)
+            above["simplified_form"]["fundingRequirementByYear"] = {"2026": 200_000_001}
+            above_analysis, _ = analyze_project(self.project, self.validator, above, supplements)
+            self.assertTrue(above_analysis.regional_scorecard["applicable"])
+            self.assertEqual(above_analysis.suggested_priority, "high")
+
+    def test_admin_can_version_regional_criteria_bands_and_invalid_order_is_rejected(self):
+        config = deepcopy(default_priority_rule_config())
+        config["thresholds"]["regional_criteria"]["cost"]["thresholds"]["at_least_5b"] = 6_000_000_000
+        config["thresholds"]["regional_criteria"]["spatial_coverage"]["scores"]["region_wide"] = 9
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            "/api/admin/cms/ai-scoring/",
+            {"config": config, "change_note": "Update regional scorecard bands."},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        active = PriorityRuleSet.objects.get(is_active=True)
+        self.assertEqual(active.thresholds["high"], 70)
+        self.assertEqual(active.thresholds["regional_criteria"]["cost"]["thresholds"]["at_least_5b"], 6_000_000_000)
+        self.assertEqual(active.thresholds["regional_criteria"]["spatial_coverage"]["scores"]["region_wide"], 9)
+
+        invalid = deepcopy(response.data["active_rule_set"]["config"])
+        invalid["thresholds"]["regional_criteria"]["cost"]["thresholds"]["at_least_5b"] = 100
+        before = PriorityRuleSet.objects.count()
+        rejected = self.client.post(
+            "/api/admin/cms/ai-scoring/",
+            {"config": invalid, "change_note": "Invalid threshold order."},
+            format="json",
+        )
+        self.assertEqual(rejected.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("thresholds must decrease", rejected.data["detail"])
+        self.assertEqual(PriorityRuleSet.objects.count(), before)
 
     def test_contextual_rules_do_not_score_an_incidental_keyword_without_sentence_support(self):
         self.client.force_authenticate(self.admin)
@@ -406,5 +473,5 @@ class AIPriorityCMSTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("must be 81", response.data["detail"])
+        self.assertIn("must be 70", response.data["detail"])
         self.assertEqual(PriorityRuleSet.objects.count(), before)

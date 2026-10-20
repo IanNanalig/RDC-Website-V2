@@ -36,7 +36,6 @@ from cms.serializers import (
     CMSArticleSummarySerializer,
     CMSContributorFormSerializer,
     CMSContributorFormVersionSummarySerializer,
-    CMSContributorFormSummarySerializer,
     CMSContributorFormVersionSerializer,
     CMSMediaAssetSerializer,
     CMSMediaAssetSummarySerializer,
@@ -171,7 +170,7 @@ def _notify_form_users(users, *, actor, form, event_type, title, message, dedupe
                 "event_type": event_type,
                 "title": title,
                 "message": message,
-                "link_path": "/employee/cms/forms",
+                "link_path": "/admin/forms",
             },
         )
 
@@ -603,7 +602,7 @@ class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.Mod
 
 class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
     serializer_class = CMSContributorFormSerializer
-    permission_classes = [permissions.IsAuthenticated, IsCMSUser]
+    permission_classes = [permissions.IsAuthenticated, IsCMSAdmin]
     content_type_key = "form"
     http_method_names = ["get", "patch", "put", "post", "head", "options"]
 
@@ -699,7 +698,7 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
                 "event_type": "cms_form_access_requested",
                 "title": "Contributor form access requested",
                 "message": f"{request.user.full_name or request.user.username} requested access to {form.name}.",
-                "link_path": "/employee/cms/forms",
+                "link_path": "/admin/forms",
             },
         )
         _log_cms_activity(
@@ -969,7 +968,7 @@ def _priority_reference_payload(limit=200):
 
 
 class AdminAIPriorityCMSView(APIView):
-    permission_classes = [permissions.IsAuthenticated, IsCMSUser]
+    permission_classes = [permissions.IsAuthenticated, IsCMSAdmin]
 
     def get(self, request):
         try:
@@ -982,7 +981,7 @@ class AdminAIPriorityCMSView(APIView):
         if getattr(request.user, "role", "") != "admin":
             raise PermissionDenied("Only administrators can activate new AI scoring rules.")
         try:
-            config = validate_priority_rule_config(request.data.get("config"))
+            config = validate_priority_rule_config(request.data.get("config"), enforce_current_high=True)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1013,7 +1012,7 @@ class AdminAIPriorityCMSView(APIView):
             PriorityRuleSet.objects.select_for_update().filter(is_active=True).update(is_active=False)
             active = PriorityRuleSet.objects.create(
                 version=version,
-                algorithm_version="expert-v3-contextual",
+                algorithm_version="expert-v4-regional-eligibility",
                 is_active=True,
                 thresholds=config["thresholds"],
                 sector_criteria=config["sector_criteria"],
@@ -1154,7 +1153,6 @@ class AdminCMSReviewQueueView(APIView):
         page_serializer = CMSPageSummarySerializer if summary else CMSPageSerializer
         section_serializer = CMSPageSectionSummarySerializer if summary else CMSPageSectionSerializer
         article_serializer = CMSArticleSummarySerializer if summary else CMSArticleSerializer
-        form_serializer = CMSContributorFormSummarySerializer if summary else CMSContributorFormSerializer
 
         pages = CMSPage.objects.filter(status="submitted")
         articles = CMSArticle.objects.filter(status="submitted").select_related("thumbnail")
@@ -1167,9 +1165,6 @@ class AdminCMSReviewQueueView(APIView):
             # Page sections are never an independent review item. Legacy submitted
             # rows are normalized to drafts by the data migration below.
             sections = CMSPageSection.objects.none()
-            forms = CMSContributorForm.objects.filter(status="submitted").select_related(
-                "current_published_version"
-            )
             events = list(
                 PublicEvent.objects.filter(status="submitted").values(
                     "id", "title", "status", "updated_at"
@@ -1182,9 +1177,6 @@ class AdminCMSReviewQueueView(APIView):
             articles = articles.select_related("created_by", "updated_by", "submitted_by", "reviewed_by")
             # Sections are reviewed as part of their parent page, never independently.
             sections = CMSPageSection.objects.none()
-            forms = CMSContributorForm.objects.filter(status="submitted").select_related(
-                "current_published_version", "created_by", "updated_by", "submitted_by", "reviewed_by", "lock_owner"
-            )
             events = PublicEventSerializer(
                 PublicEvent.objects.filter(status="submitted").select_related(
                     "created_by", "submitted_by", "reviewed_by"
@@ -1201,7 +1193,9 @@ class AdminCMSReviewQueueView(APIView):
                     context={"request": request},
                 ).data,
                 "news": article_serializer(articles, many=True, context={"request": request}).data,
-                "forms": form_serializer(forms, many=True, context={"request": request}).data,
+                # Contributor form administration lives outside the public-content CMS.
+                # Keep the key for older clients, but never expose form records here.
+                "forms": [],
                 "events": events,
             }
         )

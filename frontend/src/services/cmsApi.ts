@@ -174,6 +174,23 @@ export type CMSAIRuleConfig = {
   thresholds: {
     high: number;
     regional_project_cost: number;
+    regional_criteria: {
+      cost: {
+        thresholds: { at_least_5b: number; over_3b: number; over_1b: number; over_500m: number };
+        scores: { at_least_5b: number; over_3b: number; over_1b: number; over_500m: number; otherwise: number };
+      };
+      spatial_coverage: {
+        scores: { interregional: number; region_wide: number; eight_to_twelve_lgus: number; single_city: number };
+      };
+      outcome_contribution: {
+        thresholds: { at_least_7: number; at_least_5: number; at_least_3: number; at_least_2: number; at_least_1: number };
+        scores: { at_least_7: number; at_least_5: number; at_least_3: number; at_least_2: number; at_least_1: number; otherwise: number };
+      };
+      beneficiaries: {
+        thresholds: { over_3m: number; over_1m: number; at_least_1: number };
+        scores: { over_3m: number; over_1m: number; at_least_1: number; otherwise: number };
+      };
+    };
     pap_weights: {
       readiness: number;
       gad_responsiveness: number;

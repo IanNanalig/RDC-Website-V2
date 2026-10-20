@@ -22,11 +22,9 @@ const ContentManagement = () => {
   const cmsInitialTab = useMemo(() => {
     const path = location.pathname.toLowerCase();
     if (path.includes("/news")) return "news" as const;
-    if (path.includes("/forms")) return "forms" as const;
     if (path.includes("/media")) return "media" as const;
     if (path.includes("/settings")) return "settings" as const;
     if (path.includes("/review")) return "review" as const;
-    if (path.includes("/ai-scoring")) return "ai" as const;
     return "pages" as const;
   }, [location.pathname]);
   const [activeTab, setActiveTab] = useState<"cms" | "events" | "archived">(routeTab);
@@ -39,7 +37,7 @@ const ContentManagement = () => {
   return (
     <PortalLayout
       title="Content Management"
-      subtitle="Draft, review, and publish public content and contributor forms"
+      subtitle="Draft, review, and publish public website content"
       role={role}
       userName={displayName}
     >

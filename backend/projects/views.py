@@ -699,9 +699,10 @@ def _project_needs_revision(project):
 def _is_simplified_profile(profile_data):
     if not isinstance(profile_data, dict):
         return False
-    return str(profile_data.get("submission_type") or "").strip().lower() == "simplified" or isinstance(
-        profile_data.get("simplified_form"), dict
-    )
+    marker = str(profile_data.get("submission_type") or "").strip().lower()
+    if marker == "detailed":
+        return False
+    return marker == "simplified" or isinstance(profile_data.get("simplified_form"), dict)
 
 
 def _saved_contributor_form_marker(profile_data):
@@ -741,7 +742,7 @@ def _upgrade_profile_form_marker(profile_data, source_profile_data):
 
 def _project_link(project, recipient):
     role = getattr(recipient, "role", "")
-    suffix = "/simplified" if _is_simplified_profile(project.profile_data) else ""
+    suffix = "/simplified"
     if role == "admin":
         return f"/admin/projects/{project.id}/view{suffix}"
     if role == "validator":
@@ -750,7 +751,7 @@ def _project_link(project, recipient):
 
 
 def _revision_review_link(revision, role):
-    suffix = "/simplified" if _is_simplified_profile(revision.profile_data_snapshot) else ""
+    suffix = "/simplified"
     base = (
         f"/validator/projects/{revision.project_id}/review"
         if role == "validator"
@@ -2945,6 +2946,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         )
         if project.created_by_id != request.user.id and request.user.role != "admin" and not same_agency_staff:
             raise PermissionDenied("Only owner or admin can submit")
+        if not _is_simplified_profile(project.profile_data):
+            return Response({"detail": "Only projects created with the simplified form can be submitted."}, status=400)
         project_form_marker = project.profile_data.get("form_schema") if isinstance(project.profile_data, dict) else None
         versioned_form = isinstance(project_form_marker, dict) and project_form_marker.get("legacy") is not True
         if (
@@ -3024,6 +3027,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
 
         action_value = (request.data.get("action") or "").lower()
         profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
+        if not _is_simplified_profile(profile_data):
+            return Response({"detail": "This project does not use the supported simplified form and cannot be reviewed."}, status=400)
         existing_review = profile_data.get("validator_review")
         if isinstance(existing_review, dict):
             existing_status = str(existing_review.get("review_status") or "").lower()
@@ -3049,6 +3054,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             if not isinstance(incoming_edited, dict):
                 return Response({"detail": "edited_profile_data must be a JSON object"}, status=400)
             edited_profile = incoming_edited
+        if not _is_simplified_profile(edited_profile):
+            return Response({"detail": "Only simplified-form project data can be reviewed."}, status=400)
 
         edited_marker = edited_profile.get("form_schema")
         contributor_marker = contributor_snapshot.get("form_schema")
@@ -3283,6 +3290,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("Only validators can run priority analysis.")
         if not project.priority_analysis_eligible:
             return Response({"detail": "Legacy projects are excluded from priority analysis enforcement."}, status=400)
+        if not _is_simplified_profile(project.profile_data):
+            return Response({"detail": "Priority analysis is available only for simplified-form projects."}, status=400)
         if project.status not in ("proposed", "planning"):
             return Response({"detail": "Priority analysis is available before endorsement only."}, status=400)
 
@@ -3824,6 +3833,8 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
     def start_update(self, request, pk=None):
         self._ensure_progress_update_open()
         project = self.get_object()
+        if not _is_simplified_profile(project.profile_data):
+            return Response({"detail": "Progress updates are available only for simplified-form projects."}, status=400)
         if not project.validated:
             return Response({"detail": "Only endorsed public projects can receive progress updates."}, status=400)
         if _is_completed_rdip_project(project):
@@ -3970,6 +3981,8 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
         profile_data = request.data.get("profile_data") or request.data.get("profile_data_snapshot")
         if not isinstance(profile_data, dict):
             return Response({"detail": "profile_data is required."}, status=400)
+        if not _is_simplified_profile(profile_data):
+            return Response({"detail": "Only simplified-form project updates are supported."}, status=400)
         funding_error = _validate_simplified_funding(profile_data)
         if funding_error:
             return Response({"detail": funding_error}, status=400)
@@ -4038,6 +4051,8 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
     def submit(self, request, pk=None):
         revision = self.get_object()
         self._ensure_contributor_editable(revision)
+        if not _is_simplified_profile(revision.profile_data_snapshot):
+            return Response({"detail": "Only simplified-form progress updates can be submitted."}, status=400)
         revision_form_marker = (
             revision.profile_data_snapshot.get("form_schema")
             if isinstance(revision.profile_data_snapshot, dict)
@@ -4097,6 +4112,8 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Only submitted progress updates can be reviewed."}, status=400)
 
         saved_profile = revision.profile_data_snapshot if isinstance(revision.profile_data_snapshot, dict) else {}
+        if not _is_simplified_profile(saved_profile):
+            return Response({"detail": "This revision does not use the supported simplified form and cannot be reviewed."}, status=400)
         edited_profile = request.data.get("edited_profile_data")
         validator_review = getattr(request.user, "role", "") == "validator"
         if validator_review and edited_profile is not None and not _validator_answers_unchanged(edited_profile, saved_profile):
@@ -4108,6 +4125,8 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
             edited_profile = deepcopy(saved_profile)
         if not isinstance(edited_profile, dict):
             return Response({"detail": "edited_profile_data must be a JSON object."}, status=400)
+        if not _is_simplified_profile(edited_profile):
+            return Response({"detail": "Only simplified-form project data can be reviewed."}, status=400)
         base_marker = revision.profile_data_snapshot.get("form_schema") if isinstance(revision.profile_data_snapshot, dict) else None
         edited_marker = edited_profile.get("form_schema")
         versioned_form = (

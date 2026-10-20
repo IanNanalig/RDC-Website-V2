@@ -229,6 +229,7 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
     priority_analysis = serializers.SerializerMethodField()
     workflow_status = serializers.SerializerMethodField()
     workflow_status_label = serializers.SerializerMethodField()
+    submission_type = serializers.SerializerMethodField()
     official_priority = serializers.SerializerMethodField()
     official_priority_label = serializers.SerializerMethodField()
     validation_comment = serializers.SerializerMethodField()
@@ -266,6 +267,7 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
             "priority_analysis",
             "workflow_status",
             "workflow_status_label",
+            "submission_type",
             "official_priority",
             "official_priority_label",
             "validation_comment",
@@ -300,6 +302,11 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
     def get_validated_by(self, obj):
         # Current schema has no validated_by foreign key.
         return None
+
+    def get_submission_type(self, obj):
+        profile = obj.profile_data if isinstance(obj.profile_data, dict) else {}
+        marker = str(profile.get("submission_type") or "").strip().lower()
+        return "simplified" if marker == "simplified" or (marker != "detailed" and isinstance(profile.get("simplified_form"), dict)) else "unsupported"
 
     def get_submitted_by_name(self, obj):
         if not obj.created_by:
@@ -402,7 +409,12 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
         if not isinstance(value, dict):
             raise serializers.ValidationError("profile_data must be a JSON object.")
         simplified = value.get("simplified_form")
+        marker = str(value.get("submission_type") or "").strip().lower()
+        if marker not in ("", "simplified") or not isinstance(simplified, dict):
+            raise serializers.ValidationError("Only the simplified project form is supported.")
         if isinstance(simplified, dict):
+            value = deepcopy(value)
+            value["submission_type"] = "simplified"
             project_status = str(simplified.get("status") or "").strip()
             previous_status = ""
             if self.instance and isinstance(self.instance.profile_data, dict):
@@ -438,6 +450,17 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
             except FormSchemaError as exc:
                 raise serializers.ValidationError(str(exc)) from exc
         return value
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        if (
+            request is not None
+            and request.method == "POST"
+            and str(attrs.get("status") or "").strip().lower() == "proposed"
+            and not isinstance((attrs.get("profile_data") or {}).get("simplified_form"), dict)
+        ):
+            raise serializers.ValidationError({"profile_data": "A simplified project form is required for submission."})
+        return attrs
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)
@@ -663,9 +686,7 @@ class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.Mo
     def get_submission_type(self, obj):
         profile = self._profile(obj)
         value = str(profile.get("submission_type") or "").strip().lower()
-        if value:
-            return value
-        return "simplified" if isinstance(profile.get("simplified_form"), dict) else "detailed"
+        return "simplified" if value == "simplified" or (value != "detailed" and isinstance(profile.get("simplified_form"), dict)) else "unsupported"
 
     def get_rdip_status(self, obj):
         simplified = self._profile(obj).get("simplified_form")
@@ -783,6 +804,7 @@ class ProjectRevisionSerializer(ContributorFormVersionStatusMixin, serializers.M
     form_version = serializers.SerializerMethodField()
     current_form_version = serializers.SerializerMethodField()
     uses_outdated_form = serializers.SerializerMethodField()
+    submission_type = serializers.SerializerMethodField()
 
     class Meta:
         model = ProjectRevision
@@ -811,6 +833,7 @@ class ProjectRevisionSerializer(ContributorFormVersionStatusMixin, serializers.M
             "form_version",
             "current_form_version",
             "uses_outdated_form",
+            "submission_type",
         ]
         read_only_fields = fields
 
@@ -821,6 +844,11 @@ class ProjectRevisionSerializer(ContributorFormVersionStatusMixin, serializers.M
         if not user:
             return ""
         return user.full_name.strip() or user.get_full_name() or user.username
+
+    def get_submission_type(self, obj):
+        profile = self._form_profile(obj)
+        marker = str(profile.get("submission_type") or "").strip().lower()
+        return "simplified" if marker == "simplified" or (marker != "detailed" and isinstance(profile.get("simplified_form"), dict)) else "unsupported"
 
     def get_created_by_name(self, obj):
         return self._name(obj.created_by)
@@ -874,7 +902,7 @@ class ProjectRevisionSummarySerializer(ProjectRevisionSerializer):
     def get_submission_type(self, obj):
         profile = self._profile(obj)
         value = str(profile.get("submission_type") or "").strip().lower()
-        return value or ("simplified" if isinstance(profile.get("simplified_form"), dict) else "detailed")
+        return "simplified" if value == "simplified" or (value != "detailed" and isinstance(profile.get("simplified_form"), dict)) else "unsupported"
 
 
 class PublicProjectSerializer(serializers.ModelSerializer):
@@ -1361,7 +1389,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             return ""
         profile = obj.project.profile_data if isinstance(obj.project.profile_data, dict) else {}
         value = str(profile.get("submission_type") or "").strip().lower()
-        return "simplified" if value == "simplified" or isinstance(profile.get("simplified_form"), dict) else (value or "detailed")
+        return "simplified" if value == "simplified" or (value != "detailed" and isinstance(profile.get("simplified_form"), dict)) else "unsupported"
 
     def get_is_read(self, obj):
         return bool(obj.read_at)
