@@ -119,26 +119,44 @@ class AuditCoverageTests(APITestCase):
         audit_list = self.client.get("/api/admin/activity/?event=project_delete")
         self.assertEqual(audit_list.data[0]["project_title"], "Audit Project Updated")
 
-    def test_form_lock_actions_have_specific_editor_events(self):
+    def test_form_lock_actions_are_admin_only_and_audited(self):
         form = CMSContributorForm.objects.get(key="simplified-rdip")
         self.as_user(self.editor)
-        locked = self.client.post(f"/api/admin/cms/forms/{form.id}/lock/", {}, format="json")
-        self.assertEqual(locked.status_code, 200)
-        self.assertTrue(UserActivity.objects.filter(user=self.editor, event="cms_form_lock_acquired").exists())
+        denied = self.client.post(f"/api/admin/cms/forms/{form.id}/lock/", {}, format="json")
+        self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(UserActivity.objects.filter(user=self.editor, event="cms_form_lock_acquired").exists())
+        self.assertEqual(
+            self.client.post(f"/api/admin/cms/forms/{form.id}/heartbeat/", {}, format="json").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.post(f"/api/admin/cms/forms/{form.id}/unlock/", {}, format="json").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
         self.as_user(self.admin)
+        locked = self.client.post(f"/api/admin/cms/forms/{form.id}/lock/", {}, format="json")
+        self.assertEqual(locked.status_code, status.HTTP_200_OK)
+        self.assertTrue(UserActivity.objects.filter(user=self.admin, event="cms_form_lock_acquired").exists())
+
+        other_admin = User.objects.create_user(
+            username="second-audit-admin", email="second-audit-admin@example.com",
+            password="StrongTestPassword123!", role="admin", must_change_password=False,
+        )
+        self.as_user(other_admin)
         blocked = self.client.post(f"/api/admin/cms/forms/{form.id}/lock/", {}, format="json")
         self.assertEqual(blocked.status_code, 423)
-        self.assertTrue(UserActivity.objects.filter(user=self.admin, event="cms_form_lock_blocked").exists())
+        self.assertTrue(UserActivity.objects.filter(user=other_admin, event="cms_form_lock_blocked").exists())
         access = self.client.post(f"/api/admin/cms/forms/{form.id}/request-access/", {}, format="json")
         self.assertEqual(access.status_code, 200)
-        self.assertTrue(UserActivity.objects.filter(user=self.admin, event="cms_form_access_requested").exists())
-        self.as_user(self.editor)
+        self.assertTrue(UserActivity.objects.filter(user=other_admin, event="cms_form_access_requested").exists())
+
+        self.as_user(self.admin)
         heartbeat = self.client.post(f"/api/admin/cms/forms/{form.id}/heartbeat/", {}, format="json")
         self.assertEqual(heartbeat.status_code, 200)
-        self.assertFalse(UserActivity.objects.filter(user=self.editor, event="api_action").exists())
         unlocked = self.client.post(f"/api/admin/cms/forms/{form.id}/unlock/", {}, format="json")
         self.assertEqual(unlocked.status_code, 200)
-        self.assertTrue(UserActivity.objects.filter(user=self.editor, event="cms_form_lock_released").exists())
+        self.assertTrue(UserActivity.objects.filter(user=self.admin, event="cms_form_lock_released").exists())
 
     @override_settings(TURNSTILE_REQUIRED=False)
     def test_anonymous_password_reset_attempt_is_not_attributed_to_target_user(self):
