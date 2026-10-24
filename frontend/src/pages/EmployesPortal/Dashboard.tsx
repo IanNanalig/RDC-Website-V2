@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import { userDisplayName } from "../../utils/userDisplayName";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useEncodingWindow } from "../../hooks/useEncodingWindow";
 
@@ -105,7 +106,7 @@ const Dashboard: React.FC = () => {
       open: true,
       title: item?.project_title ? `Changes: ${item.project_title}` : "Changes",
       changes,
-      editor: String(item?.full_name || item?.username || "User"),
+      editor: userDisplayName(item, "User"),
       at: item?.created_at ? new Date(item.created_at).toLocaleString() : "",
       comment: "",
       commentAt: "",
@@ -125,7 +126,8 @@ const Dashboard: React.FC = () => {
         .map((c: any) => ({
           comment: String(c?.comment || ""),
           username: String(c?.username || ""),
-          full_name: String(c?.full_name || ""),
+          first_name: String(c?.first_name || ""),
+          last_name: String(c?.last_name || ""),
           created_at: String(c?.created_at || ""),
           created_ms: c?.created_at ? new Date(c.created_at).getTime() : 0,
         }))
@@ -225,7 +227,7 @@ const Dashboard: React.FC = () => {
   }, [navigate, activityLimit, activityOffset, refreshKey]);
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
-  const displayName = user?.full_name || user?.username || "User";
+  const displayName = userDisplayName(user);
   const activityLimitNumber = Math.max(1, Number(activityLimit) || 10);
   const activityStart = activityCount > 0 ? activityOffset + 1 : 0;
   const activityEnd = activityCount > 0 ? Math.min(activityOffset + activity.length, activityCount) : 0;
@@ -374,7 +376,7 @@ const Dashboard: React.FC = () => {
                 <div key={item.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-100 pb-3 last:border-b-0 last:pb-0">
                   <div>
                     <p className="text-sm font-semibold text-slate-800">
-                      {item.full_name || item.username || "User"}{" "}
+                      {item.display_name || item.username || "User"}{" "}
                       <span className="text-slate-500 font-normal">- {item.event?.replaceAll("_", " ")}</span>
                     </p>
                     <p className="text-xs text-slate-500">

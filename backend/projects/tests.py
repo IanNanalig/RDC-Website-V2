@@ -1122,6 +1122,24 @@ class PortalWorkflowTests(APITestCase):
         self.assertTrue(project.archived)
         self.assertFalse(project.is_active)
 
+        self._as(self.validator)
+        validator_rows = self.client.get("/api/validator/projects/?view=summary&scope=queue").data
+        validator_ids = {item["id"] for item in validator_rows}
+        self.assertNotIn(project.id, validator_ids)
+
+        self._as(self.employee)
+        contributor_rows = self.client.get("/api/employee/projects/?view=summary").data
+        contributor_ids = {item["id"] for item in contributor_rows}
+        self.assertNotIn(project.id, contributor_ids)
+
+        self._as(self.admin)
+        active_admin_rows = self.client.get("/api/admin/projects/?view=summary").data
+        active_admin_ids = {item["id"] for item in active_admin_rows}
+        archived_admin_rows = self.client.get("/api/admin/projects/?view=summary&archived=1").data
+        archived_admin_ids = {item["id"] for item in archived_admin_rows}
+        self.assertNotIn(project.id, active_admin_ids)
+        self.assertIn(project.id, archived_admin_ids)
+
     def test_employee_write_blocked_when_encoding_closed(self):
         self._set_encoding_window(timezone.now(), timezone.now(), enabled=False)
 
@@ -1463,6 +1481,46 @@ class PerformanceApiTests(APITestCase):
             self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         self.assertLessEqual(len(large_context), len(small_context) + 1)
+
+    def test_compact_project_lists_work_for_admin_validator_and_contributor(self):
+        validator = User.objects.create_user(
+            username="performance-validator", password="password", role="validator",
+            email="performance-validator@example.com",
+        )
+        contributor = User.objects.create_user(
+            username="performance-contributor", password="password", role="staff",
+            email="performance-contributor@example.com", agency="MMDA", first_name="Performance", last_name="Contributor",
+        )
+        project = Project.objects.create(
+            name="Compact list project",
+            description="This wide field is omitted from compact list queries.",
+            implementing_agency="MMDA",
+            municipality="NCR",
+            status="proposed",
+            cost=1000,
+            latitude=14.5,
+            agency="MMDA",
+            budget=1000,
+            created_by=contributor,
+            profile_data={
+                "submission_type": "simplified",
+                "simplified_form": {"status": "Ongoing", "location": "Manila"},
+            },
+        )
+
+        for user, endpoint in (
+            (self.admin, "/api/admin/projects/?view=summary"),
+            (validator, "/api/validator/projects/?view=summary&scope=queue"),
+            (contributor, "/api/employee/projects/?view=summary"),
+        ):
+            self.client.force_authenticate(user=user)
+            response = self.client.get(endpoint)
+            self.assertEqual(response.status_code, 200, response.data)
+            row = next(item for item in response.data if item["id"] == project.id)
+            self.assertEqual(row["title"], project.name)
+            self.assertEqual(row["submitted_by_name"], contributor.get_full_name())
+            self.assertNotIn("description", row)
+            self.assertNotIn("profile_data", row)
 
     def test_public_summary_is_lightweight_and_etag_changes_after_update(self):
         project = self._project(validated=True)

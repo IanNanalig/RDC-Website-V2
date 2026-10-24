@@ -27,7 +27,7 @@ from cms.services.media_validation import validate_media_upload
 def _user_display(user):
     if not user:
         return ""
-    return getattr(user, "full_name", "") or user.get_username()
+    return user.get_full_name() or user.get_username()
 
 
 class CMSMediaAssetListSerializer(serializers.ListSerializer):

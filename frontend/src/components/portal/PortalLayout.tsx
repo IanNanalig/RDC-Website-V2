@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useEncodingWindow } from "../../hooks/useEncodingWindow";
-import { api, beginPortalLogout } from "../../services/api";
+import { api, logoutPortalSession } from "../../services/api";
 
 type Role = "admin" | "validator" | "employee" | "content_editor";
 
@@ -118,6 +118,7 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
   const [mobileOpen, setMobileOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<PortalNotification[]>([]);
+  const [expandedNotificationId, setExpandedNotificationId] = useState<number | null>(null);
   const [unreadCount, setUnreadCount] = useState(0);
   const notificationsRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -163,19 +164,14 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
 
   useEffect(() => {
     loadNotifications();
-    const id = window.setInterval(loadNotifications, 60000);
     const onStorage = (event: StorageEvent) => {
       if (event.key === "projects_last_update") loadNotifications();
     };
-    const onFocus = () => loadNotifications();
     const onDataChanged = () => loadNotifications();
     window.addEventListener("storage", onStorage);
-    window.addEventListener("focus", onFocus);
     window.addEventListener("portal:data-changed", onDataChanged);
     return () => {
-      window.clearInterval(id);
       window.removeEventListener("storage", onStorage);
-      window.removeEventListener("focus", onFocus);
       window.removeEventListener("portal:data-changed", onDataChanged);
     };
   }, [loadNotifications]);
@@ -254,22 +250,8 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
   };
 
   const logout = async () => {
-    beginPortalLogout();
-    try {
-      // Older deployments may not have the audit endpoint yet.
-      await api.post("auth/logout/", {});
-    } catch {
-      // Local sign-out must still work if the backend is temporarily unavailable.
-    } finally {
-      localStorage.removeItem("user");
-      localStorage.removeItem("isLoggedIn");
-      localStorage.removeItem("username");
-      localStorage.removeItem("token");
-      localStorage.removeItem("accessToken");
-      localStorage.removeItem("refreshToken");
-      localStorage.removeItem("sessionMessage");
-      navigate("/login");
-    }
+    await logoutPortalSession();
+    navigate("/login");
   };
 
   const markRead = async (notification: PortalNotification) => {
@@ -446,33 +428,44 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
                         ) : (
                           notifications.map((notification) => {
                             const unread = !notification.is_read && !notification.read_at;
-                            const body = (
-                              <div className={`border-b border-slate-100 px-3 py-3 text-left last:border-b-0 ${unread ? "bg-blue-50/70" : "bg-white"}`}>
+                            const expanded = expandedNotificationId === notification.id;
+                            return (
+                              <div key={notification.id} className={`border-b border-slate-100 last:border-b-0 ${unread ? "bg-blue-50/70" : "bg-white"}`}>
+                                <button
+                                  type="button"
+                                  aria-expanded={expanded}
+                                  aria-controls={`notification-details-${notification.id}`}
+                                  onClick={() => {
+                                    setExpandedNotificationId(expanded ? null : notification.id);
+                                    void markRead(notification);
+                                  }}
+                                  className="block w-full px-3 py-3 text-left hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600"
+                                >
                                 <div className="flex items-start gap-2">
                                   {unread && <span className="mt-1.5 h-2 w-2 rounded-full bg-blue-600" />}
                                   <div className="min-w-0 flex-1">
                                     <p className="text-sm font-semibold text-slate-900">{notification.title}</p>
-                                    {notification.message && <p className="mt-1 line-clamp-2 text-xs text-slate-600">{notification.message}</p>}
+                                    {notification.message && <p className={`mt-1 text-xs text-slate-600 ${expanded ? "whitespace-pre-wrap break-words" : "line-clamp-2"}`}>{notification.message}</p>}
                                     <p className="mt-1 text-[11px] text-slate-400">
                                       {notification.created_at ? new Date(notification.created_at).toLocaleString() : ""}
                                     </p>
                                   </div>
                                 </div>
+                                </button>
+                                {expanded && (
+                                  <div id={`notification-details-${notification.id}`} className="px-3 pb-3 pl-8">
+                                    {notification.link_path && (
+                                      <Link
+                                        to={notificationPath(notification)}
+                                        onClick={() => void markRead(notification)}
+                                        className="inline-flex min-h-8 items-center rounded-md border border-blue-200 bg-white px-2.5 text-xs font-semibold text-blue-700 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+                                      >
+                                        Open notification
+                                      </Link>
+                                    )}
+                                  </div>
+                                )}
                               </div>
-                            );
-                            return notification.link_path ? (
-                              <Link
-                                key={notification.id}
-                                to={notificationPath(notification)}
-                                onClick={() => markRead(notification)}
-                                className="block hover:bg-slate-50"
-                              >
-                                {body}
-                              </Link>
-                            ) : (
-                              <button key={notification.id} type="button" onClick={() => markRead(notification)} className="block w-full hover:bg-slate-50">
-                                {body}
-                              </button>
                             );
                           })
                         )}

@@ -18,13 +18,14 @@ const headers = {
 };
 
 const sampleUsers = [
-  { id: 3, username: "zoe", full_name: "Zoe", email: "a@example.test", agency: "DPWH", role: "validator", is_active: true },
-  { id: 1, username: "amy", full_name: "Amy", email: "z@example.test", agency: "DENR", role: "admin", is_active: false },
-  { id: 2, username: "ben", full_name: "Ben", email: "m@example.test", agency: "RDC-NCR", role: "staff", is_active: true },
+  { id: 3, username: "zoe", first_name: "Zoe", last_name: "", email: "a@example.test", agency: "DPWH", role: "validator", is_active: true },
+  { id: 1, username: "amy", first_name: "Amy", last_name: "", email: "z@example.test", agency: "DENR", role: "admin", is_active: false },
+  { id: 2, username: "ben", first_name: "Ben", last_name: "", email: "m@example.test", agency: "RDC-NCR", role: "staff", is_active: true },
   ...Array.from({ length: 10 }, (_, index) => ({
     id: index + 10,
     username: `member-${index + 1}`,
-    full_name: `Member ${String(index + 1).padStart(2, "0")}`,
+    first_name: "Member",
+    last_name: String(index + 1).padStart(2, "0"),
     email: `member${index + 1}@example.test`,
     agency: index % 2 === 0 ? "DENR" : "DOH",
     role: "staff",
@@ -100,7 +101,8 @@ try {
   await page.goto(`${origin}/reset-password?token=reset_browser-test`);
   await page.getByRole("heading", { name: "Reset Your Password" }).waitFor();
   assert.equal(await page.getByLabel("Account email").inputValue(), "tester@example.test");
-  assert.equal(await page.getByLabel("Full Name *").count(), 0, "Reset page has no profile form");
+  assert.equal(await page.getByLabel("First Name").count(), 0, "Reset page has no profile form");
+  assert.equal(await page.getByLabel("Last Name").count(), 0, "Reset page has no profile form");
   await page.getByLabel("New Password", { exact: true }).fill("NewPassword123!");
   await page.getByLabel("Confirm Password", { exact: true }).fill("NewPassword123!");
   await page.getByRole("button", { name: "Save New Password" }).click();
@@ -134,12 +136,19 @@ try {
     assert.equal(await items.count(), 10, "System Users defaults to 10 rows per page");
     assert.match(await items.first().innerText(), /Zoe/, "System Users keeps the API order");
     if (viewport.width < 600) {
-      assert.equal(await adminPage.getByLabel("Sort by").count(), 0, "Mobile sort controls are removed");
+      const sortField = adminPage.getByLabel("Sort by field");
+      await sortField.selectOption("username");
+      assert.match(await items.first().innerText(), /Amy/, "Mobile username sort starts ascending");
+      await adminPage.getByRole("button", { name: /Change sort direction/ }).click();
+      assert.match(await items.first().innerText(), /Zoe/, "Mobile direction control reverses the order");
     } else {
-      for (const heading of ["Username", "Email", "Agency", "Role", "Status", "Actions"]) {
-        assert.equal(await adminPage.getByRole("columnheader", { name: heading }).getByRole("button").count(), 0,
-          `${heading} is a plain column heading`);
-      }
+      const username = adminPage.getByRole("columnheader", { name: /Username/ });
+      await username.getByRole("button").click();
+      assert.match(await items.first().innerText(), /Amy/, "Desktop username sort starts ascending");
+      await username.getByRole("button").click();
+      assert.match(await items.first().innerText(), /Zoe/, "Desktop username sort toggles descending");
+      assert.equal(await adminPage.getByRole("columnheader", { name: "Actions" }).getByRole("button").count(), 0,
+        "Actions is not sortable");
     }
 
     await adminPage.getByRole("button", { name: "Next" }).click();
@@ -202,7 +211,7 @@ try {
     assert.equal(await adminPage.getByLabel("Search User").inputValue(), "");
     assert.equal(await adminPage.getByLabel("Rows Per Page").inputValue(), "10");
     assert.equal(await items.count(), 10);
-    assert.match(await items.first().innerText(), /Zoe/, "Clear Filters keeps the API order");
+    assert.match(await items.first().innerText(), /Zoe/, "Clear Filters preserves the selected sort");
     await adminPage.getByLabel("Search User").fill("no such user");
     await adminPage.getByText("No users match the selected filters.").waitFor();
     const documentWidth = await adminPage.evaluate(() => document.documentElement.scrollWidth);

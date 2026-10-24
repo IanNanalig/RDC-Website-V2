@@ -8,6 +8,7 @@ import difflib
 import urllib.parse
 import urllib.request
 import hashlib
+import secrets
 from copy import deepcopy
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -23,7 +24,8 @@ from django.utils import timezone
 from django.utils.crypto import get_random_string
 from django.utils.text import slugify
 from django.db import IntegrityError, connection, transaction
-from django.db.models import Count, Max, Prefetch, Q
+from django.db.models import Count, Max, Prefetch, Q, Value, TextField, CharField
+from django.db.models.functions import Cast, Coalesce, Concat, NullIf
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
@@ -32,12 +34,14 @@ from rest_framework.response import Response
 from rest_framework.throttling import SimpleRateThrottle
 from rest_framework.views import APIView
 from cms.form_schema import FormSchemaError, validate_simplified_answers
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import AccessToken
+from .authentication import SESSION_IDLE_TIMEOUT
 from .models import (
     AccessRequest,
     Notification,
     PasswordResetRequest,
     PasswordSetupToken,
+    PortalSession,
     ProfileEditRequest,
     ProjectPriorityAnalysis,
     ProjectPriorityConfirmation,
@@ -124,6 +128,25 @@ def _normalize_account_agency(value):
 
 def _same_saved_account_agency(left, right):
     return " ".join(str(left or "").split()).casefold() == " ".join(str(right or "").split()).casefold()
+
+
+def _user_display_name(user):
+    return (user.get_full_name() or user.username or "").strip()
+
+
+def _validate_person_name(value):
+    if not isinstance(value, str):
+        return "Enter a valid name."
+    value = value.strip()
+    if not value:
+        return "This field is required."
+    if len(value) > 150:
+        return "Must be 150 characters or fewer."
+    if not any(character.isalpha() for character in value) or any(
+        not (character.isalpha() or character in " '-") for character in value
+    ):
+        return "Use letters, spaces, apostrophes, or hyphens only."
+    return ""
 
 PUBLIC_CHAT_MAX_SUGGESTIONS = 6
 PUBLIC_CHAT_MIN_SCORE = 1.0
@@ -592,11 +615,11 @@ def _is_admin_user(user):
     return getattr(user, "role", "") == "admin"
 
 
-def _build_unique_username(email: str, full_name: str = ""):
+def _build_unique_username(email: str, display_name: str = ""):
     local = (email or "").split("@")[0].strip().lower()
     local = re.sub(r"[^a-z0-9._-]+", "", local)
     if not local:
-        local = re.sub(r"[^a-z0-9]+", "", (full_name or "").lower()) or "user"
+        local = re.sub(r"[^a-z0-9]+", "", (display_name or "").lower()) or "user"
     base = local[:18]
     candidate = base
     idx = 1
@@ -622,10 +645,15 @@ def _location_hint(request):
     return ", ".join(parts)
 
 
-def _advance_user_session(user, request=None):
+def _advance_user_session(user, request=None, *, revocation_reason="credential_change"):
     previous_version = int(getattr(user, "session_version", 0) or 0)
     user.session_version = previous_version + 1
-    user.last_session_at = timezone.now()
+    now = timezone.now()
+    PortalSession.objects.filter(user=user, revoked_at__isnull=True).update(
+        revoked_at=now,
+        revocation_reason=revocation_reason,
+    )
+    user.last_session_at = now
     if request is not None:
         user.last_session_ip = _client_ip(request)
         user.last_session_user_agent = (request.META.get("HTTP_USER_AGENT", "") or "")[:1000]
@@ -640,12 +668,57 @@ def _advance_user_session(user, request=None):
     return previous_version, user.session_version
 
 
-def _issue_session_tokens(user):
-    refresh = RefreshToken.for_user(user)
-    refresh["session_version"] = int(user.session_version or 0)
-    access = refresh.access_token
+def _issue_session_access_token(user, session):
+    access = AccessToken.for_user(user)
     access["session_version"] = int(user.session_version or 0)
-    return str(access), str(refresh)
+    access["portal_session_id"] = session.pk
+    return str(access)
+
+
+def _login_user_payload(user):
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "role": _frontend_role(user.role),
+        "must_change_password": user.must_change_password,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "agency": user.agency,
+        "agency_head": user.agency_head,
+        "office": user.office,
+        "division": user.division,
+        "position": user.position,
+        "contact_number": user.contact_number,
+        "phone_number": user.phone_number,
+    }
+
+
+def _active_browser_session(refresh_token):
+    if not isinstance(refresh_token, str) or not refresh_token:
+        return None
+    digest = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+    session = PortalSession.objects.select_related("user").filter(
+        refresh_token_digest=digest,
+        revoked_at__isnull=True,
+    ).first()
+    if not session:
+        return None
+    now = timezone.now()
+    reason = ""
+    if not session.user.is_active:
+        reason = "logout"
+    elif session.session_version != session.user.session_version:
+        reason = "new_login"
+    elif not session.remember_me and now - session.last_activity_at >= SESSION_IDLE_TIMEOUT:
+        reason = "idle_timeout"
+    if reason:
+        PortalSession.objects.filter(pk=session.pk, revoked_at__isnull=True).update(
+            revoked_at=now,
+            revocation_reason=reason,
+        )
+        return None
+    return session
 
 
 def _log_activity(request, event: str, project=None, details=None):
@@ -1063,7 +1136,7 @@ def _issue_registration_invitation(request, email: str, role: str):
     return UserActivity.objects.create(
         user=actor,
         actor_username=actor.username,
-        actor_full_name=actor.full_name or actor.get_full_name() or actor.username,
+        actor_full_name=_user_display_name(actor),
         role=actor.role,
         event="registration_invitation_sent",
         ip_address=_client_ip(request)[:64],
@@ -2581,7 +2654,7 @@ def _apply_simplified_meta(incoming_profile, existing_profile, user):
                     field_edits[str(key)] = value
 
     if changed_fields:
-        display_name = getattr(user, "full_name", "").strip() or user.get_full_name() or user.username
+        display_name = _user_display_name(user)
         timestamp = timezone.now().isoformat()
         for field in changed_fields:
             field_edits[field] = {
@@ -2885,6 +2958,22 @@ def _project_queryset_with_related(qs, *, prefetch_priority=True):
     )
 
 
+def _project_summary_queryset(qs, *, prefetch_priority=True):
+    """Load only columns required by the compact project-list serializer."""
+    qs = qs.only(
+        "id", "name", "agency", "budget", "completion", "status", "updated_at",
+        "validated", "profile_data", "created_by_id", "created_by__username",
+        "created_by__first_name", "created_by__last_name",
+    )
+    return _project_queryset_with_related(qs, prefetch_priority=prefetch_priority)
+
+
+def _project_list_queryset(qs, request, *, prefetch_priority=True):
+    if request.query_params.get("view") == "summary":
+        return _project_summary_queryset(qs, prefetch_priority=prefetch_priority)
+    return _project_queryset_with_related(qs, prefetch_priority=prefetch_priority)
+
+
 class BaseProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated, ProjectPermission]
@@ -2900,7 +2989,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 event_type="contributor_project_draft_created",
                 title="Contributor project draft created",
                 message=(
-                    f"{self.request.user.full_name or self.request.user.username} "
+                    f"{_user_display_name(self.request.user)} "
                     f"created a draft: {_project_title(project)}"
                 ),
                 project=project,
@@ -2934,7 +3023,10 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             qs = Project.objects.filter(created_by=user).order_by("-created_at")
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
         qs = _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
-        return _project_queryset_with_related(qs, prefetch_priority=getattr(self, "action", "") == "list")
+        return _project_list_queryset(
+            qs, self.request,
+            prefetch_priority=getattr(self, "action", "") == "list",
+        )
 
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
@@ -3011,7 +3103,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 _active_validators(),
                 event_type="project_revision_resubmitted",
                 title="Project revision submitted",
-                message=f"{request.user.full_name or request.user.username} resubmitted {_project_title(project)} for validation.",
+                message=f"{_user_display_name(request.user)} resubmitted {_project_title(project)} for validation.",
                 project=project,
                 actor=request.user,
                 dedupe_key=f"project:{project.id}:revision-resubmitted:{project.updated_at.isoformat()}",
@@ -3193,7 +3285,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 _admins(),
                 event_type="validator_review_draft_saved_admin",
                 title="Validator review draft saved",
-                message=f"{request.user.full_name or request.user.username} saved a review draft for {_project_title(project)}.",
+                message=f"{_user_display_name(request.user)} saved a review draft for {_project_title(project)}.",
                 project=project,
                 actor=request.user,
                 dedupe_key=f"project:{project.id}:validator-review-draft:{reviewed_at}",
@@ -3223,7 +3315,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 _admins(),
                 event_type="project_endorsed_admin",
                 title="Project validated and endorsed",
-                message=f"{request.user.full_name or request.user.username} validated and endorsed {_project_title(project)}.",
+                message=f"{_user_display_name(request.user)} validated and endorsed {_project_title(project)}.",
                 project=project,
                 actor=request.user,
                 dedupe_key=f"project:{project.id}:endorsed:admins",
@@ -3412,9 +3504,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if text:
             profile_data["public_summary_override"] = {
                 "updated_at": timezone.now().isoformat(),
-                "updated_by": getattr(request.user, "full_name", "").strip()
-                or request.user.get_full_name()
-                or request.user.username,
+                "updated_by": _user_display_name(request.user),
                 "text": text,
             }
         else:
@@ -3454,6 +3544,18 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         project.is_active = False
         project.save(update_fields=["archived", "is_active", "updated_at"])
         _log_activity(request, "project_archive", project, {"archived": True, "implementation_status": implementation_status})
+        _notify_many(
+            _project_employee_recipients(project),
+            event_type="project_archived",
+            title="Project archived",
+            message=(
+                f"{_project_title(project)} was archived by an administrator. "
+                "It is no longer shown in your active projects list."
+            ),
+            project=project,
+            actor=request.user,
+            link_path="/employee/projects",
+        )
         return Response({"status": "archived"})
 
     @action(detail=True, methods=["post"])
@@ -3513,7 +3615,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 _active_validators(),
                 event_type="project_message",
                 title="Employee replied on project",
-                message=f"{request.user.full_name or request.user.username} replied on {_project_title(project)}.",
+                message=f"{_user_display_name(request.user)} replied on {_project_title(project)}.",
                 project=project,
                 actor=request.user,
                 comment=comment,
@@ -3601,10 +3703,15 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
     permission_classes = [IsAuthenticated, EmployeeRolePermission, ProjectPermission]
 
     def get_queryset(self):
-        qs = Project.objects.filter(_contributor_project_scope(self.request.user), archived=False).distinct().order_by("-created_at")
+        # The scope is an OR over plain columns, so it cannot create duplicate rows;
+        # avoid DISTINCT's extra sort/hash step on large contributor lists.
+        qs = Project.objects.filter(_contributor_project_scope(self.request.user), archived=False).order_by("-created_at")
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
         qs = _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
-        return _project_queryset_with_related(qs, prefetch_priority=getattr(self, "action", "") == "list")
+        return _project_list_queryset(
+            qs, self.request,
+            prefetch_priority=getattr(self, "action", "") == "list",
+        )
 
     def _ensure_encoding_open(self):
         state = _resolve_encoding_window_state()
@@ -3892,7 +3999,7 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             event_type="contributor_progress_draft_created",
             title="Contributor progress draft created",
             message=(
-                f"{request.user.full_name or request.user.username} created progress update "
+                f"{_user_display_name(request.user)} created progress update "
                 f"v{revision.revision_number} for {_project_title(project)}."
             ),
             project=project,
@@ -3914,18 +4021,32 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         role = getattr(self.request.user, "role", "")
-        qs = ProjectRevision.objects.select_related(
-            "project",
-            "created_by",
-            "submitted_by",
-            "reviewed_by",
-            "endorsed_by",
-        ).order_by("-updated_at")
+        if self.action == "list" and self.request.query_params.get("view") == "summary":
+            qs = ProjectRevision.objects.select_related("project", "created_by", "submitted_by").only(
+                "id", "project_id", "project__name", "project__agency", "revision_number",
+                "revision_type", "state", "profile_data_snapshot", "created_by_id",
+                "created_by__username", "created_by__first_name",
+                "created_by__last_name", "submitted_by_id", "submitted_by__username",
+                "submitted_by__first_name", "submitted_by__last_name",
+                "updated_at",
+            ).order_by("-updated_at")
+        else:
+            qs = ProjectRevision.objects.select_related(
+                "project",
+                "created_by",
+                "submitted_by",
+                "reviewed_by",
+                "endorsed_by",
+            ).order_by("-updated_at")
         if self.action == "list":
             qs = qs.filter(project__archived=False)
         if role == "admin":
             return qs
         if role == "validator":
+            # Contributor-created drafts are never reviewable. Apply this to
+            # object lookups too, not only the queue list, so guessing a revision
+            # URL cannot expose an unsubmitted snapshot.
+            qs = qs.exclude(state="draft")
             scope = (self.request.query_params.get("scope") or "queue").strip().lower()
             if scope == "history":
                 return qs.filter(state__in=["reviewed", "endorsed", "rejected", "superseded"])
@@ -4090,7 +4211,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
             event_type="progress_update_submitted",
             title="Progress update submitted",
             message=(
-                f"{request.user.full_name or request.user.username} submitted progress update "
+                f"{_user_display_name(request.user)} submitted progress update "
                 f"v{revision.revision_number} for {_project_title(revision.project)}."
             ),
             project=revision.project,
@@ -4252,7 +4373,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                 event_type="validator_progress_draft_saved_admin",
                 title="Validator progress review draft saved",
                 message=(
-                    f"{request.user.full_name or request.user.username} saved a review draft for "
+                    f"{_user_display_name(request.user)} saved a review draft for "
                     f"progress update v{revision.revision_number}: {_project_title(revision.project)}"
                 ),
                 project=revision.project,
@@ -4299,7 +4420,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                 event_type="progress_update_endorsed_admin",
                 title="Progress update validated and endorsed",
                 message=(
-                    f"{request.user.full_name or request.user.username} validated and endorsed "
+                    f"{_user_display_name(request.user)} validated and endorsed "
                     f"progress update v{revision.revision_number}: {_project_title(revision.project)}"
                 ),
                 project=revision.project,
@@ -4328,31 +4449,21 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        all_projects = Project.objects.filter(archived=False).only("id", "status", "profile_data").order_by("-created_at")
         scope = (self.request.query_params.get("scope") or "").strip().lower()
-        def review_status_for(project):
-            pd = project.profile_data if isinstance(project.profile_data, dict) else {}
-            vr = pd.get("validator_review")
-            if not isinstance(vr, dict):
-                return ""
-            status = str(vr.get("review_status") or "").lower()
-            return "endorsed" if status == "validated" else status
-
-        def reviewed_by_validator(project):
-            pd = project.profile_data if isinstance(project.profile_data, dict) else {}
-            vr = pd.get("validator_review")
-            if not isinstance(vr, dict):
-                return False
-            try:
-                reviewed_by_id = int(vr.get("reviewed_by_id"))
-            except (TypeError, ValueError):
-                return False
-            review_status = review_status_for(project)
-            return reviewed_by_id == user.id and review_status in ("draft", "reviewed", "endorsed", "rejected")
+        # Match both numeric and legacy string IDs. This lets the database filter
+        # reviewer-owned records without loading every project's JSON payload into
+        # Python on each Validation Queue, history, or detail request.
+        reviewed_by_user = (
+            Q(profile_data__validator_review__reviewed_by_id=user.id)
+            | Q(profile_data__validator_review__reviewed_by_id=str(user.id))
+        )
+        visible_project_states = ("draft", "reviewed", "endorsed", "validated", "rejected")
 
         if self.action == "update_form":
             return _project_queryset_with_related(
-                Project.objects.filter(archived=False, is_active=True).order_by("-created_at"),
+                Project.objects.filter(archived=False, is_active=True)
+                .exclude(status="planning")
+                .order_by("-created_at"),
                 prefetch_priority=False,
             )
 
@@ -4367,7 +4478,12 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
                     ).values_list("key", "current_published_version__version_number")
                 )
                 outdated_ids = []
-                for project in all_projects.filter(archived=False, is_active=True):
+                all_projects = (
+                    Project.objects.filter(archived=False, is_active=True)
+                    .exclude(status="planning")
+                    .only("id", "profile_data")
+                )
+                for project in all_projects:
                     marker = _saved_contributor_form_marker(project.profile_data)
                     if marker is None:
                         continue
@@ -4375,43 +4491,41 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
                     live_version = live_versions.get(key)
                     if live_version is not None and saved_version < live_version:
                         outdated_ids.append(project.id)
-                return _project_queryset_with_related(
+                return _project_list_queryset(
                     Project.objects.filter(id__in=outdated_ids).order_by("-updated_at"),
+                    self.request,
                     prefetch_priority=False,
                 )
             if scope == "history":
-                ids = [
-                    p.id
-                    for p in all_projects
-                    if reviewed_by_validator(p)
-                    and review_status_for(p) in ("reviewed", "endorsed", "rejected")
-                ]
-                qs = Project.objects.filter(id__in=ids).order_by("-updated_at")
+                qs = Project.objects.filter(archived=False).exclude(status="planning").filter(
+                    reviewed_by_user,
+                    profile_data__validator_review__review_status__in=("reviewed", "endorsed", "validated", "rejected"),
+                ).order_by("-updated_at")
                 workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
-                return _project_queryset_with_related(
+                return _project_list_queryset(
                     _filter_projects_for_workflow(qs, workflow).order_by("-updated_at"),
+                    self.request,
                     prefetch_priority=True,
                 )
-            draft_review_ids = [
-                p.id
-                for p in all_projects
-                if reviewed_by_validator(p)
-                and review_status_for(p) in ("draft", "reviewed")
-            ]
-            qs = Project.objects.filter(
-                Q(status="proposed") | Q(id__in=draft_review_ids)
+            qs = Project.objects.filter(archived=False).exclude(status="planning").filter(
+                Q(status="proposed")
+                | (reviewed_by_user & Q(profile_data__validator_review__review_status__in=("draft", "reviewed")))
             ).order_by("-created_at")
             workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
-            return _project_queryset_with_related(
+            return _project_list_queryset(
                 _filter_projects_for_workflow(qs, workflow).order_by("-created_at"),
+                self.request,
                 prefetch_priority=True,
             )
 
-        allowed_ids = [p.id for p in all_projects if p.status == "proposed" or reviewed_by_validator(p)]
-        qs = Project.objects.filter(id__in=allowed_ids).order_by("-created_at")
+        qs = Project.objects.filter(archived=False).exclude(status="planning").filter(
+            Q(status="proposed")
+            | (reviewed_by_user & Q(profile_data__validator_review__review_status__in=visible_project_states))
+        ).order_by("-created_at")
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
-        return _project_queryset_with_related(
+        return _project_list_queryset(
             _filter_projects_for_workflow(qs, workflow).order_by("-created_at"),
+            self.request,
             prefetch_priority=False,
         )
 
@@ -4433,6 +4547,7 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
             project = (
                 Project.objects.select_for_update()
                 .filter(pk=pk, archived=False, is_active=True)
+                .exclude(status="planning")
                 .first()
             )
             if project is None:
@@ -4547,8 +4662,9 @@ class AdminProjectViewSet(BaseProjectViewSet):
         if self.action == "list":
             qs = qs.filter(archived=self.request.query_params.get("archived") in {"1", "true", "yes"})
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
-        return _project_queryset_with_related(
+        return _project_list_queryset(
             _filter_projects_for_workflow(qs, workflow).order_by("-created_at"),
+            self.request,
             prefetch_priority=getattr(self, "action", "") == "list",
         )
 
@@ -5078,7 +5194,8 @@ class MeView(APIView):
                 "username": u.username,
                 "email": u.email,
                 "role": _frontend_role(u.role),
-                "full_name": u.full_name,
+                "first_name": u.first_name,
+                "last_name": u.last_name,
                 "agency": u.agency,
                 "agency_head": u.agency_head,
                 "office": u.office,
@@ -5096,6 +5213,16 @@ class LoginView(APIView):
     def post(self, request):
         email = (request.data.get("email") or request.data.get("username") or "").strip().lower()
         password = request.data.get("password") or ""
+        active_browser_session = _active_browser_session(request.data.get("browser_refresh"))
+        if active_browser_session:
+            return Response(
+                {
+                    "active_session": True,
+                    "detail": "This browser is already signed in. Continue with the active account.",
+                    "user": _login_user_payload(active_browser_session.user),
+                },
+                status=409,
+            )
         if not email:
             return Response({"detail": "Email is required."}, status=400)
         user = User.objects.filter(email__iexact=email).first()
@@ -5115,10 +5242,24 @@ class LoginView(APIView):
             )
             return Response({"detail": "Account is deactivated. Contact admin."}, status=403)
 
+        remember_me = request.data.get("remember_me") is True
+        refresh_token = secrets.token_urlsafe(48)
         with transaction.atomic():
             user = User.objects.select_for_update().get(pk=user.pk)
-            previous_session_version, session_version = _advance_user_session(user, request)
-            access_token, refresh_token = _issue_session_tokens(user)
+            now = timezone.now()
+            previous_session_version, session_version = _advance_user_session(
+                user,
+                request,
+                revocation_reason="new_login",
+            )
+            portal_session = PortalSession.objects.create(
+                user=user,
+                session_version=session_version,
+                refresh_token_digest=hashlib.sha256(refresh_token.encode("utf-8")).hexdigest(),
+                remember_me=remember_me,
+                last_activity_at=now,
+            )
+            access_token = _issue_session_access_token(user, portal_session)
             UserActivity.objects.create(
                 user=user,
                 role=user.role,
@@ -5129,29 +5270,75 @@ class LoginView(APIView):
                     "email": user.email,
                     "session_version": session_version,
                     "replaced_previous_session": previous_session_version > 0,
+                    "remember_me": remember_me,
                 },
             )
         return Response(
             {
                 "access": access_token,
                 "refresh": refresh_token,
-                "user": {
-                    "id": user.id,
-                    "username": user.username,
-                    "email": user.email,
-                    "role": _frontend_role(user.role),
-                    "must_change_password": user.must_change_password,
-                    "full_name": user.full_name,
-                    "agency": user.agency,
-                    "agency_head": user.agency_head,
-                    "office": user.office,
-                    "division": user.division,
-                    "position": user.position,
-                    "contact_number": user.contact_number,
-                    "phone_number": user.phone_number,
-                },
+                "user": _login_user_payload(user),
             }
         )
+
+
+class PortalSessionRefreshView(APIView):
+    """Exchange a revocable browser refresh credential for a short-lived access token."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        refresh_token = request.data.get("refresh") or ""
+        if not isinstance(refresh_token, str) or not refresh_token:
+            return Response({"detail": "Refresh token is required."}, status=400)
+        digest = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        with transaction.atomic():
+            try:
+                portal_session = PortalSession.objects.select_for_update().select_related("user").get(
+                    refresh_token_digest=digest,
+                )
+            except PortalSession.DoesNotExist:
+                return Response({"detail": "Session is invalid or has been revoked. Please log in again."}, status=401)
+
+            user = portal_session.user
+            if portal_session.revoked_at:
+                detail = (
+                    "This session expired because this account signed in from another browser or device."
+                    if portal_session.revocation_reason == "new_login"
+                    else "Session expired after 12 hours of inactivity. Please log in again."
+                    if portal_session.revocation_reason == "idle_timeout"
+                    else "This session has ended. Please log in again."
+                )
+                return Response({"detail": detail}, status=401)
+            if not user.is_active or portal_session.session_version != user.session_version:
+                portal_session.revoked_at = timezone.now()
+                portal_session.revocation_reason = "new_login"
+                portal_session.save(update_fields=["revoked_at", "revocation_reason"])
+                return Response(
+                    {"detail": "This session expired because this account signed in from another browser or device."},
+                    status=401,
+                )
+
+            now = timezone.now()
+            if not portal_session.remember_me and now - portal_session.last_activity_at >= SESSION_IDLE_TIMEOUT:
+                portal_session.revoked_at = now
+                portal_session.revocation_reason = "idle_timeout"
+                portal_session.save(update_fields=["revoked_at", "revocation_reason"])
+                return Response({"detail": "Session expired after 12 hours of inactivity. Please log in again."}, status=401)
+
+            portal_session.last_activity_at = now
+            portal_session.save(update_fields=["last_activity_at"])
+            access_token = _issue_session_access_token(user, portal_session)
+        return Response({"access": access_token, "refresh": refresh_token})
+
+
+class PortalSessionActivityView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        # The authentication class records activity with a write throttle.
+        return Response({"status": "ok"})
 
 
 class LogoutView(APIView):
@@ -5159,21 +5346,39 @@ class LogoutView(APIView):
 
     def post(self, request):
         _log_activity(request, "logout", details={"session_version": request.user.session_version})
-        _advance_user_session(request.user, request)
+        session_id = request.auth.get("portal_session_id") if request.auth else None
+        if session_id:
+            PortalSession.objects.filter(
+                pk=session_id,
+                user=request.user,
+                revoked_at__isnull=True,
+            ).update(revoked_at=timezone.now(), revocation_reason="logout")
+        _advance_user_session(request.user, request, revocation_reason="logout")
         return Response({"status": "ok"})
 
 
 def _validate_setup_profile(request, role, saved_agency, new_password):
     required_fields = [
-        "full_name", "agency_head", "office", "division", "position",
+        "first_name", "last_name", "agency_head", "office", "division", "position",
         "contact_number", "phone_number",
     ]
     agency_locked = role in INTERNAL_ACCOUNT_ROLES
     if not agency_locked:
         required_fields.append("agency")
+    for field in ("first_name", "last_name"):
+        error = _validate_person_name(request.data.get(field))
+        if error:
+            return None, Response({field: error}, status=400)
     missing = [field for field in required_fields if not str(request.data.get(field) or "").strip()]
     if missing:
         return None, Response({"detail": f"Missing required fields: {', '.join(missing)}"}, status=400)
+    for field, pattern, message in (
+        ("contact_number", r"02[0-9]{8}", "Enter a valid number: 02 xxxx xxxx"),
+        ("phone_number", r"09[0-9]{9}", "Enter a valid number: 09xx xxx xxxx"),
+    ):
+        value = request.data.get(field)
+        if not isinstance(value, str) or not re.fullmatch(pattern, value):
+            return None, Response({field: message}, status=400)
     if agency_locked:
         if "agency" in request.data and not _same_saved_account_agency(request.data.get("agency"), saved_agency):
             return None, Response({"detail": "Agency is locked to the account's saved agency."}, status=400)
@@ -5221,7 +5426,8 @@ class SetupPasswordView(APIView):
                 "setup_type": "existing_account",
                 "agency_locked": user.role in INTERNAL_ACCOUNT_ROLES,
                 "profile": {
-                    "full_name": user.full_name,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
                     "agency": user.agency,
                     "agency_head": user.agency_head,
                     "office": user.office,
@@ -5255,7 +5461,9 @@ class SetupPasswordView(APIView):
                     if not _registration_invitation(token_value):
                         return Response({"detail": "Invitation is no longer available."}, status=400)
                     user = User(
-                        username=_build_unique_username(payload["email"], profile["full_name"]),
+                        username=_build_unique_username(
+                            payload["email"], f"{profile['first_name']} {profile['last_name']}".strip()
+                        ),
                         email=payload["email"],
                         role=role,
                         created_by=activity.user,
@@ -5284,7 +5492,7 @@ class SetupPasswordView(APIView):
                         _admins(),
                         event_type="registration_awaiting_activation",
                         title="New account awaiting activation",
-                        message=f"{user.full_name} ({user.email}) completed registration and is awaiting activation.",
+                        message=f"{_user_display_name(user)} ({user.email}) completed registration and is awaiting activation.",
                         actor=user,
                         link_path="/admin/users?tab=system-users",
                         dedupe_key=f"account:{user.id}:awaiting-activation",
@@ -5332,7 +5540,8 @@ class SetupPasswordView(APIView):
         user.last_password_change = timezone.now()
         user.save(
             update_fields=[
-                "full_name",
+                "first_name",
+                "last_name",
                 "agency",
                 "agency_head",
                 "office",
@@ -5359,13 +5568,14 @@ class SetupPasswordView(APIView):
         return Response({"status": "ok"})
 
 
-PROFILE_EDIT_FIELDS = {"full_name", "agency_head", "office", "division", "position", "contact_number", "phone_number"}
+PROFILE_EDIT_FIELDS = {"first_name", "last_name", "agency_head", "office", "division", "position", "contact_number", "phone_number"}
 
 
 def _profile_payload(user):
     activity = UserActivitySerializer(UserActivity.objects.filter(user=user).order_by("-created_at")[:10], many=True).data
     return {
-        "id": user.id, "username": user.username, "full_name": user.full_name,
+        "id": user.id, "username": user.username,
+        "first_name": user.first_name, "last_name": user.last_name,
         "email": user.email, "role": _frontend_role(user.role), "agency": user.agency,
         "agency_head": user.agency_head, "office": user.office, "division": user.division,
         "position": user.position, "contact_number": user.contact_number,
@@ -5376,7 +5586,7 @@ def _profile_payload(user):
 
 def _profile_request_payload(item):
     return {
-        "id": item.pk, "user_id": item.user_id, "user_name": item.user.full_name or item.user.username,
+        "id": item.pk, "user_id": item.user_id, "user_name": _user_display_name(item.user),
         "user_email": item.user.email, "status": item.status, "created_at": item.created_at,
         "reviewed_at": item.reviewed_at, "reviewed_by": item.reviewed_by_id,
         "expires_at": item.expires_at, "used_at": item.used_at,
@@ -5400,6 +5610,19 @@ class ProfileView(APIView):
         fields = set(request.data)
         if not fields or not fields.issubset(PROFILE_EDIT_FIELDS):
             return Response({"detail": "Only name, office, and contact fields may be edited."}, status=400)
+        for field, pattern, message in (
+            ("contact_number", r"02[0-9]{8}", "Enter a valid number: 02 xxxx xxxx"),
+            ("phone_number", r"09[0-9]{9}", "Enter a valid number: 09xx xxx xxxx"),
+        ):
+            if field in fields:
+                value = request.data.get(field)
+                if not isinstance(value, str) or not re.fullmatch(pattern, value):
+                    return Response({field: message}, status=400)
+        for field in ("first_name", "last_name"):
+            if field in fields:
+                name_error = _validate_person_name(request.data.get(field))
+                if name_error:
+                    return Response({field: name_error}, status=400)
         with transaction.atomic():
             grant = ProfileEditRequest.objects.select_for_update().filter(
                 user=request.user, status=ProfileEditRequest.STATUS_APPROVED,
@@ -5483,15 +5706,22 @@ class AdminActivityView(APIView):
         date_to_raw = (request.query_params.get("date_to") or "").strip()
         limit_raw = request.query_params.get("limit")
         offset_raw = request.query_params.get("offset")
+        sort_by = (request.query_params.get("sort_by") or "").strip().lower()
+        sort_direction = (request.query_params.get("sort_direction") or "asc").strip().lower()
 
         if role_filter:
             qs = qs.filter(role=role_filter)
         if event_filter:
             qs = qs.filter(event=event_filter)
         if user_filter:
+            qs = qs.annotate(
+                _joined_user_name=Concat("user__first_name", Value(" "), "user__last_name")
+            )
             qs = qs.filter(
                 Q(user__username__icontains=user_filter)
-                | Q(user__full_name__icontains=user_filter)
+                | Q(user__first_name__icontains=user_filter)
+                | Q(user__last_name__icontains=user_filter)
+                | Q(_joined_user_name__icontains=user_filter)
                 | Q(user__email__icontains=user_filter)
                 | Q(actor_username__icontains=user_filter)
                 | Q(actor_full_name__icontains=user_filter)
@@ -5510,6 +5740,50 @@ class AdminActivityView(APIView):
                 qs = qs.filter(created_at__date__lte=date_to)
             except ValueError:
                 return Response({"detail": "date_to must use YYYY-MM-DD format."}, status=400)
+
+        sort_fields = {
+            "role": ("role",),
+            "event": ("event",),
+            "location": ("ip_address", "location_hint"),
+            "timestamp": ("created_at",),
+        }
+        if sort_by == "user":
+            qs = qs.annotate(
+                _sort_user=Coalesce(
+                    NullIf("actor_full_name", Value("")),
+                    NullIf(Concat("user__first_name", Value(" "), "user__last_name"), Value(" ")),
+                    NullIf("actor_username", Value("")),
+                    "user__username",
+                    Value(""),
+                    output_field=CharField(),
+                )
+            )
+            sort_fields["user"] = ("_sort_user",)
+        elif sort_by in {"target", "project"}:
+            qs = qs.annotate(
+                _sort_target=Coalesce(
+                    NullIf("project_title_snapshot", Value("")),
+                    NullIf("project__name", Value("")),
+                    NullIf(Cast("details__title", CharField()), Value("")),
+                    NullIf(Cast("details__email", CharField()), Value("")),
+                    NullIf(Cast("details__attempted_email", CharField()), Value("")),
+                    NullIf(Cast("details__name", CharField()), Value("")),
+                    NullIf(Cast("details__slug", CharField()), Value("")),
+                    NullIf(Cast("details__key", CharField()), Value("")),
+                    Value(""),
+                    output_field=CharField(),
+                )
+            )
+            sort_fields[sort_by] = ("_sort_target",)
+        elif sort_by == "details":
+            qs = qs.annotate(_sort_details=Cast("details", TextField()))
+            sort_fields["details"] = ("_sort_details",)
+
+        if sort_by in sort_fields and sort_direction in {"asc", "desc"}:
+            prefix = "-" if sort_direction == "desc" else ""
+            qs = qs.order_by(*(f"{prefix}{field}" for field in sort_fields[sort_by]), "id")
+        else:
+            qs = qs.order_by("-created_at", "-id")
 
         limit = 50
         if limit_raw:

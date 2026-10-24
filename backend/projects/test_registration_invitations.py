@@ -33,13 +33,14 @@ class RegistrationInvitationTests(APITestCase):
         return {
             "token": token,
             "new_password": "ValidSetup123!",
-            "full_name": "Invited Person",
+            "first_name": "Invited",
+            "last_name": "Person",
             "agency": agency,
             "agency_head": "Agency Head",
             "office": "Main Office",
             "division": "Planning",
             "position": "Officer",
-            "contact_number": "09170000000",
+            "contact_number": "0212345678",
             "phone_number": "09170000000",
         }
 
@@ -67,6 +68,7 @@ class RegistrationInvitationTests(APITestCase):
         self.assertEqual(completed.status_code, 200, completed.data)
         self.assertTrue(completed.data["requires_admin_activation"])
         user = User.objects.get(email="invited@example.com")
+        self.assertEqual((user.first_name, user.last_name), ("Invited", "Person"))
         self.assertEqual(user.role, "staff")
         self.assertEqual(user.agency, "DENR")
         self.assertEqual(user.created_by_id, self.admin.id)
@@ -90,6 +92,9 @@ class RegistrationInvitationTests(APITestCase):
             "/api/auth/login/", {"email": user.email, "password": "ValidSetup123!"}, format="json"
         )
         self.assertEqual(login.status_code, 200, login.data)
+        self.assertEqual(login.data["user"]["first_name"], "Invited")
+        self.assertEqual(login.data["user"]["last_name"], "Person")
+        self.assertNotIn("full_name", login.data["user"])
 
     def test_email_failure_creates_no_account_or_sent_audit(self):
         with patch("projects.views.send_mail", side_effect=RuntimeError("SMTP unavailable")):
@@ -139,7 +144,7 @@ class RegistrationInvitationTests(APITestCase):
         bad_agency = self.client.post("/api/auth/setup-password/", self.profile(token, "Unknown"), format="json")
         self.assertEqual(bad_agency.status_code, 400)
         incomplete = self.profile(token)
-        incomplete["full_name"] = ""
+        incomplete["first_name"] = ""
         self.assertEqual(self.client.post("/api/auth/setup-password/", incomplete, format="json").status_code, 400)
         weak_password = self.profile(token)
         weak_password["new_password"] = "weak"
@@ -148,6 +153,37 @@ class RegistrationInvitationTests(APITestCase):
             expired = self.client.post("/api/auth/setup-password/", self.profile(token), format="json")
         self.assertEqual(expired.status_code, 400)
         self.assertFalse(User.objects.filter(email="invited@example.com").exists())
+
+    def test_registration_name_validation_trims_and_rejects_invalid_values(self):
+        _, token = self.invite()
+        self.client.force_authenticate(user=None)
+        for field, value in (
+            ("first_name", ""),
+            ("last_name", "   "),
+            ("first_name", "Name_1"),
+            ("last_name", "Name1"),
+            ("first_name", "x" * 151),
+        ):
+            payload = self.profile(token)
+            payload[field] = value
+            response = self.client.post("/api/auth/setup-password/", payload, format="json")
+            self.assertEqual(response.status_code, 400, (field, response.data))
+            self.assertIn(field, response.data)
+        payload = self.profile(token)
+        payload["first_name"] = "  Ana-María O'Neil  "
+        payload["last_name"] = "  van Dyke  "
+        response = self.client.post("/api/auth/setup-password/", payload, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        user = User.objects.get(email="invited@example.com")
+        self.assertEqual((user.first_name, user.last_name), ("Ana-María O'Neil", "van Dyke"))
+
+    def test_registration_accepts_exact_150_character_name_part(self):
+        _, token = self.invite()
+        self.client.force_authenticate(user=None)
+        payload = self.profile(token)
+        payload["first_name"] = "A" * 150
+        response = self.client.post("/api/auth/setup-password/", payload, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
 
     def test_signed_invitation_expires_after_24_hours(self):
         with patch("django.core.signing.time.time", return_value=1_700_000_000):

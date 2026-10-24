@@ -3,6 +3,7 @@ import { API_BASE_URL } from "../config/api";
 const ACCESS_TOKEN_KEY = "accessToken";
 const REFRESH_TOKEN_KEY = "refreshToken";
 const SESSION_MESSAGE_KEY = "sessionMessage";
+const ACTIVITY_PING_KEY = "portalActivityPingAt";
 const DEFAULT_SESSION_EXPIRED_MESSAGE = "Session expired. Please login again.";
 const SESSION_REPLACED_MESSAGE =
   "Your account was signed in from another browser or device. Please login again.";
@@ -25,8 +26,13 @@ function clearAuthStorage(message?: string) {
   localStorage.removeItem("user");
   localStorage.removeItem("isLoggedIn");
   localStorage.removeItem("username");
+  localStorage.removeItem("token");
+  localStorage.removeItem(ACTIVITY_PING_KEY);
   if (message) {
     localStorage.setItem(SESSION_MESSAGE_KEY, message);
+  }
+  if (typeof window !== "undefined" && message) {
+    window.dispatchEvent(new CustomEvent("portal:session-expired", { detail: { message } }));
   }
 }
 
@@ -73,6 +79,7 @@ let refreshInFlight: { token: string; promise: Promise<string | null> } | null =
 let lastAuthFailureMessage = "";
 let authGeneration = 0;
 let intentionalLogout = false;
+let authRedirecting = false;
 const getRequestsInFlight = new Map<string, ReturnType<typeof request>>();
 
 export function beginPortalLogout() {
@@ -84,9 +91,51 @@ export function beginPortalLogout() {
 
 export function completePortalLogin() {
   intentionalLogout = false;
+  authRedirecting = false;
   authGeneration += 1;
   lastAuthFailureMessage = "";
   localStorage.removeItem(SESSION_MESSAGE_KEY);
+}
+
+export function clearPortalSession() {
+  clearAuthStorage();
+  localStorage.removeItem(SESSION_MESSAGE_KEY);
+  authRedirecting = false;
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("portal:auth-changed"));
+  }
+}
+
+export async function logoutPortalSession() {
+  beginPortalLogout();
+  try {
+    await api.post("auth/logout/", {});
+  } catch {
+    // Local sign-out must work even if the server is unavailable.
+  } finally {
+    clearPortalSession();
+  }
+}
+
+const ACTIVITY_THROTTLE_MS = 60_000;
+let lastLocalActivityPing = 0;
+let lastUserActivityAt = 0;
+
+function recordUserActivity() {
+  if (typeof window === "undefined" || !getRefreshToken() || intentionalLogout) return;
+  const now = Date.now();
+  lastUserActivityAt = now;
+  const sharedPingAt = Number(localStorage.getItem(ACTIVITY_PING_KEY) || 0);
+  if (now - Math.max(lastLocalActivityPing, sharedPingAt) < ACTIVITY_THROTTLE_MS) return;
+  lastLocalActivityPing = now;
+  localStorage.setItem(ACTIVITY_PING_KEY, String(now));
+  void api.post("auth/activity/", {}).catch(() => undefined);
+}
+
+if (typeof window !== "undefined") {
+  ["pointerdown", "keydown", "touchstart", "click", "focus"].forEach((eventName) => {
+    window.addEventListener(eventName, recordUserActivity, { passive: true });
+  });
 }
 
 async function errorMessageFromResponse(res: Response) {
@@ -182,7 +231,8 @@ function redirectToLoginIfNeeded() {
   if (typeof window === "undefined") {
     return;
   }
-  if (window.location.pathname !== "/login") {
+  if (window.location.pathname !== "/login" && !authRedirecting) {
+    authRedirecting = true;
     window.location.assign("/login");
   }
 }
@@ -198,6 +248,9 @@ async function request(path: string, options: RequestInit = {}, hasRetried = fal
   if (!isFormData && options.body !== undefined && options.body !== null) {
     headers["Content-Type"] = headers["Content-Type"] || "application/json";
   }
+  if (Date.now() - lastUserActivityAt < 120_000) {
+    headers["X-Portal-User-Activity"] = "1";
+  }
 
   const token = getToken();
   if (token && !isPublicRequest(normalizedPath, method)) {
@@ -206,6 +259,7 @@ async function request(path: string, options: RequestInit = {}, hasRetried = fal
 
   const res = await fetch(`${API_BASE_URL}/${normalizedPath}`, {
     ...options,
+    cache: method.toUpperCase() === "GET" ? "no-store" : options.cache,
     headers,
   });
 
@@ -239,7 +293,7 @@ async function request(path: string, options: RequestInit = {}, hasRetried = fal
     throw new Error(await requestErrorMessageFromResponse(res));
   }
 
-  if (method.toUpperCase() !== "GET" && !isLogoutRequest && !intentionalLogout && requestGeneration === authGeneration && typeof window !== "undefined") {
+  if (method.toUpperCase() !== "GET" && normalizedPath !== "auth/activity/" && !isLogoutRequest && !intentionalLogout && requestGeneration === authGeneration && typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("portal:data-changed", { detail: { path: normalizedPath } }));
   }
 

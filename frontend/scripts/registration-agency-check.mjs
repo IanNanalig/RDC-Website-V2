@@ -52,17 +52,25 @@ async function newRegistration(viewport, prefilledAgency = "", agencyLocked = fa
   await page.goto(frontendUrl + "/setup-password?token=agency-test", { waitUntil: "networkidle" });
   const agency = page.locator("#registration-agency");
   await agency.waitFor();
+  assert.equal(await page.getByLabel("Full Name").count(), 0, "The old Full Name field is removed");
+  assert.equal(await page.getByLabel("First Name").count(), 1);
+  assert.equal(await page.getByLabel("Last Name").count(), 1);
+  const firstBox = await page.getByLabel("First Name").boundingBox();
+  const lastBox = await page.getByLabel("Last Name").boundingBox();
+  assert.ok(firstBox && lastBox);
+  assert.equal(viewport.width < 600 ? lastBox.y > firstBox.y : lastBox.x > firstBox.x, true, "Name fields stack on mobile and sit side-by-side on desktop");
   return { context, page, posts, agency };
 }
 
 async function fillOtherFields(page) {
-  await page.getByLabel("Full Name *").fill("Test User");
-  await page.getByLabel("Current Head of Agency/Local Chief Executive *").fill("Agency Head");
-  await page.getByLabel("Office *").fill("Main Office");
-  await page.getByLabel("Division *").fill("Planning");
-  await page.getByLabel("Position *").fill("Officer");
-  await page.getByLabel("Office Contact No. *").fill("09170000000");
-  await page.getByLabel("Phone Number *").fill("09170000000");
+  await page.locator('input[name="first_name"]').fill("Test");
+  await page.locator('input[name="last_name"]').fill("User");
+  await page.getByLabel("Current Head of Agency/Local Chief Executive", { exact: true }).fill("Agency Head");
+  await page.getByLabel("Office", { exact: true }).fill("Main Office");
+  await page.getByLabel("Division", { exact: true }).fill("Planning");
+  await page.getByLabel("Position", { exact: true }).fill("Officer");
+  await page.getByPlaceholder("02 xxxx xxxx").fill("0212345678");
+  await page.getByPlaceholder("09xx xxx xxxx").fill("09170000000");
   await page.getByLabel("New Password").fill("ValidSetup123_");
   await page.getByLabel("Confirm Password").fill("ValidSetup123_");
 }
@@ -71,6 +79,16 @@ try {
   for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 650 }]) {
     const { context, page, posts, agency } = await newRegistration(viewport, "DENR");
     assert.equal(await agency.inputValue(), "DENR", "Existing agency is prefilled");
+    if (viewport.width === 320) {
+      const firstName = page.getByLabel("First Name");
+      await firstName.fill("Name1");
+      await firstName.blur();
+      await page.getByText("First name may contain letters, spaces, apostrophes, and hyphens only").waitFor();
+      const lastName = page.getByLabel("Last Name");
+      await lastName.fill("   ");
+      await lastName.blur();
+      await page.getByText("Last name is required").waitFor();
+    }
     await agency.tap();
     await page.getByRole("option", { name: /DPWH Department of Public Works and Highways/ }).waitFor();
     await agency.fill("environment");
@@ -101,7 +119,7 @@ try {
     assert.equal(posts.length, 0, "Unsupported agency cannot submit");
 
     await agency.fill("Department of");
-    await page.getByLabel("Full Name *").tap();
+    await page.getByLabel("First Name").tap();
     assert.equal(await agency.getAttribute("aria-expanded"), "false", "Outside tap closes the menu");
     await page.getByText("This is an invalid Agency", { exact: true }).first().waitFor();
     await page.getByRole("button", { name: "Set Password" }).click();
@@ -111,6 +129,9 @@ try {
     await page.getByRole("button", { name: "Set Password" }).click();
     assert.equal(posts.length, 1, "Exact full name can submit");
     assert.equal(posts[0].agency, "DOH", "Request sends canonical agency code");
+    assert.equal(posts[0].first_name, "Test");
+    assert.equal(posts[0].last_name, "User");
+    assert.equal("full_name" in posts[0], false);
     const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
     assert.equal(overflows, false, "Registration must not overflow a narrow viewport");
     await context.close();
@@ -131,6 +152,8 @@ try {
   await page.getByRole("button", { name: "Set Password" }).click();
   assert.equal(posts.length, 1, "Exact typed acronym can submit");
   assert.equal(posts[0].agency, "DPWH", "Typed acronym is normalized");
+  assert.equal(posts[0].first_name, "Test");
+  assert.equal(posts[0].last_name, "User");
   await context.close();
   console.log("PASS agency keyboard and exact typing");
 

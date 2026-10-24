@@ -2,11 +2,16 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import { MobileSortControls, SortableTableHeader } from "../../components/portal/TableSortControls";
+import { sortRows } from "../../utils/tableSort";
+import { userDisplayName } from "../../utils/userDisplayName";
+import type { SortDirection } from "../../utils/tableSort";
 
 type UserRow = {
   id: number;
   username: string;
-  full_name?: string;
+  first_name?: string;
+  last_name?: string;
   email: string;
   role: string;
   agency?: string;
@@ -30,7 +35,7 @@ const userRoleFilterValue = (role: string) =>
 type ActivityItem = {
   id: number;
   username: string;
-  full_name?: string;
+  display_name?: string;
   role: string;
   event: string;
   project_title?: string;
@@ -158,6 +163,7 @@ const UserManagement = () => {
   const activeTab = parseTab(searchParams.get("tab"));
   useEffect(() => { if (searchParams.get("tab") === "system-audit-log") navigate("/admin/audit-log", { replace: true }); }, [navigate, searchParams]);
   const [users, setUsers] = useState<UserRow[]>([]);
+  const [resetRequests, setResetRequests] = useState<PasswordResetRequestRow[]>([]);
   const [usersRefreshing, setUsersRefreshing] = useState(false);
   const [usersError, setUsersError] = useState("");
   const [userFilters, setUserFilters] = useState({
@@ -168,13 +174,17 @@ const UserManagement = () => {
     limit: "10",
   });
   const [userPage, setUserPage] = useState(1);
+  const [userSortKey, setUserSortKey] = useState<string | null>(null);
+  const [userSortDirection, setUserSortDirection] = useState<SortDirection>("asc");
+  const [resetSortKey, setResetSortKey] = useState<string | null>(null);
+  const [resetSortDirection, setResetSortDirection] = useState<SortDirection>("asc");
   const userAgencies = useMemo(() => [...new Set(users.map((user) => user.agency?.trim() || ""))]
     .filter(Boolean)
     .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" })), [users]);
   const hasUsersWithoutAgency = users.some((user) => !user.agency?.trim());
   const filteredUsers = useMemo(() => users.filter((user) => {
     const search = userFilters.search.trim().toLocaleLowerCase();
-    if (search && ![user.full_name, user.username, user.email]
+    if (search && ![userDisplayName(user), user.username, user.email]
       .some((value) => String(value || "").toLocaleLowerCase().includes(search))) return false;
     if (userFilters.agency === "__none__" && user.agency?.trim()) return false;
     if (userFilters.agency && userFilters.agency !== "__none__" &&
@@ -183,12 +193,57 @@ const UserManagement = () => {
     if (userFilters.status && (user.is_active ? "active" : "inactive") !== userFilters.status) return false;
     return true;
   }), [users, userFilters]);
+  const userSortOptions = [
+    { key: "username", label: "Username" },
+    { key: "email", label: "Email" },
+    { key: "agency", label: "Agency" },
+    { key: "role", label: "Role" },
+    { key: "status", label: "Status" },
+  ];
+  const changeUserSort = (key: string) => {
+    setUserPage(1);
+    if (userSortKey === key) setUserSortDirection((direction) => direction === "asc" ? "desc" : "asc");
+    else { setUserSortKey(key); setUserSortDirection("asc"); }
+  };
+  const toggleUserSortDirection = () => {
+    setUserPage(1);
+    setUserSortDirection((direction) => direction === "asc" ? "desc" : "asc");
+  };
+  const sortedUsers = useMemo(() => sortRows(filteredUsers, userSortKey, userSortDirection, (user, key) => {
+    switch (key) {
+      case "username": return userDisplayName(user);
+      case "email": return user.email || "";
+      case "agency": return user.agency || "";
+      case "role": return displayRole(user.role);
+      case "status": return user.is_active ? "Active" : "Inactive";
+      default: return "";
+    }
+  }), [filteredUsers, userSortKey, userSortDirection]);
+  const changeResetSort = (key: string) => {
+    if (resetSortKey === key) setResetSortDirection((direction) => direction === "asc" ? "desc" : "asc");
+    else { setResetSortKey(key); setResetSortDirection("asc"); }
+  };
+  const resetSortOptions = [
+    { key: "email", label: "Email" },
+    { key: "user", label: "User" },
+    { key: "status", label: "Status" },
+    { key: "requested", label: "Requested At" },
+  ];
+  const sortedResetRequests = useMemo(() => sortRows(resetRequests, resetSortKey, resetSortDirection, (request, key) => {
+    switch (key) {
+      case "email": return request.email;
+      case "user": return request.user_username || "";
+      case "status": return request.status;
+      case "requested": return new Date(request.created_at).getTime();
+      default: return "";
+    }
+  }), [resetRequests, resetSortKey, resetSortDirection]);
   const userLimit = Number(userFilters.limit) || 10;
   const userPageCount = Math.max(1, Math.ceil(filteredUsers.length / userLimit));
   const currentUserPage = Math.min(userPage, userPageCount);
   const userStart = filteredUsers.length ? (currentUserPage - 1) * userLimit + 1 : 0;
   const userEnd = Math.min(currentUserPage * userLimit, filteredUsers.length);
-  const visibleUsers = filteredUsers.slice((currentUserPage - 1) * userLimit, currentUserPage * userLimit);
+  const visibleUsers = sortedUsers.slice((currentUserPage - 1) * userLimit, currentUserPage * userLimit);
   const updateUserFilter = (key: keyof typeof userFilters, value: string) => {
     setUserPage(1);
     setUserFilters((previous) => ({ ...previous, [key]: value }));
@@ -200,13 +255,12 @@ const UserManagement = () => {
   useEffect(() => {
     setUserPage((page) => Math.min(page, userPageCount));
   }, [userPageCount]);
-  const [resetRequests, setResetRequests] = useState<PasswordResetRequestRow[]>(
-    [],
-  );
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [activityLoading, setActivityLoading] = useState(true);
   const [activityTotal, setActivityTotal] = useState(0);
   const [activityOffset, setActivityOffset] = useState(0);
+  const [activitySortKey, setActivitySortKey] = useState<string | null>(null);
+  const [activitySortDirection, setActivitySortDirection] = useState<SortDirection>("asc");
   const [chatGaps, setChatGaps] = useState<ChatKnowledgeGap[]>([]);
   const [chatGapsLoading, setChatGapsLoading] = useState(false);
   const [chatGapDrafts, setChatGapDrafts] = useState<
@@ -260,7 +314,7 @@ const UserManagement = () => {
 
   const userRaw = localStorage.getItem("user");
   const user = userRaw ? JSON.parse(userRaw) : { username: "admin" };
-  const displayName = user?.full_name || user?.username || "Admin";
+  const displayName = userDisplayName(user, "Admin");
 
   const labelRole = displayRole;
 
@@ -656,6 +710,10 @@ const UserManagement = () => {
       if (activityFilters.dateFrom)
         params.set("date_from", activityFilters.dateFrom);
       if (activityFilters.dateTo) params.set("date_to", activityFilters.dateTo);
+      if (activitySortKey) {
+        params.set("sort_by", activitySortKey);
+        params.set("sort_direction", activitySortDirection);
+      }
       params.set("offset", String(activityOffset));
       params.set("include_meta", "1");
       const qs = params.toString();
@@ -682,6 +740,8 @@ const UserManagement = () => {
     activityFilters.dateFrom,
     activityFilters.dateTo,
     activityOffset,
+    activitySortKey,
+    activitySortDirection,
   ]);
 
   const loadChatGaps = useCallback(async () => {
@@ -1124,6 +1184,24 @@ const UserManagement = () => {
       dateTo: "",
     });
   };
+  const activitySortOptions = [
+    { key: "user", label: "User" },
+    { key: "role", label: "Role" },
+    { key: "event", label: "Event" },
+    { key: "project", label: "Project" },
+    { key: "location", label: "IP / Location" },
+    { key: "details", label: "Details" },
+    { key: "timestamp", label: "Time" },
+  ];
+  const changeActivitySort = (key: string) => {
+    setActivityOffset(0);
+    if (activitySortKey === key) setActivitySortDirection((direction) => direction === "asc" ? "desc" : "asc");
+    else { setActivitySortKey(key); setActivitySortDirection("asc"); }
+  };
+  const toggleActivitySortDirection = () => {
+    setActivityOffset(0);
+    setActivitySortDirection((direction) => direction === "asc" ? "desc" : "asc");
+  };
 
   const activityLimit = Math.max(1, Number(activityFilters.limit) || 10);
   const activityStart = activityTotal > 0 ? activityOffset + 1 : 0;
@@ -1545,6 +1623,15 @@ const UserManagement = () => {
           <div className="portal-card-header">
             <h2 className="text-lg font-semibold">Password Reset Requests</h2>
           </div>
+          <div className="portal-card-body border-b border-slate-200 bg-slate-50/60 xl:hidden">
+            <MobileSortControls
+              options={resetSortOptions}
+              sortKey={resetSortKey}
+              direction={resetSortDirection}
+              onSortKeyChange={changeResetSort}
+              onToggleDirection={() => setResetSortDirection((direction) => direction === "asc" ? "desc" : "asc")}
+            />
+          </div>
           {loading ? (
             <div className="portal-card-body text-slate-500">
               Loading password reset requests...
@@ -1557,15 +1644,15 @@ const UserManagement = () => {
             <table className="portal-table">
               <thead>
                 <tr>
-                  <th>Email</th>
-                  <th className="hidden md:table-cell">User</th>
-                  <th>Status</th>
-                  <th className="hidden lg:table-cell">Requested At</th>
+                  <SortableTableHeader label="Email" sortKey="email" activeKey={resetSortKey} direction={resetSortDirection} onSort={changeResetSort} />
+                  <SortableTableHeader label="User" sortKey="user" activeKey={resetSortKey} direction={resetSortDirection} onSort={changeResetSort} className="hidden md:table-cell" />
+                  <SortableTableHeader label="Status" sortKey="status" activeKey={resetSortKey} direction={resetSortDirection} onSort={changeResetSort} />
+                  <SortableTableHeader label="Requested At" sortKey="requested" activeKey={resetSortKey} direction={resetSortDirection} onSort={changeResetSort} className="hidden lg:table-cell" />
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {resetRequests.map((r) => (
+                {sortedResetRequests.map((r) => (
                   <tr key={r.id}>
                     <td>{r.email}</td>
                     <td className="hidden md:table-cell">
@@ -1708,6 +1795,14 @@ const UserManagement = () => {
               <p className="text-xs text-slate-500">
                 {filteredUsers.length} of {users.length} system users match the filters.
               </p>
+              <MobileSortControls
+                className="w-full xl:hidden"
+                options={userSortOptions}
+                sortKey={userSortKey}
+                direction={userSortDirection}
+                onSortKeyChange={changeUserSort}
+                onToggleDirection={toggleUserSortDirection}
+              />
               <button type="button" onClick={clearUserFilters} className="portal-btn portal-btn-ghost">
                 Clear Filters
               </button>
@@ -1737,7 +1832,7 @@ const UserManagement = () => {
                   <li key={u.id} className="min-w-0 p-4">
                     <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
                       <p className="min-w-0 break-words font-semibold text-slate-900">
-                        {u.full_name || u.username}
+                        {userDisplayName(u)}
                       </p>
                       <span
                         className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${u.is_active ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-700"}`}
@@ -1782,18 +1877,18 @@ const UserManagement = () => {
               <table className="portal-table hidden xl:table">
               <thead>
                 <tr>
-                  <th>Username</th>
-                  <th>Email</th>
-                  <th>Agency</th>
-                  <th>Role</th>
-                  <th>Status</th>
+                  <SortableTableHeader label="Username" sortKey="username" activeKey={userSortKey} direction={userSortDirection} onSort={changeUserSort} />
+                  <SortableTableHeader label="Email" sortKey="email" activeKey={userSortKey} direction={userSortDirection} onSort={changeUserSort} />
+                  <SortableTableHeader label="Agency" sortKey="agency" activeKey={userSortKey} direction={userSortDirection} onSort={changeUserSort} />
+                  <SortableTableHeader label="Role" sortKey="role" activeKey={userSortKey} direction={userSortDirection} onSort={changeUserSort} />
+                  <SortableTableHeader label="Status" sortKey="status" activeKey={userSortKey} direction={userSortDirection} onSort={changeUserSort} />
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleUsers.map((u) => (
                   <tr key={u.id}>
-                    <td>{u.full_name || u.username}</td>
+                    <td>{userDisplayName(u)}</td>
                     <td>{u.email || "-"}</td>
                     <td>{u.agency || "-"}</td>
                     <td>{labelRole(u.role)}</td>
@@ -2461,6 +2556,14 @@ const UserManagement = () => {
                 Clear Filters
               </button>
             </div>
+            <MobileSortControls
+              className="mt-3 xl:hidden"
+              options={activitySortOptions}
+              sortKey={activitySortKey}
+              direction={activitySortDirection}
+              onSortKeyChange={changeActivitySort}
+              onToggleDirection={toggleActivitySortDirection}
+            />
           </div>
           {activityLoading ? (
             <div className="portal-card-body text-slate-500">
@@ -2475,20 +2578,20 @@ const UserManagement = () => {
               <table className="portal-table portal-table-activity min-w-[940px]">
                 <thead>
                   <tr>
-                    <th className="whitespace-nowrap">User</th>
-                    <th className="whitespace-nowrap">Role</th>
-                    <th className="whitespace-nowrap">Event</th>
-                    <th className="hidden lg:table-cell">Project</th>
-                    <th className="hidden xl:table-cell">IP / Location</th>
-                    <th>Details</th>
-                    <th className="whitespace-nowrap">Time</th>
+                    <SortableTableHeader label="User" sortKey="user" activeKey={activitySortKey} direction={activitySortDirection} onSort={changeActivitySort} className="whitespace-nowrap" />
+                    <SortableTableHeader label="Role" sortKey="role" activeKey={activitySortKey} direction={activitySortDirection} onSort={changeActivitySort} className="whitespace-nowrap" />
+                    <SortableTableHeader label="Event" sortKey="event" activeKey={activitySortKey} direction={activitySortDirection} onSort={changeActivitySort} className="whitespace-nowrap" />
+                    <SortableTableHeader label="Project" sortKey="project" activeKey={activitySortKey} direction={activitySortDirection} onSort={changeActivitySort} className="hidden lg:table-cell" />
+                    <SortableTableHeader label="IP / Location" sortKey="location" activeKey={activitySortKey} direction={activitySortDirection} onSort={changeActivitySort} className="hidden xl:table-cell" />
+                    <SortableTableHeader label="Details" sortKey="details" activeKey={activitySortKey} direction={activitySortDirection} onSort={changeActivitySort} />
+                    <SortableTableHeader label="Time" sortKey="timestamp" activeKey={activitySortKey} direction={activitySortDirection} onSort={changeActivitySort} className="whitespace-nowrap" />
                   </tr>
                 </thead>
                 <tbody>
                   {activity.map((item) => (
                     <tr key={item.id}>
                       <td className="whitespace-nowrap font-medium text-slate-800">
-                        {item.full_name || item.username}
+                        {item.display_name || item.username}
                       </td>
                       <td className="whitespace-nowrap">
                         {labelRole(item.role)}

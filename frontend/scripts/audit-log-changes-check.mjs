@@ -25,12 +25,12 @@ try {
     localStorage.setItem("user", JSON.stringify({ id: 1, username: "admin", role: "admin", agency: "RDC-NCR" }));
   });
   await page.route("**/api/**", async (route) => {
-    const path = new URL(route.request().url()).pathname;
+    const url = new URL(route.request().url());
+    const path = url.pathname;
     if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
-    const body = path === "/api/admin/activity/" ? {
-      results: [{
-        id: 1, username: "contributor", full_name: "Contributor", role: "staff",
-        event: "project_update", target_label: "contributor@example.com", project_title: "Sample Project", ip_address: "", location_hint: "",
+    const auditRows = [{
+        id: 1, username: "contributor", display_name: "Contributor", role: "staff",
+        event: "password_reset_request", target_label: "zulu@example.test", ip_address: "", location_hint: "",
         created_at: "2026-10-10T10:00:00Z",
         details: {
           email: "contributor@example.com", session_version: 7, replaced_previous_session: true,
@@ -42,8 +42,16 @@ try {
             { field: "sdgSelections", before: "No poverty", after: "Climate action" },
           ],
         },
-      }],
-      count: 1,
+      },
+      { id: 2, username: "second", display_name: "Second", role: "staff", event: "login", target_label: "alpha@example.test", created_at: "2026-10-09T10:00:00Z", details: {} },
+    ];
+    const sortedAuditRows = [...auditRows];
+    if (url.searchParams.get("sort_by") === "target" && url.searchParams.get("sort_direction") === "asc") {
+      sortedAuditRows.reverse();
+    }
+    const body = path === "/api/admin/activity/" ? {
+      results: sortedAuditRows,
+      count: sortedAuditRows.length,
     } : path === "/api/admin/users/" || path === "/api/password-reset-requests/" ? [] : {};
     await route.fulfill({ status: 200, contentType: "application/json", headers, body: JSON.stringify(body) });
   });
@@ -52,10 +60,14 @@ try {
   await page.waitForURL("**/admin/audit-log");
   const row = page.getByRole("row").filter({ hasText: "Contributor" });
   const target = row.locator("td").nth(2);
-  assert.equal((await target.innerText()).trim(), "contributor@example.com", "Target shows only the human-readable label");
+  assert.equal((await target.innerText()).trim(), "zulu@example.test", "Target shows only the human-readable label");
   assert.equal(await row.getByText("Changes and details").count(), 0);
   assert.doesNotMatch(await row.innerText(), /session_version|replaced_previous_session|Before:|After:/);
   assert.equal(await target.isVisible(), true, "Audit target is accessible in the mobile table");
+  await page.getByLabel("Sort by field").selectOption("target");
+  await page.getByText("alpha@example.test").waitFor();
+  assert.equal((await page.getByRole("row").nth(1).locator("td").nth(2).innerText()).trim(), "alpha@example.test",
+    "Mobile audit sorting requests and displays the full filtered dataset in ascending target order");
   console.log("PASS audit target hides raw details on mobile");
   await context.close();
 } finally {

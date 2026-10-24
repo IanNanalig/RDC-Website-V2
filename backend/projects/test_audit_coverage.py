@@ -119,6 +119,41 @@ class AuditCoverageTests(APITestCase):
         audit_list = self.client.get("/api/admin/activity/?event=project_delete")
         self.assertEqual(audit_list.data[0]["project_title"], "Audit Project Updated")
 
+    def test_admin_activity_sorting_orders_filtered_records_before_pagination(self):
+        now = timezone.now()
+        targets = ["Zulu target", "Alpha target", "Beta target"]
+        rows = [
+            UserActivity.objects.create(
+                user=self.admin,
+                actor_username=self.admin.username,
+                actor_full_name=self.admin.get_full_name(),
+                role="admin",
+                event="project_update",
+                project_title_snapshot=target,
+                created_at=now + timedelta(seconds=index),
+            )
+            for index, target in enumerate(targets)
+        ]
+        self.as_user(self.admin)
+
+        first_page = self.client.get(
+            "/api/admin/activity/?event=project_update&sort_by=target&sort_direction=asc&limit=1&offset=0&include_meta=1"
+        )
+        second_page = self.client.get(
+            "/api/admin/activity/?event=project_update&sort_by=target&sort_direction=asc&limit=1&offset=1&include_meta=1"
+        )
+        self.assertEqual(first_page.status_code, status.HTTP_200_OK, first_page.data)
+        self.assertEqual(second_page.status_code, status.HTTP_200_OK, second_page.data)
+        self.assertEqual(first_page.data["results"][0]["target_label"], "Alpha target")
+        self.assertEqual(second_page.data["results"][0]["target_label"], "Beta target")
+        self.assertEqual(first_page.data["count"], len(rows))
+
+        descending = self.client.get(
+            "/api/admin/activity/?event=project_update&sort_by=target&sort_direction=desc&limit=1&include_meta=1"
+        )
+        self.assertEqual(descending.status_code, status.HTTP_200_OK, descending.data)
+        self.assertEqual(descending.data["results"][0]["target_label"], "Zulu target")
+
     def test_form_lock_actions_are_admin_only_and_audited(self):
         form = CMSContributorForm.objects.get(key="simplified-rdip")
         self.as_user(self.editor)
@@ -211,9 +246,9 @@ class AuditCoverageTests(APITestCase):
             "/api/auth/setup-password/",
             {
                 "token": token.token, "new_password": "NewStrongPassword123_",
-                "full_name": "Audit Editor", "agency": "RDC-NCR", "agency_head": "RDC",
+                "first_name": "Audit", "last_name": "Editor", "agency": "RDC-NCR", "agency_head": "RDC",
                 "office": "Office", "division": "Division", "position": "Editor",
-                "contact_number": "09170000000", "phone_number": "09170000000",
+                "contact_number": "0212345678", "phone_number": "09170000000",
             },
             format="json",
         )

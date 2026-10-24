@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import { userDisplayName } from "../../utils/userDisplayName";
 import PrintAppendix from "./PrintAppendix";
 import cmsApi from "../../services/cmsApi";
 import {
@@ -95,7 +96,7 @@ const ProjectReview: React.FC = () => {
   const role = user?.role as "admin" | "validator" | "employee" | undefined;
   const isAdmin = role === "admin";
   const isValidator = role === "validator";
-  const displayName = user?.full_name || user?.username || "User";
+  const displayName = userDisplayName(user);
 
   const load = useCallback(async () => {
     if (!id) return;

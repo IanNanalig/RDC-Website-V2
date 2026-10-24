@@ -1,4 +1,5 @@
 import React from "react";
+import { logoutPortalSession } from "../services/api";
 
 interface PortalHeaderProps {
   title: string;
@@ -24,16 +25,8 @@ const PortalHeader: React.FC<PortalHeaderProps> = ({
     }
   };
 
-  const handleLogout = () => {
-    // Clear all authentication data
-    localStorage.removeItem("user");
-    localStorage.removeItem("isLoggedIn");
-    localStorage.removeItem("username");
-    localStorage.removeItem("token");
-    localStorage.removeItem("accessToken");
-    localStorage.removeItem("refreshToken");
-
-    // Force reload to clear any state
+  const handleLogout = async () => {
+    await logoutPortalSession();
     window.location.href = "/login";
   };
 

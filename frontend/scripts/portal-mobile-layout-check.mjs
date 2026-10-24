@@ -25,8 +25,8 @@ const sampleProject = {
 };
 
 const sampleUsers = [
-  { id: 11, username: "matt", full_name: "Matt Angelo", email: "matt.angelo@example.com", agency: "DOH", role: "contributor", is_active: true },
-  { id: 12, username: "gabriel", full_name: "Gabriel Cantor", email: "gabriel.cantor@example.com", agency: "DENR", role: "contributor", is_active: false },
+  { id: 11, username: "matt", first_name: "Matt", last_name: "Angelo", email: "matt.angelo@example.com", agency: "DOH", role: "contributor", is_active: true },
+  { id: 12, username: "gabriel", first_name: "Gabriel", last_name: "Cantor", email: "gabriel.cantor@example.com", agency: "DENR", role: "contributor", is_active: false },
 ];
 
 const mobileFormSchema = {

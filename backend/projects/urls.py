@@ -36,6 +36,7 @@ urlpatterns = [
     path("contact/", views.PublicContactView.as_view(), name="public-contact"),
     path("auth/login/", views.LoginView.as_view(), name="login"),
     path("auth/logout/", views.LogoutView.as_view(), name="logout"),
+    path("auth/activity/", views.PortalSessionActivityView.as_view(), name="auth-activity"),
     path("auth/setup-password/", views.SetupPasswordView.as_view(), name="setup-password"),
     path("auth/me/", views.MeView.as_view(), name="me"),
     path("profile/", views.ProfileView.as_view(), name="profile-self"),

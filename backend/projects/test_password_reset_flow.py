@@ -24,7 +24,7 @@ class PasswordResetFlowTests(APITestCase):
         self.user = User.objects.create_user(
             username="reset-user", email=f"reset-user-{self._testMethodName}@example.test",
             password="OldPassword123!", role="staff", must_change_password=False,
-            full_name="Original Name", agency="DENR", office="Original Office",
+            first_name="Original", last_name="Name", agency="DENR", office="Original Office",
         )
 
     def request_reset(self, email=None):
@@ -79,14 +79,14 @@ class PasswordResetFlowTests(APITestCase):
         self.assertEqual(invalid.status_code, 400)
         changed = self.client.post(
             "/api/auth/setup-password/",
-            {"token": token, "new_password": "NewPassword123!", "full_name": "Tampered Name", "agency": "DPWH"},
+            {"token": token, "new_password": "NewPassword123!", "first_name": "Tampered", "last_name": "Name", "agency": "DPWH"},
             format="json",
         )
         self.assertEqual(changed.status_code, 200, changed.data)
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password("NewPassword123!"))
         self.assertFalse(self.user.check_password("OldPassword123!"))
-        self.assertEqual(self.user.full_name, "Original Name")
+        self.assertEqual((self.user.first_name, self.user.last_name), ("Original", "Name"))
         self.assertEqual(self.user.agency, "DENR")
         self.assertEqual(self.user.office, "Original Office")
         self.assertEqual(self.user.session_version, original_session_version + 1)
@@ -115,7 +115,7 @@ class PasswordResetFlowTests(APITestCase):
             user = User.objects.create_user(
                 username=f"role-reset-{role}", email=f"role-reset-{role}@example.test",
                 password="OldPassword123!", role=role, must_change_password=False,
-                full_name=f"Original {role}", agency="RDC-NCR" if role != "staff" else "DENR",
+                first_name="Original", last_name=role.title(), agency="RDC-NCR" if role != "staff" else "DENR",
             )
             sent = self.client.post(f"/api/admin/users/{user.id}/reset_password/", {}, format="json")
             self.assertEqual(sent.status_code, 200, sent.data)
@@ -127,7 +127,7 @@ class PasswordResetFlowTests(APITestCase):
             self.assertEqual(completed.status_code, 200, completed.data)
             user.refresh_from_db()
             self.assertEqual(user.role, role)
-            self.assertEqual(user.full_name, f"Original {role}")
+            self.assertEqual((user.first_name, user.last_name), ("Original", role.title()))
             self.assertTrue(user.check_password("NewPassword123!"))
             self.client.force_authenticate(user=self.admin)
 

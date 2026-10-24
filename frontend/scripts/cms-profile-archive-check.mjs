@@ -16,7 +16,7 @@ try {
     let archived = true;
     let restored = 0;
     let profileSaved = 0;
-    const profile = { id: 1, username: "admin", full_name: "Admin User", email: "admin@example.com", role: "admin", agency: "RDC-NCR", agency_head: "", office: "Office", division: "", position: "", contact_number: "", phone_number: "", date_joined: "2026-01-01T00:00:00Z", recent_activity: [] };
+    const profile = { id: 1, username: "admin", first_name: "Admin", last_name: "User", email: "admin@example.com", role: "admin", agency: "RDC-NCR", agency_head: "", office: "Office", division: "", position: "", contact_number: "", phone_number: "", date_joined: "2026-01-01T00:00:00Z", recent_activity: [] };
     await page.addInitScript(() => { localStorage.setItem("user", JSON.stringify({ id: 1, username: "admin", role: "admin" })); localStorage.setItem("isLoggedIn", "true"); localStorage.setItem("accessToken", "cms-test-token"); });
     await page.route("**/api/**", async (route) => {
       const url = new URL(route.request().url());
@@ -27,7 +27,7 @@ try {
       if (path === "/api/admin/cms/media/") return respond(route, { results: [], count: 0, next: null, total_pages: 1 });
       if (path === "/api/profile/" && route.request().method() === "PATCH") { profileSaved += 1; Object.assign(profile, route.request().postDataJSON()); return respond(route, profile); }
       if (path === "/api/profile/") return respond(route, profile);
-      if (path === "/api/admin/profiles/2/") return respond(route, { ...profile, id: 2, username: "other", full_name: "Other User" });
+      if (path === "/api/admin/profiles/2/") return respond(route, { ...profile, id: 2, username: "other", first_name: "Other", last_name: "User" });
       if (path === "/api/profile/edit-requests/") return respond(route, [{ id: 3, status: "approved", expires_at: "2099-01-01T00:00:00Z" }]);
       if (path === "/api/admin/profile-edit-requests/") return respond(route, []);
       if (path === "/api/admin/cms/articles/") return respond(route, { results: [], count: 0, next: null, total_pages: 1 });

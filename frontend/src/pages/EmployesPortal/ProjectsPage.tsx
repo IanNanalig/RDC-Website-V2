@@ -1,8 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import { userDisplayName } from "../../utils/userDisplayName";
 import { useEncodingWindow, useProgressUpdateWindow } from "../../hooks/useEncodingWindow";
+import { MobileSortControls, SortableTableHeader } from "../../components/portal/TableSortControls";
+import { sortRows } from "../../utils/tableSort";
+import type { SortDirection } from "../../utils/tableSort";
 
 type ApiProject = {
   id: number;
@@ -64,6 +68,9 @@ type ProjectRevisionRow = {
   current_form_version?: number | null;
   uses_outdated_form?: boolean;
 };
+
+const projectListCache = new Map<string, ApiProject[]>();
+const projectListRequests = new Map<string, Promise<ApiProject[]>>();
 
 const statusLabel = (status?: string, workflowLabel?: string) => {
   if (workflowLabel) return workflowLabel;
@@ -154,10 +161,11 @@ const ProjectsPage: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const archivedView = location.pathname === "/admin/archived";
-  const [projects, setProjects] = useState<ApiProject[]>([]);
-  const [loading, setLoading] = useState(true);
+  const projectsLoadId = useRef(0);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
+  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [archiveTarget, setArchiveTarget] = useState<ApiProject | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveError, setArchiveError] = useState("");
@@ -198,15 +206,26 @@ const ProjectsPage: React.FC = () => {
     return `employee/projects/?${params.toString()}`;
   }, [role, selectedWorkflow, archivedView]);
 
-  const loadProjects = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await api.get(endpoint);
-      let rows: ApiProject[] = Array.isArray(data) ? data : [];
-      if (role === "validator" || (role === "admin" && !archivedView)) {
+  const projectCacheKey = `${role || "unknown"}:${user?.id || user?.email || "session"}:${endpoint}`;
+  const [projects, setProjects] = useState<ApiProject[]>(() => projectListCache.get(projectCacheKey) || []);
+  const [loading, setLoading] = useState(() => !projectListCache.has(projectCacheKey));
+
+  const loadProjects = useCallback(async (silent = false, force = false) => {
+    const requestId = ++projectsLoadId.current;
+    if (!silent && !projectListCache.has(projectCacheKey)) setLoading(true);
+    let request = force ? undefined : projectListRequests.get(projectCacheKey);
+    if (!request) {
+      request = (async () => {
+        const shouldLoadRevisions = role === "validator" || (role === "admin" && !archivedView);
         const revisionParams = new URLSearchParams({ view: "summary" });
         if (role === "validator") revisionParams.set("scope", "queue");
-        const revisions = await api.get(`project-revisions/?${revisionParams.toString()}`);
+        const [data, revisions] = await Promise.all([
+          api.get(endpoint),
+          shouldLoadRevisions
+            ? api.get(`project-revisions/?${revisionParams.toString()}`)
+            : Promise.resolve([]),
+        ]);
+        let rows: ApiProject[] = Array.isArray(data) ? data : [];
         if (Array.isArray(revisions)) {
           const revisionRows: ApiProject[] = revisions.map((r: ProjectRevisionRow) => ({
             id: r.project,
@@ -230,36 +249,50 @@ const ProjectsPage: React.FC = () => {
           }));
           rows = [...revisionRows, ...rows];
         }
-      }
+        return rows;
+      })();
+      projectListRequests.set(projectCacheKey, request);
+    }
+    try {
+      const rows = await request;
+      projectListCache.set(projectCacheKey, rows);
+      if (requestId !== projectsLoadId.current) return;
       setProjects(rows);
     } catch (error) {
       console.error("Failed to load projects:", error);
-      setProjects([]);
+      // Keep the current list visible if a background refresh temporarily fails.
+      if (requestId === projectsLoadId.current && !projectListCache.has(projectCacheKey)) setProjects([]);
     } finally {
-      setLoading(false);
+      if (projectListRequests.get(projectCacheKey) === request) projectListRequests.delete(projectCacheKey);
+      if (requestId === projectsLoadId.current) setLoading(false);
     }
-  }, [endpoint, role, archivedView]);
+  }, [endpoint, role, archivedView, projectCacheKey]);
 
   useEffect(() => {
     if (!user) {
       navigate("/login");
       return;
     }
-    loadProjects();
+    const cachedRows = projectListCache.get(projectCacheKey);
+    setProjects(cachedRows || []);
+    setLoading(!cachedRows);
+    void loadProjects(true);
     const onStorage = (e: StorageEvent) => {
-      if (e.key === "projects_last_update") loadProjects();
+      if (e.key === "projects_last_update") void loadProjects(true, true);
     };
-    const onDataChanged = () => loadProjects();
-    const onFocus = () => loadProjects();
+    const onDataChanged = (event: Event) => {
+      const path = (event as CustomEvent<{ path?: string }>).detail?.path || "";
+      if (path.includes("projects/") || path.includes("project-revisions/")) {
+        void loadProjects(true, true);
+      }
+    };
     window.addEventListener("storage", onStorage);
     window.addEventListener("portal:data-changed", onDataChanged);
-    window.addEventListener("focus", onFocus);
     return () => {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("portal:data-changed", onDataChanged);
-      window.removeEventListener("focus", onFocus);
     };
-  }, [loadProjects, navigate, user]);
+  }, [loadProjects, navigate, user, projectCacheKey]);
 
   const filtered = useMemo(() => {
     let list = projects;
@@ -274,11 +307,46 @@ const ProjectsPage: React.FC = () => {
     if (!q) return list;
     return list.filter((p) => `${p.title || p.name || ""} ${p.agency || ""}`.toLowerCase().includes(q));
   }, [projects, selectedWorkflow, query]);
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const sortOptions = useMemo(() => [
+    { key: "title", label: "Title" },
+    { key: "contributor", label: "Contributor" },
+    { key: "agency", label: "Agency" },
+    { key: "budget", label: "Budget" },
+    { key: "status", label: "Status" },
+    { key: "priority", label: "Priority" },
+    { key: "review", label: "Review State" },
+    { key: "updated", label: "Updated" },
+  ].filter((option) => {
+    if (option.key === "review") return role === "admin" || role === "validator";
+    return option.key !== "contributor" || role === "admin" || role === "validator" || role === "employee";
+  }), [role]);
+  const changeSort = (key: string) => {
+    setPage(1);
+    if (sortKey === key) setSortDirection((direction) => direction === "asc" ? "desc" : "asc");
+    else { setSortKey(key); setSortDirection("asc"); }
+  };
+  const toggleSortDirection = () => {
+    setPage(1);
+    setSortDirection((direction) => direction === "asc" ? "desc" : "asc");
+  };
+  const sortedProjects = useMemo(() => sortRows(filtered, sortKey, sortDirection, (project, key) => {
+    switch (key) {
+      case "title": return project.title || project.name || "Untitled";
+      case "contributor": return project.submitted_by_name || project.submitted_by?.username || "Unknown";
+      case "agency": return project.agency || "";
+      case "budget": return Number(project.budget || 0);
+      case "status": return statusLabel(project.status, project.workflow_status_label);
+      case "priority": return project.official_priority_label || "";
+      case "review": return reviewStateLabel(project);
+      case "updated": return project.updated_at ? new Date(project.updated_at).getTime() : null;
+      default: return "";
+    }
+  }), [filtered, sortKey, sortDirection]);
+  const pageCount = Math.max(1, Math.ceil(sortedProjects.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
-  const pageStart = filtered.length ? (currentPage - 1) * PAGE_SIZE + 1 : 0;
-  const pageEnd = Math.min(currentPage * PAGE_SIZE, filtered.length);
-  const visibleProjects = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  const pageStart = sortedProjects.length ? (currentPage - 1) * PAGE_SIZE + 1 : 0;
+  const pageEnd = Math.min(currentPage * PAGE_SIZE, sortedProjects.length);
+  const visibleProjects = sortedProjects.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   useEffect(() => {
     setPage((current) => Math.min(current, pageCount));
@@ -380,7 +448,7 @@ const ProjectsPage: React.FC = () => {
   };
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
-  const displayName = user?.full_name || user?.username || "User";
+  const displayName = userDisplayName(user);
 
   const title = archivedView ? "Archived Projects" : role === "admin" ? "Projects Governance" : role === "validator" ? "Validation Queue" : "My Projects";
   const subtitle =
@@ -408,7 +476,7 @@ const ProjectsPage: React.FC = () => {
               + New Project
             </Link>
           )}
-          <button onClick={loadProjects} className="portal-btn portal-btn-ghost">Refresh</button>
+          <button onClick={() => void loadProjects()} className="portal-btn portal-btn-ghost">Refresh</button>
         </>
       }
     >
@@ -439,13 +507,21 @@ const ProjectsPage: React.FC = () => {
             <option value="non_priority">Non-Priority</option>
             <option value="rejected">Rejected</option>
           </select>
+          <MobileSortControls
+            className="lg:col-span-2 2xl:hidden"
+            options={sortOptions}
+            sortKey={sortKey}
+            direction={sortDirection}
+            onSortKeyChange={changeSort}
+            onToggleDirection={toggleSortDirection}
+          />
         </div>
       </div>
 
       <div className="portal-card">
         {loading ? (
           <div className="portal-card-body text-slate-500">Loading projects...</div>
-        ) : filtered.length === 0 ? (
+        ) : sortedProjects.length === 0 ? (
           <div className="portal-card-body text-slate-500">No projects found.</div>
         ) : (
           <>
@@ -490,16 +566,16 @@ const ProjectsPage: React.FC = () => {
           <table className={`portal-table ${role === "validator" ? "hidden lg:table" : ""}`}>
             <thead>
               <tr>
-                <th>Title</th>
+                <SortableTableHeader label="Title" sortKey="title" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
                 {(role === "admin" || role === "validator" || role === "employee") && (
-                  <th className="min-w-[160px]">Contributor</th>
+                  <SortableTableHeader label="Contributor" sortKey="contributor" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="min-w-[160px]" />
                 )}
-                <th className="hidden lg:table-cell">Agency</th>
-                <th className="hidden xl:table-cell">Budget</th>
-                <th>Status</th>
-                <th className="hidden xl:table-cell">Priority</th>
-                {(role === "admin" || role === "validator") && <th className="hidden xl:table-cell">Review State</th>}
-                <th className="hidden 2xl:table-cell">Updated</th>
+                <SortableTableHeader label="Agency" sortKey="agency" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden lg:table-cell" />
+                <SortableTableHeader label="Budget" sortKey="budget" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden xl:table-cell" />
+                <SortableTableHeader label="Status" sortKey="status" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
+                <SortableTableHeader label="Priority" sortKey="priority" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden xl:table-cell" />
+                {(role === "admin" || role === "validator") && <SortableTableHeader label="Review State" sortKey="review" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden xl:table-cell" />}
+                <SortableTableHeader label="Updated" sortKey="updated" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden 2xl:table-cell" />
                 <th>Actions</th>
               </tr>
             </thead>
@@ -610,7 +686,7 @@ const ProjectsPage: React.FC = () => {
           </div>
           <div className="portal-card-body flex flex-col gap-3 border-t border-slate-200 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-slate-600" aria-live="polite">
-              Showing <span className="font-semibold">{pageStart}</span>–<span className="font-semibold">{pageEnd}</span> of {filtered.length} matching projects
+              Showing <span className="font-semibold">{pageStart}</span>–<span className="font-semibold">{pageEnd}</span> of {sortedProjects.length} matching projects
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={currentPage <= 1} className="portal-btn portal-btn-ghost disabled:cursor-not-allowed disabled:opacity-50">Previous</button>

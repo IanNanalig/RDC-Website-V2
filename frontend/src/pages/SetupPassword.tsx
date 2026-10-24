@@ -2,6 +2,8 @@ import React, { useMemo, useState } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { API_BASE_URL } from "../config/api";
 import { passwordRules, validatePassword } from "../utils/passwordPolicy";
+import { contactNumberError, formatContactNumber, sanitizeContactNumber } from "../utils/contactNumbers";
+import { personNameError } from "../utils/personName";
 
 const ACCOUNT_AGENCIES = [
   { code: "DPWH", name: "Department of Public Works and Highways" },
@@ -65,15 +67,18 @@ const SetupPassword: React.FC = () => {
   const [agencyLocked, setAgencyLocked] = useState(false);
   const [setupType, setSetupType] = useState("existing_account");
   const [profile, setProfile] = useState({
-    full_name: "",
+    first_name: "",
+    last_name: "",
     agency: "",
     agency_head: "",
     office: "",
     division: "",
     position: "",
-    contact_number: "",
-    phone_number: "",
+    contact_number: "02",
+    phone_number: "09",
   });
+  const [contactNumbersTouched, setContactNumbersTouched] = useState({ contact_number: false, phone_number: false });
+  const [nameFieldsTouched, setNameFieldsTouched] = useState({ first_name: false, last_name: false });
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -112,7 +117,12 @@ const SetupPassword: React.FC = () => {
         setSetupType(String(data?.setup_type || "existing_account"));
         setAgencyLocked(data?.agency_locked === true);
         if (data?.profile) {
-          setProfile((prev) => ({ ...prev, ...data.profile }));
+          setProfile((prev) => ({
+            ...prev,
+            ...data.profile,
+            contact_number: sanitizeContactNumber(String(data.profile.contact_number || "02"), "contact_number"),
+            phone_number: sanitizeContactNumber(String(data.profile.phone_number || "09"), "phone_number"),
+          }));
         }
       } catch {
         // ignore prefill errors
@@ -209,7 +219,8 @@ const SetupPassword: React.FC = () => {
   };
 
   const profileRequired = [
-    { key: "full_name", label: "Full Name" },
+    { key: "first_name", label: "First Name" },
+    { key: "last_name", label: "Last Name" },
     { key: "agency", label: "Agency" },
     { key: "agency_head", label: "Current Head of Agency/Local Chief Executive" },
     { key: "office", label: "Office" },
@@ -221,6 +232,8 @@ const SetupPassword: React.FC = () => {
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setContactNumbersTouched({ contact_number: true, phone_number: true });
+    setNameFieldsTouched({ first_name: true, last_name: true });
     setError("");
     setSuccess("");
     if (!token) {
@@ -229,6 +242,10 @@ const SetupPassword: React.FC = () => {
     }
     if (linkInvalid) {
       setError("This registration link is invalid or expired. Ask an administrator to resend it.");
+      return;
+    }
+    if (personNameError(profile.first_name, "first_name") || personNameError(profile.last_name, "last_name")) return;
+    if (contactNumberError(profile.contact_number, "contact_number") || contactNumberError(profile.phone_number, "phone_number")) {
       return;
     }
     const missing = profileRequired.filter(
@@ -263,7 +280,14 @@ const SetupPassword: React.FC = () => {
       const res = await fetch(`${API_BASE_URL}/auth/setup-password/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, new_password: password, ...profile, agency }),
+        body: JSON.stringify({
+          token,
+          new_password: password,
+          ...profile,
+          first_name: profile.first_name.trim(),
+          last_name: profile.last_name.trim(),
+          agency,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -315,23 +339,47 @@ const SetupPassword: React.FC = () => {
           </div>
         )}
 
-        <form onSubmit={onSubmit} className="space-y-6">
+        <form onSubmit={onSubmit} noValidate className="space-y-6">
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
             <h2 className="text-sm font-semibold text-slate-700 mb-3">Profile Information</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <label className="block">
-                <span className="text-sm text-slate-700">Full Name *</span>
+                <span className="text-sm text-slate-700">First Name</span>
                 <input
+                  name="first_name"
                   type="text"
-                  value={profile.full_name}
-                  onChange={(e) => setProfile((p) => ({ ...p, full_name: e.target.value }))}
+                  value={profile.first_name}
+                  onChange={(e) => setProfile((p) => ({ ...p, first_name: e.target.value }))}
+                  onBlur={() => setNameFieldsTouched((value) => ({ ...value, first_name: true }))}
+                  maxLength={150}
+                  placeholder="Enter first name"
+                  aria-invalid={nameFieldsTouched.first_name && Boolean(personNameError(profile.first_name, "first_name"))}
+                  aria-describedby="registration-first-name-error"
                   className="mt-1 w-full border rounded-lg px-3 py-2"
                   required
                 />
+                {nameFieldsTouched.first_name && personNameError(profile.first_name, "first_name") && <span id="registration-first-name-error" role="alert" className="mt-1 block text-xs text-rose-600">{personNameError(profile.first_name, "first_name")}</span>}
+              </label>
+              <label className="block">
+                <span className="text-sm text-slate-700">Last Name</span>
+                <input
+                  name="last_name"
+                  type="text"
+                  value={profile.last_name}
+                  onChange={(e) => setProfile((p) => ({ ...p, last_name: e.target.value }))}
+                  onBlur={() => setNameFieldsTouched((value) => ({ ...value, last_name: true }))}
+                  maxLength={150}
+                  placeholder="Enter last name"
+                  aria-invalid={nameFieldsTouched.last_name && Boolean(personNameError(profile.last_name, "last_name"))}
+                  aria-describedby="registration-last-name-error"
+                  className="mt-1 w-full border rounded-lg px-3 py-2"
+                  required
+                />
+                {nameFieldsTouched.last_name && personNameError(profile.last_name, "last_name") && <span id="registration-last-name-error" role="alert" className="mt-1 block text-xs text-rose-600">{personNameError(profile.last_name, "last_name")}</span>}
               </label>
               {agencyLocked ? (
                 <div className="block min-w-0">
-                  <label htmlFor="registration-agency" className="text-sm text-slate-700">Agency{profile.agency ? " *" : ""}</label>
+                  <label htmlFor="registration-agency" className="text-sm text-slate-700">Agency</label>
                   <input
                     id="registration-agency"
                     name="agency"
@@ -350,7 +398,7 @@ const SetupPassword: React.FC = () => {
                 </div>
               ) : (
               <div className="block min-w-0" ref={agencyPickerRef}>
-                <label htmlFor="registration-agency" className="text-sm text-slate-700">Agency *</label>
+                <label htmlFor="registration-agency" className="text-sm text-slate-700">Agency</label>
                 <div className="relative mt-1">
                   <input
                     ref={agencyInputRef}
@@ -445,7 +493,7 @@ const SetupPassword: React.FC = () => {
               </div>
               )}
               <label className="block md:col-span-2">
-                <span className="text-sm text-slate-700">Current Head of Agency/Local Chief Executive *</span>
+                <span className="text-sm text-slate-700">Current Head of Agency/Local Chief Executive</span>
                 <input
                   type="text"
                   value={profile.agency_head}
@@ -455,7 +503,7 @@ const SetupPassword: React.FC = () => {
                 />
               </label>
               <label className="block">
-                <span className="text-sm text-slate-700">Office *</span>
+                <span className="text-sm text-slate-700">Office</span>
                 <input
                   type="text"
                   value={profile.office}
@@ -465,7 +513,7 @@ const SetupPassword: React.FC = () => {
                 />
               </label>
               <label className="block">
-                <span className="text-sm text-slate-700">Division *</span>
+                <span className="text-sm text-slate-700">Division</span>
                 <input
                   type="text"
                   value={profile.division}
@@ -475,7 +523,7 @@ const SetupPassword: React.FC = () => {
                 />
               </label>
               <label className="block">
-                <span className="text-sm text-slate-700">Position *</span>
+                <span className="text-sm text-slate-700">Position</span>
                 <input
                   type="text"
                   value={profile.position}
@@ -485,27 +533,41 @@ const SetupPassword: React.FC = () => {
                 />
               </label>
               <label className="block">
-                <span className="text-sm text-slate-700">Office Contact No. *</span>
+                <span className="text-sm text-slate-700">Office Contact No.</span>
                 <input
                   type="text"
-                  value={profile.contact_number}
-                  onChange={(e) => setProfile((p) => ({ ...p, contact_number: e.target.value }))}
-                  className="mt-1 w-full border rounded-lg px-3 py-2"
+                  inputMode="numeric"
+                  placeholder="02 xxxx xxxx"
+                  value={formatContactNumber(profile.contact_number, "contact_number")}
+                  onChange={(e) => setProfile((p) => ({ ...p, contact_number: sanitizeContactNumber(e.target.value, "contact_number") }))}
+                  onBlur={() => setContactNumbersTouched((value) => ({ ...value, contact_number: true }))}
+                  aria-required="true"
+                  aria-invalid={contactNumbersTouched.contact_number && Boolean(contactNumberError(profile.contact_number, "contact_number"))}
+                  className={`mt-1 w-full border rounded-lg px-3 py-2 ${contactNumbersTouched.contact_number && contactNumberError(profile.contact_number, "contact_number") ? "border-rose-500" : ""}`}
                   required
                 />
+                <span className="mt-1 block text-xs text-slate-500">Required: 02 xxxx xxxx</span>
+                {contactNumbersTouched.contact_number && contactNumberError(profile.contact_number, "contact_number") && <span role="alert" className="mt-1 block text-xs text-rose-600">{contactNumberError(profile.contact_number, "contact_number")}</span>}
               </label>
               <label className="block">
-                <span className="text-sm text-slate-700">Phone Number *</span>
+                <span className="text-sm text-slate-700">Phone Number</span>
                 <input
                   type="text"
-                  value={profile.phone_number}
-                  onChange={(e) => setProfile((p) => ({ ...p, phone_number: e.target.value }))}
-                  className="mt-1 w-full border rounded-lg px-3 py-2"
+                  inputMode="numeric"
+                  placeholder="09xx xxx xxxx"
+                  value={formatContactNumber(profile.phone_number, "phone_number")}
+                  onChange={(e) => setProfile((p) => ({ ...p, phone_number: sanitizeContactNumber(e.target.value, "phone_number") }))}
+                  onBlur={() => setContactNumbersTouched((value) => ({ ...value, phone_number: true }))}
+                  aria-required="true"
+                  aria-invalid={contactNumbersTouched.phone_number && Boolean(contactNumberError(profile.phone_number, "phone_number"))}
+                  className={`mt-1 w-full border rounded-lg px-3 py-2 ${contactNumbersTouched.phone_number && contactNumberError(profile.phone_number, "phone_number") ? "border-rose-500" : ""}`}
                   required
                 />
+                <span className="mt-1 block text-xs text-slate-500">Required: 09xx xxx xxxx</span>
+                {contactNumbersTouched.phone_number && contactNumberError(profile.phone_number, "phone_number") && <span role="alert" className="mt-1 block text-xs text-rose-600">{contactNumberError(profile.phone_number, "phone_number")}</span>}
               </label>
               <label className="block md:col-span-2">
-                <span className="text-sm text-slate-700">Email Address *</span>
+                <span className="text-sm text-slate-700">Email Address</span>
                 <input
                   type="email"
                   value={email}
@@ -513,7 +575,7 @@ const SetupPassword: React.FC = () => {
                   className="mt-1 w-full border rounded-lg px-3 py-2 bg-slate-100 text-slate-600"
                 />
                 <p className="text-xs text-slate-500 mt-1">
-                  This email will be used to sign in. Your full name will be shown as your username.
+                  This email will be used to sign in. Your name will be shown as your username.
                 </p>
               </label>
             </div>

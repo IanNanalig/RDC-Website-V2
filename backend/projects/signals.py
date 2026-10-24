@@ -47,7 +47,7 @@ def snapshot_activity_subjects(sender, instance, **kwargs):
         if not instance.actor_username:
             instance.actor_username = user.username
         if not instance.actor_full_name:
-            instance.actor_full_name = (user.full_name or user.get_full_name() or user.username)[:200]
+            instance.actor_full_name = (user.get_full_name() or user.username)[:200]
         if not instance.role:
             instance.role = user.role
     if instance.project_id:

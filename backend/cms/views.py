@@ -230,7 +230,7 @@ class CMSWorkflowMixin:
                 if lock_is_active(section) and section.lock_owner_id != request.user.id
             ]
             if locked_elsewhere:
-                owners = sorted({section.lock_owner.full_name or section.lock_owner.username for section in locked_elsewhere if section.lock_owner})
+                owners = sorted({section.lock_owner.get_full_name() or section.lock_owner.username for section in locked_elsewhere if section.lock_owner})
                 return Response(
                     {"detail": f"Cannot submit while page sections are being edited by {', '.join(owners) or 'another editor'}. Save or release those section locks first."},
                     status=423,
@@ -451,7 +451,7 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
             raise PermissionDenied("Submitted sections can only be changed by an administrator.")
         if lock_is_active(section) and section.lock_owner_id != request.user.id:
             return Response(
-                {"detail": f"Currently being edited by {section.lock_owner.full_name or section.lock_owner.username}.", "lock_owner": section.lock_owner_id},
+                {"detail": f"Currently being edited by {section.lock_owner.get_full_name() or section.lock_owner.username}.", "lock_owner": section.lock_owner_id},
                 status=423,
             )
         return super().update(request, *args, **kwargs)
@@ -473,7 +473,7 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
     def lock(self, request, pk=None):
         section = self.get_object()
         old_owner_id = section.lock_owner_id if lock_is_active(section) else None
-        old_owner_name = (section.lock_owner.full_name or section.lock_owner.username) if old_owner_id and section.lock_owner else ""
+        old_owner_name = (section.lock_owner.get_full_name() or section.lock_owner.username) if old_owner_id and section.lock_owner else ""
         is_admin = getattr(request.user, "role", "") == "admin"
         if old_owner_id and old_owner_id != request.user.id and is_admin and not request.data.get("override_confirmed"):
             return Response({"detail": "Confirm the section lock override before taking over this section."}, status=409)
@@ -519,7 +519,7 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
                 "actor": request.user,
                 "event_type": "cms_section_access_requested",
                 "title": "CMS section access requested",
-                "message": f"{request.user.full_name or request.user.username} requested access to {section.page.title}: {section.section_key}.",
+                "message": f"{request.user.get_full_name() or request.user.username} requested access to {section.page.title}: {section.section_key}.",
                 "link_path": "/employee/cms/pages/" + section.page.slug,
             },
         )
@@ -618,7 +618,7 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
                     "versions",
                     queryset=CMSContributorFormVersion.objects.select_related("published_by").only(
                         "id", "form_id", "version_number", "schema_json", "published_by_id", "published_at",
-                        "published_by__username", "published_by__full_name",
+                        "published_by__username", "published_by__first_name", "published_by__last_name",
                     ).order_by("-version_number"),
                     to_attr="cms_version_summaries",
                 )
@@ -697,7 +697,7 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
                 "actor": request.user,
                 "event_type": "cms_form_access_requested",
                 "title": "Contributor form access requested",
-                "message": f"{request.user.full_name or request.user.username} requested access to {form.name}.",
+                "message": f"{request.user.get_full_name() or request.user.username} requested access to {form.name}.",
                 "link_path": "/admin/forms",
             },
         )
@@ -861,8 +861,7 @@ def _priority_reference_payload(limit=200):
                 "base_score": float(analysis.base_score),
                 "rule_version": analysis.rule_set.version,
                 "validator_name": (
-                    confirmation.validator.full_name.strip()
-                    or confirmation.validator.get_full_name().strip()
+                    confirmation.validator.get_full_name().strip()
                     or confirmation.validator.username
                 ) if confirmation.validator else "",
                 "override_rationale": confirmation.override_rationale,

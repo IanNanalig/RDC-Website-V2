@@ -234,13 +234,6 @@ const Projects: React.FC = () => {
 
   useEffect(() => {
     fetchData();
-    const refreshId = window.setInterval(fetchData, 60000);
-    const handleFocus = () => fetchData();
-    window.addEventListener("focus", handleFocus);
-    return () => {
-      window.clearInterval(refreshId);
-      window.removeEventListener("focus", handleFocus);
-    };
   }, [fetchData]);
 
   useEffect(() => {

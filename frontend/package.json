@@ -15,6 +15,7 @@
     "test:cms-safety": "node scripts/cms-safety-check.mjs",
     "test:notifications-ui": "node scripts/notification-panel-check.mjs",
     "test:logout-session": "node scripts/logout-session-check.mjs",
+    "test:cross-tab-session": "node scripts/cross-tab-session-check.mjs",
     "test:registration-agency": "node scripts/registration-agency-check.mjs",
     "test:account-reset-sorting": "node scripts/account-reset-sorting-check.mjs",
     "test:submission-confirmations": "node scripts/submission-confirmations-check.mjs",

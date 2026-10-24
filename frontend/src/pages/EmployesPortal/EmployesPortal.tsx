@@ -3,7 +3,7 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import ProjectForm, { type ProjectPayload } from "../../components/ProjectForm";
 import ConfirmDialog from "../../components/ConfirmDialog";
-import { api } from "../../services/api";
+import { api, logoutPortalSession } from "../../services/api";
 
 // Import your Projects and Reports components
 import ProjectsPage from "./ProjectsPage";
@@ -305,11 +305,8 @@ const PIPManagementSystem: React.FC = () => {
     setShowConfirm(false);
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("user");
-    localStorage.removeItem("isLoggedIn");
-    localStorage.removeItem("accessToken");
-    localStorage.removeItem("refreshToken");
+  const handleLogout = async () => {
+    await logoutPortalSession();
     navigate("/login");
   };
 

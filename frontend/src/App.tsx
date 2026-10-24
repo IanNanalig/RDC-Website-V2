@@ -9,6 +9,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import Navbar from "./components/Navbar";
 import Footer from "./components/Footer";
 import PortalLayout from "./components/portal/PortalLayout";
+import { userDisplayName } from "./utils/userDisplayName";
 
 const Home = lazy(() => import("./pages/Home"));
 const NewsPage = lazy(() => import("./pages/News"));
@@ -33,7 +34,6 @@ const ValidatorDashboard = lazy(() => import("./pages/EmployesPortal/ValidatorDa
 const ValidatorReviewHistory = lazy(() => import("./pages/EmployesPortal/ValidatorReviewHistory"));
 const UpdateProjectForms = lazy(() => import("./pages/EmployesPortal/UpdateProjectForms"));
 const ProjectsPage = lazy(() => import("./pages/EmployesPortal/ProjectsPage"));
-const SubmissionFormChooser = lazy(() => import("./pages/EmployesPortal/SubmissionFormChooser"));
 const SimplifiedProjectSubmission = lazy(() => import("./pages/EmployesPortal/SimplifiedProjectSubmission"));
 const ProjectReview = lazy(() => import("./pages/EmployesPortal/ProjectReview"));
 const AdminProjects = lazy(() => import("./pages/EmployesPortal/AdminProjects"));
@@ -49,7 +49,8 @@ const AIScoringManager = lazy(() => import("./components/portal/AIScoringManager
 interface User {
   id: number;
   username: string;
-  full_name?: string;
+  first_name?: string;
+  last_name?: string;
   email: string;
   role: "admin" | "validator" | "employee" | "content_editor";
   agency?: string | null;
@@ -119,6 +120,17 @@ const ProtectedRoute = ({
     };
 
     checkAuth();
+    const onStorage = (event: StorageEvent) => {
+      if (["user", "isLoggedIn", "accessToken", "refreshToken"].includes(event.key || "")) {
+        checkAuth();
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("portal:auth-changed", checkAuth);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("portal:auth-changed", checkAuth);
+    };
   }, [location, roles]);
 
   if (loading) {
@@ -264,12 +276,6 @@ const ProjectsPageComponent = () => (
   </PortalPageWrapper>
 );
 
-const SubmissionFormChooserPage = () => (
-  <PortalPageWrapper pageTitle="Choose Submission Form">
-    <SubmissionFormChooser />
-  </PortalPageWrapper>
-);
-
 const SimplifiedProjectSubmissionPage = () => (
   <PortalPageWrapper pageTitle="Simplified Project Submission">
     <SimplifiedProjectSubmission />
@@ -309,7 +315,7 @@ const ContentManagementPage = () => (
 const adminDisplayName = () => {
   try {
     const user = JSON.parse(localStorage.getItem("user") || "{}") as User;
-    return user.full_name || user.username || "Administrator";
+    return userDisplayName(user, "Administrator");
   } catch {
     return "Administrator";
   }
@@ -375,7 +381,7 @@ export default function App() {
           path="/employee/projects/new"
           element={
             <ProtectedRoute roles={["employee"]}>
-              <SubmissionFormChooserPage />
+              <SimplifiedProjectSubmissionPage />
             </ProtectedRoute>
           }
         />

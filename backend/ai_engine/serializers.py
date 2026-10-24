@@ -6,7 +6,7 @@ from .models import AIModelVersion, AIProjectAnalysis, AITrainingRecord
 def _user_name(user):
     if not user:
         return ""
-    return (getattr(user, "full_name", "") or user.get_full_name() or user.username).strip()
+    return (user.get_full_name() or user.username).strip()
 
 
 class AIModelVersionSerializer(serializers.ModelSerializer):

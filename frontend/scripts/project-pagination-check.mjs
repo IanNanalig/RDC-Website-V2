@@ -67,6 +67,12 @@ const openListing = async (role, pathname, width) => {
   let projects = [...initialProjects];
   const archived = [];
   await page.addInitScript((currentRole) => {
+    window.__portalIntervalDelays = [];
+    const originalSetInterval = window.setInterval.bind(window);
+    window.setInterval = ((handler, timeout, ...arguments_) => {
+      window.__portalIntervalDelays.push(Number(timeout));
+      return originalSetInterval(handler, timeout, ...arguments_);
+    });
     localStorage.setItem("user", JSON.stringify({ role: currentRole, username: "Pagination Tester", agency: "DENR" }));
     localStorage.setItem("isLoggedIn", "true");
     localStorage.setItem("accessToken", "pagination-test-token");
@@ -114,9 +120,14 @@ try {
       const rowCount = () => page.locator("table.portal-table tbody tr").count();
       await expectFooter(page, 1, 10, total, "projects", 1, 3);
       assert.equal(await rowCount(), 10, `${role}: first page has 10 table rows`);
+      assert.equal(
+        await page.evaluate(() => window.__portalIntervalDelays.includes(30_000)),
+        false,
+        `${role}: the project list does not start a 30-second auto-refresh timer`,
+      );
       if (role === "admin") {
         await page.locator("table.portal-table tbody tr").first().getByRole("button", { name: "View" }).click();
-        await page.waitForURL("**/admin/projects/1/view?revision=101");
+        await page.waitForURL("**/admin/projects/1/view/simplified?revision=101");
         await page.goto(`${origin}${pathname}`);
         await expectFooter(page, 1, 10, total, "projects", 1, 3);
       }
@@ -133,7 +144,7 @@ try {
         assert.equal(await page.locator("article").count(), 6);
         const card = page.locator("article").filter({ hasText: "Project 24" });
         await card.getByRole("button", { name: "Review" }).click();
-        await page.waitForURL("**/validator/projects/24/review");
+        await page.waitForURL("**/validator/projects/24/review/simplified");
         await page.goto(`${origin}${pathname}`);
         await expectFooter(page, 1, 10, total, "projects", 1, 3);
         await page.getByRole("button", { name: "Next" }).click();
@@ -182,6 +193,17 @@ try {
       await page.getByRole("button", { name: "Refresh" }).click();
       await expectFooter(page, 11, role === "employee" ? 12 : 14, role === "employee" ? 12 : 14, "projects", 2, 2);
       assert.equal(await rowCount(), role === "employee" ? 2 : 4);
+      if (role === "admin") {
+        const sortField = page.getByLabel("Sort by field");
+        await sortField.selectOption("title");
+        await expectFooter(page, 1, 10, 14, "projects", 1, 2);
+        assert.match((await page.locator("table.portal-table tbody tr").first().innerText()), /Project 01/,
+          "Changing sort resets pagination and sorts the full list ascending");
+        await page.getByRole("button", { name: /Change sort direction/ }).click();
+        await expectFooter(page, 1, 10, 14, "projects", 1, 2);
+        assert.match((await page.locator("table.portal-table tbody tr").first().innerText()), /Project 12/,
+          "Changing direction sorts the full list descending");
+      }
       const documentWidth = await page.evaluate(() => document.documentElement.scrollWidth);
       assert.ok(documentWidth <= width + 1, `${role} listing fits ${width}px: ${documentWidth}`);
     } finally {
@@ -208,9 +230,10 @@ try {
     await page.getByPlaceholder("Search by title, contributor, agency, validator").fill("missing record");
     await page.getByText("No records matched the current filters.").waitFor();
     await page.getByPlaceholder("Search by title, contributor, agency, validator").fill("");
-    await page.locator("select").selectOption("reviewed");
+    const reviewFilter = page.getByRole("combobox").first();
+    await reviewFilter.selectOption("reviewed");
     await expectFooter(page, 1, 8, 8, "records", 1, 1);
-    await page.locator("select").selectOption("all");
+    await reviewFilter.selectOption("all");
     await page.getByLabel("Edited only").check();
     await expectFooter(page, 1, 10, 12, "records", 1, 2);
     await page.getByLabel("Edited only").uncheck();

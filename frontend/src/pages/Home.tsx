@@ -846,10 +846,8 @@ const Home: React.FC = () => {
     };
 
     loadPublicStats();
-    const timer = window.setInterval(loadPublicStats, 60_000);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
     };
   }, [buildStatsFromProjects]);
 
@@ -955,10 +953,8 @@ const Home: React.FC = () => {
     };
 
     loadEvents();
-    const timer = window.setInterval(loadEvents, 60_000);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
     };
   }, [loadBelowFold]);
 

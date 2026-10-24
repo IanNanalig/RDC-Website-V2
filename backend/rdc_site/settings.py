@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
 import sys
 import secrets
+from corsheaders.defaults import default_headers
 
 try:
     import dj_database_url
@@ -99,10 +100,8 @@ REST_FRAMEWORK = {
 
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(hours=int(os.environ.get('JWT_ACCESS_HOURS', '8'))),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=int(os.environ.get('JWT_REFRESH_DAYS', '7'))),
     'ROTATE_REFRESH_TOKENS': False,
     'BLACKLIST_AFTER_ROTATION': False,
-    'TOKEN_REFRESH_SERIALIZER': 'projects.authentication.SessionVersionTokenRefreshSerializer',
 }
 
 # CORS / CSRF settings
@@ -111,6 +110,7 @@ CORS_ALLOWED_ORIGINS = env_list(
     ['http://localhost:5173', 'http://localhost:3000'] if DEBUG else [],
 )
 CORS_ALLOW_CREDENTIALS = env_bool('CORS_ALLOW_CREDENTIALS', True)
+CORS_ALLOW_HEADERS = (*default_headers, 'x-portal-user-activity')
 CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS', CORS_ALLOWED_ORIGINS)
 
 # Database configuration: prefer Postgres when env vars are present, otherwise use sqlite3 for local dev

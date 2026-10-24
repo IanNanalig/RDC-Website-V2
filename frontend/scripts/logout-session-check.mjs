@@ -96,10 +96,10 @@ try {
     await page.getByRole("button", { name: "Login to RDC Portal" }).click();
     await page.waitForURL("**/admin/dashboard");
     await freshDashboard;
-    await page.route("**/api/dashboard/", (route) => route.fulfill({
+    await page.route("**/api/auth/me/", (route) => route.fulfill({
       status: 401, contentType: "application/json", body: JSON.stringify({ detail: replacedDetail }),
     }));
-    await page.evaluate(() => window.dispatchEvent(new CustomEvent("portal:data-changed")));
+    await page.goto(`${frontendUrl}/login`);
     await page.waitForURL("**/login");
     await page.getByText("Your account was signed in from another browser or device. Please login again.").waitFor();
     await context.close();

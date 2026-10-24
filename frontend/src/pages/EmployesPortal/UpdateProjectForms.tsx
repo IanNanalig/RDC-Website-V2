@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import PortalLayout from "../../components/portal/PortalLayout";
+import { userDisplayName } from "../../utils/userDisplayName";
 import { api } from "../../services/api";
+import { MobileSortControls, SortableTableHeader } from "../../components/portal/TableSortControls";
+import { sortRows } from "../../utils/tableSort";
+import type { SortDirection } from "../../utils/tableSort";
 
 type OutdatedProject = {
   id: number;
@@ -37,6 +41,8 @@ const UpdateProjectForms: React.FC = () => {
   const [updatingId, setUpdatingId] = useState<number | null>(null);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
+  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const user = useMemo(() => {
@@ -75,11 +81,39 @@ const UpdateProjectForms: React.FC = () => {
         .includes(search),
     );
   }, [projects, query]);
-  const pageCount = Math.max(1, Math.ceil(filteredProjects.length / PAGE_SIZE));
+  const sortOptions = [
+    { key: "title", label: "Project" },
+    { key: "contributor", label: "Contributor" },
+    { key: "agency", label: "Agency" },
+    { key: "current", label: "Current Form" },
+    { key: "latest", label: "Latest Form" },
+    { key: "status", label: "Status" },
+  ];
+  const changeSort = (key: string) => {
+    setPage(1);
+    if (sortKey === key) setSortDirection((direction) => direction === "asc" ? "desc" : "asc");
+    else { setSortKey(key); setSortDirection("asc"); }
+  };
+  const toggleSortDirection = () => {
+    setPage(1);
+    setSortDirection((direction) => direction === "asc" ? "desc" : "asc");
+  };
+  const sortedProjects = useMemo(() => sortRows(filteredProjects, sortKey, sortDirection, (project, key) => {
+    switch (key) {
+      case "title": return project.title || project.name || "Untitled project";
+      case "contributor": return project.submitted_by_name || "Unknown";
+      case "agency": return project.agency || "";
+      case "current": return project.form_version ?? null;
+      case "latest": return project.current_form_version ?? null;
+      case "status": return statusLabel(project.status);
+      default: return "";
+    }
+  }), [filteredProjects, sortKey, sortDirection]);
+  const pageCount = Math.max(1, Math.ceil(sortedProjects.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
-  const pageStart = filteredProjects.length ? (currentPage - 1) * PAGE_SIZE + 1 : 0;
-  const pageEnd = Math.min(currentPage * PAGE_SIZE, filteredProjects.length);
-  const visibleProjects = filteredProjects.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  const pageStart = sortedProjects.length ? (currentPage - 1) * PAGE_SIZE + 1 : 0;
+  const pageEnd = Math.min(currentPage * PAGE_SIZE, sortedProjects.length);
+  const visibleProjects = sortedProjects.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   useEffect(() => {
     setPage((current) => Math.min(current, pageCount));
@@ -116,7 +150,7 @@ const UpdateProjectForms: React.FC = () => {
       title="Update Older Project Forms"
       subtitle="Move selected projects to the latest published contributor form"
       role="validator"
-      userName={user.full_name || user.username || "Validator"}
+      userName={userDisplayName(user, "Validator")}
       topActions={
         <div className="flex flex-wrap gap-2">
           <Link to="/validator/dashboard" className="portal-btn portal-btn-ghost">Back to Dashboard</Link>
@@ -138,13 +172,21 @@ const UpdateProjectForms: React.FC = () => {
             placeholder="Search by project title, contributor, or agency"
             className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2"
           />
+          <MobileSortControls
+            className="xl:hidden"
+            options={sortOptions}
+            sortKey={sortKey}
+            direction={sortDirection}
+            onSortKeyChange={changeSort}
+            onToggleDirection={toggleSortDirection}
+          />
         </div>
       </div>
 
       <div className="portal-card">
         {loading ? (
           <div className="portal-card-body text-slate-500">Loading projects with older forms...</div>
-        ) : filteredProjects.length === 0 ? (
+        ) : sortedProjects.length === 0 ? (
           <div className="portal-card-body text-slate-500">
             {query.trim() ? "No matching projects found." : "No projects are using an older contributor form."}
           </div>
@@ -175,12 +217,12 @@ const UpdateProjectForms: React.FC = () => {
           <table className="portal-table hidden lg:table">
             <thead>
               <tr>
-                <th>Project</th>
-                <th>Contributor</th>
-                <th className="hidden lg:table-cell">Agency</th>
-                <th>Current Form</th>
-                <th>Latest Form</th>
-                <th className="hidden xl:table-cell">Status</th>
+                <SortableTableHeader label="Project" sortKey="title" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
+                <SortableTableHeader label="Contributor" sortKey="contributor" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
+                <SortableTableHeader label="Agency" sortKey="agency" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden lg:table-cell" />
+                <SortableTableHeader label="Current Form" sortKey="current" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
+                <SortableTableHeader label="Latest Form" sortKey="latest" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
+                <SortableTableHeader label="Status" sortKey="status" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden xl:table-cell" />
                 <th>Action</th>
               </tr>
             </thead>
@@ -217,7 +259,7 @@ const UpdateProjectForms: React.FC = () => {
           </div>
           <div className="portal-card-body flex flex-col gap-3 border-t border-slate-200 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-slate-600" aria-live="polite">
-              Showing <span className="font-semibold">{pageStart}</span>–<span className="font-semibold">{pageEnd}</span> of {filteredProjects.length} matching projects
+              Showing <span className="font-semibold">{pageStart}</span>–<span className="font-semibold">{pageEnd}</span> of {sortedProjects.length} matching projects
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={currentPage <= 1} className="portal-btn portal-btn-ghost disabled:cursor-not-allowed disabled:opacity-50">Previous</button>

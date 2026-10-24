@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import { userDisplayName } from "../../utils/userDisplayName";
 import { confirmProjectSubmission } from "../../components/portal/confirmProjectSubmission";
 import { confirmRevisionRequest } from "../../components/portal/confirmRevisionRequest";
 import PriorityAnalysisPanel from "../../components/portal/PriorityAnalysisPanel";
@@ -63,7 +64,8 @@ type ProjectComment = {
   comment: string;
   created_at: string;
   username?: string;
-  full_name?: string;
+  first_name?: string;
+  last_name?: string;
   role?: string;
   agency?: string;
 };
@@ -294,7 +296,7 @@ const TextField: React.FC<{
   const showPrevious = hasEditMeta && editMeta?.before !== undefined;
   return (
   <label className="block min-w-0 max-w-full">
-    <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
+    <span className="text-sm text-slate-700">{label}</span>
     <input
       className={`mt-1 w-full min-w-0 max-w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
       value={value}
@@ -336,7 +338,7 @@ const TextAreaField: React.FC<{
   const showPrevious = hasEditMeta && editMeta?.before !== undefined;
   return (
   <label className="block min-w-0 max-w-full">
-    <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
+    <span className="text-sm text-slate-700">{label}</span>
     <textarea
       className={`mt-1 w-full min-w-0 max-w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
       rows={rows}
@@ -380,7 +382,7 @@ const NumberField: React.FC<{
   const displayValue = formatMoney ? formatMoneyInput(value) : value;
   return (
   <label className="block min-w-0 max-w-full">
-    <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
+    <span className="text-sm text-slate-700">{label}</span>
     <input
       type={formatMoney ? "text" : "number"}
       inputMode="decimal"
@@ -466,8 +468,8 @@ const CheckboxGroup: React.FC<{
     : "";
   const showPrevious = hasEditMeta && editMeta?.before !== undefined;
   return (
-  <div>
-    <p className="text-sm text-slate-700 mb-1">{label}{required ? " *" : ""}</p>
+  <div role="group" aria-label={label} aria-required={required}>
+    <p className="text-sm text-slate-700 mb-1">{label}</p>
     <div className={`columns-1 sm:columns-2 lg:columns-3 gap-x-6 border rounded p-2 ${disabled ? "bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}>
       {options.map((option) => {
         const optionValue = typeof option === "string" ? option : option.value;
@@ -526,7 +528,7 @@ const SelectField: React.FC<{
   const showPrevious = hasEditMeta && editMeta?.before !== undefined;
   return (
   <label className="block min-w-0 max-w-full">
-    <span className="text-sm text-slate-700">{label}{required ? " *" : ""}</span>
+    <span className="text-sm text-slate-700">{label}</span>
     <select
       className={`mt-1 w-full min-w-0 max-w-full border rounded p-2 ${disabled ? "bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}
       value={value}
@@ -1453,7 +1455,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       const total = mapKey === "fundingRequirementByYear" ? frTotal : aaTotal;
       return (
         <div>
-          <h4 className="text-sm font-semibold text-slate-800">{field.label}{required ? " *" : ""}</h4>
+          <h4 className="text-sm font-semibold text-slate-800">{field.label}</h4>
           {yearKeys.length === 0 ? (
             <p className="mt-2 text-sm text-slate-500">Enter Start Year and End Year to generate fields.</p>
           ) : (
@@ -1503,7 +1505,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
     if (field.type === "date") {
       return (
         <label className="block">
-          <span className="text-sm text-slate-700">{field.label}{required ? " *" : ""}</span>
+          <span className="text-sm text-slate-700">{field.label}</span>
           <input type="date" className="mt-1 w-full rounded border p-2 disabled:bg-slate-100 disabled:text-slate-500" value={String(value)} required={required} disabled={isValidator || revisionFieldLocked(field.key)} onChange={(event) => setConfiguredFieldValue(field, event.target.value)} />
           {field.help_text && <p className="mt-1 text-xs text-slate-500">{field.help_text}</p>}
         </label>
@@ -1522,7 +1524,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   const localSavedLabel = lastLocalSaveAt ? new Date(lastLocalSaveAt).toLocaleString() : "";
-  const displayName = user?.full_name || user?.username || "User";
+  const displayName = userDisplayName(user);
 
   if (isEditMode && !formReady) {
     return (
@@ -2017,7 +2019,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                   <div key={c.id} className="border rounded-lg p-3">
                     <p className="text-sm text-slate-800">{c.comment}</p>
                     <p className="text-xs text-slate-500 mt-2">
-                      {c.full_name || c.username || "User"}{" "}
+                      {userDisplayName(c)}{" "}
                       <span className="uppercase">{c.role || ""}</span>{" "}
                       {c.created_at ? `- ${new Date(c.created_at).toLocaleString()}` : ""}
                     </p>

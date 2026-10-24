@@ -38,6 +38,107 @@ class ValidatorReadOnlyReviewTests(APITestCase):
         profile["simplified_form"]["description"] = "Validator changed this answer"
         return profile
 
+    def test_contributor_drafts_are_hidden_from_all_validator_project_scopes(self):
+        draft = Project.objects.create(
+            name="Private contributor draft",
+            implementing_agency="DENR",
+            municipality="NCR",
+            status="planning",
+            cost=100,
+            latitude=14.5,
+            agency="DENR",
+            budget=100,
+            created_by=self.contributor,
+            profile_data={
+                **deepcopy(self.profile),
+                # Stale review metadata must not make the contributor's draft visible.
+                "validator_review": {
+                    "review_status": "reviewed",
+                    "reviewed_by_id": self.validator.id,
+                },
+            },
+        )
+        contributor_revision_draft = ProjectRevision.objects.create(
+            project=self.project,
+            revision_number=2,
+            revision_type="progress_update",
+            state="draft",
+            profile_data_snapshot=deepcopy(self.profile),
+            created_by=self.contributor,
+        )
+
+        for query in (
+            "",
+            "?scope=history",
+            "?scope=update_forms",
+        ):
+            response = self.client.get(f"/api/validator/projects/{query}")
+            self.assertEqual(response.status_code, 200, response.data)
+            self.assertNotIn(draft.id, {row["id"] for row in response.data})
+
+        self.assertEqual(
+            self.client.get(f"/api/validator/projects/{draft.id}/").status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.post(f"/api/validator/projects/{draft.id}/update-form/").status_code,
+            404,
+        )
+        revision_queue = self.client.get("/api/project-revisions/")
+        self.assertEqual(revision_queue.status_code, 200, revision_queue.data)
+        self.assertNotIn(contributor_revision_draft.id, {row["id"] for row in revision_queue.data})
+        self.assertEqual(
+            self.client.get(f"/api/project-revisions/{contributor_revision_draft.id}/").status_code,
+            404,
+        )
+
+    def test_validator_queue_and_history_filter_review_metadata_in_database(self):
+        legacy_review = Project.objects.create(
+            name="Legacy string reviewer ID",
+            implementing_agency="DENR",
+            municipality="NCR",
+            status="ongoing",
+            cost=100,
+            latitude=14.5,
+            agency="DENR",
+            budget=100,
+            created_by=self.contributor,
+            profile_data={
+                **deepcopy(self.profile),
+                "validator_review": {
+                    "review_status": "reviewed",
+                    "reviewed_by_id": str(self.validator.id),
+                },
+            },
+        )
+        other_validator_review = Project.objects.create(
+            name="Different validator review",
+            implementing_agency="DENR",
+            municipality="NCR",
+            status="ongoing",
+            cost=100,
+            latitude=14.5,
+            agency="DENR",
+            budget=100,
+            created_by=self.contributor,
+            profile_data={
+                **deepcopy(self.profile),
+                "validator_review": {
+                    "review_status": "reviewed",
+                    "reviewed_by_id": self.validator.id + 100,
+                },
+            },
+        )
+
+        queue = self.client.get("/api/validator/projects/?view=summary&scope=queue")
+        history = self.client.get("/api/validator/projects/?view=summary&scope=history")
+        self.assertEqual(queue.status_code, 200, queue.data)
+        self.assertEqual(history.status_code, 200, history.data)
+        self.assertIn(legacy_review.id, {row["id"] for row in queue.data})
+        self.assertIn(legacy_review.id, {row["id"] for row in history.data})
+        self.assertNotIn(other_validator_review.id, {row["id"] for row in queue.data})
+        self.assertNotIn(other_validator_review.id, {row["id"] for row in history.data})
+
     def test_review_rejects_form_edits_but_allows_notes_and_revision_selection(self):
         url = f"/api/validator/projects/{self.project.id}/validate/"
         blocked = self.client.post(url, {

@@ -111,7 +111,7 @@ const YearOnlyPicker = ({
 
   return (
     <div ref={wrapperRef} className="relative min-w-0">
-      <label id={`${id}-label`} className="block text-sm text-slate-700">{label}{required ? " *" : ""}</label>
+      <label id={`${id}-label`} className="block text-sm text-slate-700">{label}</label>
       <button
         ref={triggerRef}
         type="button"

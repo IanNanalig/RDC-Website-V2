@@ -14,7 +14,7 @@ class ProfileWorkflowTests(APITestCase):
 
     def test_approval_allows_one_owner_edit_but_not_email_or_another_edit(self):
         self.client.force_authenticate(self.contributor)
-        self.assertEqual(self.client.patch("/api/profile/", {"full_name": "Before"}, format="json").status_code, 403)
+        self.assertEqual(self.client.patch("/api/profile/", {"first_name": "Before"}, format="json").status_code, 403)
         requested = self.client.post("/api/profile/edit-requests/", {}, format="json")
         self.assertEqual(requested.status_code, 201)
         self.client.force_authenticate(self.admin)
@@ -22,11 +22,16 @@ class ProfileWorkflowTests(APITestCase):
         self.assertEqual(approved.status_code, 200)
         self.client.force_authenticate(self.contributor)
         self.assertEqual(self.client.patch("/api/profile/", {"email": "new@example.com"}, format="json").status_code, 400)
-        saved = self.client.patch("/api/profile/", {"full_name": "Updated Name", "office": "NCR Office"}, format="json")
+        invalid_name = self.client.patch("/api/profile/", {"first_name": "Updated1"}, format="json")
+        self.assertEqual(invalid_name.status_code, 400)
+        saved = self.client.patch("/api/profile/", {"first_name": "Updated", "last_name": "Name", "office": "NCR Office"}, format="json")
         self.assertEqual(saved.status_code, 200)
-        self.assertEqual(self.client.patch("/api/profile/", {"full_name": "Again"}, format="json").status_code, 403)
+        self.assertEqual(saved.data["first_name"], "Updated")
+        self.assertEqual(saved.data["last_name"], "Name")
+        self.assertNotIn("full_name", saved.data)
+        self.assertEqual(self.client.patch("/api/profile/", {"first_name": "Again"}, format="json").status_code, 403)
         self.contributor.refresh_from_db()
-        self.assertEqual(self.contributor.full_name, "Updated Name")
+        self.assertEqual((self.contributor.first_name, self.contributor.last_name), ("Updated", "Name"))
         self.assertEqual(self.contributor.email, "user@example.com")
         self.assertEqual(ProfileEditRequest.objects.get(pk=requested.data["id"]).status, "consumed")
 

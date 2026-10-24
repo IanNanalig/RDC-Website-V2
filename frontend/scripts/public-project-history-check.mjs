@@ -41,6 +41,14 @@ async function respond(route, body, status = 200) {
 try {
   const context = await browser.newContext({ viewport: { width: 390, height: 780 } });
   const page = await context.newPage();
+  await page.addInitScript(() => {
+    window.__longRefreshIntervals = [];
+    const nativeSetInterval = window.setInterval.bind(window);
+    window.setInterval = (callback, delay, ...args) => {
+      if (Number(delay) >= 60_000) window.__longRefreshIntervals.push(Number(delay));
+      return nativeSetInterval(callback, delay, ...args);
+    };
+  });
   let releaseFirstDetail;
   const firstDetailHold = new Promise((resolve) => { releaseFirstDetail = resolve; });
   let failedDetailCalls = 0;
@@ -67,6 +75,7 @@ try {
   });
 
   await page.goto(origin + "/projects", { waitUntil: "networkidle" });
+  assert.deepEqual(await page.evaluate(() => window.__longRefreshIntervals), [], "Public projects should not schedule recurring data refreshes.");
   await page.getByRole("button", { name: /Table/ }).click();
   const open = async (id) => {
     await page.locator("tbody").getByRole("button", { name: `History Project ${id}` }).click();
@@ -97,6 +106,10 @@ try {
   assert.equal(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true, "Mobile dialog does not overflow horizontally");
   await close(dialog);
   console.log("PASS multiple approved milestones, loading, keyboard tabs, and mobile width");
+
+  await page.goto(origin + "/", { waitUntil: "networkidle" });
+  assert.deepEqual(await page.evaluate(() => window.__longRefreshIntervals), [], "Public home should not schedule recurring data refreshes.");
+  console.log("PASS public home and project dashboard do not schedule periodic data refreshes");
 
   dialog = await open(2);
   await dialog.getByRole("tab", { name: "History" }).click();

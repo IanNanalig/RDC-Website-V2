@@ -176,7 +176,7 @@ def _log_activity(user, action, details):
     UserActivity.objects.create(
         user=user,
         actor_username=getattr(user, "username", "") or "",
-        actor_full_name=(getattr(user, "full_name", "") or getattr(user, "get_full_name", lambda: "")()).strip(),
+        actor_full_name=(getattr(user, "get_full_name", lambda: "")() or user.username).strip(),
         role=getattr(user, "role", "") or "",
         event="api_action",
         details={"action": action, **details},

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import { userDisplayName } from "../../utils/userDisplayName";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 interface DashboardStats {
@@ -50,7 +51,7 @@ const ValidatorDashboard: React.FC = () => {
   }, [navigate]);
 
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
-  const displayName = user?.full_name || user?.username || "Validator";
+  const displayName = userDisplayName(user, "Validator");
 
   const queueMix = [
     { label: "Draft", count: stats.review_draft || 0 },

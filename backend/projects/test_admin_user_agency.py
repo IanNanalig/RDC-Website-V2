@@ -44,13 +44,14 @@ class AccountSetupAgencyTests(APITestCase):
         return {
             "token": token.token if isinstance(token, PasswordSetupToken) else token,
             "new_password": "ValidSetup123_",
-            "full_name": "Agency User",
+            "first_name": "Agency",
+            "last_name": "User",
             "agency": agency,
             "agency_head": "Agency Head",
             "office": "Main Office",
             "division": "Planning",
             "position": "Officer",
-            "contact_number": "09170000000",
+            "contact_number": "0212345678",
             "phone_number": "09170000000",
         }
 

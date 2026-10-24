@@ -1,14 +1,16 @@
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useNavigate, Link, useLocation } from "react-router-dom";
 import photo1 from "../assets/Photo-Corousel/Photos/photo1.jpg";
 import rdcLogo from "../assets/optimized/rdc-logo-256.webp";
 import { API_BASE_URL } from "../config/api";
-import { completePortalLogin } from "../services/api";
+import { api, completePortalLogin } from "../services/api";
 
 const Login: React.FC = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [error, setError] = useState(() => {
     const message = localStorage.getItem("sessionMessage") || "";
     if (message) {
@@ -23,6 +25,67 @@ const Login: React.FC = () => {
     (location.state as { registrationPendingActivation?: boolean } | null)?.registrationPendingActivation,
   );
 
+  const redirectToRoleHome = useCallback((role: string) => {
+    const paths: Record<string, string> = {
+      admin: "/admin/dashboard",
+      validator: "/validator/dashboard",
+      employee: "/employee/dashboard",
+      content_editor: "/content/dashboard",
+    };
+    navigate(paths[role] || "/", { replace: true });
+  }, [navigate]);
+
+  useEffect(() => {
+    let active = true;
+    let checking = false;
+    const findExistingSession = async () => {
+      if (checking) return;
+      const hasStoredSession = Boolean(
+        localStorage.getItem("accessToken") || localStorage.getItem("refreshToken"),
+      );
+      if (!hasStoredSession) {
+        if (active) setCheckingSession(false);
+        return;
+      }
+      checking = true;
+      if (active) setCheckingSession(true);
+      try {
+        const currentUser = await api.get("auth/me/");
+        if (!active || !currentUser?.role) return;
+        localStorage.setItem("user", JSON.stringify(currentUser));
+        localStorage.setItem("username", currentUser.username || currentUser.email || "");
+        localStorage.setItem("isLoggedIn", "true");
+        window.dispatchEvent(new Event("portal:auth-changed"));
+        redirectToRoleHome(currentUser.role);
+      } catch {
+        // Invalid, expired, or revoked browser sessions are cleared by the API client.
+      } finally {
+        checking = false;
+        if (active) setCheckingSession(false);
+      }
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (["user", "isLoggedIn", "accessToken", "refreshToken"].includes(event.key || "")) {
+        window.setTimeout(() => void findExistingSession(), 0);
+      }
+    };
+    const onAuthChanged = () => void findExistingSession();
+    const onSessionExpired = (event: Event) => {
+      const detail = (event as CustomEvent<{ message?: string }>).detail;
+      if (detail?.message) setError(detail.message);
+    };
+    void findExistingSession();
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("portal:auth-changed", onAuthChanged);
+    window.addEventListener("portal:session-expired", onSessionExpired);
+    return () => {
+      active = false;
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("portal:auth-changed", onAuthChanged);
+      window.removeEventListener("portal:session-expired", onSessionExpired);
+    };
+  }, [redirectToRoleHome]);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
@@ -31,10 +94,23 @@ const Login: React.FC = () => {
       const res = await fetch(`${API_BASE_URL}/auth/login/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({
+          email,
+          password,
+          remember_me: rememberMe,
+          browser_refresh: localStorage.getItem("refreshToken") || undefined,
+        }),
       });
 
       const data = await res.json();
+      if (data?.active_session && data?.user?.role) {
+        localStorage.setItem("user", JSON.stringify(data.user));
+        localStorage.setItem("username", data.user.username || data.user.email || "");
+        localStorage.setItem("isLoggedIn", "true");
+        window.dispatchEvent(new Event("portal:auth-changed"));
+        redirectToRoleHome(data.user.role);
+        return;
+      }
       if (!res.ok) {
         throw new Error(data?.detail || "Invalid email or password");
       }
@@ -46,25 +122,16 @@ const Login: React.FC = () => {
       localStorage.setItem("user", JSON.stringify(user));
       localStorage.setItem("isLoggedIn", "true");
       localStorage.setItem("username", user.username);
+      localStorage.setItem("portalActivityPingAt", String(Date.now()));
+      window.dispatchEvent(new Event("portal:auth-changed"));
 
       const from =
         (location.state as unknown as { from?: { pathname?: string } })?.from
           ?.pathname || "/";
-      switch (user.role) {
-        case "admin":
-          navigate("/admin/dashboard", { replace: true });
-          break;
-        case "validator":
-          navigate("/validator/dashboard", { replace: true });
-          break;
-        case "employee":
-          navigate("/employee/dashboard", { replace: true });
-          break;
-        case "content_editor":
-          navigate("/content/dashboard", { replace: true });
-          break;
-        default:
-          navigate(from, { replace: true });
+      if (["admin", "validator", "employee", "content_editor"].includes(user.role)) {
+        redirectToRoleHome(user.role);
+      } else {
+        navigate(from, { replace: true });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Login failed";
@@ -264,6 +331,8 @@ const Login: React.FC = () => {
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
+                    checked={rememberMe}
+                    onChange={(event) => setRememberMe(event.target.checked)}
                     className="w-3.5 h-3.5 text-blue-500 rounded border-gray-300 focus:ring-blue-200"
                   />
                   <span className="text-xs text-gray-600">Remember me</span>
@@ -279,7 +348,7 @@ const Login: React.FC = () => {
               {/* Login Button */}
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || checkingSession}
                 className={`w-full py-2.5 px-4 rounded-lg font-medium text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-300 relative ${
                   loading
                     ? "bg-blue-400 cursor-not-allowed"

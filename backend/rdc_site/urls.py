@@ -4,7 +4,7 @@ from django.contrib import admin
 from django.conf import settings
 from django.urls import path, include, re_path
 from django.views.static import serve
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from projects.views import LoginView, PortalSessionRefreshView
 
 
 def media_urlpatterns():
@@ -32,8 +32,8 @@ urlpatterns = [
     path('api/', include('projects.urls')),
     path('api/', include('cms.urls')),
     path('api/', include('ai_engine.urls')),
-    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('api/token/', LoginView.as_view(), name='token_obtain_pair'),
+    path('api/token/refresh/', PortalSessionRefreshView.as_view(), name='token_refresh'),
 ]
 
 urlpatterns += media_urlpatterns()

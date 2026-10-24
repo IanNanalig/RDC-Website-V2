@@ -17,7 +17,7 @@ async function openForm(viewport, existing = false, fallback = false) {
   await page.addInitScript(() => {
     localStorage.setItem("isLoggedIn", "true");
     localStorage.setItem("accessToken", "year-picker-test");
-    localStorage.setItem("user", JSON.stringify({ id: 1, username: "year-tester", full_name: "Year Tester", role: "employee", agency: "DENR" }));
+    localStorage.setItem("user", JSON.stringify({ id: 1, username: "year-tester", first_name: "Year", last_name: "Tester", role: "employee", agency: "DENR" }));
   });
   await page.route("**/api/**", async (route) => {
     const url = route.request().url();

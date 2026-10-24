@@ -12,7 +12,6 @@ class User(AbstractUser):
     ]
     email = models.EmailField(unique=True, null=True, blank=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
-    full_name = models.CharField(max_length=200, blank=True, default="")
     agency = models.CharField(max_length=200, blank=True, default="")
     agency_head = models.CharField(max_length=200, blank=True, default="")
     office = models.CharField(max_length=200, blank=True, default="")
@@ -572,3 +571,33 @@ class PublicPageContent(models.Model):
 
     def __str__(self):
         return f"{self.get_page_display()} / {self.section_key} ({self.status})"
+
+
+class PortalSession(models.Model):
+    """Revocable browser session backing portal access and refresh credentials."""
+
+    REVOCATION_REASONS = [
+        ("new_login", "New device login"),
+        ("logout", "User logout"),
+        ("idle_timeout", "Inactivity timeout"),
+        ("credential_change", "Credential change"),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="portal_sessions")
+    session_version = models.PositiveIntegerField()
+    refresh_token_digest = models.CharField(max_length=64, unique=True)
+    remember_me = models.BooleanField(default=False)
+    last_activity_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revocation_reason = models.CharField(max_length=20, choices=REVOCATION_REASONS, blank=True, default="")
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "revoked_at"])]
+
+    @property
+    def is_active(self):
+        return self.revoked_at is None
+
+    def __str__(self):
+        return f"Portal session for {self.user_id} ({'active' if self.is_active else 'revoked'})"

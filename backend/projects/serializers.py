@@ -29,6 +29,10 @@ SYSTEM_MANAGED_DIFF_ROOTS = {
 }
 
 
+def _user_display_name(user):
+    return (user.get_full_name() or user.get_username() or "").strip()
+
+
 class ContributorFormVersionStatusMixin:
     """Expose whether a saved simplified project predates the live CMS form."""
 
@@ -93,7 +97,8 @@ class UserSerializer(serializers.ModelSerializer):
             "role",
             "is_active",
             "password",
-            "full_name",
+            "first_name",
+            "last_name",
             "agency",
             "agency_head",
             "office",
@@ -115,6 +120,22 @@ class UserSerializer(serializers.ModelSerializer):
         user.set_password(password)
         user.save()
         return user
+
+    def validate_first_name(self, value):
+        return self._validate_person_name(value)
+
+    def validate_last_name(self, value):
+        return self._validate_person_name(value)
+
+    def _validate_person_name(self, value):
+        value = value.strip()
+        if not value or len(value) > 150 or not any(character.isalpha() for character in value) or any(
+            not (character.isalpha() or character in " '-") for character in value
+        ):
+            raise serializers.ValidationError(
+                "Use 1–150 letters, spaces, apostrophes, or hyphens."
+            )
+        return value
 
     def update(self, instance, validated_data):
         password = validated_data.pop("password", None)
@@ -183,7 +204,7 @@ class PublicEventSerializer(serializers.ModelSerializer):
     def _name(self, user):
         if not user:
             return ""
-        return user.full_name or user.get_full_name() or user.username
+        return _user_display_name(user) or user.username
 
     def get_created_by_name(self, obj):
         return self._name(obj.created_by)
@@ -311,11 +332,7 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
     def get_submitted_by_name(self, obj):
         if not obj.created_by:
             return ""
-        if getattr(obj.created_by, "full_name", "").strip():
-            return obj.created_by.full_name
-        if obj.created_by.get_full_name():
-            return obj.created_by.get_full_name()
-        return obj.created_by.username
+        return _user_display_name(obj.created_by) or obj.created_by.username
 
     def get_priority_analysis(self, obj):
         analysis = self._latest_analysis(obj)
@@ -736,7 +753,7 @@ class ProjectPriorityConfirmationSerializer(serializers.ModelSerializer):
     def get_validator_name(self, obj):
         if not obj.validator:
             return ""
-        return obj.validator.full_name.strip() or obj.validator.get_full_name() or obj.validator.username
+        return _user_display_name(obj.validator) or obj.validator.username
 
 
 class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
@@ -774,7 +791,7 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
     def get_validator_name(self, obj):
         if not obj.validator:
             return ""
-        return obj.validator.full_name.strip() or obj.validator.get_full_name() or obj.validator.username
+        return _user_display_name(obj.validator) or obj.validator.username
 
     def get_latest_confirmation(self, obj):
         confirmation = obj.confirmations.first()
@@ -843,7 +860,7 @@ class ProjectRevisionSerializer(ContributorFormVersionStatusMixin, serializers.M
     def _name(self, user):
         if not user:
             return ""
-        return user.full_name.strip() or user.get_full_name() or user.username
+        return _user_display_name(user) or user.username
 
     def get_submission_type(self, obj):
         profile = self._form_profile(obj)
@@ -1274,7 +1291,7 @@ class AccessRequestSerializer(serializers.ModelSerializer):
 
 class UserActivitySerializer(serializers.ModelSerializer):
     username = serializers.SerializerMethodField()
-    full_name = serializers.SerializerMethodField()
+    display_name = serializers.SerializerMethodField()
     project_title = serializers.SerializerMethodField()
     target_label = serializers.SerializerMethodField()
 
@@ -1283,7 +1300,7 @@ class UserActivitySerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "username",
-            "full_name",
+            "display_name",
             "role",
             "event",
             "project",
@@ -1315,21 +1332,19 @@ class UserActivitySerializer(serializers.ModelSerializer):
     def get_username(self, obj):
         return obj.actor_username or (obj.user.username if obj.user else "Deleted user")
 
-    def get_full_name(self, obj):
+    def get_display_name(self, obj):
         user = getattr(obj, "user", None)
         if not user:
             return obj.actor_full_name or obj.actor_username or "Deleted user"
         if obj.actor_full_name:
             return obj.actor_full_name
-        if getattr(user, "full_name", "").strip():
-            return user.full_name
-        full = user.get_full_name()
-        return full or user.username
+        return _user_display_name(user) or user.username
 
 
 class ProjectCommentSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username", read_only=True)
-    full_name = serializers.CharField(source="user.full_name", read_only=True)
+    first_name = serializers.CharField(source="user.first_name", read_only=True)
+    last_name = serializers.CharField(source="user.last_name", read_only=True)
 
     class Meta:
         model = ProjectComment
@@ -1338,13 +1353,14 @@ class ProjectCommentSerializer(serializers.ModelSerializer):
             "project",
             "user",
             "username",
-            "full_name",
+            "first_name",
+            "last_name",
             "role",
             "agency",
             "comment",
             "created_at",
         ]
-        read_only_fields = ["id", "project", "user", "username", "full_name", "role", "agency", "created_at"]
+        read_only_fields = ["id", "project", "user", "username", "first_name", "last_name", "role", "agency", "created_at"]
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -1377,7 +1393,7 @@ class NotificationSerializer(serializers.ModelSerializer):
     def get_actor_name(self, obj):
         if not obj.actor:
             return "System"
-        return obj.actor.full_name.strip() or obj.actor.get_full_name() or obj.actor.username
+        return _user_display_name(obj.actor) or obj.actor.username
 
     def get_project_title(self, obj):
         if not obj.project:

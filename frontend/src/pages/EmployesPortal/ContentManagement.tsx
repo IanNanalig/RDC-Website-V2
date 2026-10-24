@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import PortalLayout from "../../components/portal/PortalLayout";
+import { userDisplayName } from "../../utils/userDisplayName";
 
 const CmsManager = lazy(() => import("../../components/portal/CmsManager"));
 const PublicEventsManager = lazy(() => import("../../components/portal/PublicEventsManager"));
@@ -8,7 +9,8 @@ const ArchivedContent = lazy(() => import("../../components/portal/ArchivedConte
 
 type PortalUser = {
   username?: string;
-  full_name?: string;
+  first_name?: string;
+  last_name?: string;
   role?: "admin" | "validator" | "employee" | "content_editor";
 };
 
@@ -32,7 +34,7 @@ const ContentManagement = () => {
   const userRaw = localStorage.getItem("user");
   const user: PortalUser = userRaw ? JSON.parse(userRaw) : {};
   const role = user.role === "content_editor" ? "content_editor" : "admin";
-  const displayName = user.full_name || user.username || "Content User";
+  const displayName = userDisplayName(user, "Content User");
 
   return (
     <PortalLayout

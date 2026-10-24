@@ -2,6 +2,10 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import { userDisplayName } from "../../utils/userDisplayName";
+import { MobileSortControls, SortableTableHeader } from "../../components/portal/TableSortControls";
+import { sortRows } from "../../utils/tableSort";
+import type { SortDirection } from "../../utils/tableSort";
 
 type ApiProject = {
   id: number;
@@ -83,11 +87,13 @@ const ValidatorReviewHistory: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
+  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const user = useMemo(() => {
     const userData = localStorage.getItem("user");
     return userData ? JSON.parse(userData) : null;
   }, []);
-  const displayName = user?.full_name || user?.username || "Validator";
+  const displayName = userDisplayName(user, "Validator");
 
   const loadProjects = useCallback(async () => {
     setLoading(true);
@@ -124,11 +130,41 @@ const ValidatorReviewHistory: React.FC = () => {
         .includes(q),
     );
   }, [projects, query]);
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const sortOptions = [
+    { key: "title", label: "Title" },
+    { key: "contributor", label: "Contributor" },
+    { key: "agency", label: "Agency" },
+    { key: "budget", label: "Budget" },
+    { key: "status", label: "Status" },
+    { key: "review", label: "Review State" },
+    { key: "updated", label: "Updated" },
+  ];
+  const changeSort = (key: string) => {
+    setPage(1);
+    if (sortKey === key) setSortDirection((direction) => direction === "asc" ? "desc" : "asc");
+    else { setSortKey(key); setSortDirection("asc"); }
+  };
+  const toggleSortDirection = () => {
+    setPage(1);
+    setSortDirection((direction) => direction === "asc" ? "desc" : "asc");
+  };
+  const sortedProjects = useMemo(() => sortRows(filtered, sortKey, sortDirection, (project, key) => {
+    switch (key) {
+      case "title": return project.title || project.name || "Untitled";
+      case "contributor": return project.submitted_by_name || project.submitted_by?.username || "Unknown";
+      case "agency": return project.agency || "";
+      case "budget": return Number(project.budget || 0);
+      case "status": return statusLabel(project.status);
+      case "review": return reviewStateLabel(project);
+      case "updated": return project.updated_at ? new Date(project.updated_at).getTime() : null;
+      default: return "";
+    }
+  }), [filtered, sortKey, sortDirection]);
+  const pageCount = Math.max(1, Math.ceil(sortedProjects.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
-  const pageStart = filtered.length ? (currentPage - 1) * PAGE_SIZE + 1 : 0;
-  const pageEnd = Math.min(currentPage * PAGE_SIZE, filtered.length);
-  const visibleProjects = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  const pageStart = sortedProjects.length ? (currentPage - 1) * PAGE_SIZE + 1 : 0;
+  const pageEnd = Math.min(currentPage * PAGE_SIZE, sortedProjects.length);
+  const visibleProjects = sortedProjects.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   useEffect(() => {
     setPage((current) => Math.min(current, pageCount));
@@ -145,12 +181,20 @@ const ValidatorReviewHistory: React.FC = () => {
       topActions={<button onClick={loadProjects} className="portal-btn portal-btn-ghost">Refresh</button>}
     >
       <div className="portal-card mb-3">
-        <div className="portal-card-body">
+        <div className="portal-card-body space-y-3">
           <input
             value={query}
             onChange={(e) => { setQuery(e.target.value); setPage(1); }}
             placeholder="Search by title, agency, or contributor"
             className="w-full border border-slate-200 rounded-xl px-3 py-2 bg-white"
+          />
+          <MobileSortControls
+            className="2xl:hidden"
+            options={sortOptions}
+            sortKey={sortKey}
+            direction={sortDirection}
+            onSortKeyChange={changeSort}
+            onToggleDirection={toggleSortDirection}
           />
         </div>
       </div>
@@ -158,7 +202,7 @@ const ValidatorReviewHistory: React.FC = () => {
       <div className="portal-card">
         {loading ? (
           <div className="portal-card-body text-slate-500">Loading reviewed history...</div>
-        ) : filtered.length === 0 ? (
+        ) : sortedProjects.length === 0 ? (
           <div className="portal-card-body text-slate-500">No reviewed/endorsed projects found yet.</div>
         ) : (
           <>
@@ -188,13 +232,13 @@ const ValidatorReviewHistory: React.FC = () => {
           <table className="portal-table hidden lg:table">
             <thead>
               <tr>
-                <th>Title</th>
-                <th className="min-w-[160px]">Contributor</th>
-                <th className="hidden lg:table-cell">Agency</th>
-                <th className="hidden xl:table-cell">Budget</th>
-                <th>Status</th>
-                <th>Review State</th>
-                <th className="hidden 2xl:table-cell">Updated</th>
+                <SortableTableHeader label="Title" sortKey="title" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
+                <SortableTableHeader label="Contributor" sortKey="contributor" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="min-w-[160px]" />
+                <SortableTableHeader label="Agency" sortKey="agency" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden lg:table-cell" />
+                <SortableTableHeader label="Budget" sortKey="budget" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden xl:table-cell" />
+                <SortableTableHeader label="Status" sortKey="status" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
+                <SortableTableHeader label="Review State" sortKey="review" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
+                <SortableTableHeader label="Updated" sortKey="updated" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden 2xl:table-cell" />
                 <th>Actions</th>
               </tr>
             </thead>
@@ -233,7 +277,7 @@ const ValidatorReviewHistory: React.FC = () => {
           </div>
           <div className="portal-card-body flex flex-col gap-3 border-t border-slate-200 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-slate-600" aria-live="polite">
-              Showing <span className="font-semibold">{pageStart}</span>–<span className="font-semibold">{pageEnd}</span> of {filtered.length} matching projects
+              Showing <span className="font-semibold">{pageStart}</span>–<span className="font-semibold">{pageEnd}</span> of {sortedProjects.length} matching projects
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={currentPage <= 1} className="portal-btn portal-btn-ghost disabled:cursor-not-allowed disabled:opacity-50">Previous</button>
