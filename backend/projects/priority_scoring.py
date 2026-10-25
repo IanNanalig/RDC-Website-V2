@@ -762,7 +762,9 @@ def _pap_explanation(key, raw, weight, score, remarks, facts, form):
             )
     else:
         selected = facts.get("spatialCoverageScope")
-        location = _compact_text(form.get("location"), maximum=140)
+        from .utils import format_project_locations
+
+        location = _compact_text(format_project_locations(form.get("location")), maximum=140)
         if not selected:
             reason = (
                 "No official spatial coverage category was supplied by the validator. A location written in the form "
@@ -1365,6 +1367,16 @@ def source_hash(
             )
         except Exception:
             historical_dataset_version = "unavailable"
+    document_source_hash = ""
+    if project is not None:
+        try:
+            from .document_assessments import current_document_source_hash
+            from .document_policy import resolve_project_document_policy
+
+            policy = resolve_project_document_policy(project)
+            document_source_hash = current_document_source_hash(project, policy) if policy else ""
+        except Exception:
+            document_source_hash = "unavailable"
     payload = {
         "snapshot": snapshot if isinstance(snapshot, dict) else {},
         "supplements": supplements if isinstance(supplements, dict) else {},
@@ -1374,6 +1386,7 @@ def source_hash(
         "ai_primary_model": getattr(settings, "GROQ_PRIMARY_MODEL", "") if getattr(settings, "GROQ_ENABLED", False) else "",
         "ai_backup_model": getattr(settings, "GROQ_BACKUP_MODEL", "") if getattr(settings, "GROQ_ENABLED", False) else "",
         "historical_dataset_version": historical_dataset_version,
+        "document_source_hash": document_source_hash,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -1425,7 +1438,7 @@ def analyze_project(project, validator, snapshot, supplements=None):
     form = _scoring_form(snapshot)
     facts = _merge_facts(form, supplements)
     text = _normalized_text(form)
-    lgu_count = len(derive_ncr_lgus(str(form.get("location") or "")))
+    lgu_count = len(derive_ncr_lgus(form.get("location")))
     missing = []
 
     readiness = _scale_rating(dictionaries["readiness"], facts.get("readinessLevel"))
@@ -1755,19 +1768,44 @@ def analyze_project(project, validator, snapshot, supplements=None):
 
 
 def has_matching_confirmation(project, snapshot):
+    from .document_assessments import current_document_assessment
+    from .document_policy import resolve_project_document_policy
+
     active_rules = _active_ruleset()
     current_snapshot_hash = _confirmation_snapshot_hash(snapshot)
     confirmed_analyses = project.priority_analyses.filter(
         confirmations__isnull=False,
         rule_set=active_rules,
-    ).distinct().only("input_snapshot")
-    return any(
-        _confirmation_snapshot_hash(analysis.input_snapshot) == current_snapshot_hash
-        for analysis in confirmed_analyses
-    )
+    ).distinct().prefetch_related("confirmations").only("input_snapshot")
+    policy = resolve_project_document_policy(project)
+    has_documents = bool(policy and project.supporting_documents.filter(removed_at__isnull=True).exists())
+    documents_need_assessment = bool(policy and (policy.get("required") or has_documents))
+    assessment = current_document_assessment(project) if documents_need_assessment else None
+    for analysis in confirmed_analyses:
+        if _confirmation_snapshot_hash(analysis.input_snapshot) != current_snapshot_hash:
+            continue
+        for confirmation in analysis.confirmations.all():
+            if not documents_need_assessment:
+                return True
+            if not assessment or confirmation.document_assessment_id != assessment.id:
+                continue
+            if assessment.status == "pass":
+                return True
+            if confirmation.document_override and confirmation.document_override_rationale.strip():
+                return True
+    return False
 
 
-def confirm_analysis(analysis, validator, adjusted_scores, final_priority, override_rationale, confirmed_flags):
+def confirm_analysis(
+    analysis,
+    validator,
+    adjusted_scores,
+    final_priority,
+    override_rationale,
+    confirmed_flags,
+    document_override=False,
+    document_override_rationale="",
+):
     project = Project.objects.only("status", "profile_data").get(pk=analysis.project_id)
     profile = project.profile_data if isinstance(project.profile_data, dict) else {}
     review = profile.get("validator_review") if isinstance(profile.get("validator_review"), dict) else {}
@@ -1779,6 +1817,24 @@ def confirm_analysis(analysis, validator, adjusted_scores, final_priority, overr
         raise ValueError("Final priority must be high or low.")
     if (final_priority != analysis.suggested_priority or missing) and not str(override_rationale or "").strip():
         raise ValueError("An override rationale is required for an incomplete analysis or a changed priority.")
+    from .document_assessments import current_document_assessment
+    from .document_policy import resolve_project_document_policy
+
+    document_policy = resolve_project_document_policy(project)
+    has_documents = bool(
+        document_policy
+        and project.supporting_documents.filter(removed_at__isnull=True).exists()
+    )
+    documents_need_assessment = bool(
+        document_policy and (document_policy.get("required") or has_documents)
+    )
+    document_assessment = current_document_assessment(project) if documents_need_assessment else None
+    document_rationale = str(document_override_rationale or "").strip()
+    if documents_need_assessment and (not document_assessment or document_assessment.status != "pass"):
+        if not document_override or not document_rationale:
+            raise ValueError(
+                "The supporting-document assessment did not pass. Select the document override and provide a rationale."
+            )
     confirmation = ProjectPriorityConfirmation.objects.create(
         analysis=analysis,
         validator=validator,
@@ -1786,6 +1842,9 @@ def confirm_analysis(analysis, validator, adjusted_scores, final_priority, overr
         final_priority=final_priority,
         override_rationale=str(override_rationale or "").strip(),
         confirmed_flags=confirmed_flags if isinstance(confirmed_flags, list) else [],
+        document_assessment=document_assessment,
+        document_override=bool(documents_need_assessment and document_assessment and document_assessment.status != "pass" and document_override),
+        document_override_rationale=document_rationale if document_override else "",
     )
     from ai_engine.services import sync_training_record
     sync_training_record(confirmation)

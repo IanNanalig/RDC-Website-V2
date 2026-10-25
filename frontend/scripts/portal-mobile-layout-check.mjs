@@ -118,6 +118,35 @@ async function assertSimplifiedReviewFits(page, width) {
 }
 
 try {
+  for (const [role, path] of [
+    ["admin", "/admin/dashboard"],
+    ["validator", "/validator/dashboard"],
+    ["employee", "/employee/dashboard"],
+    ["content_editor", "/content/dashboard"],
+  ]) {
+    const viewport = { width: 1024, height: 720 };
+    const { context, page } = await openPortal(viewport, role, path);
+    const sidebar = page.locator("#portal-navigation");
+    const initialBounds = await sidebar.boundingBox();
+    assert.ok(initialBounds, `${role} sidebar is visible`);
+    assert.equal(await sidebar.evaluate((element) => getComputedStyle(element).position), "sticky",
+      `${role} uses the floating desktop sidebar`);
+    assert.ok(initialBounds.x >= 15 && initialBounds.y >= 15,
+      `${role} sidebar is inset from the viewport edges: ${JSON.stringify(initialBounds)}`);
+    assert.ok(initialBounds.y + initialBounds.height <= viewport.height + 1,
+      `${role} sidebar fits the viewport height`);
+    assert.ok(Number.parseFloat(await sidebar.evaluate((element) => getComputedStyle(element).borderRadius)) > 0,
+      `${role} sidebar keeps its floating rounded panel`);
+    await page.locator("main").evaluate((element) => { element.style.minHeight = "1800px"; });
+    await page.evaluate(() => window.scrollTo(0, 600));
+    await page.waitForTimeout(50);
+    const scrolledBounds = await sidebar.boundingBox();
+    assert.ok(scrolledBounds && Math.abs(scrolledBounds.y - initialBounds.y) <= 1,
+      `${role} sidebar remains visible while page content scrolls`);
+    await context.close();
+    console.log(`PASS ${role} floating sidebar`);
+  }
+
   for (const width of [320, 360, 390, 430, 768, 1024, 1280]) {
     const { context, page } = await openPortal(
       { width, height: 844 }, "admin", "/admin/users?tab=system-users",

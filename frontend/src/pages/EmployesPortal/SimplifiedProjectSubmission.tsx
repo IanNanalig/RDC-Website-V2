@@ -9,6 +9,10 @@ import PriorityAnalysisPanel from "../../components/portal/PriorityAnalysisPanel
 import YearOnlyPicker from "../../components/portal/YearOnlyPicker";
 import { useEncodingWindow, useProgressUpdateWindow } from "../../hooks/useEncodingWindow";
 import cmsApi from "../../services/cmsApi";
+import projectDocumentsApi, {
+  type SupportingDocument,
+  type DocumentAssessment,
+} from "../../services/projectDocumentsApi";
 import {
   cloneContributorFormSchema,
   contributorFieldApplies,
@@ -26,7 +30,7 @@ type SimplifiedForm = {
   agencyName: string;
   program: string;
   projectActivity: string;
-  location: string;
+  location: string | string[];
   description: string;
   objective: string;
   startYear: string;
@@ -86,7 +90,7 @@ const initialForm: SimplifiedForm = {
   agencyName: "",
   program: "",
   projectActivity: "",
-  location: "",
+  location: [],
   description: "",
   objective: "",
   startYear: "",
@@ -506,6 +510,74 @@ const CheckboxGroup: React.FC<{
   );
 };
 
+const MultiSelectDropdown: React.FC<{
+  label: string;
+  options: Array<string | { value: string; label: string }>;
+  values: string[];
+  onChange: (values: string[]) => void;
+  diffBefore?: string;
+  editMeta?: EditMeta;
+  required?: boolean;
+  helpText?: string;
+  disabled?: boolean;
+}> = ({ label, options, values, onChange, diffBefore, editMeta, required, helpText, disabled }) => {
+  const selectedLabels = options
+    .filter((option) => values.includes(typeof option === "string" ? option : option.value))
+    .map((option) => typeof option === "string" ? option : option.label);
+  const unknownValues = values.filter((value) => !options.some((option) =>
+    (typeof option === "string" ? option : option.value) === value,
+  ));
+  const summary = [...selectedLabels, ...unknownValues].join(", ") || "Select one or more locations";
+  const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
+
+  return (
+    <div className="min-w-0" role="group" aria-label={label} aria-required={required}>
+      <p className="mb-1 text-sm text-slate-700">{label}</p>
+      <details className={`group rounded border bg-white ${disabled ? "pointer-events-none bg-slate-100 text-slate-500" : ""} ${diffBefore !== undefined ? "border-amber-500 bg-amber-50" : hasEditMeta ? "border-cyan-500 bg-cyan-50" : ""}`}>
+        <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 [&::-webkit-details-marker]:hidden">
+          <span className={`min-w-0 truncate ${values.length ? "text-slate-800" : "text-slate-500"}`}>{summary}</span>
+          <span aria-hidden="true" className="h-2 w-2 shrink-0 rotate-45 border-b-2 border-r-2 border-slate-500 transition-transform group-open:rotate-[225deg]" />
+        </summary>
+        <div className="max-h-64 overflow-y-auto border-t border-slate-200 p-2">
+          {options.map((option) => {
+            const optionValue = typeof option === "string" ? option : option.value;
+            const optionLabel = typeof option === "string" ? option : option.label;
+            return (
+              <label key={optionValue} className="flex cursor-pointer items-start gap-2 rounded px-2 py-2 text-sm hover:bg-blue-50">
+                <input
+                  className="mt-0.5"
+                  type="checkbox"
+                  checked={values.includes(optionValue)}
+                  disabled={disabled}
+                  onChange={(event) => onChange(event.target.checked
+                    ? [...values, optionValue]
+                    : values.filter((value) => value !== optionValue))}
+                />
+                <span>{optionLabel}</span>
+              </label>
+            );
+          })}
+          {unknownValues.map((value) => (
+            <label key={`legacy-${value}`} className="flex cursor-pointer items-start gap-2 rounded bg-amber-50 px-2 py-2 text-sm text-amber-900">
+              <input
+                className="mt-0.5"
+                type="checkbox"
+                checked
+                disabled={disabled}
+                onChange={() => onChange(values.filter((current) => current !== value))}
+              />
+              <span>{value} (previous form value)</span>
+            </label>
+          ))}
+        </div>
+      </details>
+      {helpText && <p className="mt-1 text-xs text-slate-500">{helpText}</p>}
+      {diffBefore !== undefined && <p className="mt-1 text-xs text-amber-700">Original: {diffBefore || "(empty)"}</p>}
+      {hasEditMeta && <p className="mt-1 text-xs text-cyan-700">Last edited by {editMeta?.name || editMeta?.by || "User"}{editMeta?.at ? ` at ${new Date(editMeta.at).toLocaleString()}` : ""}</p>}
+    </div>
+  );
+};
+
 const SelectField: React.FC<{
   label: string;
   value: string;
@@ -600,6 +672,12 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const [comments, setComments] = useState<ProjectComment[]>([]);
   const [commentInput, setCommentInput] = useState("");
   const [commentLoading, setCommentLoading] = useState(false);
+  const [supportingDocuments, setSupportingDocuments] = useState<SupportingDocument[]>([]);
+  const [queuedDocuments, setQueuedDocuments] = useState<File[]>([]);
+  const [documentAssessment, setDocumentAssessment] = useState<DocumentAssessment | null>(null);
+  const [documentBusy, setDocumentBusy] = useState(false);
+  const [documentAction, setDocumentAction] = useState("");
+  const [documentNotice, setDocumentNotice] = useState("");
   const isValidator = user?.role === "validator";
   const isAdmin = user?.role === "admin";
   const isEmployee = user?.role === "employee";
@@ -624,6 +702,18 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const canReviseSubmitted = isEmployee && isEditMode && !isRevisionMode && workflowStatus === "needs_revision";
   const canReviseProgress = isEmployee && isRevisionMode && revisionState === "reviewed" && editableFields.length > 0;
   const formRef = useRef(form);
+  const documentField = useMemo(
+    () => formSchema.sections
+      .filter((section) => section.visible !== false && !section.admin_only)
+      .flatMap((section) => section.fields)
+      .find((field) => field.type === "document_upload" && field.visible !== false),
+    [formSchema],
+  );
+  const canChangeSupportingDocuments = Boolean(
+    isEmployee && !isRevisionMode && (
+      !isEditMode || projectStatus === "planning" || canReviseSubmitted && documentField && editableFields.includes(documentField.key)
+    ),
+  );
 
   const draftStorageKey = useMemo(() => {
     const identity =
@@ -632,10 +722,27 @@ const SimplifiedProjectSubmission: React.FC = () => {
       (user?.id ? String(user.id) : "") ||
       user?.role ||
       "";
-    if (!identity) return "";
+    // A new submission must always begin with a clean form. Browser recovery
+    // is reserved for an existing server-side project or progress revision.
+    if (!identity || !isEditMode) return "";
     const recordKey = isRevisionMode ? `revision_${revisionId}` : id || "new";
     return `simplified_submission_draft_v3_${identity}_${recordKey}`;
-  }, [user?.username, user?.email, user?.id, user?.role, id, isRevisionMode, revisionId]);
+  }, [user?.username, user?.email, user?.id, user?.role, id, isEditMode, isRevisionMode, revisionId]);
+
+  useEffect(() => {
+    if (!isEmployee || isEditMode) return;
+    const identity =
+      user?.username ||
+      user?.email ||
+      (user?.id ? String(user.id) : "") ||
+      user?.role ||
+      "";
+    if (identity) {
+      localStorage.removeItem(`simplified_submission_draft_v3_${identity}_new`);
+    }
+    setRestoreNotice("");
+    setLastLocalSaveAt("");
+  }, [isEditMode, isEmployee, user?.email, user?.id, user?.role, user?.username]);
 
   const updateFormWithLocalDraft = useCallback((updater: (prev: SimplifiedForm) => SimplifiedForm) => {
     setForm((prev) => {
@@ -725,7 +832,29 @@ const SimplifiedProjectSubmission: React.FC = () => {
         const pinnedVersion = Number(formMarker?.version || 1);
         try {
           const payload = await cmsApi.getContributorFormVersion(pinnedKey, pinnedVersion);
-          setFormSchema(cloneContributorFormSchema(payload.schema));
+          const pinnedSchema = cloneContributorFormSchema(payload.schema);
+          const hasDocumentField = pinnedSchema.sections.some((section) =>
+            section.fields.some((field) => field.type === "document_upload"),
+          );
+          if (!hasDocumentField && !isRevisionMode) {
+            try {
+              const current = await cmsApi.getContributorForm(pinnedKey);
+              const currentDocumentSection = current.schema.sections.find((section) =>
+                section.visible !== false && section.fields.some((field) => field.type === "document_upload" && field.visible !== false),
+              );
+              if (currentDocumentSection) {
+                const firstAdminSection = pinnedSchema.sections.findIndex((section) => section.admin_only);
+                pinnedSchema.sections.splice(
+                  firstAdminSection < 0 ? pinnedSchema.sections.length : firstAdminSection,
+                  0,
+                  cloneContributorFormSchema({ ...pinnedSchema, sections: [currentDocumentSection] }).sections[0],
+                );
+              }
+            } catch (error) {
+              console.warn("Failed to add the current supporting-document policy to the legacy form:", error);
+            }
+          }
+          setFormSchema(pinnedSchema);
           setFormSchemaKey(payload.key);
           setFormSchemaVersion(payload.version);
         } catch (error) {
@@ -865,8 +994,36 @@ const SimplifiedProjectSubmission: React.FC = () => {
     formRef.current = form;
   }, [form]);
 
+  const loadSupportingDocuments = useCallback(async () => {
+    if (!id || !documentField) return;
+    try {
+      const [documents, assessment] = await Promise.all([
+        projectDocumentsApi.list(id),
+        projectDocumentsApi.assessment(id),
+      ]);
+      setSupportingDocuments(documents);
+      setDocumentAssessment(assessment);
+    } catch (error) {
+      setDocumentNotice(error instanceof Error ? error.message : "Failed to load supporting documents.");
+    }
+  }, [documentField, id]);
+
+  useEffect(() => { void loadSupportingDocuments(); }, [loadSupportingDocuments]);
+
   useEffect(() => {
-    if (!isEmployee || !formReady || !draftStorageKey) return;
+    if (!supportingDocuments.some((document) =>
+      ["queued", "processing"].includes(document.extraction_status) && !document.processing_error
+    )) return;
+    const timer = window.setInterval(() => { void loadSupportingDocuments(); }, 4000);
+    return () => window.clearInterval(timer);
+  }, [loadSupportingDocuments, supportingDocuments]);
+
+  useEffect(() => {
+    if (!isEmployee || !formReady) return;
+    if (!draftStorageKey) {
+      setLocalDraftHydrated(true);
+      return;
+    }
     setLocalDraftHydrated(false);
     try {
       const raw = localStorage.getItem(draftStorageKey);
@@ -1200,6 +1357,94 @@ const SimplifiedProjectSubmission: React.FC = () => {
     }));
   };
 
+  const addQueuedSupportingDocuments = (files: FileList | null) => {
+    if (!files || !documentField || !canChangeSupportingDocuments || documentBusy) return;
+    const allowed = new Set((documentField.allowed_extensions || []).map((value) => value.toLowerCase()));
+    const maxFiles = Math.min(documentField.max_files || 10, 10);
+    const maxBytes = Math.min(documentField.max_file_bytes || 20 * 1024 * 1024, 20 * 1024 * 1024);
+    const existingKeys = new Set([
+      ...supportingDocuments.map((item) => `${item.original_filename.toLowerCase()}:${item.size_bytes}`),
+      ...queuedDocuments.map((item) => `${item.name.toLowerCase()}:${item.size}`),
+    ]);
+    const accepted: File[] = [];
+    const rejected: string[] = [];
+    for (const file of Array.from(files)) {
+      const extension = file.name.split(".").pop()?.toLowerCase() || "";
+      const key = `${file.name.toLowerCase()}:${file.size}`;
+      if (!allowed.has(extension)) rejected.push(`${file.name} (unsupported format)`);
+      else if (file.size <= 0 || file.size > maxBytes) rejected.push(`${file.name} (over ${Math.round(maxBytes / 1024 / 1024)} MB)`);
+      else if (existingKeys.has(key)) rejected.push(`${file.name} (already selected)`);
+      else if (supportingDocuments.length + queuedDocuments.length + accepted.length >= maxFiles) rejected.push(`${file.name} (maximum ${maxFiles} files)`);
+      else {
+        existingKeys.add(key);
+        accepted.push(file);
+      }
+    }
+    if (accepted.length) setQueuedDocuments((current) => [...current, ...accepted]);
+    setDocumentNotice(rejected.length ? `Not added: ${rejected.join(", ")}` : "");
+  };
+
+  const uploadQueuedSupportingDocuments = async (projectId: string) => {
+    if (!documentField || queuedDocuments.length === 0) return { uploaded: 0, failed: 0 };
+    let uploaded = 0;
+    let failed = 0;
+    const remaining: File[] = [];
+    setDocumentBusy(true);
+    for (const file of queuedDocuments) {
+      try {
+        await projectDocumentsApi.upload(projectId, documentField.key, file);
+        uploaded += 1;
+      } catch (error) {
+        failed += 1;
+        remaining.push(file);
+        setDocumentNotice(`${file.name}: ${error instanceof Error ? error.message : "Upload failed."}`);
+      }
+    }
+    setQueuedDocuments(remaining);
+    setDocumentBusy(false);
+    if (projectId === id) await loadSupportingDocuments();
+    return { uploaded, failed };
+  };
+
+  const removeSupportingDocument = async (document: SupportingDocument) => {
+    if (!canChangeSupportingDocuments || documentBusy || !window.confirm(`Remove ${document.original_filename}? It will not be submitted.`)) return;
+    setDocumentBusy(true);
+    setDocumentAction(`remove-${document.id}`);
+    setDocumentNotice("");
+    try {
+      await projectDocumentsApi.remove(document.id);
+      setSupportingDocuments((current) => current.filter((item) => item.id !== document.id));
+      setDocumentAssessment(null);
+    } catch (error) {
+      setDocumentNotice(error instanceof Error ? error.message : "Failed to remove the document.");
+    } finally {
+      setDocumentBusy(false);
+      setDocumentAction("");
+    }
+  };
+
+  const retrySupportingDocument = async (document: SupportingDocument) => {
+    if (!canChangeSupportingDocuments || documentBusy) return;
+    setDocumentBusy(true);
+    setDocumentAction(`retry-${document.id}`);
+    setDocumentNotice("");
+    try {
+      const updated = await projectDocumentsApi.retry(document.id);
+      setSupportingDocuments((current) => current.map((item) => item.id === updated.id ? updated : item));
+      await loadSupportingDocuments();
+      setDocumentNotice(updated.extraction_status === "ready"
+        ? "Document processing completed."
+        : updated.extraction_status === "failed"
+        ? updated.processing_error || "Document processing failed."
+        : "Document processing was queued again.");
+    } catch (error) {
+      setDocumentNotice(error instanceof Error ? error.message : "Failed to retry document processing.");
+    } finally {
+      setDocumentBusy(false);
+      setDocumentAction("");
+    }
+  };
+
   const save = async (e: React.FormEvent, action: FormAction) => {
     e.preventDefault();
     if (isReadOnly) {
@@ -1243,6 +1488,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
         .filter((section) => section.visible !== false && (!section.admin_only || isAdmin))
         .flatMap((section) => section.fields)
         .filter((field) => field.visible !== false && contributorFieldApplies(field, formValues))
+        .filter((field) => field.type !== "document_upload")
         .filter((field) => field.required || field.condition_required)
         .filter((field) => {
           const value = field.key.startsWith("custom_")
@@ -1255,6 +1501,22 @@ const SimplifiedProjectSubmission: React.FC = () => {
       if (missing.length > 0) {
         alert(`Please complete all required fields before submit: ${missing.map((field) => field.label).join(", ")}.`);
         return;
+      }
+      if (documentField && !isRevisionMode) {
+        const minimum = documentField.required ? Math.max(1, documentField.min_files || 1) : documentField.min_files || 0;
+        if (supportingDocuments.length + queuedDocuments.length < minimum) {
+          alert(`Please upload at least ${minimum} supporting document(s) before submit.`);
+          return;
+        }
+        if (queuedDocuments.length === 0) {
+          const unavailable = supportingDocuments.find((document) => document.extraction_status !== "ready");
+          if (unavailable) {
+            alert(unavailable.extraction_status === "failed"
+              ? `Retry or replace ${unavailable.original_filename} before submitting.`
+              : "Wait for all supporting documents to finish processing before submitting.");
+            return;
+          }
+        }
       }
       if (parseYear(form.startYear) === null || parseYear(form.endYear) === null) {
         alert("Start Year and End Year must be valid years.");
@@ -1363,6 +1625,20 @@ const SimplifiedProjectSubmission: React.FC = () => {
         const created = await api.post("employee/projects/", payload);
         targetId = String(created?.id || "");
       }
+      const queuedBeforeUpload = queuedDocuments.length;
+      const uploadResult = targetId
+        ? await uploadQueuedSupportingDocuments(String(targetId))
+        : { uploaded: 0, failed: queuedBeforeUpload };
+      if (uploadResult.failed > 0) {
+        alert("The project was saved as a draft, but one or more supporting documents failed to upload. Review the queue and retry.");
+        if (!isEditMode && targetId) navigate(`/employee/projects/${targetId}/edit/simplified`);
+        return;
+      }
+      if (action === "submit" && queuedBeforeUpload > 0) {
+        alert("The project was saved as a draft and its supporting documents are processing. Return to this draft and submit it when every file is ready.");
+        if (targetId) navigate(`/employee/projects/${targetId}/edit/simplified`);
+        return;
+      }
       if (action === "submit" && targetId) {
         await api.post(`employee/projects/${targetId}/submit/`, {});
       }
@@ -1382,7 +1658,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   };
 
   const configuredFieldValue = (field: ContributorFormField): string | string[] => {
-    if (field.key.startsWith("custom_")) return form.custom_fields[field.key] ?? (field.type === "multiselect" ? [] : "");
+    if (field.key.startsWith("custom_")) return form.custom_fields[field.key] ?? (["multiselect", "multiselect_dropdown"].includes(field.type) ? [] : "");
     if (field.key.startsWith("priorityAnalysisFacts.")) {
       const key = field.key.split(".")[1] as keyof SimplifiedForm["priorityAnalysisFacts"];
       const value = form.priorityAnalysisFacts[key] || "";
@@ -1432,6 +1708,38 @@ const SimplifiedProjectSubmission: React.FC = () => {
       editMeta,
       disabled: isValidator || revisionFieldLocked(field.key) || (isEmployee && field.key === "agencyName"),
     };
+
+    if (field.type === "document_upload") {
+      const maximum = Math.min(field.max_files || 10, 10);
+      const maxMegabytes = Math.min(Math.round((field.max_file_bytes || 20 * 1024 * 1024) / 1024 / 1024), 20);
+      const accept = (field.allowed_extensions || []).map((extension) => `.${extension}`).join(",");
+      return (
+        <div className="space-y-3">
+          <div>
+            <h4 className="text-sm font-semibold text-slate-800">{field.label}{required ? " (Required)" : ""}</h4>
+            {field.help_text && <p className="mt-1 text-xs text-slate-500">{field.help_text}</p>}
+            <p className="mt-1 text-xs text-slate-500">Selected documents are processed securely. Bounded extracted text is sent to the configured Groq AI service to assess project relevance and sufficiency. File bytes are never sent to Groq.</p>
+          </div>
+          {canChangeSupportingDocuments && !isReadOnly && (
+            <label className="block cursor-pointer rounded-xl border-2 border-dashed border-blue-200 bg-blue-50 p-4 text-center text-sm text-blue-800 focus-within:ring-2 focus-within:ring-blue-500">
+              <span className="font-semibold">Choose supporting documents</span>
+              <span className="mt-1 block text-xs">Up to {maximum} files · {maxMegabytes} MB each · {accept.replaceAll(".", "").toUpperCase()}</span>
+              <input type="file" multiple accept={accept} className="sr-only" disabled={documentBusy} onChange={(event) => { addQueuedSupportingDocuments(event.target.files); event.currentTarget.value = ""; }} />
+            </label>
+          )}
+          {queuedDocuments.length > 0 && <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ready to upload when you save</p>
+            {queuedDocuments.map((file) => <div key={`${file.name}-${file.size}-${file.lastModified}`} className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm"><span className="min-w-0 break-all"><strong>{file.name}</strong><span className="ml-2 text-xs text-slate-500">{(file.size / 1024 / 1024).toFixed(2)} MB</span></span><button type="button" aria-label={`Remove ${file.name}`} disabled={documentBusy} className="shrink-0 rounded-full px-2 py-1 font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50" onClick={() => setQueuedDocuments((current) => current.filter((item) => item !== file))}>×</button></div>)}
+          </div>}
+          {supportingDocuments.length > 0 ? <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Uploaded evidence</p>
+            {supportingDocuments.map((document) => <div key={document.id} className="rounded-lg border border-slate-200 bg-white p-3 text-sm"><div className="flex flex-wrap items-center justify-between gap-3"><div className="min-w-0"><strong className="break-all">{document.original_filename}</strong><p className="text-xs text-slate-500">{(document.size_bytes / 1024 / 1024).toFixed(2)} MB · <span className={document.extraction_status === "ready" ? "text-emerald-700" : document.extraction_status === "failed" ? "text-rose-700" : "text-amber-700"}>{document.extraction_status === "ready" ? "Ready" : document.extraction_status === "failed" ? "Processing failed" : document.extraction_status === "processing" ? "Processing..." : "Queued"}</span></p></div><div className="flex flex-wrap items-center gap-2"><a href={document.download_url} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2" onClick={(event) => { event.preventDefault(); void projectDocumentsApi.download(document).catch((error) => setDocumentNotice(error instanceof Error ? error.message : "Download failed.")); }}>Download</a>{(document.extraction_status === "failed" || Boolean(document.processing_error)) && canChangeSupportingDocuments && <button type="button" aria-label={`Retry processing ${document.original_filename}`} disabled={documentBusy} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 transition hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void retrySupportingDocument(document)}>{documentAction === `retry-${document.id}` ? "Retrying..." : "Retry"}</button>}{canChangeSupportingDocuments && <button type="button" aria-label={`Remove ${document.original_filename}`} disabled={documentBusy} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void removeSupportingDocument(document)}>{documentAction === `remove-${document.id}` ? "Removing..." : "Remove"}</button>}</div></div>{document.processing_error && <p className="mt-2 text-xs text-rose-700">{document.processing_error}</p>}</div>)}
+          </div> : queuedDocuments.length === 0 && <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-500">No supporting documents attached.</p>}
+          {documentNotice && <p role="status" className="text-xs font-medium text-amber-700">{documentNotice}</p>}
+          {documentAssessment && ["pass", "fail", "unavailable", "processing"].includes(documentAssessment.status) && <div className={`rounded-lg border p-3 text-sm ${documentAssessment.status === "pass" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : documentAssessment.status === "fail" ? "border-rose-200 bg-rose-50 text-rose-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}><strong>AI document assessment: {documentAssessment.status === "pass" ? "Pass" : documentAssessment.status === "fail" ? "Fail" : documentAssessment.status === "processing" ? "Processing" : "Unavailable"}</strong>{documentAssessment.summary && <p className="mt-1 text-xs">{documentAssessment.summary}</p>}{documentAssessment.document_results?.map((result) => <div key={result.document_id} className="mt-2 border-t border-current/20 pt-2 text-xs"><strong>{result.filename}: {result.related ? "Related" : "Unrelated"}</strong><p>{result.explanation}</p>{result.citations?.length ? <p className="mt-1">Evidence: {result.citations.join(" · ")}</p> : null}</div>)}</div>}
+        </div>
+      );
+    }
 
     if (isEmployee && (field.key === "startYear" || field.key === "endYear")) {
       const isEnd = field.key === "endYear";
@@ -1495,6 +1803,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
     }
     if (field.type === "select") {
       return <SelectField {...common} value={String(value)} options={field.key === "status" ? statusOptions : field.options || []} showLegacyValue={field.key === "status"} onChange={(next) => setConfiguredFieldValue(field, next)} />;
+    }
+    if (field.type === "multiselect_dropdown") {
+      const selectedValues = Array.isArray(value)
+        ? value
+        : String(value || "").trim()
+        ? [String(value).trim()]
+        : [];
+      return <MultiSelectDropdown {...common} values={selectedValues} options={field.options || []} onChange={(next) => setConfiguredFieldValue(field, next)} />;
     }
     if (field.type === "multiselect") {
       return <CheckboxGroup {...common} values={Array.isArray(value) ? value : []} options={field.options || []} onChange={(next) => setConfiguredFieldValue(field, next)} />;
@@ -1715,7 +2031,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                   <div className="mb-4"><h3 className="font-semibold text-slate-900">{section.title}</h3>{section.description && <p className="mt-1 text-xs text-slate-600">{section.description}</p>}</div>
                   <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-2">
                     {fields.map((field) => (
-                      <div key={field.key} className={`min-w-0 ${["textarea", "multiselect", "currency_by_year"].includes(field.type) ? "xl:col-span-2" : ""}`}>
+                      <div key={field.key} className={`min-w-0 ${["textarea", "multiselect", "multiselect_dropdown", "currency_by_year", "document_upload"].includes(field.type) ? "xl:col-span-2" : ""}`}>
                         {isValidator && field.key !== "agencyName" && (
                           <label className="mb-2 flex min-w-0 max-w-full items-start gap-2 rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-800">
                             <input
@@ -1747,7 +2063,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
             {isEmployee && <p className="text-xs text-slate-500">Agency Name is locked to the account for new projects and preserved for existing projects.</p>}
             <TextField label="Program" value={form.program} onChange={(v) => setField("program", v)} required diffBefore={diffOf("program")?.before} editMeta={editMetaOf("program")} />
             <TextField label="Project/Activity" value={form.projectActivity} onChange={(v) => setField("projectActivity", v)} required diffBefore={diffOf("projectActivity")?.before} editMeta={editMetaOf("projectActivity")} />
-            <TextField label="Location" value={form.location} onChange={(v) => setField("location", v)} required diffBefore={diffOf("location")?.before} editMeta={editMetaOf("location")} />
+            <TextField label="Location" value={Array.isArray(form.location) ? form.location.join(", ") : form.location} onChange={(v) => setField("location", v)} required diffBefore={diffOf("location")?.before} editMeta={editMetaOf("location")} />
             <TextAreaField label="Description" value={form.description} onChange={(v) => setField("description", v)} required rows={4} diffBefore={diffOf("description")?.before} editMeta={editMetaOf("description")} />
             <TextAreaField label="Objective" value={form.objective} onChange={(v) => setField("objective", v)} required rows={4} diffBefore={diffOf("objective")?.before} editMeta={editMetaOf("objective")} />
           </div>

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { api } from "../../services/api";
+import RefreshButton from "./RefreshButton";
 
 type PublicEventRow = {
   id: number;
@@ -206,9 +207,7 @@ const PublicEventsManager: React.FC<Props> = ({ mode, onChanged }) => {
               : "Create event drafts and submit them for administrator publishing."}
           </p>
         </div>
-        <button type="button" onClick={loadEvents} className="portal-btn portal-btn-ghost">
-          Refresh Events
-        </button>
+        <RefreshButton loading={eventsLoading} onClick={loadEvents} label="Refresh Events" />
       </div>
 
       {notice && (

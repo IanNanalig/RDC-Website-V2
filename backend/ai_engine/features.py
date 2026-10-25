@@ -56,7 +56,13 @@ def _form(snapshot):
 
 def normalized_project_text(snapshot):
     form = _form(snapshot)
-    values = [str(form.get(field) or "") for field in TEXT_FIELDS]
+    values = []
+    for field in TEXT_FIELDS:
+        value = form.get(field)
+        if isinstance(value, list):
+            values.extend(str(item) for item in value)
+        else:
+            values.append(str(value or ""))
     for key in ("sdgSelections", "basisSelections", "projectReadinessItems"):
         selected = form.get(key)
         if isinstance(selected, list):

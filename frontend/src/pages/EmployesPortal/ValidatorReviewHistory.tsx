@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import RefreshButton from "../../components/portal/RefreshButton";
 import { userDisplayName } from "../../utils/userDisplayName";
 import { MobileSortControls, SortableTableHeader } from "../../components/portal/TableSortControls";
 import { sortRows } from "../../utils/tableSort";
@@ -178,7 +179,7 @@ const ValidatorReviewHistory: React.FC = () => {
       subtitle="Projects you already reviewed or endorsed"
       role="validator"
       userName={displayName}
-      topActions={<button onClick={loadProjects} className="portal-btn portal-btn-ghost">Refresh</button>}
+      topActions={<RefreshButton loading={loading} onClick={loadProjects} />}
     >
       <div className="portal-card mb-3">
         <div className="portal-card-body space-y-3">

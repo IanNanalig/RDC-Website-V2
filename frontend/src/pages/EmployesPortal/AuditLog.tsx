@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import PortalLayout from "../../components/portal/PortalLayout";
+import RefreshButton from "../../components/portal/RefreshButton";
 import { userDisplayName } from "../../utils/userDisplayName";
 import { api } from "../../services/api";
 import { MobileSortControls, SortableTableHeader } from "../../components/portal/TableSortControls";
@@ -60,7 +61,7 @@ export default function AuditLog() {
 
   return <PortalLayout title="System Audit Log" subtitle="Review portal activity, security actions, and project workflow events" role="admin" userName={userDisplayName(user, "Admin")}>
     <div className="portal-card">
-      <div className="portal-card-header flex flex-wrap items-center justify-between gap-2"><h2 className="font-semibold">Audit records</h2><button type="button" onClick={() => void load()} className="portal-btn portal-btn-ghost">Refresh Log</button></div>
+      <div className="portal-card-header flex flex-wrap items-center justify-between gap-2"><h2 className="font-semibold">Audit records</h2><RefreshButton loading={loading} onClick={load} label="Refresh Log" /></div>
       <div className="portal-card-body grid gap-3 border-b border-slate-200 bg-slate-50 sm:grid-cols-2 xl:grid-cols-4">
         <label className="text-xs font-semibold text-slate-600">User<input value={filters.user} onChange={(event) => change("user", event.target.value)} placeholder="Name, username, or email" className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" /></label>
         <label className="text-xs font-semibold text-slate-600">Action type<select value={filters.event} onChange={(event) => change("event", event.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"><option value="">All actions</option>{eventOptions.map((event) => <option key={event} value={event}>{event.replaceAll("_", " ")}</option>)}</select></label>

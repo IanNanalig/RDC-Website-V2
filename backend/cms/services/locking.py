@@ -41,12 +41,12 @@ def heartbeat_section_lock(section_id, user):
         return section, True
 
 
-def acquire_form_lock(form_id, user):
+def acquire_form_lock(form_id, user, force=False):
     with transaction.atomic():
         # Lock only the form row. Joining the nullable lock_owner relation makes
         # PostgreSQL reject FOR UPDATE with "nullable side of an outer join".
         form = CMSContributorForm.objects.select_for_update().get(pk=form_id)
-        if lock_is_active(form) and form.lock_owner_id != user.id:
+        if lock_is_active(form) and form.lock_owner_id != user.id and not force:
             return form, False
         form.lock_owner = user
         form.lock_acquired_at = timezone.now()

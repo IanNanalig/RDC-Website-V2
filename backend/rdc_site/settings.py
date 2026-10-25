@@ -302,6 +302,19 @@ GROQ_TIMEOUT_SECONDS = max(5, env_int("GROQ_TIMEOUT_SECONDS", 30))
 GROQ_MAX_COMPLETION_TOKENS = max(256, env_int("GROQ_MAX_COMPLETION_TOKENS", 4096))
 GROQ_ENABLED = bool(GROQ_API_KEY and GROQ_PRIMARY_MODEL)
 
+# Supporting-document processing runs outside web requests in production.
+# Local DEBUG environments fall back to eager execution so contributors can
+# exercise the upload workflow without installing Redis and a worker.
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/0")
+CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = env_int("CELERY_TASK_TIME_LIMIT", 600)
+CELERY_TASK_SOFT_TIME_LIMIT = env_int("CELERY_TASK_SOFT_TIME_LIMIT", 540)
+CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", DEBUG)
+
 # Sentry configuration (optional)
 SENTRY_DSN = os.environ.get('SENTRY_DSN', '')
 if SENTRY_DSN:

@@ -914,12 +914,12 @@ const Home: React.FC = () => {
     if ("requestIdleCallback" in window) {
       idleId = window.requestIdleCallback(preload, { timeout: 1500 });
     } else {
-      idleId = window.setTimeout(preload, 0);
+      idleId = globalThis.setTimeout(preload, 0);
     }
     return () => {
       if (idleId === undefined) return;
       if ("cancelIdleCallback" in window) window.cancelIdleCallback(idleId);
-      else window.clearTimeout(idleId);
+      else globalThis.clearTimeout(idleId);
     };
   }, [carouselImages, currentSlide]);
 

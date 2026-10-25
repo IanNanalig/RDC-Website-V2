@@ -18,6 +18,22 @@ type Confirmation = {
   override_rationale?: string;
   validator_name?: string;
   created_at?: string;
+  document_override?: boolean;
+  document_override_rationale?: string;
+};
+
+type DocumentAssessment = {
+  status: "not_required" | "missing" | "pending" | "processing" | "pass" | "fail" | "unavailable";
+  summary?: string;
+  error_message?: string;
+  collective_sufficient?: boolean;
+  document_results?: Array<{
+    document_id: number;
+    filename: string;
+    related: boolean;
+    explanation: string;
+    citations?: string[];
+  }>;
 };
 
 type GuidanceField = {
@@ -124,6 +140,7 @@ type Analysis = {
   latest_confirmation?: Confirmation | null;
   confirmations?: Confirmation[];
   learning_result?: LearningResult | null;
+  document_assessment?: DocumentAssessment;
   created_at?: string;
 };
 
@@ -250,6 +267,8 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
   const [finalPriority, setFinalPriority] = useState("");
   const [overrideRationale, setOverrideRationale] = useState("");
   const [confirmedFlags, setConfirmedFlags] = useState<string[]>([]);
+  const [documentOverride, setDocumentOverride] = useState(false);
+  const [documentOverrideRationale, setDocumentOverrideRationale] = useState("");
 
   const endpointBase = role === "admin" ? "admin/projects" : "validator/projects";
 
@@ -276,6 +295,8 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
     setFinalPriority(normalizePriority(analysis.latest_confirmation?.final_priority || analysis.suggested_priority));
     setOverrideRationale(analysis.latest_confirmation?.override_rationale || "");
     setConfirmedFlags([]);
+    setDocumentOverride(Boolean(analysis.latest_confirmation?.document_override));
+    setDocumentOverrideRationale(analysis.latest_confirmation?.document_override_rationale || "");
   }, [analysis]);
 
   const run = async () => {
@@ -306,6 +327,8 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
         final_priority: finalPriority,
         override_rationale: overrideRationale,
         confirmed_flags: confirmedFlags,
+        document_override: documentOverride,
+        document_override_rationale: documentOverrideRationale,
       }) as Analysis;
       setAnalysis(next);
       setAnalyses((prev) => [next, ...prev.filter((item) => item.id !== next.id)]);
@@ -326,6 +349,10 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
   const visiblePriority = confirmed?.final_priority || analysis?.suggested_priority;
   const incompleteResult = analysis?.suggested_priority === "incomplete" || missingFacts.length > 0;
   const rationaleRequired = incompleteResult || Boolean(finalPriority && finalPriority !== analysis?.suggested_priority);
+  const documentOverrideRequired = Boolean(
+    analysis?.document_assessment
+    && !["pass", "not_required"].includes(analysis.document_assessment.status),
+  );
   const analysisComplete = Boolean(
     analysis
     && analysis.suggested_priority !== "incomplete"
@@ -410,6 +437,13 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
               </div>
             )}
             <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">{binaryPriorityText(analysis.summary)}</p>
+            {analysis.document_assessment && analysis.document_assessment.status !== "not_required" && (
+              <section className={`rounded-xl border p-4 ${analysis.document_assessment.status === "pass" ? "border-emerald-200 bg-emerald-50" : analysis.document_assessment.status === "fail" ? "border-rose-200 bg-rose-50" : "border-amber-200 bg-amber-50"}`}>
+                <h3 className="font-semibold text-slate-900">Supporting Document Assessment: {analysis.document_assessment.status === "pass" ? "Pass" : analysis.document_assessment.status === "fail" ? "Fail" : "Unavailable"}</h3>
+                <p className="mt-1 text-sm text-slate-700">{analysis.document_assessment.summary || analysis.document_assessment.error_message || "The document assessment could not produce a passing result."}</p>
+                {(analysis.document_assessment.document_results || []).map((result) => <div key={result.document_id} className="mt-3 rounded-lg border border-white/80 bg-white p-3 text-sm"><strong>{result.filename}: {result.related ? "Related" : "Unrelated"}</strong><p className="mt-1 text-slate-600">{result.explanation}</p>{result.citations?.length ? <p className="mt-1 text-xs text-slate-500">Evidence: {result.citations.join(" · ")}</p> : null}</div>)}
+              </section>
+            )}
             {learning && (
               <section className="rounded-xl border border-violet-200 bg-violet-50/40 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -540,7 +574,8 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
                 )}
                 <Select label="Final Priority" value={finalPriority} onChange={setFinalPriority} options={[["high", "High Priority"], ["low", "Low Priority"]]} />
                 <label className="block"><span className="text-xs font-medium text-slate-600">Override rationale {rationaleRequired ? "(required)" : "(required if final priority differs)"}</span><textarea className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" rows={2} value={overrideRationale} onChange={(e) => setOverrideRationale(e.target.value)} /></label>
-                <div className="flex justify-end"><button type="button" onClick={confirm} disabled={busy || !finalPriority || (rationaleRequired && !overrideRationale.trim())} className="portal-btn portal-btn-primary">{busy ? "Saving..." : "Confirm Priority Analysis"}</button></div>
+                {documentOverrideRequired && <div className="rounded-lg border border-rose-200 bg-rose-50 p-3"><label className="flex items-start gap-2 text-sm font-semibold text-rose-900"><input type="checkbox" checked={documentOverride} onChange={(event) => setDocumentOverride(event.target.checked)} /><span>Override the non-passing supporting-document assessment</span></label><label className="mt-2 block"><span className="text-xs font-medium text-rose-800">Document override rationale (required)</span><textarea className="mt-1 w-full rounded-lg border border-rose-200 px-3 py-2 text-sm" rows={3} value={documentOverrideRationale} onChange={(event) => setDocumentOverrideRationale(event.target.value)} /></label></div>}
+                <div className="flex justify-end"><button type="button" onClick={confirm} disabled={busy || !finalPriority || (rationaleRequired && !overrideRationale.trim()) || (documentOverrideRequired && (!documentOverride || !documentOverrideRationale.trim()))} className="portal-btn portal-btn-primary">{busy ? "Saving..." : "Confirm Priority Analysis"}</button></div>
               </div>
             )}
             {confirmed && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">Official validator decision: <strong>{priorityLabel(confirmed.final_priority)}</strong> (AI result: {priorityLabel(analysis.suggested_priority)}){confirmed.validator_name ? ` by ${confirmed.validator_name}` : ""}{confirmed.created_at ? ` on ${new Date(confirmed.created_at).toLocaleString()}` : ""}.</div>}

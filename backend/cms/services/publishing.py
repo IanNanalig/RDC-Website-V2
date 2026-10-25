@@ -11,7 +11,7 @@ from cms.models import (
     CMSPage,
     CMSPageSection,
 )
-from cms.form_schema import normalize_system_managed_sections, validate_form_schema
+from cms.form_schema import FormSchemaError, normalize_system_managed_sections, validate_form_schema
 from cms.services.snapshots import (
     build_article_snapshot,
     build_page_snapshot,
@@ -71,6 +71,8 @@ def publish_contributor_form(form, user=None):
     form_id = form.pk if isinstance(form, CMSContributorForm) else form
     with transaction.atomic():
         locked_form = CMSContributorForm.objects.select_for_update().get(pk=form_id)
+        if not locked_form.has_unpublished_changes:
+            raise FormSchemaError("This contributor form has no unpublished changes.")
         published_schema = (
             locked_form.current_published_version.schema_json
             if locked_form.current_published_version_id
@@ -167,6 +169,7 @@ def restore_contributor_form_version(form, version, user=None):
                         not isinstance(field, dict)
                         or field_key in restored_keys
                         or not str(field_key or "").startswith("custom_")
+                        or field.get("type") == "document_upload"
                     ):
                         continue
                     retired_field = deepcopy(field)

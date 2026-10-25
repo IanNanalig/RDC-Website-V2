@@ -88,6 +88,7 @@ class Project(models.Model):
     completion = models.IntegerField(default=0)
     profile_data = models.JSONField(null=True, blank=True)
     priority_analysis_eligible = models.BooleanField(default=True)
+    supporting_document_policy = models.JSONField(default=dict, blank=True)
 
     @property
     def title(self):
@@ -285,7 +286,13 @@ class UserActivity(models.Model):
         ("cms_form_lock_acquired", "CMS Form Lock Acquired"),
         ("cms_form_lock_blocked", "CMS Form Lock Blocked"),
         ("cms_form_lock_released", "CMS Form Lock Released"),
+        ("cms_form_lock_overridden", "CMS Form Lock Overridden"),
         ("cms_form_access_requested", "CMS Form Access Requested"),
+        ("supporting_document_uploaded", "Supporting Document Uploaded"),
+        ("supporting_document_removed", "Supporting Document Removed"),
+        ("supporting_document_extraction_failed", "Supporting Document Extraction Failed"),
+        ("document_assessment_completed", "Document Assessment Completed"),
+        ("document_assessment_overridden", "Document Assessment Overridden"),
         ("notification_read", "Notification Read"),
         ("notification_read_all", "All Notifications Read"),
         ("access_request_approved", "Access Request Approved"),
@@ -421,6 +428,15 @@ class ProjectPriorityConfirmation(models.Model):
     final_priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES)
     override_rationale = models.TextField(blank=True)
     confirmed_flags = models.JSONField(default=list, blank=True)
+    document_assessment = models.ForeignKey(
+        "ProjectDocumentAssessment",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="priority_confirmations",
+    )
+    document_override = models.BooleanField(default=False)
+    document_override_rationale = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -428,6 +444,104 @@ class ProjectPriorityConfirmation(models.Model):
 
     def __str__(self):
         return f"{self.analysis_id} {self.final_priority}"
+
+
+class ProjectSupportingDocument(models.Model):
+    EXTRACTION_QUEUED = "queued"
+    EXTRACTION_PROCESSING = "processing"
+    EXTRACTION_READY = "ready"
+    EXTRACTION_FAILED = "failed"
+    EXTRACTION_STATUS_CHOICES = [
+        (EXTRACTION_QUEUED, "Queued"),
+        (EXTRACTION_PROCESSING, "Processing"),
+        (EXTRACTION_READY, "Ready"),
+        (EXTRACTION_FAILED, "Failed"),
+    ]
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="supporting_documents")
+    field_key = models.CharField(max_length=120, default="custom_supporting_documents")
+    form_key = models.CharField(max_length=120, default="simplified-rdip")
+    form_version = models.PositiveIntegerField(default=1)
+    original_filename = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=120)
+    extension = models.CharField(max_length=12)
+    size_bytes = models.PositiveBigIntegerField()
+    checksum_sha256 = models.CharField(max_length=64, db_index=True)
+    content = models.BinaryField()
+    extraction_status = models.CharField(
+        max_length=20,
+        choices=EXTRACTION_STATUS_CHOICES,
+        default=EXTRACTION_QUEUED,
+        db_index=True,
+    )
+    extracted_text = models.TextField(blank=True)
+    extraction_metadata = models.JSONField(default=dict, blank=True)
+    processing_error = models.TextField(blank=True)
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="uploaded_project_documents",
+    )
+    removed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [models.Index(fields=["project", "removed_at"], name="project_doc_active_idx")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "checksum_sha256"],
+                condition=models.Q(removed_at__isnull=True),
+                name="unique_active_project_doc_hash",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.project_id}: {self.original_filename}"
+
+
+class ProjectDocumentAssessment(models.Model):
+    STATUS_QUEUED = "queued"
+    STATUS_PROCESSING = "processing"
+    STATUS_PASS = "pass"
+    STATUS_FAIL = "fail"
+    STATUS_UNAVAILABLE = "unavailable"
+    STATUS_CHOICES = [
+        (STATUS_QUEUED, "Queued"),
+        (STATUS_PROCESSING, "Processing"),
+        (STATUS_PASS, "Pass"),
+        (STATUS_FAIL, "Fail"),
+        (STATUS_UNAVAILABLE, "Unavailable"),
+    ]
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="document_assessments")
+    source_hash = models.CharField(max_length=64, db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_QUEUED, db_index=True)
+    document_results = models.JSONField(default=list, blank=True)
+    collective_sufficient = models.BooleanField(default=False)
+    summary = models.TextField(blank=True)
+    provider = models.CharField(max_length=40, blank=True)
+    model = models.CharField(max_length=120, blank=True)
+    used_backup_model = models.BooleanField(default=False)
+    policy_snapshot = models.JSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "source_hash"],
+                name="unique_project_document_assessment_source",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.project_id}: {self.status}"
 
 
 class PasswordSetupToken(models.Model):

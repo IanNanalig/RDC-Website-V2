@@ -304,15 +304,15 @@ async function request(path: string, options: RequestInit = {}, hasRetried = fal
   return res.text();
 }
 
-function get(path: string) {
+function get(path: string, force = false) {
   const key = `${normalizePath(path)}|${getToken() || "public"}`;
   const existing = getRequestsInFlight.get(key);
-  if (existing) return existing;
+  if (existing && !force) return existing;
 
   const pending = request(path, { method: "GET" }).finally(() => {
     if (getRequestsInFlight.get(key) === pending) getRequestsInFlight.delete(key);
   });
-  getRequestsInFlight.set(key, pending);
+  if (!force) getRequestsInFlight.set(key, pending);
   return pending;
 }
 

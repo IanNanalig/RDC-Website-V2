@@ -1,5 +1,17 @@
 version: "3.8"
 services:
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   db:
     image: postgres:15
     environment:
@@ -31,10 +43,39 @@ services:
       POSTGRES_HOST: db
       DJANGO_SETTINGS_MODULE: rdc_site.settings
       FRONTEND_BASE_URL: "${FRONTEND_BASE_URL:-http://localhost:5173}"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
     depends_on:
       db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: celery -A rdc_site worker --loglevel=INFO --concurrency=2
+    environment:
+      SECRET_KEY: "${SECRET_KEY:-dev-secret}"
+      DEBUG: "False"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1,0.0.0.0}"
+      POSTGRES_DB: rdc_db
+      POSTGRES_USER: rdc
+      POSTGRES_PASSWORD: rdc
+      POSTGRES_HOST: db
+      DJANGO_SETTINGS_MODULE: rdc_site.settings
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/0"
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+      GROQ_PRIMARY_MODEL: "${GROQ_PRIMARY_MODEL:-llama-3.1-8b-instant}"
+      GROQ_BACKUP_MODEL: "${GROQ_BACKUP_MODEL:-llama-3.3-70b-versatile}"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
 
 volumes:
   db_data:
+  redis_data:

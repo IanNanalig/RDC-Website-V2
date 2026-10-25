@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import RefreshButton from "../../components/portal/RefreshButton";
 import { userDisplayName } from "../../utils/userDisplayName";
 import { useEncodingWindow, useProgressUpdateWindow } from "../../hooks/useEncodingWindow";
 import { MobileSortControls, SortableTableHeader } from "../../components/portal/TableSortControls";
@@ -28,6 +29,7 @@ type ApiProject = {
   revision_number?: number;
   revision_state?: string;
   revision_type?: string;
+  archive_title?: string;
   submitted_by_name?: string;
   submission_type?: string;
   rdip_status?: string;
@@ -209,10 +211,16 @@ const ProjectsPage: React.FC = () => {
   const projectCacheKey = `${role || "unknown"}:${user?.id || user?.email || "session"}:${endpoint}`;
   const [projects, setProjects] = useState<ApiProject[]>(() => projectListCache.get(projectCacheKey) || []);
   const [loading, setLoading] = useState(() => !projectListCache.has(projectCacheKey));
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
 
   const loadProjects = useCallback(async (silent = false, force = false) => {
     const requestId = ++projectsLoadId.current;
-    if (!silent && !projectListCache.has(projectCacheKey)) setLoading(true);
+    if (!silent) {
+      setRefreshError("");
+      setLoading(true);
+      setRefreshing(true);
+    }
     let request = force ? undefined : projectListRequests.get(projectCacheKey);
     if (!request) {
       request = (async () => {
@@ -220,33 +228,40 @@ const ProjectsPage: React.FC = () => {
         const revisionParams = new URLSearchParams({ view: "summary" });
         if (role === "validator") revisionParams.set("scope", "queue");
         const [data, revisions] = await Promise.all([
-          api.get(endpoint),
+          api.get(endpoint, force),
           shouldLoadRevisions
-            ? api.get(`project-revisions/?${revisionParams.toString()}`)
+            ? api.get(`project-revisions/?${revisionParams.toString()}`, force)
             : Promise.resolve([]),
         ]);
         let rows: ApiProject[] = Array.isArray(data) ? data : [];
         if (Array.isArray(revisions)) {
-          const revisionRows: ApiProject[] = revisions.map((r: ProjectRevisionRow) => ({
-            id: r.project,
-            revision_id: r.id,
-            revision_number: r.revision_number,
-            revision_state: r.state,
-            revision_type: r.revision_type,
-            is_revision: true,
-            title: `${r.project_title || "Project"} - Progress Update v${r.revision_number || ""}`,
-            name: `${r.project_title || "Project"} - Progress Update v${r.revision_number || ""}`,
-            agency: r.project_agency || "",
-            budget: Number(r.budget ?? ((r.profile_data_snapshot as any)?.public_summary?.key_facts?.funding_requirement_total || 0)),
-            status: r.state === "endorsed" ? "completed" : "proposed",
-            updated_at: r.updated_at,
-            submitted_by_name: r.submitted_by_name || r.created_by_name || "Unknown",
-            submission_type: r.submission_type,
-            form_version: r.form_version,
-            current_form_version: r.current_form_version,
-            uses_outdated_form: r.uses_outdated_form,
-            profile_data: r.profile_data_snapshot || (r.submission_type === "simplified" ? { submission_type: "simplified", simplified_form: {} } : {}),
-          }));
+          const projectsById = new Map(rows.map((project) => [project.id, project]));
+          const revisionRows: ApiProject[] = revisions.map((r: ProjectRevisionRow) => {
+            const project = projectsById.get(r.project);
+            const projectTitle = project?.title || project?.name || r.project_title || "Project";
+            return {
+              id: r.project,
+              revision_id: r.id,
+              revision_number: r.revision_number,
+              revision_state: r.state,
+              revision_type: r.revision_type,
+              is_revision: true,
+              archive_title: projectTitle,
+              title: `${r.project_title || "Project"} - Progress Update v${r.revision_number || ""}`,
+              name: `${r.project_title || "Project"} - Progress Update v${r.revision_number || ""}`,
+              agency: r.project_agency || "",
+              budget: Number(r.budget ?? ((r.profile_data_snapshot as any)?.public_summary?.key_facts?.funding_requirement_total || 0)),
+              status: r.state === "endorsed" ? "completed" : "proposed",
+              rdip_status: project?.rdip_status,
+              updated_at: r.updated_at,
+              submitted_by_name: r.submitted_by_name || r.created_by_name || "Unknown",
+              submission_type: r.submission_type,
+              form_version: r.form_version,
+              current_form_version: r.current_form_version,
+              uses_outdated_form: r.uses_outdated_form,
+              profile_data: r.profile_data_snapshot || (r.submission_type === "simplified" ? { submission_type: "simplified", simplified_form: {} } : {}),
+            };
+          });
           rows = [...revisionRows, ...rows];
         }
         return rows;
@@ -255,16 +270,22 @@ const ProjectsPage: React.FC = () => {
     }
     try {
       const rows = await request;
-      projectListCache.set(projectCacheKey, rows);
       if (requestId !== projectsLoadId.current) return;
+      projectListCache.set(projectCacheKey, rows);
       setProjects(rows);
     } catch (error) {
       console.error("Failed to load projects:", error);
+      if (requestId === projectsLoadId.current && !silent) {
+        setRefreshError("Could not refresh projects. Please try again.");
+      }
       // Keep the current list visible if a background refresh temporarily fails.
       if (requestId === projectsLoadId.current && !projectListCache.has(projectCacheKey)) setProjects([]);
     } finally {
       if (projectListRequests.get(projectCacheKey) === request) projectListRequests.delete(projectCacheKey);
-      if (requestId === projectsLoadId.current) setLoading(false);
+      if (requestId === projectsLoadId.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [endpoint, role, archivedView, projectCacheKey]);
 
@@ -276,6 +297,8 @@ const ProjectsPage: React.FC = () => {
     const cachedRows = projectListCache.get(projectCacheKey);
     setProjects(cachedRows || []);
     setLoading(!cachedRows);
+    setRefreshing(false);
+    setRefreshError("");
     void loadProjects(true);
     const onStorage = (e: StorageEvent) => {
       if (e.key === "projects_last_update") void loadProjects(true, true);
@@ -476,7 +499,7 @@ const ProjectsPage: React.FC = () => {
               + New Project
             </Link>
           )}
-          <button onClick={() => void loadProjects()} className="portal-btn portal-btn-ghost">Refresh</button>
+          <RefreshButton loading={refreshing} onClick={() => loadProjects(false, true)} />
         </>
       }
     >
@@ -517,6 +540,12 @@ const ProjectsPage: React.FC = () => {
           />
         </div>
       </div>
+
+      {refreshError && (
+        <p role="alert" className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+          {refreshError}
+        </p>
+      )}
 
       <div className="portal-card">
         {loading ? (
@@ -672,7 +701,7 @@ const ProjectsPage: React.FC = () => {
                         </button>
                         {archivedView ? (
                           <button onClick={() => handleRestore(p.id)} className="text-emerald-700 hover:underline whitespace-nowrap">Restore</button>
-                        ) : !p.is_revision && (
+                        ) : (
                           <button onClick={() => { setArchiveTarget(p); setArchiveError(""); }} className="text-amber-700 hover:underline whitespace-nowrap">Archive</button>
                         )}
                       </>
@@ -703,7 +732,7 @@ const ProjectsPage: React.FC = () => {
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !archiveBusy) setArchiveTarget(null); }}>
             <div role="alertdialog" aria-modal="true" aria-labelledby="archive-title" aria-describedby="archive-description" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-              <h2 id="archive-title" className="text-lg font-semibold text-slate-900">Archive {archiveTarget.title || archiveTarget.name || "this project"}?</h2>
+              <h2 id="archive-title" className="text-lg font-semibold text-slate-900">Archive {archiveTarget.archive_title || archiveTarget.title || archiveTarget.name || "this project"}?</h2>
               <p id="archive-description" className="mt-3 text-sm text-slate-700">{neutral
                 ? `This project is ${status}. It will be moved to the Archived tab and can be restored later.`
                 : `Current status: ${status || "Not specified"}. This project is still ongoing. Archiving it will remove it from active lists. It can be restored later.`}</p>

@@ -287,7 +287,7 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
             aria-modal={mobileOpen ? true : undefined}
             className={`portal-sidebar fixed top-2 left-2 bottom-2 z-[60] w-[84vw] max-w-[300px] max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain ${
               mobileOpen ? "block" : "hidden"
-            } md:static md:block md:w-auto md:max-w-none md:max-h-none`}
+            } md:block md:w-auto md:max-w-none`}
           >
             <div className="flex items-start justify-between gap-2">
               <div className="portal-brand min-w-0">

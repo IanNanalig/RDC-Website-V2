@@ -13,6 +13,8 @@ from .models import (
     ProjectComment,
     ProjectPriorityAnalysis,
     ProjectPriorityConfirmation,
+    ProjectDocumentAssessment,
+    ProjectSupportingDocument,
     ProjectRevision,
     User,
     UserActivity,
@@ -254,6 +256,7 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
     official_priority = serializers.SerializerMethodField()
     official_priority_label = serializers.SerializerMethodField()
     validation_comment = serializers.SerializerMethodField()
+    document_assessment = serializers.SerializerMethodField()
 
     form_version = serializers.SerializerMethodField()
     current_form_version = serializers.SerializerMethodField()
@@ -295,6 +298,8 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
             "form_version",
             "current_form_version",
             "uses_outdated_form",
+            "supporting_document_policy",
+            "document_assessment",
         ]
         read_only_fields = [
             "id",
@@ -308,6 +313,8 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
             "official_priority",
             "official_priority_label",
             "validation_comment",
+            "supporting_document_policy",
+            "document_assessment",
         ]
         extra_kwargs = {
             "name": {"required": False},
@@ -410,6 +417,11 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
     def get_validation_comment(self, obj):
         return str(self._validator_review(obj).get("review_notes") or "")
 
+    def get_document_assessment(self, obj):
+        from .document_assessments import serialize_document_assessment
+
+        return serialize_document_assessment(obj)
+
     def validate_status(self, value):
         mapping = {
             "draft": "planning",
@@ -470,6 +482,14 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
 
     def validate(self, attrs):
         request = self.context.get("request")
+        if (
+            request is not None
+            and request.method == "POST"
+            and str(attrs.get("status") or "").strip().lower() == "proposed"
+        ):
+            raise serializers.ValidationError(
+                {"status": "Save the project as a draft, upload its supporting documents, then submit it."}
+            )
         if (
             request is not None
             and request.method == "POST"
@@ -617,6 +637,25 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
         validated_data.setdefault("status", validated_data.get("status", "planning"))
         return super().create(validated_data)
 
+    def update(self, instance, validated_data):
+        project = super().update(instance, validated_data)
+        request = self.context.get("request")
+        role = getattr(getattr(request, "user", None), "role", "")
+        profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+        review = profile.get("validator_review") if isinstance(profile.get("validator_review"), dict) else {}
+        if (
+            role in ("staff", "employee")
+            and not project.supporting_document_policy
+            and (project.status == "planning" or str(review.get("review_status") or "").lower() == "reviewed")
+        ):
+            from .document_policy import current_document_policy
+
+            policy = current_document_policy("simplified-rdip")
+            if policy:
+                project.supporting_document_policy = policy
+                project.save(update_fields=["supporting_document_policy", "updated_at"])
+        return project
+
 
 class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.ModelSerializer):
     """Compact, additive projection used only when list callers request view=summary."""
@@ -746,6 +785,9 @@ class ProjectPriorityConfirmationSerializer(serializers.ModelSerializer):
             "final_priority",
             "override_rationale",
             "confirmed_flags",
+            "document_assessment",
+            "document_override",
+            "document_override_rationale",
             "created_at",
         ]
         read_only_fields = fields
@@ -763,6 +805,7 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
     confirmations = ProjectPriorityConfirmationSerializer(many=True, read_only=True)
     latest_confirmation = serializers.SerializerMethodField()
     learning_result = serializers.SerializerMethodField()
+    document_assessment = serializers.SerializerMethodField()
 
     class Meta:
         model = ProjectPriorityAnalysis
@@ -784,6 +827,7 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
             "confirmations",
             "latest_confirmation",
             "learning_result",
+            "document_assessment",
             "created_at",
         ]
         read_only_fields = fields
@@ -809,6 +853,32 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
                 "similar_projects__training_record__confirmation__validator",
             ).first()
         return serialize_learning_assessment(assessment)
+
+    def get_document_assessment(self, obj):
+        from .document_assessments import serialize_document_assessment
+
+        return serialize_document_assessment(obj.project)
+
+
+class ProjectSupportingDocumentSerializer(serializers.ModelSerializer):
+    uploaded_by_name = serializers.SerializerMethodField()
+    download_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProjectSupportingDocument
+        fields = [
+            "id", "project", "field_key", "form_key", "form_version", "original_filename",
+            "content_type", "extension", "size_bytes", "checksum_sha256", "extraction_status",
+            "extraction_metadata", "processing_error", "uploaded_by_name", "created_at", "updated_at",
+            "download_url",
+        ]
+        read_only_fields = fields
+
+    def get_uploaded_by_name(self, obj):
+        return _user_display_name(obj.uploaded_by) if obj.uploaded_by else ""
+
+    def get_download_url(self, obj):
+        return f"/api/project-supporting-documents/{obj.pk}/download/"
 
 
 class ProjectRevisionSerializer(ContributorFormVersionStatusMixin, serializers.ModelSerializer):
@@ -1014,8 +1084,10 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         return str(getattr(obj, "description", "") or "").strip()
 
     def get_location_raw(self, obj):
+        from .utils import format_project_locations
+
         sf = self._simplified(obj)
-        return str(sf.get("location") or "").strip()
+        return format_project_locations(sf.get("location"))
 
     def get_lgu(self, obj):
         # Keep a primary LGU for backwards compatibility with older clients.

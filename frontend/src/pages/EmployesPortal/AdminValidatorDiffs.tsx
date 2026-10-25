@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import RefreshButton from "../../components/portal/RefreshButton";
 import { userDisplayName } from "../../utils/userDisplayName";
 import { MobileSortControls, SortableTableHeader } from "../../components/portal/TableSortControls";
 import { sortRows } from "../../utils/tableSort";
@@ -167,7 +168,7 @@ const AdminValidatorDiffs: React.FC = () => {
       subtitle="Track reviewed copies, edited fields, and validator decisions"
       role="admin"
       userName={displayName}
-      topActions={<button onClick={load} className="portal-btn portal-btn-ghost">Refresh</button>}
+      topActions={<RefreshButton loading={loading} onClick={load} />}
     >
       <div className="portal-card mb-3">
         <div className="portal-card-body grid grid-cols-1 lg:grid-cols-4 gap-3">

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../services/api";
+import RefreshButton from "./RefreshButton";
 
 type ArchivedItem = { id: number; title?: string; name?: string; section_key?: string; key?: string; caption?: string; original_filename?: string; status?: string; [key: string]: unknown };
 type Group = { label: string; endpoint: string; detail: (id: number) => string; restore: (id: number) => string };
@@ -80,7 +81,7 @@ export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
   const pageSections = Array.isArray(selected?.detail.sections) ? selected.detail.sections.map(record) : [];
 
   return <div className="space-y-4">
-    <div className="portal-card"><div className="portal-card-header flex items-center justify-between gap-2"><div><h2 className="font-bold">Archived Content</h2><p className="text-sm text-slate-500">Restored items return as drafts and must be published again.</p></div><button type="button" onClick={() => void refresh()} className="portal-btn portal-btn-ghost">Refresh</button></div></div>
+    <div className="portal-card"><div className="portal-card-header flex items-center justify-between gap-2"><div><h2 className="font-bold">Archived Content</h2><p className="text-sm text-slate-500">Restored items return as drafts and must be published again.</p></div><RefreshButton loading={loading} onClick={refresh} /></div></div>
     {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
     {loading ? <p className="text-sm text-slate-500">Loading archived content...</p> : groups.map((group) => <section key={group.label} className="portal-card"><div className="portal-card-header"><h3 className="font-semibold">{group.label} ({items[group.label]?.length || 0})</h3></div><div className="portal-card-body space-y-2">{!items[group.label]?.length ? <p className="text-sm text-slate-500">No archived {group.label.toLowerCase()}.</p> : items[group.label].map((item) => <div key={item.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 p-3"><span className="min-w-0 break-words text-sm">{item.title || item.name || item.caption || item.original_filename || item.section_key || item.key || `#${item.id}`}</span><div className="flex flex-wrap items-center gap-3"><button type="button" onClick={() => void viewDetails(group, item)} className="text-sm font-semibold text-blue-700">View details</button>{isAdmin && <button type="button" disabled={busyId === `${group.label}-${item.id}`} onClick={() => void restore(group, item.id)} className="portal-btn portal-btn-ghost">Restore as Draft</button>}</div></div>)}</div></section>)}
     {selected && <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-3 sm:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelected(null); }}>

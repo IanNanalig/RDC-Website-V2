@@ -74,11 +74,11 @@ const Footer: React.FC<FooterProps> = ({ showVisitorCount = true }) => {
     };
     let idleId: number;
     if ("requestIdleCallback" in window) idleId = window.requestIdleCallback(register, { timeout: 2500 });
-    else idleId = window.setTimeout(register, 0);
+    else idleId = globalThis.setTimeout(register, 0);
     return () => {
       mounted = false;
       if ("cancelIdleCallback" in window) window.cancelIdleCallback(idleId);
-      else window.clearTimeout(idleId);
+      else globalThis.clearTimeout(idleId);
     };
   }, []);
 

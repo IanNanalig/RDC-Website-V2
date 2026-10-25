@@ -56,7 +56,6 @@ class ContributorFormWorkflowTests(APITestCase):
             "type": "text",
             "required": required,
             "visible": True,
-            "protected": False,
             "help_text": "",
             "placeholder": "",
         })
@@ -80,6 +79,7 @@ class ContributorFormWorkflowTests(APITestCase):
         )
 
     def test_admin_can_save_submit_and_publish_form(self):
+        initial_version = self.form.current_published_version.version_number
         reviewer = User.objects.create_user(
             username="second-form-admin",
             email="second-form-admin@example.com",
@@ -101,7 +101,7 @@ class ContributorFormWorkflowTests(APITestCase):
         self.form.save(update_fields=["updated_by", "updated_at"])
         published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
         self.assertEqual(published.status_code, status.HTTP_200_OK)
-        self.assertEqual(published.data["current_published_version_number"], 2)
+        self.assertEqual(published.data["current_published_version_number"], initial_version + 1)
         self.assertFalse(published.data["has_unpublished_changes"])
         self.assertTrue(Notification.objects.filter(
             recipient=self.editor, event_type="cms_form_published",
@@ -111,7 +111,7 @@ class ContributorFormWorkflowTests(APITestCase):
         current = self.client.get("/api/contributor-forms/simplified-rdip/current/")
         legacy = self.client.get("/api/contributor-forms/simplified-rdip/versions/1/")
         self.assertEqual(current.status_code, status.HTTP_200_OK)
-        self.assertEqual(current.data["version"], 2)
+        self.assertEqual(current.data["version"], initial_version + 1)
         self.assertEqual(legacy.status_code, status.HTTP_200_OK)
         self.assertNotIn(
             "custom_reference_number",
@@ -217,6 +217,7 @@ class ContributorFormWorkflowTests(APITestCase):
         self.assertEqual(restored.status, "draft")
 
     def test_restore_is_a_draft_and_does_not_replace_live_version(self):
+        initial_version = self.form.current_published_version.version_number
         saved = self._save_draft(self._draft_with_custom_field())
         self.assertEqual(saved.status_code, status.HTTP_200_OK)
         self.authenticate(self.admin)
@@ -232,11 +233,11 @@ class ContributorFormWorkflowTests(APITestCase):
         )
         self.assertEqual(restored.status_code, status.HTTP_200_OK)
         self.assertEqual(restored.data["status"], "draft")
-        self.assertEqual(restored.data["current_published_version_number"], 2)
+        self.assertEqual(restored.data["current_published_version_number"], initial_version + 1)
         self.assertTrue(restored.data["has_unpublished_changes"])
 
         current = self.client.get("/api/contributor-forms/simplified-rdip/current/")
-        self.assertEqual(current.data["version"], 2)
+        self.assertEqual(current.data["version"], initial_version + 1)
         retired = [
             field
             for section in restored.data["draft_schema_json"]["sections"]
@@ -253,7 +254,11 @@ class ContributorFormWorkflowTests(APITestCase):
         retired_section = next(
             section for section in reactivated_schema["sections"] if section["key"] == "retired_fields"
         )
-        reactivated_field = retired_section["fields"].pop()
+        reactivated_field = next(
+            field for field in retired_section["fields"]
+            if field["key"] == "custom_reference_number"
+        )
+        retired_section["fields"].remove(reactivated_field)
         origin = reactivated_field.pop("retired_from")
         reactivated_field["visible"] = True
         reactivated_field["required"] = origin["field_required"]
@@ -353,7 +358,11 @@ class ContributorFormWorkflowTests(APITestCase):
         retired_section = next(
             section for section in reactivated_schema["sections"] if section["key"] == "retired_fields"
         )
-        reactivated_field = retired_section["fields"].pop()
+        reactivated_field = next(
+            field for field in retired_section["fields"]
+            if field["key"] == "custom_reference_number"
+        )
+        retired_section["fields"].remove(reactivated_field)
         origin = reactivated_field.pop("retired_from")
         reactivated_field["visible"] = True
         reactivated_field["required"] = origin["field_required"]
@@ -373,6 +382,115 @@ class ContributorFormWorkflowTests(APITestCase):
         response = self._save_draft(schema, edit_mode="update")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("Change Form", str(response.data))
+
+    def test_change_mode_can_change_a_published_scalar_field_type(self):
+        original_version = self.form.current_published_version
+        original_schema = deepcopy(original_version.schema_json)
+        schema = deepcopy(self.form.draft_schema_json)
+        program_field = next(
+            field for section in schema["sections"] for field in section["fields"]
+            if field["key"] == "program"
+        )
+        program_field["type"] = "textarea"
+
+        saved = self._save_draft(schema, edit_mode="change")
+        self.assertEqual(saved.status_code, status.HTTP_200_OK, saved.data)
+
+        self.authenticate(self.admin)
+        published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
+        self.assertEqual(published.status_code, status.HTTP_200_OK, published.data)
+        self.form.refresh_from_db()
+        published_program = next(
+            field for section in self.form.current_published_version.schema_json["sections"]
+            for field in section["fields"] if field["key"] == "program"
+        )
+        original_program = next(
+            field for section in original_schema["sections"]
+            for field in section["fields"] if field["key"] == "program"
+        )
+        self.assertEqual(published_program["type"], "textarea")
+        self.assertEqual(original_program["type"], "text")
+
+    def test_update_mode_cannot_change_an_existing_field_type(self):
+        schema = deepcopy(self.form.draft_schema_json)
+        program_field = next(
+            field for section in schema["sections"] for field in section["fields"]
+            if field["key"] == "program"
+        )
+        program_field["type"] = "textarea"
+
+        response = self._save_draft(schema, edit_mode="update")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Change Form", str(response.data))
+
+    def test_agency_name_field_type_remains_fixed(self):
+        schema = deepcopy(self.form.draft_schema_json)
+        agency_field = next(
+            field for section in schema["sections"] for field in section["fields"]
+            if field["key"] == "agencyName"
+        )
+        agency_field["type"] = "textarea"
+
+        response = self._save_draft(schema, edit_mode="change")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("supplied by the contributor account", str(response.data))
+
+    def test_change_mode_can_change_other_workflow_field_types(self):
+        schema = deepcopy(self.form.draft_schema_json)
+        status_field = next(
+            field for section in schema["sections"] for field in section["fields"]
+            if field["key"] == "status"
+        )
+        status_field["type"] = "text"
+        status_field.pop("options", None)
+
+        response = self._save_draft(schema, edit_mode="change")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+    def test_location_is_an_admin_editable_multiselect_dropdown(self):
+        schema = deepcopy(self.form.draft_schema_json)
+        location_field = next(
+            field for section in schema["sections"] for field in section["fields"]
+            if field["key"] == "location"
+        )
+        self.assertEqual(location_field["type"], "multiselect_dropdown")
+        self.assertEqual(len(location_field["options"]), 17)
+        self.assertIn("Quezon City", [option["value"] for option in location_field["options"]])
+
+        location_field["options"][0]["label"] = "Caloocan City"
+        location_field["options"].append({"value": "option_1", "label": "Region-wide"})
+        response = self._save_draft(schema, edit_mode="change")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        saved_location = next(
+            field for section in response.data["draft_schema_json"]["sections"]
+            for field in section["fields"] if field["key"] == "location"
+        )
+        self.assertEqual(saved_location["options"][0]["label"], "Caloocan City")
+        self.assertEqual(saved_location["options"][-1]["label"], "Region-wide")
+
+        sdg_field = next(
+            field for section in schema["sections"] for field in section["fields"]
+            if field["key"] == "sdgSelections"
+        )
+        self.assertEqual(sdg_field["type"], "multiselect")
+
+    def test_current_location_field_requires_a_list_of_selected_values(self):
+        self.form.refresh_from_db()
+        version = self.form.current_published_version.version_number
+        profile = {
+            "form_schema": {"key": "simplified-rdip", "version": version},
+            "simplified_form": {"location": ["Pasig", "Quezon City"], "custom_fields": {}},
+        }
+        validate_simplified_answers(profile, require_complete=False)
+
+        invalid_profile = deepcopy(profile)
+        invalid_profile["simplified_form"]["location"] = "Pasig"
+        with self.assertRaises(FormSchemaError):
+            validate_simplified_answers(invalid_profile, require_complete=False)
 
     def test_published_legacy_readiness_options_do_not_block_cms_saves(self):
         legacy_values = [
@@ -415,7 +533,7 @@ class ContributorFormWorkflowTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("System-managed AI analysis", str(response.data))
 
-    def test_protected_select_options_can_be_added_reordered_and_removed(self):
+    def test_workflow_select_options_can_be_added_reordered_and_removed(self):
         schema = deepcopy(self.form.draft_schema_json)
         sdg_field = next(
             field
@@ -497,7 +615,6 @@ class ContributorFormWorkflowTests(APITestCase):
                 "type": "text",
                 "required": False,
                 "visible": True,
-                "protected": False,
             }],
         })
         saved = self._save_draft(schema, edit_mode="change")
@@ -528,6 +645,7 @@ class ContributorFormWorkflowTests(APITestCase):
             f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json"
         )
         self.assertEqual(version_two_response.status_code, status.HTTP_200_OK)
+        version_two_number = version_two_response.data["current_published_version_number"]
 
         self.form.refresh_from_db()
         schema = deepcopy(self.form.draft_schema_json)
@@ -545,10 +663,11 @@ class ContributorFormWorkflowTests(APITestCase):
             f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json"
         )
         self.assertEqual(version_three_response.status_code, status.HTTP_200_OK)
+        version_three_number = version_three_response.data["current_published_version_number"]
 
         self.form.refresh_from_db()
-        version_two = self.form.versions.get(version_number=2)
-        version_three = self.form.versions.get(version_number=3)
+        version_two = self.form.versions.get(version_number=version_two_number)
+        version_three = self.form.versions.get(version_number=version_three_number)
         old_field = next(
             field for section in version_two.schema_json["sections"] for field in section["fields"]
             if field["key"] == "custom_reference_number"
@@ -693,6 +812,7 @@ class ContributorFormWorkflowTests(APITestCase):
                 "form_schema": {"key": "simplified-rdip", "version": 1},
                 "simplified_form": {
                     "projectTitle": "Project ready for form update",
+                    "location": "Pasig and Quezon City",
                     "custom_fields": {"custom_historical_note": "Preserve this answer"},
                 },
             },
@@ -708,6 +828,7 @@ class ContributorFormWorkflowTests(APITestCase):
                 "form_schema": {"key": "simplified-rdip", "version": 1},
                 "simplified_form": {
                     "projectActivity": "Draft answer to preserve",
+                    "location": "Makati",
                     "custom_fields": {"custom_historical_note": "Preserve this draft answer"},
                 },
             },
@@ -740,6 +861,7 @@ class ContributorFormWorkflowTests(APITestCase):
             project.profile_data["simplified_form"]["custom_fields"]["custom_historical_note"],
             "Preserve this answer",
         )
+        self.assertEqual(project.profile_data["simplified_form"]["location"], ["Pasig", "Quezon City"])
         self.assertEqual(project.status, "completed")
         self.assertTrue(project.validated)
         progress_draft.refresh_from_db()
@@ -748,6 +870,7 @@ class ContributorFormWorkflowTests(APITestCase):
             progress_draft.profile_data_snapshot["simplified_form"]["custom_fields"]["custom_historical_note"],
             "Preserve this draft answer",
         )
+        self.assertEqual(progress_draft.profile_data_snapshot["simplified_form"]["location"], ["Makati"])
         self.assertEqual(updated.data["updated_progress_drafts"], 1)
         self.assertTrue(UserActivity.objects.filter(
             user=self.validator,

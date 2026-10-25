@@ -37,12 +37,27 @@ def _normalize_location_text(text: str) -> str:
     return re.sub(r"\s+", " ", lowered).strip()
 
 
-def derive_ncr_lgus(location_text: str | None) -> list[str]:
+def format_project_locations(location_value) -> str:
+    """Return legacy text and versioned multi-select locations as readable text."""
+    if isinstance(location_value, (list, tuple, set)):
+        seen = set()
+        values = []
+        for item in location_value:
+            value = str(item or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            values.append(value)
+        return ", ".join(values)
+    return str(location_value or "").strip()
+
+
+def derive_ncr_lgus(location_text) -> list[str]:
     """
     Extract every NCR LGU mentioned in human-entered `location` text.
     Results follow the order in which locations appear in the source text.
     """
-    raw = str(location_text or "").strip()
+    raw = format_project_locations(location_text)
     if not raw:
         return []
 
@@ -69,7 +84,7 @@ def derive_ncr_lgus(location_text: str | None) -> list[str]:
     return [canonical for _, canonical in matches]
 
 
-def derive_ncr_lgu(location_text: str | None) -> str | None:
+def derive_ncr_lgu(location_text) -> str | None:
     """
     Best-effort extraction of NCR LGU from human-entered `location` text.
     Strict matching: returns a canonical NCR LGU key or None when not recognized.

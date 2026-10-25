@@ -14,6 +14,7 @@ from .models import (
     Notification,
     PriorityRuleSet,
     Project,
+    ProjectSupportingDocument,
     ProjectPriorityAnalysis,
     ProjectRevision,
     SystemSetting,
@@ -160,15 +161,17 @@ class PortalWorkflowTests(APITestCase):
             format="json",
         )
         self.assertEqual(draft.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(submitted.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(submitted.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(Notification.objects.filter(
             project_id=draft.data["id"], recipient=self.admin,
             event_type="contributor_project_draft_created",
         ).count(), 1)
-        self.assertEqual(Notification.objects.filter(
-            project_id=submitted.data["id"], recipient=self.validator,
+        self.assertIn("Save the project as a draft", str(submitted.data))
+        self.assertFalse(Notification.objects.filter(
+            recipient=self.validator,
             event_type="project_submitted",
-        ).count(), 1)
+            message__icontains="General API Submitted",
+        ).exists())
 
     def test_submit_creates_employee_and_validator_notifications_once(self):
         self.employee.agency = "MMDA"
@@ -703,7 +706,15 @@ class PortalWorkflowTests(APITestCase):
         self.assertEqual(missing_comment.status_code, status.HTTP_400_BAD_REQUEST)
         needs_revision = self.client.post(
             f"/api/validator/projects/{project_id}/validate/",
-            {"action": "save_reviewed", "notes": "Please attach the project proposal."},
+            {
+                "action": "save_reviewed",
+                "notes": "Please attach the project proposal.",
+                "editable_fields": [
+                    "projectActivity",
+                    "fundingRequirementByYear",
+                    "custom_supporting_documents",
+                ],
+            },
             format="json",
         )
         self.assertEqual(needs_revision.status_code, status.HTTP_200_OK)
@@ -730,13 +741,29 @@ class PortalWorkflowTests(APITestCase):
             {
                 "title": "Revision Project Updated",
                 "agency": "MMDA",
-                "budget": 2,
+                "budget": 1,
                 "status": "draft",
                 "profile_data": self._simplified_profile("Revision Project"),
             },
             format="json",
         )
-        self.assertEqual(update_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(update_res.status_code, status.HTTP_200_OK, update_res.data)
+        project.refresh_from_db()
+        ProjectSupportingDocument.objects.create(
+            project=project,
+            field_key="custom_supporting_documents",
+            form_key="simplified-rdip",
+            form_version=int(project.supporting_document_policy.get("form_version") or 1),
+            original_filename="project-proposal.csv",
+            content_type="text/csv",
+            extension="csv",
+            size_bytes=16,
+            checksum_sha256="f" * 64,
+            content=b"item,value\nscope,1\n",
+            extraction_status="ready",
+            extracted_text="Project proposal scope and budget evidence.",
+            uploaded_by=self.employee,
+        )
         resubmit = self.client.post(f"/api/employee/projects/{project_id}/submit/", {}, format="json")
         self.assertEqual(resubmit.status_code, status.HTTP_200_OK)
         self.assertEqual(
@@ -827,7 +854,10 @@ class PortalWorkflowTests(APITestCase):
             agency="MMDA",
             budget=1,
             created_by=self.employee,
-            profile_data={"simplified_form": {"startYear": "2026", "endYear": "2026"}},
+            profile_data={
+                "form_schema": {"key": "simplified-rdip", "version": 1, "legacy": True},
+                "simplified_form": {"startYear": "2026", "endYear": "2026"},
+            },
         )
         rules = PriorityRuleSet.objects.create(version="test-rules", is_active=True)
         analysis = ProjectPriorityAnalysis.objects.create(

@@ -21,9 +21,16 @@ const fieldTypeOptions: Array<{ value: ContributorFormFieldType; label: string }
   { value: "textarea", label: "Long text" },
   { value: "number", label: "Number / currency" },
   { value: "date", label: "Date" },
+  { value: "year", label: "Year" },
   { value: "select", label: "Single select" },
-  { value: "multiselect", label: "Multiple select" },
+  { value: "multiselect", label: "Multiple select (checkboxes)" },
+  { value: "multiselect_dropdown", label: "Multiple select dropdown" },
+  { value: "currency_by_year", label: "Year-based currency" },
+  { value: "document_upload", label: "Supporting documents" },
 ];
+const documentExtensions = ["pdf", "docx", "xlsx", "csv", "png", "jpg", "jpeg"] as const;
+const choiceFieldTypes: ContributorFormFieldType[] = ["select", "multiselect", "multiselect_dropdown"];
+const fixedFieldTypeKeys = new Set(["agencyName"]);
 
 const errorDetail = (error: unknown, fallback: string) => {
   if (!(error instanceof Error) || !error.message) return fallback;
@@ -109,7 +116,7 @@ const versionSummary = (version: CMSContributorFormVersion) => {
   if (version.schema_json) return schemaSummary(version.schema_json);
   const counts = version.schema_summary;
   if (!counts) return "Version metadata";
-  return `${counts.section_count} sections Â· ${counts.field_count} fields Â· ${counts.custom_field_count} custom`;
+  return `${counts.section_count} sections · ${counts.field_count} fields · ${counts.custom_field_count} custom`;
 };
 
 const schemaDifferences = (live: ContributorFormSchema, draft: ContributorFormSchema) => {
@@ -198,8 +205,8 @@ const FormPreview = ({ schema }: { schema: ContributorFormSchema }) => {
           {section.description && <p className="mb-3 mt-1 text-xs text-slate-500">{section.description}</p>}
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {section.fields.filter((field) => field.visible !== false && contributorFieldApplies(field, previewValues)).map((field) => (
-              <label key={field.key} className={field.type === "textarea" || field.type === "multiselect" || field.type === "currency_by_year" ? "md:col-span-2" : ""}>
-                <span className="text-sm font-medium text-slate-700">{field.label}{field.required ? " *" : ""}</span>
+              <label key={field.key} className={field.type === "textarea" || field.type === "multiselect" || field.type === "multiselect_dropdown" || field.type === "currency_by_year" || field.type === "document_upload" ? "md:col-span-2" : ""}>
+                <span className="text-sm font-medium text-slate-700">{field.label}</span>
                 {field.type === "textarea" ? (
                   <textarea rows={2} className="mt-1 w-full rounded-lg border border-slate-300 bg-white p-2" placeholder={field.placeholder} value={String(previewValues[field.key] || "")} onChange={(event) => setValue(field.key, event.target.value)} />
                 ) : field.type === "select" ? (
@@ -207,12 +214,37 @@ const FormPreview = ({ schema }: { schema: ContributorFormSchema }) => {
                     <option value="">Choose</option>
                     {field.options?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                   </select>
+                ) : field.type === "multiselect_dropdown" ? (
+                  <details className="group mt-1 rounded-lg border border-slate-300 bg-white">
+                    <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 [&::-webkit-details-marker]:hidden">
+                      <span className={Array.isArray(previewValues[field.key]) && previewValues[field.key].length ? "truncate text-slate-800" : "text-slate-500"}>
+                        {Array.isArray(previewValues[field.key]) && previewValues[field.key].length
+                          ? field.options
+                            ?.filter((option) => (previewValues[field.key] as string[]).includes(option.value))
+                            .map((option) => option.label)
+                            .join(", ")
+                          : "Select one or more locations"}
+                      </span>
+                      <span aria-hidden="true" className="h-2 w-2 shrink-0 rotate-45 border-b-2 border-r-2 border-slate-500 transition-transform group-open:rotate-[225deg]" />
+                    </summary>
+                    <div className="max-h-64 space-y-1 overflow-y-auto border-t border-slate-200 p-2">
+                      {field.options?.map((option) => {
+                        const selectedValues = Array.isArray(previewValues[field.key]) ? previewValues[field.key] as string[] : [];
+                        return <span key={option.value} className="flex items-center gap-2 rounded px-2 py-1.5 text-xs text-slate-700 hover:bg-blue-50"><input type="checkbox" checked={selectedValues.includes(option.value)} onChange={(event) => setValue(field.key, event.target.checked ? [...selectedValues, option.value] : selectedValues.filter((value) => value !== option.value))} />{option.label}</span>;
+                      })}
+                    </div>
+                  </details>
                 ) : field.type === "multiselect" ? (
                   <div className="mt-1 space-y-1 rounded-lg border border-slate-300 bg-white p-2">
                     {field.options?.map((option) => {
                       const selectedValues = Array.isArray(previewValues[field.key]) ? previewValues[field.key] as string[] : [];
                       return <span key={option.value} className="flex items-center gap-2 text-xs text-slate-700"><input type="checkbox" checked={selectedValues.includes(option.value)} onChange={(event) => setValue(field.key, event.target.checked ? [...selectedValues, option.value] : selectedValues.filter((value) => value !== option.value))} />{option.label}</span>;
                     })}
+                  </div>
+                ) : field.type === "document_upload" ? (
+                  <div className="mt-1 rounded-lg border-2 border-dashed border-blue-200 bg-blue-50 p-4 text-center text-xs text-blue-800">
+                    <strong>Choose supporting documents</strong>
+                    <span className="mt-1 block">Preview only · {field.min_files || (field.required ? 1 : 0)}–{field.max_files || 10} files · up to {Math.round((field.max_file_bytes || 20 * 1024 * 1024) / 1024 / 1024)} MB each</span>
                   </div>
                 ) : field.type === "currency_by_year" ? (
                   <div className="mt-1 rounded-lg border border-slate-300 bg-slate-50 p-3 text-xs text-slate-500">Funding inputs generated from the implementation period</div>
@@ -240,6 +272,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   const [compareVersion, setCompareVersion] = useState<CMSContributorFormVersion | null>(null);
   const [loadingVersionId, setLoadingVersionId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [busyAction, setBusyAction] = useState("");
   const [notice, setNotice] = useState("");
   const [readOnly, setReadOnly] = useState(false);
   const selectedKeyRef = useRef("");
@@ -331,12 +364,13 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     return () => window.clearInterval(timer);
   }, [editMode, readOnly, selected]);
 
-  const beginEdit = async (nextMode: EditMode) => {
+  const beginEdit = async (nextMode: EditMode, force = false) => {
     if (!selected) return;
     setLoading(true);
+    setBusyAction(force ? "taking-over" : `opening-${nextMode}`);
     setNotice("");
     try {
-      const locked = await cmsApi.lockContributorForm(selected.id) as CMSContributorForm;
+      const locked = await cmsApi.lockContributorForm(selected.id, force) as CMSContributorForm;
       const nextSchema = normalizeContributorSchema(locked.draft_schema_json);
       setSelected(locked);
       setSchema(nextSchema);
@@ -349,33 +383,51 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
       setNotice(errorDetail(error, `This form is currently being edited by ${selected.lock_owner_name || "another editor"}.`));
     } finally {
       setLoading(false);
+      setBusyAction("");
     }
+  };
+
+  const takeOverEdit = async (nextMode: EditMode) => {
+    if (!selected || !isAdmin) return;
+    if (!window.confirm(`Take over editing from ${selected.lock_owner_name || "the current editor"}? Their unsaved browser changes may no longer be saved.`)) return;
+    await beginEdit(nextMode, true);
   };
 
   const requestAccess = async () => {
     if (!selected) return;
+    setBusyAction("requesting");
+    setNotice("");
     try {
       const response = await cmsApi.requestContributorFormAccess(selected.id) as { detail?: string };
       setNotice(response.detail || "Access request sent to the current editor.");
     } catch (error) {
       setNotice(errorDetail(error, "Failed to request form access."));
+    } finally {
+      setBusyAction("");
     }
   };
 
   const closeEditor = async () => {
     if (!selected) return;
     if (dirty && !window.confirm("Discard the unsaved form changes?")) return;
-    let unlocked = selected;
-    if (!readOnly) {
-      try { unlocked = await cmsApi.unlockContributorForm(selected.id) as CMSContributorForm; } catch { /* expired locks need no cleanup */ }
+    setLoading(true);
+    setBusyAction("discarding");
+    try {
+      let unlocked = selected;
+      if (!readOnly) {
+        try { unlocked = await cmsApi.unlockContributorForm(selected.id) as CMSContributorForm; } catch { /* expired locks need no cleanup */ }
+      }
+      const restoredSchema = normalizeContributorSchema(unlocked.draft_schema_json);
+      setSelected(unlocked);
+      setSchema(restoredSchema);
+      setBaseline(JSON.stringify(restoredSchema));
+      setEditMode(null);
+      setReadOnly(false);
+      setPreview(false);
+    } finally {
+      setLoading(false);
+      setBusyAction("");
     }
-    const restoredSchema = normalizeContributorSchema(unlocked.draft_schema_json);
-    setSelected(unlocked);
-    setSchema(restoredSchema);
-    setBaseline(JSON.stringify(restoredSchema));
-    setEditMode(null);
-    setReadOnly(false);
-    setPreview(false);
   };
 
   const updateSection = (sectionIndex: number, updater: (section: ContributorFormSection) => ContributorFormSection) => {
@@ -404,7 +456,6 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
         type: "text",
         required: false,
         visible: true,
-        protected: false,
         help_text: "",
         placeholder: "",
       }],
@@ -414,8 +465,8 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   const removeField = (sectionIndex: number, fieldIndex: number) => {
     if (!schema) return;
     const field = schema.sections[sectionIndex]?.fields[fieldIndex];
-    if (!field || publishedFieldKeys.has(field.key)) return;
-    if (!window.confirm(`Remove the unpublished field "${field.label}"?`)) return;
+    if (!field || publishedFieldKeys.has(field.key) && field.type !== "document_upload") return;
+    if (!window.confirm(`Remove the field "${field.label}" from future form versions? Existing project records will keep their historical policy.`)) return;
     updateSection(sectionIndex, (section) => ({
       ...section,
       fields: section.fields.filter((_, index) => index !== fieldIndex),
@@ -425,8 +476,8 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   const removeSection = (sectionIndex: number) => {
     if (!schema) return;
     const section = schema.sections[sectionIndex];
-    if (!section || publishedSectionKeys.has(section.key) || section.admin_only) return;
-    if (!window.confirm(`Remove the unpublished section "${section.title}" and its fields?`)) return;
+    if (!section || section.admin_only || publishedSectionKeys.has(section.key) && !section.fields.every((field) => field.type === "document_upload")) return;
+    if (!window.confirm(`Remove the section "${section.title}" from future form versions? Existing project records will keep their historical policy.`)) return;
     setSchema({ ...schema, sections: schema.sections.filter((_, index) => index !== sectionIndex) });
   };
 
@@ -548,6 +599,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   const saveDraft = async () => {
     if (!selected || !schema || !editMode) return;
     setLoading(true);
+    setBusyAction("saving");
     setNotice("");
     try {
       const saved = await cmsApi.updateContributorForm(selected.id, {
@@ -568,6 +620,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
       setNotice(errorDetail(error, "Failed to save the contributor form draft."));
     } finally {
       setLoading(false);
+      setBusyAction("");
     }
   };
 
@@ -577,6 +630,8 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     const remarks = action === "reject" ? window.prompt("Reason for rejection:", selected.review_notes || "") : "";
     if (action === "reject" && remarks === null) return;
     setLoading(true);
+    setBusyAction(action);
+    setNotice("");
     try {
       let updated: CMSContributorForm | null = null;
       if (action === "submit") updated = await cmsApi.submitContributorForm(selected.id) as CMSContributorForm;
@@ -595,6 +650,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
       setNotice(errorDetail(error, `Failed to ${action} the contributor form.`));
     } finally {
       setLoading(false);
+      setBusyAction("");
     }
   };
 
@@ -606,6 +662,8 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
       : `Restore published version ${version.version_number} as a new draft? The live form will not change until that draft is published.`;
     if (!window.confirm(prompt)) return;
     setLoading(true);
+    setBusyAction(`restore-${version.id}`);
+    setNotice("");
     try {
       const restored = await cmsApi.restoreContributorFormVersion(selected.id, version.id) as CMSContributorForm;
       const restoredSchema = normalizeContributorSchema(restored.draft_schema_json);
@@ -618,6 +676,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
       setNotice(errorDetail(error, "Failed to restore the selected form version."));
     } finally {
       setLoading(false);
+      setBusyAction("");
     }
   };
 
@@ -641,12 +700,13 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
             {selected.review_notes && <p className="mt-2 text-sm font-medium text-rose-700">Review note: {selected.review_notes}</p>}
           </div>
           {!editMode && <div className="flex flex-wrap gap-2">
-            {selected.is_locked && !selected.locked_by_me && <button className="portal-btn portal-btn-ghost" onClick={() => void requestAccess()}>Request Access from {selected.lock_owner_name || "Editor"}</button>}
-            <button className="portal-btn portal-btn-primary" disabled={loading || selected.status === "submitted" && !isAdmin} onClick={() => void beginEdit("update")}>Update Form</button>
-            <button className="portal-btn portal-btn-ghost" disabled={loading || selected.status === "submitted" && !isAdmin} onClick={() => void beginEdit("change")}>Change Form</button>
-            {!isAdmin && selected.status !== "submitted" && selected.has_unpublished_changes && <button className="portal-btn portal-btn-ghost" onClick={() => void workflow("submit")}>Submit for Review</button>}
-            {isAdmin && selected.has_unpublished_changes && <button className="portal-btn portal-btn-primary" onClick={() => void workflow("publish")}>Publish</button>}
-            {isAdmin && selected.status === "submitted" && <button className="portal-btn portal-btn-ghost" onClick={() => void workflow("reject")}>Reject</button>}
+            {selected.is_locked && !selected.locked_by_me && <button disabled={Boolean(busyAction)} className="portal-btn portal-btn-ghost" onClick={() => void requestAccess()}>{busyAction === "requesting" ? "Requesting..." : `Request Access from ${selected.lock_owner_name || "Editor"}`}</button>}
+            {isAdmin && selected.is_locked && !selected.locked_by_me && <button disabled={Boolean(busyAction)} className="portal-btn portal-btn-ghost" onClick={() => void takeOverEdit("change")}>{busyAction === "taking-over" ? "Taking over..." : "Take Over Editing"}</button>}
+            <button className="portal-btn portal-btn-primary" disabled={loading || Boolean(busyAction) || selected.status === "submitted" && !isAdmin} onClick={() => void beginEdit("update")}>{busyAction === "opening-update" ? "Opening..." : "Update Form"}</button>
+            <button className="portal-btn portal-btn-ghost" disabled={loading || Boolean(busyAction) || selected.status === "submitted" && !isAdmin} onClick={() => void beginEdit("change")}>{busyAction === "opening-change" ? "Opening..." : "Change Form"}</button>
+            {!isAdmin && selected.status !== "submitted" && selected.has_unpublished_changes && <button disabled={Boolean(busyAction)} className="portal-btn portal-btn-ghost" onClick={() => void workflow("submit")}>{busyAction === "submit" ? "Submitting..." : "Submit for Review"}</button>}
+            {isAdmin && selected.has_unpublished_changes && <button disabled={Boolean(busyAction)} className="portal-btn portal-btn-primary" onClick={() => void workflow("publish")}>{busyAction === "publish" ? "Publishing..." : "Publish"}</button>}
+            {isAdmin && selected.status === "submitted" && <button disabled={Boolean(busyAction)} className="portal-btn portal-btn-ghost" onClick={() => void workflow("reject")}>{busyAction === "reject" ? "Rejecting..." : "Reject"}</button>}
           </div>}
         </div>
       </div>
@@ -687,27 +747,28 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                     {editMode === "change" && (section.key === "retired_fields" ? (
                       <span className="rounded-full bg-slate-200 px-2 py-1 text-xs font-semibold text-slate-600">Hidden compatibility section</span>
                     ) : (
-                      <div className="flex flex-wrap items-center gap-2 text-xs"><button type="button" onClick={() => setSchema({ ...schema, sections: moveContributorSection(schema.sections, sectionIndex, -1) })}>Up</button><button type="button" onClick={() => setSchema({ ...schema, sections: moveContributorSection(schema.sections, sectionIndex, 1) })}>Down</button>{!section.fields.some((field) => field.required || field.condition_required) && <label className="flex items-center gap-1"><input type="checkbox" checked={section.visible !== false} onChange={(event) => updateSection(sectionIndex, (current) => ({ ...current, visible: event.target.checked }))} />Visible</label>}{!publishedSectionKeys.has(section.key) && <button type="button" className="font-semibold text-rose-700" onClick={() => removeSection(sectionIndex)}>Remove section</button>}</div>
+                      <div className="flex flex-wrap items-center gap-2 text-xs"><button type="button" disabled={moveContributorSection(schema.sections, sectionIndex, -1) === schema.sections} className="disabled:cursor-not-allowed disabled:text-slate-300" onClick={() => setSchema({ ...schema, sections: moveContributorSection(schema.sections, sectionIndex, -1) })}>Up</button><button type="button" disabled={moveContributorSection(schema.sections, sectionIndex, 1) === schema.sections} className="disabled:cursor-not-allowed disabled:text-slate-300" onClick={() => setSchema({ ...schema, sections: moveContributorSection(schema.sections, sectionIndex, 1) })}>Down</button>{!section.fields.some((field) => field.required || field.condition_required) && <label className="flex items-center gap-1"><input type="checkbox" checked={section.visible !== false} onChange={(event) => updateSection(sectionIndex, (current) => ({ ...current, visible: event.target.checked }))} />Visible</label>}{(!publishedSectionKeys.has(section.key) || section.fields.every((field) => field.type === "document_upload")) && <button type="button" className="font-semibold text-rose-700" onClick={() => removeSection(sectionIndex)}>Remove section</button>}</div>
                     ))}
                   </div>
                   <div className="mt-3 space-y-3">
                     {section.fields.map((item, fieldIndex) => {
                       const isCustom = item.key.startsWith("custom_");
                       const isPublished = publishedFieldKeys.has(item.key);
-                      const canRemove = isCustom && !isPublished && (editMode === "change" || !baselineFieldKeys.has(item.key));
+                      const canRemove = isCustom && (!isPublished || item.type === "document_upload") && (editMode === "change" || !baselineFieldKeys.has(item.key));
                       const isRetired = section.key === "retired_fields";
                       const retiredOrigin = isRetired ? resolveRetiredOrigin(item) : undefined;
                       const canReorder = !isRetired && (editMode === "change" || (isCustom && !baselineFieldKeys.has(item.key)));
+                      const typeIsFixed = fixedFieldTypeKeys.has(item.key);
                       return (
                         <div key={item.key} data-form-field-key={item.key} className="rounded-xl border border-slate-200 bg-white p-3">
                           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                             <label><span className="text-xs font-semibold text-slate-600">Label</span><input className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.label} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, label: event.target.value }))} /></label>
                             <label><span className="text-xs font-semibold text-slate-600">Help text</span><input className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.help_text || ""} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, help_text: event.target.value }))} /></label>
                             <label><span className="text-xs font-semibold text-slate-600">Placeholder</span><input className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.placeholder || ""} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, placeholder: event.target.value }))} /></label>
-                            <label><span className="text-xs font-semibold text-slate-600">Field type</span><select disabled={!isCustom || publishedFieldKeys.has(item.key) || editMode === "update" && baselineFieldKeys.has(item.key)} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.type} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, type: event.target.value as ContributorFormFieldType, options: ["select", "multiselect"].includes(event.target.value) ? fieldValue.options || [{ value: "option_1", label: "Option 1" }] : undefined }))}>{fieldTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+                            <label><span className="text-xs font-semibold text-slate-600">Field type</span><select disabled={typeIsFixed || editMode === "update" && baselineFieldKeys.has(item.key)} title={typeIsFixed ? "Agency Name is supplied by the contributor's account, so its field type cannot be changed." : editMode === "update" && baselineFieldKeys.has(item.key) ? "Use Change Form to change an existing field type." : undefined} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500" value={item.type} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => { const nextType = event.target.value as ContributorFormFieldType; return { ...fieldValue, type: nextType, options: choiceFieldTypes.includes(nextType) ? fieldValue.options || [{ value: "option_1", label: "Option 1" }] : undefined, ...(nextType === "document_upload" ? { allowed_extensions: [...documentExtensions], min_files: 0, max_files: 10, max_file_bytes: 20 * 1024 * 1024, ai_sufficiency_instructions: "Documents should substantiate the project scope, objectives, budget, readiness, beneficiaries, or outcomes." } : {}) }; })}>{fieldTypeOptions.map((option) => <option key={option.value} value={option.value} disabled={(option.value === "document_upload" && (!isCustom || item.type !== "document_upload" && schema.sections.some((candidate) => candidate.visible !== false && candidate.fields.some((field) => field.visible !== false && field.type === "document_upload")))) || (option.value === "currency_by_year" && !["fundingRequirementByYear", "actualFundingByYear"].includes(item.key))}>{option.label}</option>)}</select></label>
                           </div>
                           <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-600">
-                            <span className={`rounded-full px-2 py-0.5 font-semibold ${!isCustom ? "bg-slate-200 text-slate-700" : isPublished ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}`}>{!isCustom ? "Protected" : isPublished ? "Published custom" : "Unpublished custom"}</span>
+                            <span className={`rounded-full px-2 py-0.5 font-semibold ${isPublished ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}`}>{isPublished ? "Published field" : "New field"}</span>
                             <span className="rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-600">Order {fieldIndex + 1}</span>
                             <span className="font-mono">{item.key}</span>
                             {canReorder && <><button type="button" disabled={fieldIndex === 0} className="font-semibold text-blue-700 disabled:cursor-not-allowed disabled:text-slate-300" aria-label={`Move ${item.label} up`} onClick={() => updateSection(sectionIndex, (current) => ({ ...current, fields: move(current.fields, fieldIndex, -1) }))}>Move up</button><button type="button" disabled={fieldIndex === section.fields.length - 1} className="font-semibold text-blue-700 disabled:cursor-not-allowed disabled:text-slate-300" aria-label={`Move ${item.label} down`} onClick={() => updateSection(sectionIndex, (current) => ({ ...current, fields: move(current.fields, fieldIndex, 1) }))}>Move down</button></>}
@@ -721,10 +782,19 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                               >
                                 {retiredOrigin ? `Reactivate in ${retiredOrigin.section_title}` : "Original location unavailable"}
                               </button>
-                            ) : <>{(isCustom || !item.required && !item.condition_required) && <label className="flex items-center gap-1"><input type="checkbox" checked={item.visible !== false} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, visible: event.target.checked }))} />{item.visible === false ? "Reactivate" : "Visible"}</label>}{isCustom && <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(item.required)} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, required: event.target.checked }))} />Required</label>}</>)}
+                            ) : <>{(isCustom || !item.required && !item.condition_required) && <label className="flex items-center gap-1"><input type="checkbox" checked={item.visible !== false} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, visible: event.target.checked }))} />{item.visible === false ? "Reactivate" : "Visible"}</label>}{isCustom && <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(item.required)} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, required: event.target.checked, min_files: fieldValue.type === "document_upload" ? event.target.checked ? Math.max(1, fieldValue.min_files || 1) : 0 : fieldValue.min_files }))} />Required</label>}</>)}
                             {canRemove && <button type="button" className="font-semibold text-rose-700" onClick={() => removeField(sectionIndex, fieldIndex)}>Remove field</button>}
                           </div>
                           {isCustom && editMode === "update" && !baselineFieldKeys.has(item.key) && <label className="mt-2 flex items-center gap-1 text-xs text-slate-600"><input type="checkbox" checked={Boolean(item.required)} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, required: event.target.checked }))} />Required for submission</label>}
+                          {item.type === "document_upload" && <div className="mt-3 space-y-3 rounded-xl border border-blue-100 bg-blue-50 p-3">
+                            <div className="grid gap-3 sm:grid-cols-3">
+                              <label><span className="text-xs font-semibold text-slate-600">Minimum files</span><input type="number" min={item.required ? 1 : 0} max={item.max_files || 10} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.min_files ?? (item.required ? 1 : 0)} onChange={(event) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, min_files: Number(event.target.value) }))} /></label>
+                              <label><span className="text-xs font-semibold text-slate-600">Maximum files</span><input type="number" min={1} max={10} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.max_files || 10} onChange={(event) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, max_files: Number(event.target.value) }))} /></label>
+                              <label><span className="text-xs font-semibold text-slate-600">Per-file limit (MB)</span><input type="number" min={1} max={20} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={Math.round((item.max_file_bytes || 20 * 1024 * 1024) / 1024 / 1024)} onChange={(event) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, max_file_bytes: Number(event.target.value) * 1024 * 1024 }))} /></label>
+                            </div>
+                            <fieldset><legend className="text-xs font-semibold text-slate-600">Allowed formats</legend><div className="mt-1 flex flex-wrap gap-3">{documentExtensions.map((extension) => <label key={extension} className="flex items-center gap-1 text-xs uppercase"><input type="checkbox" checked={(item.allowed_extensions || []).includes(extension)} onChange={(event) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, allowed_extensions: event.target.checked ? [...(value.allowed_extensions || []), extension] : (value.allowed_extensions || []).filter((current) => current !== extension) }))} />{extension}</label>)}</div></fieldset>
+                            <label className="block"><span className="text-xs font-semibold text-slate-600">AI sufficiency instructions</span><textarea rows={3} maxLength={4000} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm" value={item.ai_sufficiency_instructions || ""} onChange={(event) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, ai_sufficiency_instructions: event.target.value }))} /></label>
+                          </div>}
                           {item.options && <div className="mt-3 space-y-2"><div className="grid gap-2 sm:grid-cols-2">{item.options.map((option, optionIndex) => {
                             const canChangeOptionOrder = editMode === "change" || !baselineFieldKeys.has(item.key);
                             const controlsCondition = conditionalOptionValues.get(item.key)?.has(option.value) === true;
@@ -741,10 +811,10 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                 </section>
               ))}
               {editMode === "change" && <button type="button" className="portal-btn portal-btn-ghost" onClick={addSection}>Add Section</button>}
-              <div className="flex justify-end gap-2 border-t border-slate-200 pt-4"><button type="button" className="portal-btn portal-btn-ghost" onClick={() => void closeEditor()}>Discard</button><button type="button" className="portal-btn portal-btn-primary" disabled={loading || !dirty} onClick={() => void saveDraft()}>{loading ? "Saving..." : "Save Draft"}</button></div>
+              <div className="flex justify-end gap-2 border-t border-slate-200 pt-4"><button type="button" className="portal-btn portal-btn-ghost" disabled={loading || Boolean(busyAction)} onClick={() => void closeEditor()}>{busyAction === "discarding" ? "Discarding..." : "Discard"}</button><button type="button" className="portal-btn portal-btn-primary" disabled={loading || Boolean(busyAction) || !dirty} onClick={() => void saveDraft()}>{busyAction === "saving" ? "Saving..." : "Save Draft"}</button></div>
             </fieldset>
           </div>
-          <div>{preview ? <FormPreview schema={schema} /> : <div className="portal-card p-4 text-sm text-slate-600"><h3 className="font-bold text-slate-800">Editing safeguards</h3><p className="mt-2">Protected workflow fields keep their stable keys, types, option values, and required rules. Published fields are hidden instead of deleted so older projects remain readable. Unpublished custom fields and sections can be removed permanently.</p><p className="mt-2">The validator AI analysis is system-managed and is intentionally excluded from this contributor-form editor.</p></div>}</div>
+          <div>{preview ? <FormPreview schema={schema} /> : <div className="portal-card p-4 text-sm text-slate-600"><h3 className="font-bold text-slate-800">Administrator editing</h3><p className="mt-2">Change Form lets Administrators edit field labels, guidance, placeholders, order, choices, and field types. Agency Name keeps its Short text type because its value is supplied by the contributor&apos;s account. Update Form remains limited to wording and safe additions. Published fields are hidden instead of deleted for historical compatibility; new unpublished fields and sections can be removed permanently.</p><p className="mt-2">The validator AI analysis is system-managed and is intentionally excluded from this contributor-form editor.</p></div>}</div>
         </div>
       ) : (
         <div className="grid gap-4 xl:grid-cols-2">
@@ -754,7 +824,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
             <div className="portal-card-body space-y-3">
               {versions.length === 0 ? <p className="text-sm text-slate-500">No published versions yet.</p> : versions.map((version) => (
                 <div key={version.id} data-form-version={version.version_number} className="rounded-xl border border-slate-200 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-3"><div><strong>Version {version.version_number}</strong><p className="text-xs text-slate-500">{versionSummary(version)} · {version.published_by_name || "system"} · {formatDate(version.published_at)}</p></div><div className="flex flex-wrap gap-2"><button disabled={loadingVersionId === version.id} className="text-sm text-blue-700 disabled:text-slate-400" onClick={() => void toggleCompareVersion(version)}>{loadingVersionId === version.id ? "Loading preview..." : "Preview changes"}</button>{isAdmin && version.version_number === selected.current_published_version_number && selected.has_unpublished_changes && <button className="text-sm font-semibold text-rose-700" onClick={() => void restore(version)}>Reset Draft to Live Version</button>}{isAdmin && version.version_number !== selected.current_published_version_number && <button className="text-sm text-amber-700" onClick={() => void restore(version)}>Restore as Draft</button>}</div></div>
+                  <div className="flex flex-wrap items-center justify-between gap-3"><div><strong>Version {version.version_number}</strong><p className="text-xs text-slate-500">{versionSummary(version)} · {version.published_by_name || "system"} · {formatDate(version.published_at)}</p></div><div className="flex flex-wrap gap-2"><button disabled={loadingVersionId === version.id || Boolean(busyAction)} className="text-sm text-blue-700 disabled:text-slate-400" onClick={() => void toggleCompareVersion(version)}>{loadingVersionId === version.id ? "Loading preview..." : "Preview changes"}</button>{isAdmin && version.version_number === selected.current_published_version_number && selected.has_unpublished_changes && <button disabled={Boolean(busyAction)} className="text-sm font-semibold text-rose-700 disabled:text-slate-400" onClick={() => void restore(version)}>{busyAction === `restore-${version.id}` ? "Restoring..." : "Reset Draft to Live Version"}</button>}{isAdmin && version.version_number !== selected.current_published_version_number && <button disabled={Boolean(busyAction)} className="text-sm text-amber-700 disabled:text-slate-400" onClick={() => void restore(version)}>{busyAction === `restore-${version.id}` ? "Restoring..." : "Restore as Draft"}</button>}</div></div>
                   {compareVersion?.id === version.id && compareVersion.schema_json && <div className="mt-3 border-t border-slate-200 pt-3"><p className="mb-2 text-xs font-semibold text-slate-600">Changes from Version {version.version_number} to current draft</p><div className="mb-3"><ChangeSummary live={compareVersion.schema_json} draft={schema} /></div><FormPreview schema={compareVersion.schema_json} /></div>}
                 </div>
               ))}

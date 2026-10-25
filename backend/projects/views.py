@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 import re
 import string
@@ -9,6 +10,8 @@ import urllib.parse
 import urllib.request
 import hashlib
 import secrets
+import zipfile
+from pathlib import Path
 from copy import deepcopy
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -19,7 +22,7 @@ from django.core.mail import send_mail, EmailMessage
 from django.core import signing
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
-from django.http import Http404
+from django.http import Http404, HttpResponse
 from django.utils import timezone
 from django.utils.crypto import get_random_string
 from django.utils.text import slugify
@@ -45,6 +48,7 @@ from .models import (
     ProfileEditRequest,
     ProjectPriorityAnalysis,
     ProjectPriorityConfirmation,
+    ProjectSupportingDocument,
     Project,
     ProjectComment,
     ProjectRevision,
@@ -68,6 +72,7 @@ from .serializers import (
     UserActivitySerializer,
     UserSerializer,
     ProjectPriorityAnalysisSerializer,
+    ProjectSupportingDocumentSerializer,
 )
 from .public_summary import build_public_summary
 from .project_status import (
@@ -76,7 +81,19 @@ from .project_status import (
     canonical_implementation_status,
 )
 from .priority_scoring import analyze_project, confirm_analysis, ensure_analysis_guidance, has_matching_confirmation
-from .utils import derive_ncr_lgus
+from .document_policy import (
+    PROJECT_DOCUMENT_MAX_TOTAL_BYTES,
+    active_project_documents,
+    resolve_project_document_policy,
+    validate_project_documents_for_submit,
+)
+from .document_assessments import (
+    dispatch_document_assessment,
+    dispatch_document_processing,
+    ensure_queued_assessment,
+    serialize_document_assessment,
+)
+from .utils import derive_ncr_lgus, format_project_locations
 
 
 ENCODING_WINDOW_KEY = "portal_encoding_window"
@@ -792,7 +809,66 @@ def _saved_contributor_form_marker(profile_data):
     return key, max(version, 1)
 
 
-def _upgrade_profile_form_marker(profile_data, source_profile_data):
+def _normalize_location_for_form_schema(profile_data, schema):
+    """Convert a legacy text location when opting a project into a multi-select form."""
+    if not isinstance(profile_data, dict) or not isinstance(schema, dict):
+        return profile_data, ""
+    location_field = next(
+        (
+            field
+            for section in schema.get("sections", [])
+            if isinstance(section, dict)
+            for field in section.get("fields", [])
+            if isinstance(field, dict) and field.get("key") == "location" and field.get("type") == "multiselect_dropdown"
+        ),
+        None,
+    )
+    if location_field is None:
+        return profile_data, ""
+    simplified = profile_data.get("simplified_form")
+    if not isinstance(simplified, dict):
+        return profile_data, ""
+
+    options = [
+        option for option in location_field.get("options", [])
+        if isinstance(option, dict) and str(option.get("value") or "").strip()
+    ]
+    allowed_values = {str(option["value"]) for option in options}
+    raw = simplified.get("location")
+    if isinstance(raw, list):
+        selected = [str(value).strip() for value in raw if str(value).strip()]
+        unsupported = [value for value in selected if value not in allowed_values]
+        if unsupported:
+            return profile_data, "The saved project contains location choices that are not available in the current form."
+    else:
+        text = str(raw or "").strip()
+        selected = []
+        if text:
+            option_lookup = {
+                str(candidate).strip().casefold(): str(option["value"])
+                for option in options
+                for candidate in (option.get("value"), option.get("label"))
+                if str(candidate or "").strip()
+            }
+            direct = option_lookup.get(text.casefold())
+            if direct:
+                selected = [direct]
+            else:
+                selected = [value for value in derive_ncr_lgus(text) if value in allowed_values]
+            if not selected:
+                return profile_data, (
+                    "The saved text location does not match any location choice in the current form. "
+                    "Keep the project on its existing form until its location can be corrected."
+                )
+
+    upgraded = deepcopy(profile_data)
+    upgraded_simplified = deepcopy(simplified)
+    upgraded_simplified["location"] = selected
+    upgraded["simplified_form"] = upgraded_simplified
+    return upgraded, ""
+
+
+def _upgrade_profile_form_marker(profile_data, source_profile_data, target_schema=None):
     """Upgrade an editable snapshot to the source project's newer form marker."""
     if not isinstance(profile_data, dict):
         return profile_data, None
@@ -805,6 +881,9 @@ def _upgrade_profile_form_marker(profile_data, source_profile_data):
     if saved_key != source_key or saved_version >= source_version:
         return profile_data, None
     upgraded = deepcopy(profile_data)
+    upgraded, location_error = _normalize_location_for_form_schema(upgraded, target_schema)
+    if location_error:
+        return profile_data, {"error": location_error}
     upgraded["form_schema"] = {"key": source_key, "version": source_version}
     return upgraded, {
         "form_key": source_key,
@@ -2249,6 +2328,29 @@ def _available_revision_fields(profile_data):
         custom = simplified.get("custom_fields")
         if isinstance(custom, dict):
             fields.update(str(key) for key in custom.keys())
+        marker = profile_data.get("form_schema") if isinstance(profile_data.get("form_schema"), dict) else {}
+        try:
+            from cms.models import CMSContributorFormVersion
+            from .document_policy import current_document_policy, document_policy_from_schema
+
+            version = CMSContributorFormVersion.objects.filter(
+                form__key=str(marker.get("key") or "simplified-rdip"),
+                version_number=marker.get("version"),
+            ).first()
+            if version:
+                document_policy = document_policy_from_schema(
+                    version.schema_json,
+                    form_key=version.form.key,
+                    form_version=version.version_number,
+                )
+                if document_policy.get("field_key"):
+                    fields.add(str(document_policy["field_key"]))
+            if not version or not document_policy.get("field_key"):
+                document_policy = current_document_policy(str(marker.get("key") or "simplified-rdip"))
+                if document_policy.get("field_key"):
+                    fields.add(str(document_policy["field_key"]))
+        except (TypeError, ValueError):
+            pass
         return fields
     return {
         str(key)
@@ -2974,6 +3076,266 @@ def _project_list_queryset(qs, request, *, prefetch_priority=True):
     return _project_queryset_with_related(qs, prefetch_priority=prefetch_priority)
 
 
+def _can_access_project_documents(user, project):
+    role = getattr(user, "role", "")
+    if role == "admin":
+        return True
+    if project.archived:
+        return False
+    if role == "validator":
+        return project.status == "proposed"
+    if role in ("staff", "employee"):
+        agency = str(getattr(user, "agency", "") or "").strip().casefold()
+        return project.created_by_id == user.id or bool(agency and agency == str(project.agency or "").strip().casefold())
+    return False
+
+
+def _can_change_project_documents(user, project, field_key):
+    if getattr(user, "role", "") not in ("staff", "employee") or not _can_access_project_documents(user, project):
+        return False
+    if project.status == "planning":
+        return True
+    if not _project_needs_revision(project):
+        return False
+    profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+    review = profile.get("validator_review") if isinstance(profile.get("validator_review"), dict) else {}
+    editable = review.get("editable_fields")
+    return isinstance(editable, list) and field_key in editable
+
+
+def _validate_uploaded_document(filename, content_type, data, extension):
+    """Validate file signatures instead of trusting the browser's MIME label."""
+    if extension == "pdf":
+        valid = data.startswith(b"%PDF-")
+        canonical = "application/pdf"
+    elif extension == "png":
+        valid = data.startswith(b"\x89PNG\r\n\x1a\n")
+        canonical = "image/png"
+    elif extension in {"jpg", "jpeg"}:
+        valid = data.startswith(b"\xff\xd8\xff")
+        canonical = "image/jpeg"
+    elif extension in {"docx", "xlsx"}:
+        valid = False
+        canonical = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            if extension == "docx"
+            else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                names = set(archive.namelist())
+                valid = "[Content_Types].xml" in names and any(
+                    value.startswith("word/" if extension == "docx" else "xl/") for value in names
+                )
+                expanded_size = sum(item.file_size for item in archive.infolist())
+                if len(names) > 20000 or expanded_size > 200 * 1024 * 1024 or expanded_size > max(len(data) * 100, 20 * 1024 * 1024):
+                    valid = False
+        except (zipfile.BadZipFile, OSError):
+            valid = False
+    elif extension == "csv":
+        canonical = "text/csv"
+        valid = b"\x00" not in data
+        if valid:
+            try:
+                data.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                try:
+                    data.decode("cp1252")
+                except UnicodeDecodeError:
+                    valid = False
+    else:
+        valid = False
+        canonical = str(content_type or "application/octet-stream")
+    if not valid:
+        raise ValueError(f"{filename} does not match its .{extension} file type or is corrupt.")
+    return canonical
+
+
+class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
+    serializer_class = ProjectSupportingDocumentSerializer
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "post", "delete", "head", "options"]
+
+    def get_queryset(self):
+        queryset = ProjectSupportingDocument.objects.filter(removed_at__isnull=True).select_related(
+            "project", "project__created_by", "uploaded_by"
+        )
+        project_id = self.request.query_params.get("project")
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+        role = getattr(self.request.user, "role", "")
+        if role == "admin":
+            return queryset
+        if role == "validator":
+            return queryset.filter(project__status="proposed", project__archived=False, project__is_active=True)
+        if role in ("staff", "employee"):
+            agency = str(getattr(self.request.user, "agency", "") or "").strip()
+            scope = Q(project__created_by=self.request.user)
+            if agency:
+                scope |= Q(project__agency__iexact=agency)
+            return queryset.filter(scope, project__archived=False)
+        return queryset.none()
+
+    def create(self, request, *args, **kwargs):
+        if getattr(request.user, "role", "") not in ("staff", "employee"):
+            raise PermissionDenied("Only contributors can upload project supporting documents.")
+        try:
+            project = Project.objects.get(pk=int(request.data.get("project") or 0))
+        except (Project.DoesNotExist, TypeError, ValueError):
+            return Response({"detail": "Project not found."}, status=404)
+        policy = resolve_project_document_policy(project, persist=True)
+        if not policy:
+            from .document_policy import current_document_policy
+
+            policy = current_document_policy("simplified-rdip")
+            if policy:
+                project.supporting_document_policy = policy
+                project.save(update_fields=["supporting_document_policy", "updated_at"])
+        if not policy:
+            return Response({"detail": "This project form has no active supporting-document field."}, status=400)
+        field_key = str(request.data.get("field_key") or policy.get("field_key") or "")
+        if field_key != policy.get("field_key") or not _can_change_project_documents(request.user, project, field_key):
+            raise PermissionDenied("Supporting documents are not editable for this project.")
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"detail": "Choose a file to upload."}, status=400)
+        filename = os.path.basename(str(upload.name or "document"))[:255]
+        extension = Path(filename).suffix.lower().lstrip(".")
+        if extension not in set(policy.get("allowed_extensions") or []):
+            return Response({"detail": f"{filename} is not an allowed file type."}, status=400)
+        max_file_bytes = min(int(policy.get("max_file_bytes") or 0), 20 * 1024 * 1024)
+        if upload.size <= 0 or upload.size > max_file_bytes:
+            return Response({"detail": f"{filename} must be no larger than {max_file_bytes // (1024 * 1024)} MB."}, status=400)
+        data = upload.read(max_file_bytes + 1)
+        if len(data) != upload.size or len(data) > max_file_bytes:
+            return Response({"detail": "The uploaded file size could not be verified."}, status=400)
+        try:
+            canonical_type = _validate_uploaded_document(filename, upload.content_type, data, extension)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        checksum = hashlib.sha256(data).hexdigest()
+        try:
+            with transaction.atomic():
+                locked_project = Project.objects.select_for_update().get(pk=project.pk)
+                documents = list(active_project_documents(locked_project))
+                if len(documents) >= min(int(policy.get("max_files") or 10), 10):
+                    return Response({"detail": "The maximum number of supporting documents has been reached."}, status=400)
+                if sum(item.size_bytes for item in documents) + len(data) > PROJECT_DOCUMENT_MAX_TOTAL_BYTES:
+                    return Response({"detail": "Supporting documents cannot exceed 200 MB per project."}, status=400)
+                if any(item.checksum_sha256 == checksum for item in documents):
+                    return Response({"detail": f"{filename} is already attached to this project."}, status=409)
+                document = ProjectSupportingDocument.objects.create(
+                    project=locked_project,
+                    field_key=field_key,
+                    form_key=str(policy.get("form_key") or "simplified-rdip"),
+                    form_version=int(policy.get("form_version") or 1),
+                    original_filename=filename,
+                    content_type=canonical_type,
+                    extension=extension,
+                    size_bytes=len(data),
+                    checksum_sha256=checksum,
+                    content=data,
+                    uploaded_by=request.user,
+                )
+        except IntegrityError:
+            return Response({"detail": f"{filename} is already attached to this project."}, status=409)
+        queued = dispatch_document_processing(document.id)
+        if not queued:
+            document.processing_error = "The document worker is unavailable. Retry processing when it is online."
+            document.save(update_fields=["processing_error", "updated_at"])
+        else:
+            # Eager local-development tasks complete before ``delay`` returns.
+            # Refresh so the response immediately reports Ready or Failed
+            # instead of returning the stale Queued instance.
+            document.refresh_from_db()
+        _log_activity(
+            request,
+            "supporting_document_uploaded",
+            project,
+            {"document_id": document.id, "filename": filename, "size_bytes": len(data)},
+        )
+        return Response(self.get_serializer(document).data, status=201)
+
+    def destroy(self, request, *args, **kwargs):
+        document = self.get_object()
+        if not _can_change_project_documents(request.user, document.project, document.field_key):
+            raise PermissionDenied("Supporting documents are not editable for this project.")
+        document.removed_at = timezone.now()
+        document.content = b""
+        document.extracted_text = ""
+        document.save(update_fields=["removed_at", "content", "extracted_text", "updated_at"])
+        _log_activity(
+            request,
+            "supporting_document_removed",
+            document.project,
+            {"document_id": document.id, "filename": document.original_filename},
+        )
+        return Response(status=204)
+
+    @action(detail=True, methods=["get"])
+    def download(self, request, pk=None):
+        document = self.get_object()
+        if not _can_access_project_documents(request.user, document.project):
+            raise PermissionDenied("You cannot access this project's supporting documents.")
+        response = HttpResponse(bytes(document.content), content_type=document.content_type)
+        safe_name = document.original_filename.replace('"', "")
+        response["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+        response["Cache-Control"] = "no-store, private"
+        response["Pragma"] = "no-cache"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @action(detail=True, methods=["post"])
+    def retry(self, request, pk=None):
+        document = self.get_object()
+        if not _can_change_project_documents(request.user, document.project, document.field_key):
+            raise PermissionDenied("Supporting documents are not editable for this project.")
+        document.extraction_status = ProjectSupportingDocument.EXTRACTION_QUEUED
+        document.processing_error = ""
+        document.save(update_fields=["extraction_status", "processing_error", "updated_at"])
+        if not dispatch_document_processing(document.id):
+            document.processing_error = "The document worker is unavailable. Try again later."
+            document.save(update_fields=["processing_error", "updated_at"])
+            return Response(self.get_serializer(document).data, status=503)
+        document.refresh_from_db()
+        return Response(self.get_serializer(document).data)
+
+    @action(detail=False, methods=["get"], url_path="assessment-status")
+    def assessment_status(self, request):
+        try:
+            project = Project.objects.get(pk=int(request.query_params.get("project") or 0))
+        except (Project.DoesNotExist, TypeError, ValueError):
+            return Response({"detail": "Project not found."}, status=404)
+        if not _can_access_project_documents(request.user, project):
+            raise PermissionDenied("You cannot access this project's supporting documents.")
+        return Response(serialize_document_assessment(project))
+
+    @action(detail=False, methods=["post"], url_path="retry-assessment")
+    def retry_assessment(self, request):
+        try:
+            project = Project.objects.get(pk=int(request.data.get("project") or 0))
+        except (Project.DoesNotExist, TypeError, ValueError):
+            return Response({"detail": "Project not found."}, status=404)
+        if getattr(request.user, "role", "") not in {"validator", "admin"} or not _can_access_project_documents(request.user, project):
+            raise PermissionDenied("Only an assigned validator or administrator can retry this assessment.")
+        documents = list(active_project_documents(project))
+        if not documents or any(item.extraction_status != "ready" for item in documents):
+            return Response({"detail": "All active documents must be ready before assessment."}, status=400)
+        assessment, created = ensure_queued_assessment(project)
+        if assessment is None:
+            return Response({"detail": "This project has no supporting-document policy."}, status=400)
+        if not created:
+            assessment.status = "queued"
+            assessment.error_message = ""
+            assessment.save(update_fields=["status", "error_message", "updated_at"])
+        if not dispatch_document_assessment(assessment.id):
+            assessment.status = "unavailable"
+            assessment.error_message = "The document assessment worker is unavailable."
+            assessment.save(update_fields=["status", "error_message", "updated_at"])
+            return Response(serialize_document_assessment(project), status=503)
+        return Response(serialize_document_assessment(project))
+
+
 class BaseProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated, ProjectPermission]
@@ -3052,6 +3414,9 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             validate_simplified_answers(project.profile_data, require_complete=versioned_form)
         except FormSchemaError as exc:
             return Response({"detail": str(exc)}, status=400)
+        document_error = validate_project_documents_for_submit(project)
+        if document_error:
+            return Response({"detail": document_error, "code": "supporting_documents_not_ready"}, status=400)
         was_needs_revision = _project_needs_revision(project)
         if project.status == "planning":
             project.status = "proposed"
@@ -3108,6 +3473,12 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 actor=request.user,
                 dedupe_key=f"project:{project.id}:revision-resubmitted:{project.updated_at.isoformat()}",
             )
+        assessment, created = ensure_queued_assessment(project)
+        if assessment and (created or assessment.status in {"queued", "unavailable"}):
+            if not dispatch_document_assessment(assessment.id):
+                assessment.status = "unavailable"
+                assessment.error_message = "The document assessment worker is unavailable. Retry when it is online."
+                assessment.save(update_fields=["status", "error_message", "updated_at"])
         return Response({"status": project.status})
 
     @action(detail=True, methods=["post"])
@@ -3386,6 +3757,12 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Priority analysis is available only for simplified-form projects."}, status=400)
         if project.status not in ("proposed", "planning"):
             return Response({"detail": "Priority analysis is available before endorsement only."}, status=400)
+        document_assessment = serialize_document_assessment(project)
+        if document_assessment.get("status") in {"missing", "pending", "processing"}:
+            return Response(
+                {"detail": "Wait for the supporting-document assessment before running priority analysis.", "document_assessment": document_assessment},
+                status=409,
+            )
 
         incoming_snapshot = request.data.get("edited_profile_data")
         if incoming_snapshot is not None and not isinstance(incoming_snapshot, dict):
@@ -3401,6 +3778,15 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         supplements = request.data.get("supplements")
         if not isinstance(supplements, dict):
             supplements = {}
+        supplements = dict(supplements)
+        supplements.pop("supporting_document_evidence", None)
+        if document_assessment.get("status") in {"pass", "fail"}:
+            supplements["supporting_document_evidence"] = {
+                "status": document_assessment.get("status"),
+                "collective_sufficient": document_assessment.get("collective_sufficient"),
+                "summary": document_assessment.get("summary"),
+                "files": document_assessment.get("document_results") or [],
+            }
         analysis, reused = analyze_project(project, request.user, snapshot, supplements)
         ai_provider = (
             analysis.suggested_scores.get("ai_provider")
@@ -3458,6 +3844,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 str(request.data.get("final_priority") or analysis.suggested_priority),
                 request.data.get("override_rationale"),
                 request.data.get("confirmed_flags"),
+                request.data.get("document_override") is True,
+                request.data.get("document_override_rationale"),
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
@@ -3477,6 +3865,17 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 "score": float(analysis.base_score),
             },
         )
+        if confirmation.document_override:
+            _log_activity(
+                request,
+                "document_assessment_overridden",
+                project,
+                {
+                    "analysis_id": analysis.id,
+                    "assessment_id": confirmation.document_assessment_id,
+                    "rationale": confirmation.document_override_rationale,
+                },
+            )
         next_group = _priority_group(confirmation.final_priority)
         if next_group and next_group != previous_group:
             label = _priority_label(confirmation.final_priority)
@@ -4582,11 +4981,14 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+            live_schema = contributor_form.current_published_version.schema_json
+            profile_data, location_error = _normalize_location_for_form_schema(profile_data, live_schema)
+            if location_error:
+                return Response({"detail": location_error}, status=status.HTTP_400_BAD_REQUEST)
             profile_data["form_schema"] = {"key": form_key, "version": live_version}
-            project.profile_data = profile_data
-            project.save(update_fields=["profile_data", "updated_at"])
 
             updated_progress_drafts = []
+            progress_updates = []
             editable_progress_revisions = ProjectRevision.objects.select_for_update().filter(
                 project=project,
                 revision_type="progress_update",
@@ -4596,16 +4998,24 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
                 upgraded_profile, form_change = _upgrade_profile_form_marker(
                     revision.profile_data_snapshot,
                     profile_data,
+                    live_schema,
                 )
+                if form_change and form_change.get("error"):
+                    return Response({"detail": form_change["error"]}, status=status.HTTP_400_BAD_REQUEST)
                 if not form_change:
                     continue
-                revision.profile_data_snapshot = upgraded_profile
-                revision.save(update_fields=["profile_data_snapshot", "updated_at"])
+                progress_updates.append((revision, upgraded_profile))
                 updated_progress_drafts.append({
                     "revision_id": revision.id,
                     "revision_number": revision.revision_number,
                     **form_change,
                 })
+
+            project.profile_data = profile_data
+            project.save(update_fields=["profile_data", "updated_at"])
+            for revision, upgraded_profile in progress_updates:
+                revision.profile_data_snapshot = upgraded_profile
+                revision.save(update_fields=["profile_data_snapshot", "updated_at"])
 
             _log_activity(
                 request,
@@ -6065,7 +6475,7 @@ class PublicProjectsStatsView(APIView):
                 profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
                 simplified = profile_data.get("simplified_form")
                 simplified = simplified if isinstance(simplified, dict) else {}
-                return str(simplified.get("location") or "")
+                return simplified.get("location")
 
             if lgu_filter.lower() == "unspecified":
                 projects = [
@@ -6100,7 +6510,7 @@ class PublicProjectsStatsView(APIView):
                 sf.get("status") or getattr(p, "status", "")
             ) or "Unspecified"
             agency_name = str(sf.get("agencyName") or getattr(p, "agency", "") or "").strip() or "Other"
-            location_raw = str(sf.get("location") or "").strip()
+            location_raw = format_project_locations(sf.get("location"))
             lgus = derive_ncr_lgus(location_raw)
             if not lgus:
                 unspecified += 1

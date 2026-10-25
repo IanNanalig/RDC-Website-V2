@@ -8,6 +8,7 @@ import cmsApi, {
   type CMSSiteSetting,
 } from "../../services/cmsApi";
 import { ORGANIZATION_NODE_DEFAULTS, RESOLUTIONS_BY_YEAR } from "../../pages/About_RDC";
+import RefreshButton from "./RefreshButton";
 const RichTextEditor = React.lazy(() => import("./RichTextEditor"));
 
 type ResourceTab = "pages" | "news" | "media" | "review" | "settings";
@@ -2518,12 +2519,14 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                 className="min-w-48 rounded-xl border border-slate-300 px-3 py-2 text-sm"
               />
             )}
-            <button type="button" onClick={() => {
-              if (hasUnsavedChanges && !window.confirm("Reload CMS data and discard all unsaved changes?")) return;
-              void loadTab(activeTab, true);
-            }} className="portal-btn portal-btn-ghost" disabled={loading}>
-              {loading ? "Working..." : "Refresh"}
-            </button>
+            <RefreshButton
+              loading={loading}
+              onClick={() => {
+                if (hasUnsavedChanges && !window.confirm("Reload CMS data and discard all unsaved changes?")) return;
+                return loadTab(activeTab, true);
+              }}
+              disabled={loading}
+            />
             <button type="button" onClick={() => setShowGuide((value) => !value)} className="portal-btn portal-btn-ghost">
               CMS Guide
             </button>

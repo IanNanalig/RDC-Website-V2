@@ -23,6 +23,7 @@
     "test:audit-log-changes": "node scripts/audit-log-changes-check.mjs",
     "test:year-picker": "node scripts/year-picker-check.mjs",
     "test:contributor-corrections": "node scripts/contributor-corrections-check.mjs",
+    "test:contributor-supporting-documents": "node scripts/contributor-supporting-documents-check.mjs",
     "test:validator-priority-override": "node scripts/validator-priority-override-check.mjs",
     "test:performance-smoke": "node scripts/performance-smoke-check.mjs",
     "optimize:images": "node scripts/optimize-images.mjs",

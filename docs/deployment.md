@@ -351,3 +351,14 @@ SERVE_MEDIA_FILES=false
 ```
 
 The R2 token should be limited to the selected media bucket. `R2_PUBLIC_BASE_URL` must point to a public bucket domain or custom domain. Existing local media is not copied automatically when the switch is enabled.
+
+# Supporting-document worker
+
+Contributor supporting documents are stored in PostgreSQL and processed outside the web request. Production requires:
+
+- a Redis instance configured through `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`;
+- a worker using the same image and environment as the web service, started with `celery -A rdc_site worker --loglevel=INFO --concurrency=2`;
+- Tesseract and Poppler in the runtime image (the repository Dockerfile installs both);
+- the same `DATABASE_URL` and Groq variables on the web and worker services.
+
+If the worker or Groq is unavailable, uploads remain visible with a queued, failed, or unavailable status. The application deliberately blocks submission or endorsement until processing succeeds or a Validator records the allowed assessment override.

@@ -150,7 +150,8 @@ for (const setting of settings) {
   console.log(`PASS setting: ${setting.key}`);
 }
 
-await page.getByRole("button", { name: "Contributor Forms", exact: true }).click();
+await page.goto(`${frontendUrl}/admin/forms`, { waitUntil: "networkidle" });
+await page.getByRole("heading", { name: "Contributor Forms" }).waitFor();
 const contributorForm = page.locator('[data-cms-contributor-form-key="simplified-rdip"]');
 await contributorForm.waitFor();
 await contributorForm.getByRole("button", { name: "Change Form", exact: true }).click();

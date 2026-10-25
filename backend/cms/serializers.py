@@ -370,7 +370,9 @@ class CMSContributorFormVersionSummarySerializer(serializers.ModelSerializer):
             "section_count": len(sections),
             "field_count": len(fields),
             "custom_field_count": sum(
-                1 for field in fields if str(field.get("key") or "").startswith("custom_")
+                1 for field in fields
+                if str(field.get("key") or "").startswith("custom_")
+                and field.get("type") != "document_upload"
             ),
         }
 

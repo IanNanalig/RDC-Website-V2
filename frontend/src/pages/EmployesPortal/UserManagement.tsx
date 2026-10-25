@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import RefreshButton from "../../components/portal/RefreshButton";
 import { MobileSortControls, SortableTableHeader } from "../../components/portal/TableSortControls";
 import { sortRows } from "../../utils/tableSort";
 import { userDisplayName } from "../../utils/userDisplayName";
@@ -1216,15 +1217,10 @@ const UserManagement = () => {
       role="admin"
       userName={displayName}
       topActions={
-        <button
-          onClick={() => {
-            load();
-            loadActivity();
-          }}
-          className="portal-btn portal-btn-ghost"
-        >
-          Refresh
-        </button>
+        <RefreshButton
+          loading={loading || activityLoading}
+          onClick={() => { void load(); void loadActivity(); }}
+        />
       }
     >
       {toast && (
@@ -1715,14 +1711,13 @@ const UserManagement = () => {
                 Find accounts, review access, and manage password resets.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => void refreshUsers()}
+            <RefreshButton
+              loading={usersRefreshing}
+              onClick={refreshUsers}
+              label="Refresh Users"
               disabled={loading || usersRefreshing}
               className="portal-btn portal-btn-ghost disabled:cursor-wait disabled:opacity-60"
-            >
-              {usersRefreshing ? "Refreshing..." : "Refresh Users"}
-            </button>
+            />
           </div>
           <div className="portal-card-body border-b border-slate-200 bg-slate-50/60">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -1958,13 +1953,7 @@ const UserManagement = () => {
                 public website.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={loadEvents}
-              className="portal-btn portal-btn-ghost"
-            >
-              Refresh Events
-            </button>
+            <RefreshButton loading={eventsLoading} onClick={loadEvents} label="Refresh Events" />
           </div>
           <form
             onSubmit={saveEvent}
@@ -2239,13 +2228,7 @@ const UserManagement = () => {
                 <option value="rejected">Rejected</option>
                 <option value="all">All statuses</option>
               </select>
-              <button
-                type="button"
-                onClick={loadChatGaps}
-                className="portal-btn portal-btn-ghost"
-              >
-                Refresh
-              </button>
+              <RefreshButton loading={chatGapsLoading} onClick={loadChatGaps} />
             </div>
           </div>
           <div className="portal-card-body space-y-4">
@@ -2443,13 +2426,7 @@ const UserManagement = () => {
                 workflow events.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={loadActivity}
-              className="portal-btn portal-btn-ghost"
-            >
-              Refresh Log
-            </button>
+            <RefreshButton loading={activityLoading} onClick={loadActivity} label="Refresh Log" />
           </div>
           <div className="portal-card-body border-b border-slate-200 bg-slate-50/60">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">

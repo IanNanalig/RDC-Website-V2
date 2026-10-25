@@ -66,6 +66,9 @@ const openListing = async (role, pathname, width) => {
   const page = await context.newPage();
   let projects = [...initialProjects];
   const archived = [];
+  let delayNextProjectResponse = false;
+  let signalDelayedProjectResponseStarted = () => {};
+  let delayedProjectResponseStarted = Promise.resolve();
   await page.addInitScript((currentRole) => {
     window.__portalIntervalDelays = [];
     const originalSetInterval = window.setInterval.bind(window);
@@ -91,7 +94,13 @@ const openListing = async (role, pathname, width) => {
     }
     if (path.endsWith("/project-revisions/")) return json(route, revisions);
     if (path.endsWith("/admin/projects/") || path.endsWith("/validator/projects/") || path.endsWith("/employee/projects/")) {
-      return json(route, projects);
+      const snapshot = [...projects];
+      if (delayNextProjectResponse) {
+        delayNextProjectResponse = false;
+        signalDelayedProjectResponseStarted();
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+      return json(route, snapshot);
     }
     if (path.endsWith("/encoding-window/") || path.endsWith("/progress-update-window/")) {
       return json(route, { can_encode: true, is_open: true, enabled: true, status_code: "open" });
@@ -105,6 +114,11 @@ const openListing = async (role, pathname, width) => {
     page,
     archived,
     setProjects: (next) => { projects = next; },
+    delayNextProjectFetch: () => {
+      delayedProjectResponseStarted = new Promise((resolve) => { signalDelayedProjectResponseStarted = resolve; });
+      delayNextProjectResponse = true;
+      return delayedProjectResponseStarted;
+    },
   };
 };
 
@@ -114,7 +128,7 @@ try {
     { role: "validator", pathname: "/validator/projects", width: 390 },
     { role: "employee", pathname: "/employee/projects", width: 320 },
   ]) {
-    const { context, page, archived, setProjects } = await openListing(role, pathname, width);
+    const { context, page, archived, setProjects, delayNextProjectFetch } = await openListing(role, pathname, width);
     try {
       const total = role === "employee" ? 24 : 26;
       const rowCount = () => page.locator("table.portal-table tbody tr").count();
@@ -130,6 +144,12 @@ try {
         await page.waitForURL("**/admin/projects/1/view/simplified?revision=101");
         await page.goto(`${origin}${pathname}`);
         await expectFooter(page, 1, 10, total, "projects", 1, 3);
+        const revisionRow = page.locator("table.portal-table tbody tr").first();
+        await revisionRow.getByRole("button", { name: "Archive" }).click();
+        await page.getByRole("heading", { name: "Archive Project 01?" }).waitFor();
+        assert.equal(archived.length, 0, "Opening archive from a progress-update row sends no request");
+        await page.getByRole("button", { name: "Cancel" }).click();
+        assert.equal(archived.length, 0, "Canceling from a progress-update row does not archive its project");
       }
       if (role === "validator") {
         assert.equal(await page.locator("article").count(), 10, "Mobile validator cards are paginated too");
@@ -189,10 +209,28 @@ try {
       await expectFooter(page, 1, 10, role === "admin" ? 25 : total, "projects", 1, 3);
       await page.getByRole("button", { name: "Next" }).click();
       await page.getByRole("button", { name: "Next" }).click();
-      setProjects(initialProjects.slice(0, 12));
-      await page.getByRole("button", { name: "Refresh" }).click();
-      await expectFooter(page, 11, role === "employee" ? 12 : 14, role === "employee" ? 12 : 14, "projects", 2, 2);
-      assert.equal(await rowCount(), role === "employee" ? 2 : 4);
+      if (role === "admin") {
+        setProjects(initialProjects.slice(0, 13));
+        const delayedResponseStarted = delayNextProjectFetch();
+        await page.evaluate(() => window.dispatchEvent(new CustomEvent("portal:data-changed", { detail: { path: "projects/" } })));
+        await delayedResponseStarted;
+        setProjects(initialProjects.slice(0, 12));
+        const delayedRefreshStarted = delayNextProjectFetch();
+        await page.getByRole("button", { name: "Refresh" }).click();
+        await delayedRefreshStarted;
+        await page.getByRole("button", { name: "Refreshing..." }).waitFor();
+        await page.getByText("Loading projects...").waitFor();
+        await expectFooter(page, 11, 14, 14, "projects", 2, 2);
+        await page.getByRole("button", { name: "Refresh", exact: true }).waitFor();
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        await expectFooter(page, 11, 14, 14, "projects", 2, 2);
+        assert.equal(await rowCount(), 4, "A slow older response cannot overwrite a manual refresh");
+      } else {
+        setProjects(initialProjects.slice(0, 12));
+        await page.getByRole("button", { name: "Refresh" }).click();
+        await expectFooter(page, 11, role === "employee" ? 12 : 14, role === "employee" ? 12 : 14, "projects", 2, 2);
+        assert.equal(await rowCount(), role === "employee" ? 2 : 4);
+      }
       if (role === "admin") {
         const sortField = page.getByLabel("Sort by field");
         await sortField.selectOption("title");

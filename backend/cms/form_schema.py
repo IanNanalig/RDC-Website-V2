@@ -12,8 +12,14 @@ ALLOWED_FIELD_TYPES = {
     "year",
     "select",
     "multiselect",
+    "multiselect_dropdown",
     "currency_by_year",
+    "document_upload",
 }
+
+DOCUMENT_UPLOAD_EXTENSIONS = {"pdf", "docx", "xlsx", "csv", "png", "jpg", "jpeg"}
+DOCUMENT_UPLOAD_MAX_FILES = 10
+DOCUMENT_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 
 
 def _options(values):
@@ -72,6 +78,11 @@ STATUS_OPTIONS = _options([
     "Completed", "New", "Ongoing", "Not Implemented",
 ])
 CURRENT_PROJECT_STATUS_VALUES = frozenset(option["value"] for option in STATUS_OPTIONS)
+NCR_LOCATION_OPTIONS = _options([
+    "Caloocan", "Las Piñas", "Makati", "Malabon", "Mandaluyong", "Manila", "Marikina",
+    "Muntinlupa", "Navotas", "Parañaque", "Pasay", "Pasig", "Pateros", "Quezon City",
+    "San Juan", "Taguig", "Valenzuela",
+])
 SDG_OPTIONS = _options([
     "1 - No poverty", "2 - Zero hunger", "3 - Good health and well-being", "4 - Quality education",
     "5 - Gender equality", "6- Clean water and sanitation", "7 - Affordable and clean energy",
@@ -89,7 +100,6 @@ def _field(key, label, field_type="text", required=False, options=None, **extra)
         "type": field_type,
         "required": required,
         "visible": True,
-        "protected": not key.startswith("custom_"),
         "help_text": "",
         "placeholder": "",
     }
@@ -113,7 +123,11 @@ DEFAULT_SIMPLIFIED_FORM_SCHEMA = {
                 _field("agencyName", "Agency Name", required=True),
                 _field("program", "Program", required=True),
                 _field("projectActivity", "Project/Activity", required=True),
-                _field("location", "Location", required=True),
+                _field(
+                    "location", "Location", "multiselect_dropdown", required=True,
+                    options=NCR_LOCATION_OPTIONS,
+                    help_text="Select one or more NCR locations covered by the project.",
+                ),
                 _field("description", "Description", "textarea", required=True),
                 _field("objective", "Objective", "textarea", required=True),
             ],
@@ -172,6 +186,32 @@ DEFAULT_SIMPLIFIED_FORM_SCHEMA = {
             ],
         },
         {
+            "key": "supporting_documents",
+            "title": "Supporting Documents",
+            "description": "Upload evidence that supports the project information and readiness described above.",
+            "visible": True,
+            "fields": [
+                _field(
+                    "custom_supporting_documents",
+                    "Supporting Documents",
+                    "document_upload",
+                    required=True,
+                    help_text=(
+                        "Required formats: PDF, DOCX, XLSX, CSV, PNG, or JPEG. "
+                        "Files are checked for project relevance and sufficiency."
+                    ),
+                    allowed_extensions=["pdf", "docx", "xlsx", "csv", "png", "jpg", "jpeg"],
+                    min_files=1,
+                    max_files=10,
+                    max_file_bytes=DOCUMENT_UPLOAD_MAX_BYTES,
+                    ai_sufficiency_instructions=(
+                        "The documents should substantiate the stated project scope, objectives, budget, "
+                        "readiness, intended beneficiaries, or expected outcomes."
+                    ),
+                ),
+            ],
+        },
+        {
             "key": "priority_analysis",
             "title": "Priority Analysis Facts",
             "description": "Optional factual inputs for the AI-assisted priority recommendation.",
@@ -201,9 +241,13 @@ CORE_FIELDS = {
     field["key"]: deepcopy(field)
     for section in DEFAULT_SIMPLIFIED_FORM_SCHEMA["sections"]
     for field in section["fields"]
+    if not str(field.get("key") or "").startswith("custom_")
 }
 REQUIRED_CORE_FIELDS = {key for key, field in CORE_FIELDS.items() if field.get("required")}
 CONDITION_REQUIRED_CORE_FIELDS = {key for key, field in CORE_FIELDS.items() if field.get("condition_required")}
+FIXED_FIELD_TYPES = {
+    "agencyName": "text",
+}
 
 
 class FormSchemaError(ValueError):
@@ -278,6 +322,7 @@ def validate_form_schema(schema, published_schema=None):
     section_keys = set()
     field_keys = set()
     field_count = 0
+    active_document_fields = []
     for section in sections:
         if not isinstance(section, dict):
             raise FormSchemaError("Every section must be an object.")
@@ -309,8 +354,41 @@ def validate_form_schema(schema, published_schema=None):
                 raise FormSchemaError("New fields must use a stable key beginning with custom_ .")
             if not str(field.get("label") or "").strip():
                 raise FormSchemaError(f"Field {key} needs a label.")
+            if field_type == "currency_by_year" and key not in {"fundingRequirementByYear", "actualFundingByYear"}:
+                raise FormSchemaError("Year-based currency is only supported by the project funding fields.")
+            if field_type == "document_upload":
+                if not key.startswith("custom_"):
+                    raise FormSchemaError("Supporting-document fields must use a custom field key.")
+                if section.get("admin_only") is True:
+                    raise FormSchemaError("Supporting-document fields must be contributor-facing.")
+                extensions = field.get("allowed_extensions")
+                if not isinstance(extensions, list) or not extensions:
+                    raise FormSchemaError(f"Field {key} needs at least one allowed document format.")
+                normalized_extensions = [str(value or "").strip().lower().lstrip(".") for value in extensions]
+                if (
+                    len(set(normalized_extensions)) != len(normalized_extensions)
+                    or any(value not in DOCUMENT_UPLOAD_EXTENSIONS for value in normalized_extensions)
+                ):
+                    raise FormSchemaError(f"Field {key} contains an unsupported or duplicate document format.")
+                try:
+                    min_files = int(field.get("min_files", 1 if field.get("required") else 0))
+                    max_files = int(field.get("max_files", DOCUMENT_UPLOAD_MAX_FILES))
+                    max_file_bytes = int(field.get("max_file_bytes", DOCUMENT_UPLOAD_MAX_BYTES))
+                except (TypeError, ValueError) as exc:
+                    raise FormSchemaError(f"Field {key} has invalid document limits.") from exc
+                if min_files < 0 or max_files < 1 or max_files > DOCUMENT_UPLOAD_MAX_FILES or min_files > max_files:
+                    raise FormSchemaError(f"Field {key} must allow between 1 and {DOCUMENT_UPLOAD_MAX_FILES} files.")
+                if field.get("required") and min_files < 1:
+                    raise FormSchemaError(f"Required document field {key} must require at least one file.")
+                if max_file_bytes < 1 or max_file_bytes > DOCUMENT_UPLOAD_MAX_BYTES:
+                    raise FormSchemaError(f"Field {key} has an invalid per-file size limit.")
+                instructions = str(field.get("ai_sufficiency_instructions") or "").strip()
+                if len(instructions) > 4000:
+                    raise FormSchemaError(f"Field {key} AI sufficiency instructions are too long.")
+                if section.get("visible") is not False and field.get("visible") is not False:
+                    active_document_fields.append(key)
             options = field.get("options", [])
-            if field_type in {"select", "multiselect"}:
+            if field_type in {"select", "multiselect", "multiselect_dropdown"}:
                 if not isinstance(options, list) or not options:
                     raise FormSchemaError(f"Field {key} needs at least one option.")
                 values = [str(option.get("value") or "") for option in options if isinstance(option, dict)]
@@ -319,9 +397,11 @@ def validate_form_schema(schema, published_schema=None):
 
     if field_count > 100:
         raise FormSchemaError("A form can contain at most 100 fields.")
+    if len(active_document_fields) > 1:
+        raise FormSchemaError("A contributor form can contain only one active supporting-document field.")
     missing = set(CORE_FIELDS) - field_keys
     if missing:
-        raise FormSchemaError(f"Protected fields cannot be removed: {', '.join(sorted(missing))}.")
+        raise FormSchemaError(f"Required workflow fields cannot be removed: {', '.join(sorted(missing))}.")
 
     current = _field_map(schema)
     published_fields = _field_map(published_schema) if isinstance(published_schema, dict) else {}
@@ -333,14 +413,12 @@ def validate_form_schema(schema, published_schema=None):
     }
     for key, original in CORE_FIELDS.items():
         candidate = current[key]
-        if candidate.get("type") != original.get("type"):
-            raise FormSchemaError(f"The protected type for {key} cannot be changed.")
         if key in REQUIRED_CORE_FIELDS and (
             not candidate.get("required")
             or candidate.get("visible") is False
             or not section_visible_for_field.get(key, False)
         ):
-            raise FormSchemaError(f"Required protected field {key} must remain visible and required.")
+            raise FormSchemaError(f"Required workflow field {key} must remain visible and required.")
         if key in CONDITION_REQUIRED_CORE_FIELDS and (
             not candidate.get("condition_required")
             or candidate.get("visible") is False
@@ -360,7 +438,12 @@ def validate_form_schema(schema, published_schema=None):
             }
             generated_values = set(candidate_values) - set(original_values) - published_values
             if any(not re.fullmatch(r"option_[1-9][0-9]*", str(value)) for value in generated_values):
-                raise FormSchemaError(f"New choices for protected field {key} must use generated option values.")
+                raise FormSchemaError(f"New choices for workflow field {key} must use generated option values.")
+
+    for key, field_type in FIXED_FIELD_TYPES.items():
+        candidate = current.get(key)
+        if candidate is not None and candidate.get("type") != field_type:
+            raise FormSchemaError("Agency Name is supplied by the contributor account, so its field type cannot be changed.")
 
     for field in current.values():
         condition = field.get("condition") if isinstance(field.get("condition"), dict) else None
@@ -370,7 +453,7 @@ def validate_form_schema(schema, published_schema=None):
         source = current.get(source_key)
         if source is None:
             raise FormSchemaError(f"Conditional field {field.get('key')} references a missing field.")
-        if source.get("type") not in {"select", "multiselect"}:
+        if source.get("type") not in {"select", "multiselect", "multiselect_dropdown"}:
             continue
         allowed_values = {
             str(option.get("value"))
@@ -395,7 +478,13 @@ def validate_form_schema(schema, published_schema=None):
             for section in sections
             if isinstance(section, dict) and section.get("admin_only") is not True
         }
-        missing_sections = set(published_sections) - current_section_keys
+        missing_sections = {
+            key for key in set(published_sections) - current_section_keys
+            if any(
+                isinstance(field, dict) and field.get("type") != "document_upload"
+                for field in published_sections[key].get("fields", [])
+            )
+        }
         if missing_sections:
             raise FormSchemaError(
                 "Published sections must be hidden instead of deleted: " + ", ".join(sorted(missing_sections)) + "."
@@ -403,9 +492,9 @@ def validate_form_schema(schema, published_schema=None):
         for key, old_field in published_fields.items():
             new_field = current.get(key)
             if new_field is None:
+                if old_field.get("type") == "document_upload":
+                    continue
                 raise FormSchemaError(f"Published field {key} must be deactivated instead of deleted.")
-            if new_field.get("type") != old_field.get("type"):
-                raise FormSchemaError(f"The published field type for {key} cannot be changed.")
     return deepcopy(schema)
 
 
@@ -497,6 +586,11 @@ def validate_simplified_answers(profile_data, require_complete=False, legacy_sta
         if not applies:
             continue
         key = str(field.get("key"))
+        field_type = field.get("type")
+        if field_type == "document_upload":
+            # Supporting files are normalized in their own project-owned table,
+            # not inside the JSON answer snapshot.
+            continue
         if key.startswith("custom_"):
             value = custom.get(key)
         elif key.startswith("priorityAnalysisFacts."):
@@ -511,8 +605,7 @@ def validate_simplified_answers(profile_data, require_complete=False, legacy_sta
             continue
         if empty:
             continue
-        field_type = field.get("type")
-        if field_type == "multiselect" and not isinstance(value, list):
+        if field_type in {"multiselect", "multiselect_dropdown"} and not isinstance(value, list):
             invalid.append(str(field.get("label") or key))
         elif field_type == "currency_by_year" and not isinstance(value, dict):
             invalid.append(str(field.get("label") or key))
@@ -521,7 +614,7 @@ def validate_simplified_answers(profile_data, require_complete=False, legacy_sta
                 float(str(value).replace(",", ""))
             except (TypeError, ValueError):
                 invalid.append(str(field.get("label") or key))
-        elif field_type in {"select", "multiselect"}:
+        elif field_type in {"select", "multiselect", "multiselect_dropdown"}:
             allowed = {str(option.get("value")) for option in field.get("options", []) if isinstance(option, dict)}
             if key == "status":
                 allowed.update(CURRENT_PROJECT_STATUS_VALUES)

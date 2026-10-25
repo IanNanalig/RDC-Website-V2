@@ -40,7 +40,7 @@ const incompleteAnalysis = {
   latest_confirmation: null,
 };
 
-async function openReview(endorsed = false) {
+async function openReview(endorsed = false, analysisOverride = incompleteAnalysis) {
   const context = await browser.newContext({ viewport: { width: 1050, height: 780 } });
   const page = await context.newPage();
   let submitted = null;
@@ -57,20 +57,22 @@ async function openReview(endorsed = false) {
       status: 200, contentType: "application/json", headers,
       body: JSON.stringify({ key: "simplified-rdip", version: 1, schema: formSchema }),
     });
-    if (url.includes("priority-analysis/7/confirm/") && method === "POST") {
+    if (/priority-analysis\/\d+\/confirm\//.test(url) && method === "POST") {
       submitted = JSON.parse(route.request().postData() || "{}");
       return route.fulfill({
         status: 200, contentType: "application/json", headers,
-        body: JSON.stringify({ ...incompleteAnalysis, latest_confirmation: {
+        body: JSON.stringify({ ...analysisOverride, latest_confirmation: {
           final_priority: submitted.final_priority,
           override_rationale: submitted.override_rationale,
+          document_override: submitted.document_override,
+          document_override_rationale: submitted.document_override_rationale,
           validator_name: "Priority Validator",
         } }),
       });
     }
     if (url.includes("priority-analysis/")) return route.fulfill({
       status: 200, contentType: "application/json", headers,
-      body: JSON.stringify({ eligible: true, analyses: [incompleteAnalysis] }),
+      body: JSON.stringify({ eligible: true, analyses: [analysisOverride] }),
     });
     if (url.includes("validator/projects/1/")) return route.fulfill({
       status: 200, contentType: "application/json", headers,
@@ -126,6 +128,48 @@ try {
   assert.equal(await lockedConfirm.isDisabled(), true, "Endorsed project priority controls remain disabled");
   await locked.context.close();
   console.log("PASS endorsed project priority controls are locked");
+
+  const failedDocumentsAnalysis = {
+    ...incompleteAnalysis,
+    id: 8,
+    suggested_priority: "low",
+    suggested_scores: { ...incompleteAnalysis.suggested_scores, missing_facts: [] },
+    document_assessment: {
+      status: "fail",
+      summary: "One file is unrelated and the collection is insufficient.",
+      collective_sufficient: false,
+      document_results: [{
+        document_id: 81,
+        filename: "unrelated.csv",
+        related: false,
+        explanation: "The file describes a different project.",
+        citations: ["Different project title"],
+      }],
+    },
+  };
+  const documentReview = await openReview(false, failedDocumentsAnalysis);
+  const documentPanel = documentReview.page.locator(".portal-card").filter({
+    has: documentReview.page.getByRole("heading", { name: "AI-Assisted Priority Scorer" }),
+  }).first();
+  await documentPanel.getByRole("heading", { name: "Supporting Document Assessment: Fail" }).waitFor();
+  await documentPanel.getByText("unrelated.csv: Unrelated", { exact: true }).waitFor();
+  const documentConfirm = documentPanel.getByRole("button", { name: "Confirm Priority Analysis" });
+  assert.equal(await documentConfirm.isDisabled(), true, "A failed document assessment blocks confirmation.");
+  await documentPanel.getByLabel("Override the non-passing supporting-document assessment").check();
+  assert.equal(await documentConfirm.isDisabled(), true, "The override still requires a rationale.");
+  await documentPanel.getByLabel("Document override rationale (required)").fill(
+    "The validator manually verified the signed originals against the project.",
+  );
+  assert.equal(await documentConfirm.isDisabled(), false);
+  await documentConfirm.click();
+  await documentPanel.getByText("Priority analysis confirmed.", { exact: false }).waitFor();
+  assert.equal(documentReview.submitted().document_override, true);
+  assert.equal(
+    documentReview.submitted().document_override_rationale,
+    "The validator manually verified the signed originals against the project.",
+  );
+  await documentReview.context.close();
+  console.log("PASS non-passing document assessment requires an explicit audited override rationale");
 } finally {
   await browser.close();
   await new Promise((resolve, reject) => server.httpServer.close((error) => error ? reject(error) : resolve()));

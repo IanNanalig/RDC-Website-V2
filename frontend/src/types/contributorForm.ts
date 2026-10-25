@@ -6,7 +6,9 @@ export type ContributorFormFieldType =
   | "year"
   | "select"
   | "multiselect"
-  | "currency_by_year";
+  | "multiselect_dropdown"
+  | "currency_by_year"
+  | "document_upload";
 
 export type ContributorFormOption = { value: string; label: string };
 
@@ -26,13 +28,17 @@ export type ContributorFormField = {
   type: ContributorFormFieldType;
   required?: boolean;
   visible?: boolean;
-  protected?: boolean;
   help_text?: string;
   placeholder?: string;
   options?: ContributorFormOption[];
   condition?: { field: string; equals?: string; not_equals?: string };
   condition_required?: boolean;
   retired_from?: ContributorFormRetiredOrigin;
+  allowed_extensions?: Array<"pdf" | "docx" | "xlsx" | "csv" | "png" | "jpg" | "jpeg">;
+  min_files?: number;
+  max_files?: number;
+  max_file_bytes?: number;
+  ai_sufficiency_instructions?: string;
 };
 
 export type ContributorFormSection = {
@@ -63,6 +69,25 @@ const options = (values: string[]): ContributorFormOption[] =>
   values.map((value) => ({ value, label: value }));
 
 export const PROJECT_STATUS_OPTIONS = ["Completed", "New", "Ongoing", "Not Implemented"] as const;
+export const NCR_LOCATION_OPTIONS = [
+  "Caloocan",
+  "Las Piñas",
+  "Makati",
+  "Malabon",
+  "Mandaluyong",
+  "Manila",
+  "Marikina",
+  "Muntinlupa",
+  "Navotas",
+  "Parañaque",
+  "Pasay",
+  "Pasig",
+  "Pateros",
+  "Quezon City",
+  "San Juan",
+  "Taguig",
+  "Valenzuela",
+] as const;
 
 const field = (
   key: string,
@@ -74,7 +99,6 @@ const field = (
   label,
   type,
   visible: true,
-  protected: !key.startsWith("custom_"),
   help_text: "",
   placeholder: "",
   ...extra,
@@ -92,7 +116,11 @@ export const DEFAULT_CONTRIBUTOR_FORM_SCHEMA: ContributorFormSchema = {
         field("agencyName", "Agency Name", "text", { required: true }),
         field("program", "Program", "text", { required: true }),
         field("projectActivity", "Project/Activity", "text", { required: true }),
-        field("location", "Location", "text", { required: true }),
+        field("location", "Location", "multiselect_dropdown", {
+          required: true,
+          help_text: "Select one or more NCR locations covered by the project.",
+          options: options([...NCR_LOCATION_OPTIONS]),
+        }),
         field("description", "Description", "textarea", { required: true }),
         field("objective", "Objective", "textarea", { required: true }),
       ],
@@ -180,6 +208,22 @@ export const DEFAULT_CONTRIBUTOR_FORM_SCHEMA: ContributorFormSchema = {
           condition: { field: "status", not_equals: "New" }, condition_required: true,
         }),
         field("remarks", "Remarks", "textarea"),
+      ],
+    },
+    {
+      key: "supporting_documents",
+      title: "Supporting Documents",
+      description: "Upload evidence that supports the project information and readiness described above.",
+      fields: [
+        field("custom_supporting_documents", "Supporting Documents", "document_upload", {
+          required: true,
+          help_text: "Required formats: PDF, DOCX, XLSX, CSV, PNG, or JPEG. Files are checked for project relevance and sufficiency.",
+          allowed_extensions: ["pdf", "docx", "xlsx", "csv", "png", "jpg", "jpeg"],
+          min_files: 1,
+          max_files: 10,
+          max_file_bytes: 20 * 1024 * 1024,
+          ai_sufficiency_instructions: "The documents should substantiate the stated project scope, objectives, budget, readiness, intended beneficiaries, or expected outcomes.",
+        }),
       ],
     },
     {

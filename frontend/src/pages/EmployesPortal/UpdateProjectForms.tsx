@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import PortalLayout from "../../components/portal/PortalLayout";
+import RefreshButton from "../../components/portal/RefreshButton";
 import { userDisplayName } from "../../utils/userDisplayName";
 import { api } from "../../services/api";
 import { MobileSortControls, SortableTableHeader } from "../../components/portal/TableSortControls";
@@ -154,7 +155,7 @@ const UpdateProjectForms: React.FC = () => {
       topActions={
         <div className="flex flex-wrap gap-2">
           <Link to="/validator/dashboard" className="portal-btn portal-btn-ghost">Back to Dashboard</Link>
-          <button type="button" onClick={loadProjects} className="portal-btn portal-btn-ghost">Refresh</button>
+          <RefreshButton loading={loading} onClick={loadProjects} />
         </div>
       }
     >

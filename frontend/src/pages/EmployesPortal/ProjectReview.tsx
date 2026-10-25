@@ -349,7 +349,7 @@ const ProjectReview: React.FC = () => {
                         {section.description && <p className="mt-1 text-xs text-slate-500">{section.description}</p>}
                         <div className="mt-3 grid gap-3 md:grid-cols-2">
                           {fields.map((field) => (
-                            <div key={field.key} className={`rounded border border-slate-200 p-3 ${field.type === "textarea" || field.type === "multiselect" || field.type === "currency_by_year" ? "md:col-span-2" : ""}`}>
+                            <div key={field.key} className={`rounded border border-slate-200 p-3 ${field.type === "textarea" || field.type === "multiselect" || field.type === "multiselect_dropdown" || field.type === "currency_by_year" ? "md:col-span-2" : ""}`}>
                               <p className="text-xs text-slate-500">{field.label}</p>
                               <p className="whitespace-pre-wrap text-slate-800">{printableValue(configuredValue(field))}</p>
                             </div>

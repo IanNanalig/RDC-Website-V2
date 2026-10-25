@@ -663,10 +663,30 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def lock(self, request, pk=None):
-        form, acquired = acquire_form_lock(pk, request.user)
+        current = self.get_object()
+        previous_owner_id = current.lock_owner_id if lock_is_active(current) else None
+        previous_owner_name = (
+            current.lock_owner.get_full_name() or current.lock_owner.username
+            if previous_owner_id and current.lock_owner
+            else ""
+        )
+        force = request.data.get("force") is True
+        if force and previous_owner_id and previous_owner_id != request.user.id:
+            if getattr(request.user, "role", "") != "admin":
+                raise PermissionDenied("Only administrators can take over another editor's form lock.")
+            if request.data.get("confirm_takeover") is not True:
+                return Response({"detail": "Confirm the form lock takeover first."}, status=400)
+        form, acquired = acquire_form_lock(pk, request.user, force=force)
+        overridden = bool(acquired and previous_owner_id and previous_owner_id != request.user.id)
         _log_cms_activity(
-            request, "cms_form_lock_acquired" if acquired else "cms_form_lock_blocked",
-            {"form_id": form.pk, "lock_owner": form.lock_owner_id},
+            request,
+            "cms_form_lock_overridden" if overridden else "cms_form_lock_acquired" if acquired else "cms_form_lock_blocked",
+            {
+                "form_id": form.pk,
+                "lock_owner": form.lock_owner_id,
+                "previous_lock_owner": previous_owner_id,
+                "previous_lock_owner_name": previous_owner_name,
+            },
         )
         return Response(self.get_serializer(form).data, status=200 if acquired else 423)
 

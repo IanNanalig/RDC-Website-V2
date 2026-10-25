@@ -457,7 +457,10 @@ export const cmsApi = {
       edit_mode: "update" | "change";
     },
   ) => api.patch(`admin/cms/forms/${id}/`, payload),
-  lockContributorForm: (id: number) => api.post(`admin/cms/forms/${id}/lock/`),
+  lockContributorForm: (id: number, force = false) => api.post(
+    `admin/cms/forms/${id}/lock/`,
+    force ? { force: true, confirm_takeover: true } : {},
+  ),
   unlockContributorForm: (id: number) => api.post(`admin/cms/forms/${id}/unlock/`),
   heartbeatContributorForm: (id: number) => api.post(`admin/cms/forms/${id}/heartbeat/`),
   requestContributorFormAccess: (id: number) => api.post(`admin/cms/forms/${id}/request-access/`),

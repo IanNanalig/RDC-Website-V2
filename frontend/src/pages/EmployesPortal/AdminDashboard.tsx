@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import RefreshButton from "../../components/portal/RefreshButton";
 import { userDisplayName } from "../../utils/userDisplayName";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
@@ -86,7 +87,8 @@ const AdminDashboard: React.FC = () => {
       role="admin"
       userName={displayName}
       topActions={
-        <button
+        <RefreshButton
+          loading={loading}
           onClick={async () => {
             setLoading(true);
             try {
@@ -96,10 +98,7 @@ const AdminDashboard: React.FC = () => {
               setLoading(false);
             }
           }}
-          className="portal-btn portal-btn-ghost"
-        >
-          Refresh
-        </button>
+        />
       }
     >
       <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-8 gap-3 md:gap-4 mb-4">

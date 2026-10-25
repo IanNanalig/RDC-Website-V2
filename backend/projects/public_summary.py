@@ -4,6 +4,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from .utils import format_project_locations
+
 
 _NUM_RE = re.compile(r"[^0-9.\-]+")
 
@@ -79,7 +81,7 @@ def build_public_summary(simplified_form: Dict[str, Any]) -> Dict[str, Any]:
     agency = _safe_str(sf.get("agencyName"))
     program = _safe_str(sf.get("program"))
     activity = _safe_str(sf.get("projectActivity"))
-    location_raw = _safe_str(sf.get("location"))
+    location_raw = format_project_locations(sf.get("location"))
     objective = _safe_str(sf.get("objective"))
     description = _safe_str(sf.get("description"))
 
