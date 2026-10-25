@@ -492,6 +492,15 @@ class ContributorFormWorkflowTests(APITestCase):
         with self.assertRaises(FormSchemaError):
             validate_simplified_answers(invalid_profile, require_complete=False)
 
+    def test_legacy_version_keeps_free_text_location_compatible(self):
+        profile = {
+            "form_schema": {"key": "simplified-rdip", "version": 1, "legacy": True},
+            "simplified_form": {"location": "NCR", "custom_fields": {}},
+        }
+
+        validate_simplified_answers(profile, require_complete=False)
+        self.assertEqual(profile["simplified_form"]["location"], "NCR")
+
     def test_published_legacy_readiness_options_do_not_block_cms_saves(self):
         legacy_values = [
             "Completed supporting documents",
