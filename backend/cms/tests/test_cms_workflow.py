@@ -14,7 +14,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from PIL import Image
 
-from cms.models import CMSArticle, CMSMediaAsset, CMSPage, CMSPageSection, CMSRevision
+from cms.models import CMSArticle, CMSMediaAsset, CMSPage, CMSPageSection
 from projects.models import PublicEvent, User
 
 
@@ -67,120 +67,93 @@ class CMSWorkflowTests(APITestCase):
         self.client.force_authenticate(user=user or self.admin)
 
     def test_public_page_etag_revalidates_and_publish_is_immediately_fresh(self):
-        page = CMSPage.objects.create(
-            title="ETag page",
-            slug="etag-page",
-            status=CMSPage.STATUS_PUBLISHED,
-            published_at=timezone.now(),
-            published_snapshot_json={"title": "First", "slug": "etag-page", "sections": [{"content": {"body": "x" * 1000}}]},
-        )
-        first = self.client.get("/api/public/cms/pages/etag-page/", HTTP_ACCEPT_ENCODING="gzip")
+        page = CMSPage.objects.get(slug="contact")
+        page.status = CMSPage.STATUS_PUBLISHED
+        page.published_at = timezone.now()
+        page.published_snapshot_json = {
+            "title": "First", "slug": "contact", "sections": [{"content": {"body": "x" * 1000}}],
+        }
+        page.save(update_fields=["status", "published_at", "published_snapshot_json", "updated_at"])
+        first = self.client.get("/api/public/cms/pages/contact/", HTTP_ACCEPT_ENCODING="gzip")
         self.assertEqual(first.status_code, status.HTTP_200_OK)
         self.assertEqual(first["Cache-Control"], "public, no-cache, must-revalidate")
         etag = first["ETag"]
         self.assertFalse(etag.startswith("W/"))
         self.assertEqual(
-            self.client.get("/api/public/cms/pages/etag-page/", HTTP_IF_NONE_MATCH=etag).status_code,
+            self.client.get("/api/public/cms/pages/contact/", HTTP_IF_NONE_MATCH=etag).status_code,
             status.HTTP_304_NOT_MODIFIED,
         )
 
-        page.published_snapshot_json = {"title": "Second", "slug": "etag-page", "sections": []}
+        page.published_snapshot_json = {"title": "Second", "slug": "contact", "sections": []}
         page.save(update_fields=["published_snapshot_json", "updated_at"])
-        fresh = self.client.get("/api/public/cms/pages/etag-page/", HTTP_IF_NONE_MATCH=etag)
+        fresh = self.client.get("/api/public/cms/pages/contact/", HTTP_IF_NONE_MATCH=etag)
         self.assertEqual(fresh.status_code, status.HTTP_200_OK)
         self.assertEqual(fresh.data["title"], "Second")
         self.assertNotEqual(fresh["ETag"], etag)
+        self.assertEqual(self.client.get("/api/public/cms/pages/not-a-fixed-module/").status_code, 404)
 
     def test_page_draft_is_private_and_publish_snapshot_isolated(self):
         self.authenticate()
-        page_response = self.client.post(
-            "/api/admin/cms/pages/",
-            {"title": "Test Home", "slug": "test-home"},
+        page = CMSPage.objects.get(slug="contact")
+        section = page.sections.get(section_key="contact-hero")
+        initial_content = {**section.content_json, "title": "Published title"}
+        section_response = self.client.patch(
+            f"/api/admin/cms/sections/{section.pk}/",
+            {"content_json": initial_content},
             format="json",
         )
-        self.assertEqual(page_response.status_code, status.HTTP_201_CREATED)
-        page_id = page_response.data["id"]
-
-        section_response = self.client.post(
-            "/api/admin/cms/sections/",
-            {
-                "page": page_id,
-                "section_key": "hero",
-                "section_type": "hero",
-                "order": 1,
-                "content_json": {"title": "Published title"},
-                "is_visible": True,
-            },
-            format="json",
-        )
-        self.assertEqual(section_response.status_code, status.HTTP_201_CREATED)
-        section_id = section_response.data["id"]
-
-        self.client.force_authenticate(user=None)
-        self.assertEqual(
-            self.client.get("/api/public/cms/pages/test-home/").status_code,
-            status.HTTP_404_NOT_FOUND,
-        )
-
-        self.authenticate()
-        publish_response = self.client.post(f"/api/admin/cms/pages/{page_id}/publish/")
+        self.assertEqual(section_response.status_code, status.HTTP_200_OK)
+        publish_response = self.client.post(f"/api/admin/cms/pages/{page.pk}/publish/")
         self.assertEqual(publish_response.status_code, status.HTTP_200_OK)
 
         self.client.force_authenticate(user=None)
-        public_response = self.client.get("/api/public/cms/pages/test-home/")
+        public_response = self.client.get("/api/public/cms/pages/contact/")
         self.assertEqual(public_response.status_code, status.HTTP_200_OK)
-        self.assertEqual(public_response.data["sections"][0]["content"]["title"], "Published title")
+        published_hero = next(row for row in public_response.data["sections"] if row["sectionKey"] == "contact-hero")
+        self.assertEqual(published_hero["content"]["title"], "Published title")
 
         self.authenticate()
-        update_response = self.client.put(
-            f"/api/admin/cms/sections/{section_id}/",
-            {
-                "page": page_id,
-                "section_key": "hero",
-                "section_type": "hero",
-                "order": 1,
-                "content_json": {"title": "Draft-only title"},
-                "is_visible": True,
-            },
+        update_response = self.client.patch(
+            f"/api/admin/cms/sections/{section.pk}/",
+            {"content_json": {**initial_content, "title": "Draft-only title"}},
             format="json",
         )
         self.assertEqual(update_response.status_code, status.HTTP_200_OK)
-        self.assertTrue(CMSPage.objects.get(pk=page_id).has_unpublished_changes)
+        self.assertTrue(CMSPage.objects.get(pk=page.pk).has_unpublished_changes)
 
         self.client.force_authenticate(user=None)
-        public_response = self.client.get("/api/public/cms/pages/test-home/")
-        self.assertEqual(public_response.data["sections"][0]["content"]["title"], "Published title")
+        public_response = self.client.get("/api/public/cms/pages/contact/")
+        public_hero = next(row for row in public_response.data["sections"] if row["sectionKey"] == "contact-hero")
+        self.assertEqual(public_hero["content"]["title"], "Published title")
 
         self.authenticate()
-        self.client.post(f"/api/admin/cms/pages/{page_id}/publish/")
+        self.client.post(f"/api/admin/cms/pages/{page.pk}/publish/")
         self.client.force_authenticate(user=None)
-        public_response = self.client.get("/api/public/cms/pages/test-home/")
-        self.assertEqual(public_response.data["sections"][0]["content"]["title"], "Draft-only title")
+        public_response = self.client.get("/api/public/cms/pages/contact/")
+        public_hero = next(row for row in public_response.data["sections"] if row["sectionKey"] == "contact-hero")
+        self.assertEqual(public_hero["content"]["title"], "Draft-only title")
 
     def test_draft_publish_isolation_for_structurally_different_sections(self):
-        cases = {
-            "hero_carousel": lambda label: {"slides": [{"title": label, "subtitle": "Hero"}]},
-            "cards": lambda label: {"title": "Cards", "items": [{"id": "card-1", "title": label}]},
-            "faq": lambda label: {"title": "FAQ", "items": [{"id": "question-1", "question": label, "answer": "Answer"}]},
-        }
+        cases = (
+            ("contact", "contact-hero"),
+            ("regional-profile", "regional-overview"),
+            ("news", "news-listing"),
+        )
 
-        for section_type, content_for in cases.items():
-            with self.subTest(section_type=section_type):
+        for page_slug, section_key in cases:
+            with self.subTest(section_key=section_key):
                 self.authenticate()
-                page = CMSPage.objects.create(title=f"{section_type} isolation", slug=f"{section_type}-isolation")
-                section = CMSPageSection.objects.create(
-                    page=page,
-                    section_key=section_type,
-                    section_type=section_type,
-                    order=1,
-                    content_json=content_for("Initial public value"),
-                    is_visible=True,
+                page = CMSPage.objects.get(slug=page_slug)
+                section = page.sections.get(section_key=section_key)
+                initial = {**section.content_json, "workflowTestValue": "Initial public value"}
+                self.client.patch(
+                    f"/api/admin/cms/sections/{section.pk}/", {"content_json": initial}, format="json",
                 )
                 self.client.post(f"/api/admin/cms/pages/{page.pk}/publish/")
 
                 self.client.patch(
                     f"/api/admin/cms/sections/{section.pk}/",
-                    {"content_json": content_for("First draft value")},
+                    {"content_json": {**initial, "workflowTestValue": "First draft value"}},
                     format="json",
                 )
                 self.client.force_authenticate(user=None)
@@ -198,7 +171,7 @@ class CMSWorkflowTests(APITestCase):
                 self.authenticate()
                 self.client.patch(
                     f"/api/admin/cms/sections/{section.pk}/",
-                    {"content_json": content_for("Second unpublished value")},
+                    {"content_json": {**initial, "workflowTestValue": "Second unpublished value"}},
                     format="json",
                 )
                 self.client.force_authenticate(user=None)
@@ -207,62 +180,62 @@ class CMSWorkflowTests(APITestCase):
                 self.assertNotIn("Second unpublished value", str(public_after_second_draft.data))
 
     def test_published_page_converts_backend_media_urls_to_portable_paths(self):
-        page = CMSPage.objects.create(title="Media Page", slug="media-page")
-        CMSPageSection.objects.create(
-            page=page,
-            section_key="hero",
-            section_type="hero",
-            order=1,
-            content_json={
+        page = CMSPage.objects.get(slug="contact")
+        section = page.sections.get(section_key="contact-hero")
+        self.authenticate()
+        update_response = self.client.patch(
+            f"/api/admin/cms/sections/{section.pk}/",
+            {"content_json": {
+                **section.content_json,
                 "imageUrl": "http://127.0.0.1:8000/media/cms/cover.jpg",
                 "nested": [{"documentUrl": "https://backend.example/media/cms/report.pdf?download=1"}],
-            },
+            }},
+            format="json",
         )
-        self.authenticate()
+        self.assertEqual(update_response.status_code, status.HTTP_200_OK)
         response = self.client.post(f"/api/admin/cms/pages/{page.pk}/publish/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        content = response.data["published_snapshot_json"]["sections"][0]["content"]
+        content = next(
+            row["content"] for row in response.data["published_snapshot_json"]["sections"]
+            if row["sectionKey"] == "contact-hero"
+        )
         self.assertEqual(content["imageUrl"], "/media/cms/cover.jpg")
         self.assertEqual(content["nested"][0]["documentUrl"], "/media/cms/report.pdf?download=1")
 
     def test_content_editor_can_edit_but_cannot_publish(self):
         self.authenticate(self.editor)
-        response = self.client.post(
-            "/api/admin/cms/pages/",
-            {"title": "Editor Page", "slug": "editor-page"},
+        page = CMSPage.objects.get(slug="contact")
+        section = page.sections.get(section_key="contact-hero")
+        response = self.client.patch(
+            f"/api/admin/cms/sections/{section.pk}/",
+            {"content_json": {**section.content_json, "title": "Editor draft"}},
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        publish_response = self.client.post(f"/api/admin/cms/pages/{response.data['id']}/publish/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        publish_response = self.client.post(f"/api/admin/cms/pages/{page.pk}/publish/")
         self.assertEqual(publish_response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_summary_lists_are_paginated_searchable_and_keep_details_complete(self):
         self.authenticate()
-        target = CMSPage.objects.create(
-            title="Performance Target",
-            slug="performance-target",
-            published_snapshot_json={"slug": "performance-target", "body": "x" * 5000},
-        )
-        CMSPageSection.objects.create(
-            page=target,
-            section_key="large-section",
-            section_type="cards",
-            order=1,
-            content_json={"items": [{"body": "y" * 5000}]},
-        )
+        target = CMSPage.objects.get(slug="projects-dashboard")
+        target.published_snapshot_json = {"slug": "projects-dashboard", "body": "x" * 5000}
+        target.save(update_fields=["published_snapshot_json", "updated_at"])
+        large_section = target.sections.get(section_key="projects-hero")
+        large_section.content_json = {**large_section.content_json, "items": [{"body": "y" * 5000}]}
+        large_section.save(update_fields=["content_json", "updated_at"])
         for index in range(4):
             CMSPage.objects.create(title=f"Other Page {index}", slug=f"other-page-{index}")
 
         with CaptureQueriesContext(connection) as captured:
             response = self.client.get(
-                "/api/admin/cms/pages/?view=summary&page_size=2&q=Performance"
+                "/api/admin/cms/pages/?view=summary&page_size=2&q=Projects%20Dashboard"
             )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["page"], 1)
-        self.assertEqual(response.data["results"][0]["section_count"], 1)
-        self.assertEqual(response.data["results"][0]["published_slug"], "performance-target")
+        self.assertEqual(response.data["results"][0]["section_count"], 3)
+        self.assertEqual(response.data["results"][0]["published_slug"], "projects-dashboard")
         self.assertNotIn("published_snapshot_json", response.data["results"][0])
         self.assertNotIn("sections", response.data["results"][0])
         self.assertLessEqual(len(captured), 8)
@@ -271,12 +244,14 @@ class CMSWorkflowTests(APITestCase):
         detail = self.client.get(f"/api/admin/cms/pages/{target.pk}/")
         self.assertEqual(detail.status_code, status.HTTP_200_OK)
         self.assertIn("published_snapshot_json", detail.data)
-        self.assertEqual(detail.data["sections"][0]["content_json"]["items"][0]["body"], "y" * 5000)
+        detail_section = next(row for row in detail.data["sections"] if row["section_key"] == "projects-hero")
+        self.assertEqual(detail_section["content_json"]["items"][0]["body"], "y" * 5000)
 
         editor_detail = self.client.get(f"/api/admin/cms/pages/{target.pk}/?view=editor")
         self.assertEqual(editor_detail.status_code, status.HTTP_200_OK)
         self.assertNotIn("published_snapshot_json", editor_detail.data)
-        self.assertEqual(editor_detail.data["sections"][0]["content_json"]["items"][0]["body"], "y" * 5000)
+        editor_section = next(row for row in editor_detail.data["sections"] if row["section_key"] == "projects-hero")
+        self.assertEqual(editor_section["content_json"]["items"][0]["body"], "y" * 5000)
         self.assertLess(
             len(json.dumps(editor_detail.data, default=str)),
             len(json.dumps(detail.data, default=str)),
@@ -287,9 +262,7 @@ class CMSWorkflowTests(APITestCase):
             {"title": "Updated Performance Target", "slug": target.slug},
             format="json",
         )
-        self.assertEqual(editor_update.status_code, status.HTTP_200_OK)
-        self.assertNotIn("published_snapshot_json", editor_update.data)
-        self.assertEqual(editor_update.data["title"], "Updated Performance Target")
+        self.assertEqual(editor_update.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
         legacy = self.client.get("/api/admin/cms/pages/")
         self.assertIsInstance(legacy.data, list)
@@ -389,31 +362,29 @@ class CMSWorkflowTests(APITestCase):
 
     def test_plain_section_fields_strip_markup_and_executable_links_on_publish(self):
         self.authenticate()
-        page_response = self.client.post(
-            "/api/admin/cms/pages/",
-            {"title": "Plain Field Safety", "slug": "plain-field-safety"},
-            format="json",
-        )
+        page = CMSPage.objects.get(slug="contact")
+        section = page.sections.get(section_key="contact-hero")
         payload = '<script>alert(1)</script><img src=x onerror=alert(1)><a href="javascript:alert(1)">link</a>'
-        section_response = self.client.post(
-            "/api/admin/cms/sections/",
-            {
-                "page": page_response.data["id"],
-                "section_key": "safe-title",
-                "section_type": "text",
-                "order": 1,
-                "content_json": {"title": payload, "buttonLabel": payload, "buttonLink": "javascript:alert(1)"},
-                "is_visible": True,
-            },
+        section_response = self.client.patch(
+            f"/api/admin/cms/sections/{section.pk}/",
+            {"content_json": {
+                **section.content_json,
+                "title": payload,
+                "buttonLabel": payload,
+                "buttonLink": "javascript:alert(1)",
+            }},
             format="json",
         )
-        self.assertEqual(section_response.status_code, status.HTTP_201_CREATED)
-        publish_response = self.client.post(f"/api/admin/cms/pages/{page_response.data['id']}/publish/")
+        self.assertEqual(section_response.status_code, status.HTTP_200_OK)
+        publish_response = self.client.post(f"/api/admin/cms/pages/{page.pk}/publish/")
         self.assertEqual(publish_response.status_code, status.HTTP_200_OK)
 
         self.client.force_authenticate(user=None)
-        public_response = self.client.get("/api/public/cms/pages/plain-field-safety/")
-        content = public_response.data["sections"][0]["content"]
+        public_response = self.client.get("/api/public/cms/pages/contact/")
+        content = next(
+            row["content"] for row in public_response.data["sections"]
+            if row["sectionKey"] == "contact-hero"
+        )
         self.assertNotIn("<script", content["title"])
         self.assertNotIn("<img", content["title"])
         self.assertNotIn("onerror", content["title"])
@@ -421,30 +392,20 @@ class CMSWorkflowTests(APITestCase):
         self.assertNotIn("<", content["buttonLabel"])
         self.assertEqual(content["buttonLink"], "")
 
-    def test_section_reorder_is_atomic_and_published_order_stays_stable(self):
-        page = CMSPage.objects.create(title="Order Page", slug="order-page")
-        first = CMSPageSection.objects.create(
-            page=page,
-            section_key="first",
-            section_type="text",
-            order=1,
-        )
-        second = CMSPageSection.objects.create(
-            page=page,
-            section_key="second",
-            section_type="text",
-            order=2,
-        )
+    def test_fixed_section_reorder_is_rejected_and_order_stays_stable(self):
+        page = CMSPage.objects.get(slug="contact")
+        first, second = list(page.sections.order_by("order")[:2])
+        original_order = list(page.sections.order_by("order").values_list("id", flat=True))
         self.authenticate()
         response = self.client.post(
             f"/api/admin/cms/pages/{page.pk}/reorder_sections/",
             {"section_ids": [second.pk, first.pk]},
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
         self.assertEqual(
             list(page.sections.order_by("order").values_list("id", flat=True)),
-            [second.pk, first.pk],
+            original_order,
         )
 
         invalid_response = self.client.post(
@@ -452,34 +413,22 @@ class CMSWorkflowTests(APITestCase):
             {"section_ids": [first.pk]},
             format="json",
         )
-        self.assertEqual(invalid_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(invalid_response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
         self.assertEqual(
             list(page.sections.order_by("order").values_list("id", flat=True)),
-            [second.pk, first.pk],
+            original_order,
         )
 
-    def test_section_delete_marks_page_changed_and_is_audited(self):
-        page = CMSPage.objects.create(
-            title="Published Page",
-            slug="published-page",
-            status=CMSPage.STATUS_PUBLISHED,
-            has_unpublished_changes=False,
-            published_snapshot_json={"slug": "published-page", "sections": []},
-        )
-        section = CMSPageSection.objects.create(
-            page=page,
-            section_key="temporary",
-            section_type="text",
-            order=1,
-        )
+    def test_fixed_section_delete_is_rejected_without_mutation(self):
+        page = CMSPage.objects.get(slug="contact")
+        section = page.sections.get(section_key="contact-hero")
+        was_changed = page.has_unpublished_changes
         self.authenticate()
         response = self.client.delete(f"/api/admin/cms/sections/{section.pk}/")
-        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
         page.refresh_from_db()
-        self.assertTrue(page.has_unpublished_changes)
-        self.assertFalse(CMSRevision.objects.filter(
-            content_type__model="cmspagesection", object_id=section.pk,
-        ).exists())
+        self.assertEqual(page.has_unpublished_changes, was_changed)
+        self.assertTrue(CMSPageSection.objects.filter(pk=section.pk).exists())
 
     def test_pages_and_articles_cannot_be_hard_deleted(self):
         page = CMSPage.objects.create(title="Protected Page", slug="protected-page")

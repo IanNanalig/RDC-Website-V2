@@ -11,13 +11,6 @@ type InquiryForm = {
 
 // Feedback moved to a shared component
 
-const DEFAULT_LOCATION = {
-  address:
-    "16th Floor, MMDA Head Office, Dofia Julia Vargas Avenue corner Molawe St., Barangay Ugong, Pasig City",
-  lat: 14.5764,
-  lng: 121.0851,
-};
-
 const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -71,13 +64,10 @@ const Contact: React.FC = () => {
   const mapContent = asRecord(getContactSection(contactCmsPage, "location-map"));
   const formContent = asRecord(getContactSection(contactCmsPage, "message-form"));
 
-  const contactAddress = asString(officeContent.address, DEFAULT_LOCATION.address);
-  const contactEmail = asString(officeContent.email, "rdc.ncr@mmda.gov.ph");
-  const contactPhone = asString(officeContent.phone, "+63 (2) 1234-5678");
-  const officeHours = asString(
-    officeContent.officeHours,
-    "Monday - Friday: 7:00 AM - 4:00 PM\nSaturday, Sunday & Holidays: Closed",
-  );
+  const contactAddress = asString(officeContent.address);
+  const contactEmail = asString(officeContent.email);
+  const contactPhone = asString(officeContent.phone);
+  const officeHours = asString(officeContent.officeHours);
 
   const handleInquirySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -128,10 +118,24 @@ const Contact: React.FC = () => {
   // feedback submit handled in Feedback component
 
   const getMapEmbedUrl = () => {
-    const { lat, lng } = DEFAULT_LOCATION;
-    const query = encodeURIComponent(contactAddress);
-    return `https://www.google.com/maps/embed/v1/place?key=AIzaSyBFw0Qbyq9zTFTd-tUY6dZWTgaQzuU17R8&q=${query}&center=${lat},${lng}&zoom=16`;
+    const configuredQuery = asString(mapContent.mapQuery) || asString(mapContent.address) || contactAddress;
+    const rawLatitude = String(mapContent.latitude ?? "").trim();
+    const rawLongitude = String(mapContent.longitude ?? "").trim();
+    const parsedLatitude = Number(rawLatitude);
+    const parsedLongitude = Number(rawLongitude);
+    const latitude = rawLatitude && Number.isFinite(parsedLatitude) && parsedLatitude >= -90 && parsedLatitude <= 90
+      ? parsedLatitude
+      : null;
+    const longitude = rawLongitude && Number.isFinite(parsedLongitude) && parsedLongitude >= -180 && parsedLongitude <= 180
+      ? parsedLongitude
+      : null;
+    const query = latitude !== null && longitude !== null
+      ? `${latitude},${longitude}`
+      : configuredQuery;
+    return query ? `https://www.google.com/maps?q=${encodeURIComponent(query)}&output=embed` : "";
   };
+
+  const mapEmbedUrl = getMapEmbedUrl();
 
   // no local feedback modal state here
 
@@ -186,7 +190,7 @@ const Contact: React.FC = () => {
                           {asString(officeContent.addressLabel, "Address")}
                         </h4>
                         <p className="text-slate-600 text-sm mt-1">
-                          {contactAddress}
+                          {contactAddress || "Address has not been configured."}
                         </p>
                       </div>
                     </div>
@@ -208,12 +212,11 @@ const Contact: React.FC = () => {
                         <h4 className="font-semibold text-slate-900">
                           {asString(officeContent.emailLabel, "Email")}
                         </h4>
-                        <a
-                          href={`mailto:${contactEmail}`}
-                          className="text-blue-600 hover:underline text-sm"
-                        >
-                          {contactEmail}
-                        </a>
+                        {contactEmail ? (
+                          <a href={`mailto:${contactEmail}`} className="text-blue-600 hover:underline text-sm">
+                            {contactEmail}
+                          </a>
+                        ) : <p className="text-slate-500 text-sm">Email has not been configured.</p>}
                       </div>
                     </div>
 
@@ -234,12 +237,11 @@ const Contact: React.FC = () => {
                         <h4 className="font-semibold text-slate-900">
                           {asString(officeContent.phoneLabel, "Phone")}
                         </h4>
-                        <a
-                          href={`tel:${contactPhone.replace(/[^\d+]/g, "")}`}
-                          className="text-blue-600 hover:underline text-sm"
-                        >
-                          {contactPhone}
-                        </a>
+                        {contactPhone ? (
+                          <a href={`tel:${contactPhone.replace(/[^\d+]/g, "")}`} className="text-blue-600 hover:underline text-sm">
+                            {contactPhone}
+                          </a>
+                        ) : <p className="text-slate-500 text-sm">Phone numbers have not been configured.</p>}
                       </div>
                     </div>
 
@@ -267,6 +269,7 @@ const Contact: React.FC = () => {
                               {line}
                             </React.Fragment>
                           ))}
+                          {!officeHours && "Office hours have not been configured."}
                         </p>
                       </div>
                     </div>
@@ -297,17 +300,23 @@ const Contact: React.FC = () => {
 
                   {/* Map Container */}
                   <div className="relative h-[500px] w-full">
-                    <iframe
-                      src={getMapEmbedUrl()}
-                      width="100%"
-                      height="100%"
-                      style={{ border: 0 }}
-                      allowFullScreen
-                      loading="lazy"
-                      referrerPolicy="no-referrer-when-downgrade"
-                      title="RDC-NCR Location Map"
-                      className="absolute inset-0"
-                    />
+                    {mapEmbedUrl ? (
+                      <iframe
+                        src={mapEmbedUrl}
+                        width="100%"
+                        height="100%"
+                        style={{ border: 0 }}
+                        allowFullScreen
+                        loading="lazy"
+                        referrerPolicy="no-referrer-when-downgrade"
+                        title="RDC-NCR Location Map"
+                        className="absolute inset-0"
+                      />
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center bg-slate-100 px-6 text-center text-slate-500">
+                        Map location has not been configured in Content Management.
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

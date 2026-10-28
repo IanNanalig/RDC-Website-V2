@@ -19,69 +19,7 @@ type QuickStat = {
   color: string;
 };
 
-const FALLBACK_STATS: QuickStat[] = [
-  {
-    label: "Population",
-    value: "13.5M",
-    subtext: "2020 Census",
-    icon: "people",
-    color: "from-blue-500 to-cyan-400",
-  },
-  {
-    label: "GDP Share",
-    value: "36%",
-    subtext: "National GDP",
-    icon: "peso",
-    color: "from-green-500 to-emerald-400",
-  },
-  {
-    label: "Land Area",
-    value: "619.57 km2",
-    subtext: "Metro Manila",
-    icon: "map",
-    color: "from-purple-500 to-indigo-400",
-  },
-  {
-    label: "Cities & Municipality",
-    value: "16 + 1",
-    subtext: "Pateros",
-    icon: "building",
-    color: "from-orange-500 to-red-400",
-  },
-  {
-    label: "Key Sectors",
-    value: "Services",
-    subtext: "Finance, Trade, BPO",
-    icon: "office",
-    color: "from-pink-500 to-rose-400",
-  },
-];
 
-const FALLBACK_OVERVIEW_PARAGRAPHS = [
-  "The National Capital Region (NCR), also known as Metropolitan Manila or Metro Manila, is the Philippines' political, economic, educational, and cultural center. It is the smallest region in the country, with a land area of 619.54 square kilometers, and the most densely populated, home to more than 13 million Filipinos.",
-  "Located in central Luzon, NCR sits on the eastern coast of Manila Bay at the mouth of the Pasig River. It is bordered by Manila Bay to the west, Central Luzon to the north, Laguna de Bay to the south, and the Sierra Madre mountains to the east.",
-  "NCR is the only region in the Philippines without provinces. It is composed of 17 local government units: 16 cities (Caloocan, Malabon, Navotas, Valenzuela, Quezon City, Marikina, Pasig, Taguig, Makati, Manila, Mandaluyong, San Juan, Pasay, Paranaque, Las Pinas, and Muntinlupa) and one municipality, Pateros.",
-];
-
-const FALLBACK_CITIES: CityLink[] = [
-  { name: "Manila", website: "https://www.manila.gov.ph", type: "website" },
-  { name: "Quezon City", website: "https://www.quezoncity.gov.ph", type: "website" },
-  { name: "Caloocan", website: "https://caloocancity.gov.ph", type: "facebook" },
-  { name: "Las Pinas", website: "https://laspinascity.gov.ph/", type: "facebook" },
-  { name: "Makati", website: "https://www.makati.gov.ph", type: "website" },
-  { name: "Malabon", website: "https://malabon.gov.ph", type: "facebook" },
-  { name: "Mandaluyong", website: "https://mandaluyong.gov.ph", type: "facebook" },
-  { name: "Marikina", website: "https://marikina.gov.ph", type: "facebook" },
-  { name: "Muntinlupa", website: "https://muntinlupacity.gov.ph", type: "facebook" },
-  { name: "Navotas", website: "https://navotas.gov.ph", type: "facebook" },
-  { name: "Paranaque", website: "https://paranaque.gov.ph", type: "facebook" },
-  { name: "Pasay", website: "https://pasay.gov.ph", type: "facebook" },
-  { name: "Pasig", website: "https://pasigcity.gov.ph", type: "website" },
-  { name: "San Juan", website: "https://sanjuancity.gov.ph", type: "facebook" },
-  { name: "Taguig", website: "https://taguig.gov.ph", type: "website" },
-  { name: "Valenzuela", website: "https://valenzuela.gov.ph", type: "facebook" },
-  { name: "Pateros", website: "https://www.pateros.gov.ph", type: "facebook" },
-];
 
 const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -117,6 +55,33 @@ const statIcon = (key: string) => {
 };
 
 const statsFromContent = (content: Record<string, unknown>): QuickStat[] => {
+  const numericStats = [
+    { key: "population", unit: "populationUnit", label: "Population", icon: "people", color: "from-blue-500 to-cyan-400" },
+    { key: "gdpShare", unit: "gdpShareUnit", label: "GDP Share", icon: "gdp", color: "from-green-500 to-emerald-400" },
+    { key: "landArea", unit: "landAreaUnit", label: "Land Area", icon: "map", color: "from-purple-500 to-indigo-400" },
+  ].map((definition) => {
+    const numericValue = asString(content[definition.key]);
+    const unit = asString(content[definition.unit]);
+    return numericValue ? {
+      label: definition.label,
+      value: `${numericValue}${unit ? ` ${unit}` : ""}`,
+      subtext: asString(content.dataYear),
+      icon: definition.icon,
+      color: definition.color,
+    } : null;
+  }).filter(Boolean) as QuickStat[];
+  const cityCount = asString(content.cityCount);
+  const municipalityCount = asString(content.municipalityCount);
+  if (cityCount || municipalityCount) {
+    numericStats.push({
+      label: "Cities & Municipalities",
+      value: [cityCount, municipalityCount].filter(Boolean).join(" + "),
+      subtext: asString(content.dataYear),
+      icon: "building",
+      color: "from-orange-500 to-red-400",
+    });
+  }
+  if (numericStats.length) return numericStats;
   const items = asArray(content.stats)
     .map((item) => {
       const row = asRecord(item);
@@ -132,7 +97,7 @@ const statsFromContent = (content: Record<string, unknown>): QuickStat[] => {
       };
     })
     .filter(Boolean) as QuickStat[];
-  return items.length ? items : FALLBACK_STATS;
+  return items;
 };
 
 const citiesFromContent = (content: Record<string, unknown>): CityLink[] => {
@@ -145,7 +110,7 @@ const citiesFromContent = (content: Record<string, unknown>): CityLink[] => {
       return name && website ? { name, website, type } : null;
     })
     .filter(Boolean) as CityLink[];
-  return items.length ? items : FALLBACK_CITIES;
+  return items;
 };
 
 export default function RegionalProfile() {
@@ -175,7 +140,7 @@ export default function RegionalProfile() {
     const paragraphs = asArray(overview.paragraphs)
       .map((item) => asString(item))
       .filter(Boolean);
-    return paragraphs.length ? paragraphs : FALLBACK_OVERVIEW_PARAGRAPHS;
+    return paragraphs;
   }, [overview.paragraphs]);
 
   const quickStats = useMemo(() => statsFromContent(overview), [overview]);
@@ -219,6 +184,7 @@ export default function RegionalProfile() {
                     {paragraph}
                   </p>
                 ))}
+                {overviewParagraphs.length === 0 && <p className="text-slate-500">Regional overview content has not been published.</p>}
               </div>
             </div>
 
@@ -237,6 +203,7 @@ export default function RegionalProfile() {
                   </div>
                 </div>
               ))}
+              {quickStats.length === 0 && <p className="col-span-full text-center text-sm text-slate-500">No regional statistics are currently published.</p>}
             </div>
           </div>
         </section>
@@ -307,6 +274,7 @@ export default function RegionalProfile() {
                       </svg>
                     </a>
                   ))}
+                  {cities.length === 0 && <p className="text-sm text-slate-500">No local government directory entries are published.</p>}
                 </div>
               </div>
             </div>

@@ -12,11 +12,15 @@ from cms.form_schema import (
 )
 from cms.models import (
     CMSArticle,
+    CMSCarouselItem,
     CMSContributorForm,
     CMSContributorFormVersion,
     CMSMediaAsset,
     CMSPage,
     CMSPageSection,
+    CMSPublicationCategory,
+    CMSPublicationDocument,
+    CMSResolution,
     CMSSiteSetting,
 )
 from cms.services.locking import lock_is_active
@@ -120,6 +124,7 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
             "lock_expires_at", "is_locked", "locked_by_me", "created_at", "updated_at",
         ]
         read_only_fields = [
+            "page", "section_key", "section_type", "order", "schema_version", "is_visible",
             "status", "lock_owner", "lock_owner_name", "lock_acquired_at", "lock_expires_at",
             "is_locked", "locked_by_me", "created_at", "updated_at",
         ]
@@ -129,6 +134,77 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
             return {}
         if not isinstance(value, dict):
             raise serializers.ValidationError("Section content must be a JSON object.")
+        page_slug = getattr(getattr(self.instance, "page", None), "slug", "")
+        section_key = getattr(self.instance, "section_key", "")
+
+        if page_slug == "about-rdc" and section_key == "committees":
+            expected = {"executive", "sectoral", "special", "affiliate", "advisory"}
+            items = value.get("items")
+            if not isinstance(items, list):
+                raise serializers.ValidationError("The five fixed committee entries are required.")
+            codes = [str(item.get("id") or "") for item in items if isinstance(item, dict)]
+            if len(codes) != 5 or set(codes) != expected:
+                raise serializers.ValidationError(
+                    "Committee structure is fixed. Keep executive, sectoral, special, affiliate, and advisory exactly once."
+                )
+
+        if page_slug == "contact" and section_key == "main-office":
+            email = str(value.get("email") or "").strip()
+            if email:
+                serializers.EmailField().run_validation(email)
+            phones = value.get("phones")
+            if phones is not None and not isinstance(phones, list):
+                raise serializers.ValidationError({"phones": "Phone numbers must be a list."})
+
+        if page_slug == "contact" and section_key == "location-map":
+            prohibited = {"embedHtml", "embed_html", "embedUrl", "embed_url", "apiKey", "api_key"}
+            if prohibited.intersection(value):
+                raise serializers.ValidationError("Map HTML, embed URLs, and API keys are not accepted.")
+            query = str(value.get("mapQuery") or value.get("address") or "").strip()
+            if len(query) > 500:
+                raise serializers.ValidationError({"mapQuery": "Map address must be 500 characters or fewer."})
+            latitude = str(value.get("latitude") or "").strip()
+            longitude = str(value.get("longitude") or "").strip()
+            if bool(latitude) != bool(longitude):
+                raise serializers.ValidationError("Provide both latitude and longitude, or leave both blank.")
+            if latitude and longitude:
+                try:
+                    lat_value = float(latitude)
+                    lng_value = float(longitude)
+                except (TypeError, ValueError):
+                    raise serializers.ValidationError("Latitude and longitude must be numeric.")
+                if not -90 <= lat_value <= 90 or not -180 <= lng_value <= 180:
+                    raise serializers.ValidationError("Latitude or longitude is outside its valid range.")
+                value = {**value, "latitude": lat_value, "longitude": lng_value}
+
+        if page_slug == "regional-profile" and section_key == "regional-overview":
+            numeric_fields = {
+                "population": "Population",
+                "gdpShare": "GDP share",
+                "landArea": "Land area",
+                "cityCount": "City count",
+                "municipalityCount": "Municipality count",
+            }
+            errors = {}
+            for field, label in numeric_fields.items():
+                raw = value.get(field)
+                if raw in (None, ""):
+                    continue
+                try:
+                    float(raw)
+                except (TypeError, ValueError):
+                    errors[field] = f"{label} must contain only a numeric value; put the unit in its display-unit field."
+            data_year = value.get("dataYear")
+            if data_year not in (None, ""):
+                try:
+                    year = int(data_year)
+                    if not 1900 <= year <= 2200:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    errors["dataYear"] = "Data year must be between 1900 and 2200."
+            if errors:
+                raise serializers.ValidationError(errors)
+
         return value
 
     def validate(self, attrs):
@@ -325,6 +401,221 @@ class CMSArticleEditorSerializer(CMSArticleSerializer):
             field for field in CMSArticleSerializer.Meta.read_only_fields
             if field != "published_snapshot_json"
         ]
+
+
+def _validate_public_link(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if value.startswith("/") and not value.startswith("//"):
+        return value
+    from urllib.parse import urlsplit
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise serializers.ValidationError("Use a relative site path or an http/https URL.")
+    return value
+
+
+class CMSManagedContentSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField()
+    updated_by_name = serializers.SerializerMethodField()
+    submitted_by_name = serializers.SerializerMethodField()
+    reviewed_by_name = serializers.SerializerMethodField()
+
+    def _name(self, value):
+        return _user_display(value)
+
+    def get_created_by_name(self, obj):
+        return self._name(obj.created_by)
+
+    def get_updated_by_name(self, obj):
+        return self._name(obj.updated_by)
+
+    def get_submitted_by_name(self, obj):
+        return self._name(obj.submitted_by)
+
+    def get_reviewed_by_name(self, obj):
+        return self._name(obj.reviewed_by)
+
+    @property
+    def workflow_fields(self):
+        return [
+            "status", "published_snapshot_json", "has_unpublished_changes", "review_notes",
+            "created_by_name", "updated_by_name", "submitted_by_name", "reviewed_by_name",
+            "published_at", "archived_at", "created_at", "updated_at",
+        ]
+
+
+class CMSCarouselItemSerializer(CMSManagedContentSerializer):
+    image_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CMSCarouselItem
+        fields = [
+            "id", "stable_key", "title", "description", "image", "image_url", "legacy_image_url",
+            "primary_label", "primary_url", "secondary_label", "secondary_url", "sort_order",
+            "status", "published_snapshot_json", "has_unpublished_changes", "review_notes",
+            "created_by_name", "updated_by_name", "submitted_by_name", "reviewed_by_name",
+            "published_at", "archived_at", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "status", "published_snapshot_json", "has_unpublished_changes", "review_notes",
+            "created_by_name", "updated_by_name", "submitted_by_name", "reviewed_by_name",
+            "published_at", "archived_at", "created_at", "updated_at",
+        ]
+
+    def get_image_url(self, obj):
+        return obj.image.resolved_public_url if obj.image and not obj.image.is_archived else obj.legacy_image_url
+
+    def validate_stable_key(self, value):
+        if self.instance and value != self.instance.stable_key:
+            raise serializers.ValidationError("The stable key cannot be changed.")
+        return value
+
+    def validate_image(self, value):
+        if value and (value.is_archived or value.file_type != CMSMediaAsset.FILE_TYPE_IMAGE):
+            raise serializers.ValidationError("Choose an active image from the media library.")
+        return value
+
+    def validate_primary_url(self, value):
+        return _validate_public_link(value)
+
+    def validate_secondary_url(self, value):
+        return _validate_public_link(value)
+
+
+class CMSPublicationCategorySerializer(CMSManagedContentSerializer):
+    document_count = serializers.IntegerField(read_only=True, default=0)
+    featured_slots = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CMSPublicationCategory
+        fields = [
+            "id", "code", "name", "description", "icon", "color", "sort_order", "document_count",
+            "featured_slots", "status", "published_snapshot_json", "has_unpublished_changes", "review_notes",
+            "created_by_name", "updated_by_name", "submitted_by_name", "reviewed_by_name",
+            "published_at", "archived_at", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "document_count", "featured_slots", "status", "published_snapshot_json",
+            "has_unpublished_changes", "review_notes", "created_by_name", "updated_by_name",
+            "submitted_by_name", "reviewed_by_name", "published_at", "archived_at", "created_at", "updated_at",
+        ]
+
+    def validate_code(self, value):
+        if self.instance and value != self.instance.code:
+            raise serializers.ValidationError("Publication category codes cannot be changed.")
+        return value
+
+    def get_featured_slots(self, obj):
+        slots = []
+        page = CMSPage.objects.filter(slug="home").prefetch_related("sections").first()
+        if not page:
+            return slots
+        for section in page.sections.all():
+            if (section.content_json or {}).get("featuredCategoryCode") == obj.code:
+                slots.append(section.section_key)
+        return slots
+
+
+class CMSPublicationDocumentSerializer(CMSManagedContentSerializer):
+    attachment_url = serializers.SerializerMethodField()
+    category_code = serializers.CharField(source="category.code", read_only=True)
+
+    class Meta:
+        model = CMSPublicationDocument
+        fields = [
+            "id", "stable_key", "category", "category_code", "title", "description", "publication_date",
+            "document_type", "attachment", "attachment_url", "external_url", "legacy_file_size", "sort_order",
+            "status", "published_snapshot_json", "has_unpublished_changes", "review_notes", "created_by_name",
+            "updated_by_name", "submitted_by_name", "reviewed_by_name", "published_at", "archived_at",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "category_code", "attachment_url", "status", "published_snapshot_json",
+            "has_unpublished_changes", "review_notes", "created_by_name", "updated_by_name",
+            "submitted_by_name", "reviewed_by_name", "published_at", "archived_at", "created_at", "updated_at",
+        ]
+
+    def get_attachment_url(self, obj):
+        return obj.attachment.resolved_public_url if obj.attachment and not obj.attachment.is_archived else ""
+
+    def validate_stable_key(self, value):
+        if self.instance and value != self.instance.stable_key:
+            raise serializers.ValidationError("The stable key cannot be changed.")
+        return value
+
+    def validate_category(self, value):
+        if value.status == "archived" and (not self.instance or value.pk != self.instance.category_id):
+            raise serializers.ValidationError("Choose an active publication category.")
+        return value
+
+    def validate_attachment(self, value):
+        if value and (value.is_archived or value.file_type != CMSMediaAsset.FILE_TYPE_DOCUMENT):
+            raise serializers.ValidationError("Choose an active document from the media library.")
+        return value
+
+    def validate_external_url(self, value):
+        return _validate_public_link(value)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        attachment = attrs.get("attachment", getattr(self.instance, "attachment", None))
+        external_url = attrs.get("external_url", getattr(self.instance, "external_url", ""))
+        if not attachment and not external_url:
+            raise serializers.ValidationError("Choose a document attachment or provide a document URL.")
+        return attrs
+
+
+class CMSResolutionSerializer(CMSManagedContentSerializer):
+    attachment_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CMSResolution
+        fields = [
+            "id", "stable_key", "resolution_number", "title", "description", "year", "resolution_date",
+            "attachment", "attachment_url", "external_url", "sort_order", "status", "published_snapshot_json",
+            "has_unpublished_changes", "review_notes", "created_by_name", "updated_by_name",
+            "submitted_by_name", "reviewed_by_name", "published_at", "archived_at", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "attachment_url", "status", "published_snapshot_json", "has_unpublished_changes",
+            "review_notes", "created_by_name", "updated_by_name", "submitted_by_name", "reviewed_by_name",
+            "published_at", "archived_at", "created_at", "updated_at",
+        ]
+
+    def get_attachment_url(self, obj):
+        return obj.attachment.resolved_public_url if obj.attachment and not obj.attachment.is_archived else ""
+
+    def validate_stable_key(self, value):
+        if self.instance and value != self.instance.stable_key:
+            raise serializers.ValidationError("The stable key cannot be changed.")
+        return value
+
+    def validate_year(self, value):
+        if value < 1900 or value > timezone.now().year + 5:
+            raise serializers.ValidationError("Enter a valid resolution year.")
+        return value
+
+    def validate_attachment(self, value):
+        if value and (value.is_archived or value.file_type != CMSMediaAsset.FILE_TYPE_DOCUMENT):
+            raise serializers.ValidationError("Choose an active document from the media library.")
+        return value
+
+    def validate_external_url(self, value):
+        return _validate_public_link(value)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        year = attrs.get("year", getattr(self.instance, "year", None))
+        resolution_date = attrs.get("resolution_date", getattr(self.instance, "resolution_date", None))
+        if resolution_date and resolution_date.year != year:
+            raise serializers.ValidationError({"resolution_date": "Resolution date must match the selected year."})
+        attachment = attrs.get("attachment", getattr(self.instance, "attachment", None))
+        external_url = attrs.get("external_url", getattr(self.instance, "external_url", ""))
+        if not attachment and not external_url:
+            raise serializers.ValidationError("Choose a resolution attachment or provide a document URL.")
+        return attrs
 
 
 class CMSContributorFormVersionSerializer(serializers.ModelSerializer):

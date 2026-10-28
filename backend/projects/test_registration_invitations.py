@@ -36,7 +36,6 @@ class RegistrationInvitationTests(APITestCase):
             "first_name": "Invited",
             "last_name": "Person",
             "agency": agency,
-            "agency_head": "Agency Head",
             "office": "Main Office",
             "division": "Planning",
             "position": "Officer",

@@ -5,6 +5,7 @@ from cms.form_schema import CURRENT_PROJECT_STATUS_VALUES, FormSchemaError, vali
 from .project_status import canonical_implementation_status
 from .models import (
     AccessRequest,
+    Agency,
     Notification,
     PublicEvent,
     PriorityRuleSet,
@@ -88,6 +89,7 @@ class ContributorFormVersionStatusMixin:
 
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False)
+    agency_head = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -122,6 +124,10 @@ class UserSerializer(serializers.ModelSerializer):
         user.save()
         return user
 
+    def get_agency_head(self, obj):
+        agency = getattr(obj, "agency_record", None)
+        return agency.head_name if agency else ""
+
     def validate_first_name(self, value):
         return self._validate_person_name(value)
 
@@ -153,6 +159,63 @@ class UserSerializer(serializers.ModelSerializer):
             instance.set_password(password)
         instance.save()
         return instance
+
+
+class AgencySerializer(serializers.ModelSerializer):
+    dependency_counts = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Agency
+        fields = [
+            "id", "code", "name", "head_name", "is_active", "is_legacy",
+            "archived_at", "dependency_counts", "created_at", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "is_active", "is_legacy", "archived_at", "dependency_counts",
+            "created_at", "updated_at",
+        ]
+
+    def validate_code(self, value):
+        normalized = " ".join(str(value or "").strip().split())
+        if not normalized or len(normalized) > 50 or not all(
+            character.isalnum() or character in "-_" for character in normalized
+        ):
+            raise serializers.ValidationError("Use up to 50 letters, numbers, hyphens, or underscores.")
+        if self.instance and normalized.casefold() != self.instance.code.casefold():
+            raise serializers.ValidationError("Agency codes are permanent and cannot be changed.")
+        duplicate = Agency.objects.filter(code__iexact=normalized)
+        if self.instance:
+            duplicate = duplicate.exclude(pk=self.instance.pk)
+        if duplicate.exists():
+            raise serializers.ValidationError("An agency with this code already exists.")
+        return normalized
+
+    def validate_name(self, value):
+        normalized = " ".join(str(value or "").strip().split())
+        if not normalized:
+            raise serializers.ValidationError("Agency name is required.")
+        duplicate = Agency.objects.filter(name__iexact=normalized)
+        if self.instance:
+            duplicate = duplicate.exclude(pk=self.instance.pk)
+        if duplicate.exists():
+            raise serializers.ValidationError("An agency with this name already exists.")
+        return normalized
+
+    def validate_head_name(self, value):
+        return " ".join(str(value or "").strip().split())
+
+    def get_dependency_counts(self, obj):
+        from .models import ProjectCollaboratingAgency, UserInvitation
+
+        return {
+            "users": obj.users.count(),
+            "pending_invitations": UserInvitation.objects.filter(
+                agency_record=obj,
+                status__in=[UserInvitation.STATUS_PENDING, UserInvitation.STATUS_SENT],
+            ).count(),
+            "primary_projects": obj.primary_projects.count(),
+            "collaborating_projects": ProjectCollaboratingAgency.objects.filter(agency=obj).count(),
+        }
 
 
 class PublicEventSerializer(serializers.ModelSerializer):

@@ -20,7 +20,7 @@ const project = (id) => ({
   budget: 1000000, year: 2026, lgu: "Manila", lgus: ["Manila"],
   updated_at: "2026-10-01T10:00:00Z", has_public_updates: false,
 });
-const projects = [1, 2, 3, 4].map(project);
+const projects = Array.from({ length: 14 }, (_, index) => project(index + 1));
 const initial = {
   revision_number: 1, revision_type: "initial_submission", endorsed_at: "2026-09-01T10:00:00Z",
   status: "New", budget: "1000000", location: "Manila", changed_fields: [], change_badges: [],
@@ -56,8 +56,8 @@ try {
     const path = new URL(route.request().url()).pathname;
     if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
     if (path.endsWith("/public/projects/stats/")) return respond(route, {
-      total_projects: 4, total_budget: 4000000, by_status: { Ongoing: 4 },
-      by_agency: { DENR: 4 }, by_lgu: { Manila: 4 }, by_year: { 2026: 4 },
+      total_projects: 14, total_budget: 14000000, by_status: { Ongoing: 14 },
+      by_agency: { DENR: 14 }, by_lgu: { Manila: 14 }, by_year: { 2026: 14 },
     });
     if (path.endsWith("/public/projects/")) return respond(route, projects);
     const match = path.match(/\/public\/projects\/(\d+)\/$/);
@@ -77,8 +77,10 @@ try {
   await page.goto(origin + "/projects", { waitUntil: "networkidle" });
   assert.deepEqual(await page.evaluate(() => window.__longRefreshIntervals), [], "Public projects should not schedule recurring data refreshes.");
   await page.getByRole("button", { name: /Table/ }).click();
+  assert.equal(await page.locator("tbody tr").count(), 10, "Public table shows at most ten projects per page");
+  await page.getByText("Showing 1–10 of 14 projects").waitFor();
   const open = async (id) => {
-    await page.locator("tbody").getByRole("button", { name: `History Project ${id}` }).click();
+    await page.locator("tbody").getByRole("button", { name: `History Project ${id}`, exact: true }).click();
     const dialog = page.getByRole("dialog");
     await dialog.getByRole("tab", { name: "Overview" }).waitFor();
     assert.equal(await dialog.getByRole("tab", { name: "Overview" }).getAttribute("aria-selected"), "true");
@@ -138,6 +140,13 @@ try {
   assert.equal(failedDetailCalls, 2);
   await close(dialog);
   console.log("PASS detail failure and retry");
+
+  await page.getByRole("button", { name: "Next page" }).click();
+  await page.getByText("Page 2 of 2").waitFor();
+  assert.equal(await page.locator("tbody tr").count(), 4, "The final public table page shows the remaining projects");
+  await page.getByRole("button", { name: "Previous page" }).click();
+  await page.getByText("Page 1 of 2").waitFor();
+  console.log("PASS public project table pagination");
 
   await context.close();
 } finally {

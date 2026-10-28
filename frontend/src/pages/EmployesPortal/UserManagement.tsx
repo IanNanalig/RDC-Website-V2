@@ -8,6 +8,7 @@ import { sortRows } from "../../utils/tableSort";
 import { userDisplayName } from "../../utils/userDisplayName";
 import type { SortDirection } from "../../utils/tableSort";
 import BatchRegistrationPanel from "../../components/portal/BatchRegistrationPanel";
+import AgencyManagementPanel from "../../components/portal/AgencyManagementPanel";
 
 type UserRow = {
   id: number;
@@ -106,6 +107,7 @@ type PublicEventForm = {
 type AdminUsersTab =
   | "create-account"
   | "encoding-window"
+  | "agencies"
   | "system-users"
   | "system-audit-log"
   | "chatbot-learning";
@@ -125,6 +127,7 @@ const parseTab = (value: string | null): AdminUsersTab => {
   if (
     value === "create-account" ||
     value === "encoding-window" ||
+    value === "agencies" ||
     value === "system-users" ||
     value === "system-audit-log"
   )
@@ -1088,6 +1091,13 @@ const UserManagement = () => {
             >
               System Users
             </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("agencies")}
+              className={`portal-btn min-h-11 min-w-0 whitespace-normal sm:min-h-0 ${activeTab === "agencies" ? "portal-btn-primary" : "portal-btn-ghost"}`}
+            >
+              Agencies
+            </button>
           </div>
         </div>
       </div>
@@ -1142,6 +1152,8 @@ const UserManagement = () => {
           </div>
         </div>
       )}
+
+      {activeTab === "agencies" && <AgencyManagementPanel />}
 
       {activeTab === "encoding-window" && (
         <>

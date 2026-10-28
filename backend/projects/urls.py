@@ -17,6 +17,7 @@ router.register(r"employee/projects", views.EmployeeProjectViewSet, basename="em
 router.register(r"validator/projects", views.ValidatorProjectViewSet, basename="validator-projects")
 router.register(r"admin/projects", views.AdminProjectViewSet, basename="admin-projects")
 router.register(r"admin/users", views.AdminUserViewSet, basename="admin-users")
+router.register(r"admin/agencies", views.AdminAgencyViewSet, basename="admin-agencies")
 router.register(r"access-requests", views.AccessRequestViewSet, basename="access-requests")
 router.register(r"project-revisions", views.ProjectRevisionViewSet, basename="project-revisions")
 router.register(r"project-supporting-documents", views.ProjectSupportingDocumentViewSet, basename="project-supporting-documents")

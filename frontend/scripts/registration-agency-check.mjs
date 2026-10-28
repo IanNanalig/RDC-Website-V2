@@ -47,10 +47,10 @@ async function newRegistration(viewport, prefilledAgency = "", agencyLocked = fa
         email: "registration@example.com", setup_type: setupType,
         agency_locked: agencyLocked, profile: { agency: prefilledAgency },
         agencies: [
-          { code: "DENR", name: "Department of Environment and Natural Resources" },
-          { code: "DOH", name: "Department of Health" },
-          { code: "DPWH", name: "Department of Public Works and Highways" },
-          { code: "RDC-NCR", name: "Regional Development Council National Capital Region" },
+          { code: "DENR", name: "Department of Environment and Natural Resources", head_name: "Secretary Maria Santos" },
+          { code: "DOH", name: "Department of Health", head_name: "Secretary Juan Reyes" },
+          { code: "DPWH", name: "Department of Public Works and Highways", head_name: "Secretary Ana Cruz" },
+          { code: "RDC-NCR", name: "Regional Development Council National Capital Region", head_name: "Mayor Vico Sotto" },
         ],
       }),
     });
@@ -78,7 +78,6 @@ async function newRegistration(viewport, prefilledAgency = "", agencyLocked = fa
 async function fillOtherFields(page) {
   await page.locator('input[name="first_name"]').fill("Test");
   await page.locator('input[name="last_name"]').fill("User");
-  await page.getByLabel("Current Head of Agency/Local Chief Executive", { exact: true }).fill("Agency Head");
   await page.getByLabel("Division", { exact: true }).fill("Planning");
   await page.getByLabel("Position", { exact: true }).fill("Officer");
   await page.getByPlaceholder("02 xxxx xxxx").fill("0212345678");
@@ -121,6 +120,7 @@ try {
       "Agency result stays inside a reduced mobile viewport: " + JSON.stringify({ optionBounds, inputBounds: await agency.boundingBox() }));
     await denr.tap();
     assert.equal(await agency.inputValue(), "DENR", "Touch selection stores the acronym");
+    assert.equal(await page.getByLabel("Current Head of Agency/Local Chief Executive", { exact: true }).inputValue(), "Secretary Maria Santos", "Agency head follows the selected catalog agency");
     assert.equal(await agency.getAttribute("aria-expanded"), "false", "Touch selection closes the menu");
 
     await agency.fill("does not exist");
@@ -144,6 +144,7 @@ try {
     assert.equal(posts[0].office, "DOH", "The canonical agency is also saved as the office");
     assert.equal(posts[0].first_name, "Test");
     assert.equal(posts[0].last_name, "User");
+    assert.equal("agency_head" in posts[0], false, "Authoritative agency head is not submitted by the browser");
     assert.equal("full_name" in posts[0], false);
     const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
     assert.equal(overflows, false, "Registration must not overflow a narrow viewport");
@@ -168,6 +169,7 @@ try {
   assert.equal(posts[0].office, "DPWH", "Agency and office cannot diverge");
   assert.equal(posts[0].first_name, "Test");
   assert.equal(posts[0].last_name, "User");
+  assert.equal("agency_head" in posts[0], false, "Typed catalog selection cannot override the agency head");
   await context.close();
   console.log("PASS agency keyboard and exact typing");
 

@@ -64,6 +64,7 @@ from .models import (
 )
 from .serializers import (
     AccessRequestSerializer,
+    AgencySerializer,
     NotificationSerializer,
     ProjectCommentSerializer,
     PublicEventSerializer,
@@ -123,30 +124,6 @@ PASSWORD_RESET_OTP_TTL_SECONDS = int(getattr(settings, "PASSWORD_RESET_OTP_TTL_S
 PASSWORD_RESET_TOKEN_TTL_SECONDS = int(getattr(settings, "PASSWORD_RESET_TOKEN_TTL_SECONDS", 600))
 PASSWORD_RESET_RESEND_COOLDOWN_SECONDS = int(getattr(settings, "PASSWORD_RESET_RESEND_COOLDOWN_SECONDS", 60))
 PASSWORD_RESET_MAX_ATTEMPTS = int(getattr(settings, "PASSWORD_RESET_MAX_ATTEMPTS", 5))
-ACCOUNT_AGENCIES = {
-    "MMDA": "Metropolitan Manila Development Authority",
-    "DPWH": "Department of Public Works and Highways",
-    "DENR": "Department of Environment and Natural Resources",
-    "RDC-NCR": "Regional Development Council National Capital Region",
-    "DILG": "Department of the Interior and Local Government",
-    "DEPDev": "Department of Economy, Planning, and Development",
-    "DBM": "Department of Budget and Management",
-    "DA": "Department of Agriculture",
-    "DAR": "Department of Agrarian Reform",
-    "DepEd": "Department of Education",
-    "DOH": "Department of Health",
-    "DHSUD": "Department of Human Settlements and Urban Development",
-    "DICT": "Department of Information and Communications Technology",
-    "DOLE": "Department of Labor and Employment",
-    "DOST": "Department of Science and Technology",
-    "DSWD": "Department of Social Welfare and Development",
-    "DOT": "Department of Tourism",
-    "DTI": "Department of Trade and Industry",
-    "DOTr": "Department of Transportation",
-    "TESDA": "Technical Education and Skills Development Authority",
-    "CHED": "Commission on Higher Education",
-    "PSA": "Philippine Statistics Authority",
-}
 INTERNAL_ACCOUNT_ROLES = {"admin", "validator", "content_editor"}
 
 
@@ -159,30 +136,17 @@ def _normalize_account_agency(value):
             Q(code__iexact=normalized) | Q(name__iexact=normalized),
             is_active=True,
         ).only("code").first()
-        if agency:
-            return agency.code
+        return agency.code if agency else ""
     except Exception:
-        # Keep startup and historical migrations compatible before the catalog table exists.
-        pass
-    normalized_value = normalized.casefold()
-    return next(
-        (
-            code
-            for code, full_name in ACCOUNT_AGENCIES.items()
-            if code.casefold() == normalized_value or full_name.casefold() == normalized_value
-        ),
-        "",
-    )
+        # Startup checks may run before the agency catalog migration exists.
+        return ""
 
 
 def _active_agency_options():
     try:
-        rows = list(Agency.objects.filter(is_active=True).order_by("code").values("code", "name"))
-        if rows:
-            return rows
+        return list(Agency.objects.filter(is_active=True).order_by("code").values("code", "name", "head_name"))
     except Exception:
-        pass
-    return [{"code": code, "name": name} for code, name in ACCOUNT_AGENCIES.items()]
+        return []
 
 
 def _agency_for_value(value, *, active_only=False):
@@ -206,7 +170,8 @@ def _project_primary_agency_code(project):
 def _is_primary_agency_contributor(user, project):
     if getattr(user, "role", "") not in ("staff", "employee"):
         return False
-    user_code = _normalize_account_agency(getattr(user, "agency", ""))
+    user_agency = getattr(user, "agency_record", None)
+    user_code = user_agency.code if user_agency else str(getattr(user, "agency", "") or "").strip()
     primary_code = _project_primary_agency_code(project)
     return bool(user_code and primary_code and user_code.casefold() == primary_code.casefold())
 
@@ -214,13 +179,13 @@ def _is_primary_agency_contributor(user, project):
 def _is_collaborating_agency_contributor(user, project):
     if getattr(user, "role", "") not in ("staff", "employee") or project.status == "planning":
         return False
-    user_code = _normalize_account_agency(getattr(user, "agency", ""))
+    user_agency = getattr(user, "agency_record", None)
+    user_code = user_agency.code if user_agency else str(getattr(user, "agency", "") or "").strip()
     return bool(
         user_code
         and ProjectCollaboratingAgency.objects.filter(
             project=project,
             agency__code__iexact=user_code,
-            agency__is_active=True,
         ).exists()
     )
 
@@ -853,7 +818,7 @@ def _login_user_payload(user):
         "first_name": user.first_name,
         "last_name": user.last_name,
         "agency": user.agency,
-        "agency_head": user.agency_head,
+        "agency_head": user.agency_record.head_name if user.agency_record_id else "",
         "office": user.office,
         "division": user.division,
         "position": user.position,
@@ -1605,6 +1570,7 @@ def _issue_registration_invitation(request, email: str, role: str, agency: str =
     agency_locked = role in INTERNAL_ACCOUNT_ROLES or bool(normalized_agency)
     if role in INTERNAL_ACCOUNT_ROLES:
         normalized_agency = "RDC-NCR"
+    agency_record = _agency_for_value(normalized_agency, active_only=True) if normalized_agency else None
     signed = signing.dumps(
         {
             "email": email,
@@ -1629,6 +1595,7 @@ def _issue_registration_invitation(request, email: str, role: str, agency: str =
             email=email,
             role=role,
             agency=normalized_agency,
+            agency_record=agency_record,
             agency_locked=agency_locked,
             token_digest=digest,
             status=UserInvitation.STATUS_PENDING,
@@ -2698,12 +2665,10 @@ class AdminEventViewSet(viewsets.ModelViewSet):
         return Response(PublicEventSerializer(event).data)
 
     def destroy(self, request, *args, **kwargs):
-        event = self.get_object()
-        _log_activity(
-            request, "cms_event_deleted",
-            details={"event_id": event.id, "title": event.title, "status": event.status},
+        return Response(
+            {"detail": "Public events are archived instead of hard-deleted."},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
         )
-        return super().destroy(request, *args, **kwargs)
 
 
 def _validate_password_policy(password: str):
@@ -5611,8 +5576,100 @@ class AdminProjectViewSet(BaseProjectViewSet):
         })
 
 
+class AdminAgencyViewSet(viewsets.ModelViewSet):
+    serializer_class = AgencySerializer
+    permission_classes = [IsAuthenticated, AdminOnlyPermission]
+    lookup_field = "code"
+
+    def get_queryset(self):
+        queryset = Agency.objects.all().order_by("code")
+        archived = str(self.request.query_params.get("archived") or "").lower() in {"1", "true", "yes"}
+        queryset = queryset.filter(is_active=not archived)
+        search = str(self.request.query_params.get("q") or "").strip()
+        if search:
+            queryset = queryset.filter(
+                Q(code__icontains=search) | Q(name__icontains=search) | Q(head_name__icontains=search)
+            )
+        return queryset
+
+    def perform_create(self, serializer):
+        agency = serializer.save(created_by=self.request.user, updated_by=self.request.user)
+        _log_activity(
+            self.request, "api_action",
+            details={"action": "agency_created", "agency_id": agency.pk, "agency_code": agency.code},
+        )
+
+    def perform_update(self, serializer):
+        before = {
+            "name": serializer.instance.name,
+            "head_name": serializer.instance.head_name,
+        }
+        agency = serializer.save(updated_by=self.request.user)
+        _log_activity(
+            self.request, "api_action",
+            details={
+                "action": "agency_updated", "agency_id": agency.pk, "agency_code": agency.code,
+                "before": before, "after": {"name": agency.name, "head_name": agency.head_name},
+            },
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        return Response({"detail": "Agencies are archived instead of deleted."}, status=405)
+
+    def _dependency_counts(self, agency):
+        return AgencySerializer(agency, context={"request": self.request}).data["dependency_counts"]
+
+    @action(detail=True, methods=["get"])
+    def dependencies(self, request, code=None):
+        agency = self.get_object()
+        return Response({
+            "agency": {"code": agency.code, "name": agency.name, "is_active": agency.is_active},
+            "counts": self._dependency_counts(agency),
+        })
+
+    @action(detail=True, methods=["post"])
+    def archive(self, request, code=None):
+        agency = self.get_object()
+        if not agency.is_active:
+            return Response({"detail": "Agency is already archived."}, status=409)
+        counts = self._dependency_counts(agency)
+        has_dependencies = any(int(value or 0) for value in counts.values())
+        confirmed = str(request.data.get("confirm") or "").lower() in {"1", "true", "yes"}
+        if has_dependencies and not confirmed:
+            return Response(
+                {"detail": "Confirm archival after reviewing the dependency counts.", "counts": counts},
+                status=409,
+            )
+        agency.is_active = False
+        agency.archived_at = timezone.now()
+        agency.updated_by = request.user
+        agency.save(update_fields=["is_active", "archived_at", "updated_by", "updated_at"])
+        _log_activity(
+            request, "api_action",
+            details={"action": "agency_archived", "agency_id": agency.pk, "agency_code": agency.code, "dependencies": counts},
+        )
+        return Response(AgencySerializer(agency, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"])
+    def restore(self, request, code=None):
+        agency = Agency.objects.filter(code__iexact=code).first()
+        if not agency:
+            raise Http404("Agency not found.")
+        if agency.is_active:
+            return Response({"detail": "Agency is already active."}, status=409)
+        agency.is_active = True
+        agency.archived_at = None
+        agency.updated_by = request.user
+        agency.save(update_fields=["is_active", "archived_at", "updated_by", "updated_at"])
+        _log_activity(
+            request, "api_action",
+            details={"action": "agency_restored", "agency_id": agency.pk, "agency_code": agency.code},
+        )
+        return Response(AgencySerializer(agency, context={"request": request}).data)
+
+
 class AdminUserViewSet(viewsets.ModelViewSet):
-    queryset = User.objects.all().order_by("username")
+    queryset = User.objects.select_related("agency_record").all().order_by("username")
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated, AdminOnlyPermission]
 
@@ -6426,7 +6483,7 @@ class MeView(APIView):
                 "first_name": u.first_name,
                 "last_name": u.last_name,
                 "agency": u.agency,
-                "agency_head": u.agency_head,
+                "agency_head": u.agency_record.head_name if u.agency_record_id else "",
                 "office": u.office,
                 "division": u.division,
                 "position": u.position,
@@ -6588,7 +6645,7 @@ class LogoutView(APIView):
 
 def _validate_setup_profile(request, role, saved_agency, new_password, agency_locked=None):
     required_fields = [
-        "first_name", "last_name", "agency_head", "division", "position",
+        "first_name", "last_name", "division", "position",
         "contact_number", "phone_number",
     ]
     agency_locked = role in INTERNAL_ACCOUNT_ROLES if agency_locked is None else bool(agency_locked)
@@ -6616,11 +6673,18 @@ def _validate_setup_profile(request, role, saved_agency, new_password, agency_lo
         agency = _normalize_account_agency(request.data.get("agency"))
         if not agency:
             return None, Response({"detail": "This is an invalid Agency"}, status=400)
+    agency_record = _agency_for_value(agency, active_only=True)
+    if not agency_record:
+        return None, Response({"detail": "This agency is archived or unavailable for registration."}, status=400)
+    if "agency_head" in request.data:
+        return None, Response({"agency_head": "Head of Agency is managed by the Administrator and cannot be changed."}, status=400)
     policy_error = _validate_password_policy(new_password)
     if policy_error:
         return None, Response({"detail": policy_error}, status=400)
     profile = {field: str(request.data.get(field) or "").strip() for field in required_fields if field != "agency"}
     profile["agency"] = agency
+    profile["agency_record"] = agency_record
+    profile["agency_head"] = agency_record.head_name
     # Registration exposes one canonical Agency / Office selection. Mirror the
     # normalized value into both legacy model fields so existing profile,
     # reporting, and export code remains compatible without divergent values.
@@ -6643,14 +6707,18 @@ class SetupPasswordView(APIView):
             role = payload["role"]
             assigned_agency = str(payload.get("agency") or ("RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else ""))
             agency_locked = bool(payload.get("agency_locked", role in INTERNAL_ACCOUNT_ROLES))
+            assigned_record = _agency_for_value(assigned_agency, active_only=True)
             return Response({
                 "email": payload["email"],
                 "setup_type": "invitation",
                 "agency_locked": agency_locked,
                 "agencies": _active_agency_options(),
-                "profile": {"agency": assigned_agency},
+                "profile": {
+                    "agency": assigned_agency,
+                    "agency_head": assigned_record.head_name if assigned_record else "",
+                },
             })
-        token = PasswordSetupToken.objects.select_related("user").filter(token=token_value).first()
+        token = PasswordSetupToken.objects.select_related("user", "user__agency_record").filter(token=token_value).first()
         if not token or not token.is_valid():
             return Response({"detail": "Token is invalid or expired."}, status=400)
         user = token.user
@@ -6666,7 +6734,7 @@ class SetupPasswordView(APIView):
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                     "agency": user.agency,
-                    "agency_head": user.agency_head,
+                    "agency_head": user.agency_record.head_name if user.agency_record_id else "",
                     "office": user.office,
                     "division": user.division,
                     "position": user.position,
@@ -6790,6 +6858,7 @@ class SetupPasswordView(APIView):
                 "first_name",
                 "last_name",
                 "agency",
+                "agency_record",
                 "agency_head",
                 "office",
                 "division",
@@ -6815,7 +6884,7 @@ class SetupPasswordView(APIView):
         return Response({"status": "ok"})
 
 
-PROFILE_EDIT_FIELDS = {"first_name", "last_name", "agency_head", "office", "division", "position", "contact_number", "phone_number"}
+PROFILE_EDIT_FIELDS = {"first_name", "last_name", "office", "division", "position", "contact_number", "phone_number"}
 
 
 def _profile_payload(user):
@@ -6824,7 +6893,8 @@ def _profile_payload(user):
         "id": user.id, "username": user.username,
         "first_name": user.first_name, "last_name": user.last_name,
         "email": user.email, "role": _frontend_role(user.role), "agency": user.agency,
-        "agency_head": user.agency_head, "office": user.office, "division": user.division,
+        "agency_head": user.agency_record.head_name if user.agency_record_id else "",
+        "office": user.office, "division": user.division,
         "position": user.position, "contact_number": user.contact_number,
         "phone_number": user.phone_number, "date_joined": user.date_joined,
         "recent_activity": activity,

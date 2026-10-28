@@ -10,6 +10,7 @@ from cms.models import (
     CMSContributorFormVersion,
     CMSPage,
     CMSPageSection,
+    CMSPublicationCategory,
 )
 from cms.form_schema import (
     FormSchemaError,
@@ -27,11 +28,39 @@ def publish_page(page, user=None):
     page_id = page.pk if isinstance(page, CMSPage) else page
     with transaction.atomic():
         locked_page = CMSPage.objects.select_for_update().get(pk=page_id)
+        if locked_page.slug == "home":
+            slots = ("development-plans", "investment-programming", "monitoring-evaluation")
+            codes = []
+            for section_key in slots:
+                section = locked_page.sections.filter(section_key=section_key).first()
+                if section is None:
+                    raise serializers.ValidationError({"featured_categories": f"Missing fixed Home section: {section_key}."})
+                content = dict(section.content_json or {})
+                code = str(content.get("featuredCategoryCode") or "").strip()
+                if not code:
+                    raise serializers.ValidationError({
+                        "featured_categories": f"Choose a published publication category for {section_key}."
+                    })
+                codes.append(code)
+            if len(set(codes)) != 3:
+                raise serializers.ValidationError({"featured_categories": "Choose exactly three different publication categories."})
+            active_codes = set(
+                CMSPublicationCategory.objects.filter(
+                    code__in=codes, status="published", published_at__isnull=False,
+                ).values_list("code", flat=True)
+            )
+            if active_codes != set(codes):
+                missing = ", ".join(sorted(set(codes) - active_codes))
+                raise serializers.ValidationError({
+                    "featured_categories": f"Publish the selected active publication categories first: {missing}."
+                })
         # Publishing a whole page remains a useful V1-compatible admin shortcut:
         # every non-archived section is approved in the same atomic operation.
         locked_page.sections.exclude(status="archived").update(
             status="published", lock_owner=None, lock_acquired_at=None,
         )
+        from cms.services.collections import publish_normalized_page_content
+        publish_normalized_page_content(locked_page, user)
         snapshot = build_page_snapshot(locked_page)
         published_at = timezone.now()
         locked_page.status = CMSPage.STATUS_PUBLISHED

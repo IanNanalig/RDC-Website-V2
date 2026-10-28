@@ -2,20 +2,35 @@ import uuid
 
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 
 class Agency(models.Model):
     code = models.CharField(max_length=50, unique=True)
     name = models.CharField(max_length=255)
+    head_name = models.CharField(max_length=255, blank=True, default="")
     is_active = models.BooleanField(default=True, db_index=True)
     is_legacy = models.BooleanField(default=False)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        "User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="created_agencies",
+    )
+    updated_by = models.ForeignKey(
+        "User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="updated_agencies",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["code"]
         verbose_name_plural = "agencies"
+        constraints = [
+            models.UniqueConstraint(Lower("code"), name="unique_agency_code_ci"),
+            models.UniqueConstraint(Lower("name"), name="unique_agency_name_ci"),
+        ]
 
     def __str__(self):
         return f"{self.code} - {self.name}"
@@ -31,6 +46,10 @@ class User(AbstractUser):
     email = models.EmailField(unique=True, null=True, blank=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
     agency = models.CharField(max_length=200, blank=True, default="")
+    agency_record = models.ForeignKey(
+        Agency, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="users",
+    )
     agency_head = models.CharField(max_length=200, blank=True, default="")
     office = models.CharField(max_length=200, blank=True, default="")
     division = models.CharField(max_length=200, blank=True, default="")
@@ -73,6 +92,10 @@ class UserInvitation(models.Model):
     email = models.EmailField(db_index=True)
     role = models.CharField(max_length=20, choices=User.ROLE_CHOICES)
     agency = models.CharField(max_length=200, blank=True, default="")
+    agency_record = models.ForeignKey(
+        Agency, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="invitations",
+    )
     agency_locked = models.BooleanField(default=False)
     token_digest = models.CharField(max_length=64, unique=True)
     status = models.CharField(max_length=24, choices=STATUS_CHOICES, default=STATUS_PENDING)

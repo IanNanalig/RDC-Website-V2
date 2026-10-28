@@ -186,7 +186,7 @@ const PublicEventsManager: React.FC<Props> = ({ mode, onChanged }) => {
         publish: "Event published to the public website.",
         reject: "Event rejected.",
         archive: "Event archived.",
-        unarchive: "Event restored and published on the public calendar.",
+        unarchive: "Event restored as a draft. Publish it when it is ready for the public calendar.",
       };
       setNotice(labels[action]);
       await loadEvents();

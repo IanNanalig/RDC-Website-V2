@@ -1,6 +1,14 @@
 from django.db.models import Prefetch
 
-from cms.models import CMSArticle, CMSMediaAsset, CMSPage, CMSPageSection
+from cms.models import (
+    CMSArticle,
+    CMSCarouselItem,
+    CMSMediaAsset,
+    CMSPage,
+    CMSPageSection,
+    CMSPublicationDocument,
+    CMSResolution,
+)
 
 
 def get_media_usages(media: CMSMediaAsset):
@@ -73,6 +81,23 @@ def get_media_usage_map(media_assets):
                 "is_public": True,
             },
         )
+
+    normalized_sources = (
+        (CMSCarouselItem, "image_id", "carousel", "Home carousel image"),
+        (CMSPublicationDocument, "attachment_id", "publication", "Publication document"),
+        (CMSResolution, "attachment_id", "resolution", "RDC resolution document"),
+    )
+    for model, field_name, content_type, location in normalized_sources:
+        for item in model.objects.only("id", field_name):
+            media_id = getattr(item, field_name)
+            if media_id in usage_map:
+                usage_map[media_id].append({
+                    "type": content_type,
+                    "title": str(item),
+                    "slug": "",
+                    "location": location,
+                    "is_public": bool(getattr(item, "published_at", None) and getattr(item, "status", "") != "archived"),
+                })
 
     return usage_map
 

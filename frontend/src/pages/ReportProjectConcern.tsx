@@ -266,7 +266,6 @@ const ReportProjectConcern: React.FC = () => {
           <section className="border-t border-slate-200 pt-5" aria-labelledby="evidence-heading">
             <h2 id="evidence-heading" className="text-lg font-semibold text-slate-900">3. Supporting evidence <span className="text-sm font-normal text-slate-500">(optional)</span></h2>
             <p className="mt-1 text-sm text-slate-600">Up to 5 files, 5 MB each and 15 MB total. Accepted: PDF, DOCX, XLSX, CSV, PNG, JPG, JPEG.</p>
-            <p className="mt-1 text-xs text-amber-700">Files are format-validated and kept private, but they are not malware-scanned.</p>
             <input ref={fileInputRef} type="file" multiple accept=".pdf,.docx,.xlsx,.csv,.png,.jpg,.jpeg" onChange={(event) => addFiles(event.target.files)} className="mt-3 block w-full rounded-xl border border-dashed border-slate-300 p-3 text-sm" />
             {files.length > 0 && (
               <div className="mt-3 space-y-2">

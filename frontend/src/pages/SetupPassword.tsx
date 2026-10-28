@@ -5,7 +5,7 @@ import { passwordRules, validatePassword } from "../utils/passwordPolicy";
 import { contactNumberError, formatContactNumber, sanitizeContactNumber } from "../utils/contactNumbers";
 import { personNameError } from "../utils/personName";
 
-type AgencyOption = { code: string; name: string };
+type AgencyOption = { code: string; name: string; head_name?: string };
 
 const normalizeAgency = (value: string, agencies: AgencyOption[]) => {
   const normalized = value.trim().replace(/\s+/g, " ").toLowerCase();
@@ -95,7 +95,11 @@ const SetupPassword: React.FC = () => {
         setSetupType(String(data?.setup_type || "existing_account"));
         setAgencyLocked(data?.agency_locked === true);
         if (Array.isArray(data?.agencies) && data.agencies.length) {
-          setAgencies(data.agencies.map((agency: AgencyOption) => ({ code: String(agency.code || ""), name: String(agency.name || "") })).filter((agency: AgencyOption) => agency.code && agency.name));
+          setAgencies(data.agencies.map((agency: AgencyOption) => ({
+            code: String(agency.code || ""),
+            name: String(agency.name || ""),
+            head_name: String(agency.head_name || ""),
+          })).filter((agency: AgencyOption) => agency.code && agency.name));
         }
         if (data?.profile) {
           setProfile((prev) => ({
@@ -186,7 +190,12 @@ const SetupPassword: React.FC = () => {
   }, [agencyActiveIndex, agencyOpen, agencyOptions]);
 
   const selectAgency = (code: string) => {
-    setProfile((previous) => ({ ...previous, agency: code }));
+    const selected = agencies.find((agency) => agency.code === code);
+    setProfile((previous) => ({
+      ...previous,
+      agency: code,
+      agency_head: selected?.head_name || "",
+    }));
     setAgencyOpen(false);
     setAgencySearchDirty(false);
     setAgencyTouched(true);
@@ -203,7 +212,6 @@ const SetupPassword: React.FC = () => {
     { key: "first_name", label: "First Name" },
     { key: "last_name", label: "Last Name" },
     { key: "agency", label: "Agency / Office" },
-    { key: "agency_head", label: "Current Head of Agency/Local Chief Executive" },
     { key: "division", label: "Division" },
     { key: "position", label: "Position" },
     { key: "contact_number", label: "Office Contact No." },
@@ -263,11 +271,14 @@ const SetupPassword: React.FC = () => {
         body: JSON.stringify({
           token,
           new_password: password,
-          ...profile,
           first_name: profile.first_name.trim(),
           last_name: profile.last_name.trim(),
           agency,
           office: agency,
+          division: profile.division.trim(),
+          position: profile.position.trim(),
+          contact_number: profile.contact_number,
+          phone_number: profile.phone_number,
         }),
       });
       const data = await res.json();
@@ -400,7 +411,12 @@ const SetupPassword: React.FC = () => {
                     onFocus={openAgencyList}
                     onClick={() => { if (!agencyOpen) openAgencyList(); }}
                     onChange={(e) => {
-                      setProfile((p) => ({ ...p, agency: e.target.value }));
+                      const value = e.target.value;
+                      const selected = agencies.find((agency) =>
+                        agency.code.toLowerCase() === value.trim().toLowerCase() ||
+                        agency.name.toLowerCase() === value.trim().toLowerCase(),
+                      );
+                      setProfile((p) => ({ ...p, agency: value, agency_head: selected?.head_name || "" }));
                       setAgencySearchDirty(true);
                       setAgencyTouched(false);
                       setAgencyActiveIndex(0);
@@ -483,11 +499,13 @@ const SetupPassword: React.FC = () => {
                   id="registration-agency-head"
                   type="text"
                   value={profile.agency_head}
-                  onChange={(e) => setProfile((p) => ({ ...p, agency_head: e.target.value }))}
-                  className="mt-1 w-full border rounded-lg px-3 py-2"
-                  required
+                  readOnly
+                  aria-readonly="true"
+                  placeholder="Not yet configured by the Administrator"
+                  className="mt-1 w-full border rounded-lg bg-slate-100 px-3 py-2 text-slate-700"
                 />
                 <span className="mt-1 block text-xs text-slate-500">Ex. Mayor Vico Sotto</span>
+                <span className="mt-0.5 block text-xs text-slate-500">Automatically supplied from the selected agency. Contact an Administrator if it needs updating.</span>
               </div>
               <div className="block">
                 <label htmlFor="registration-division" className="text-sm text-slate-700">Division</label>

@@ -73,8 +73,8 @@ class CMSV2Tests(APITestCase):
             },
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("only have one hero carousel", str(response.data).lower())
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertIn("fixed", str(response.data).lower())
 
     def test_duplicate_home_carousel_cleanup_archives_legacy_section(self):
         page = CMSPage.objects.get(slug="home")
@@ -110,10 +110,7 @@ class CMSV2Tests(APITestCase):
         self.assertNotIn("carousel", [row["sectionKey"] for row in page.published_snapshot_json["sections"]])
 
     def test_section_soft_lock_blocks_other_editor_and_expires(self):
-        page = CMSPage.objects.create(title="Locked page", slug="locked-page")
-        section = CMSPageSection.objects.create(
-            page=page, section_key="hero", section_type="hero", order=1, content_json={"title": "Original"}
-        )
+        section = CMSPageSection.objects.get(page__slug="contact", section_key="contact-hero")
         self.authenticate(self.editor)
         response = self.client.post(f"/api/admin/cms/sections/{section.pk}/lock/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -141,8 +138,7 @@ class CMSV2Tests(APITestCase):
         )
 
     def test_admin_must_confirm_section_lock_takeover_and_it_is_audited(self):
-        page = CMSPage.objects.create(title="Takeover page", slug="takeover-page")
-        section = CMSPageSection.objects.create(page=page, section_key="hero", section_type="text", order=1)
+        section = CMSPageSection.objects.get(page__slug="contact", section_key="contact-hero")
         self.authenticate(self.editor)
         self.assertEqual(self.client.post(f"/api/admin/cms/sections/{section.pk}/lock/").status_code, 200)
 
@@ -162,8 +158,8 @@ class CMSV2Tests(APITestCase):
         self.assertEqual(blocked.status_code, 423)
 
     def test_page_sections_are_only_submitted_and_reviewed_with_parent(self):
-        page = CMSPage.objects.create(title="Unified page", slug="unified-page")
-        section = CMSPageSection.objects.create(page=page, section_key="intro", section_type="text", order=1)
+        page = CMSPage.objects.get(slug="contact")
+        section = page.sections.get(section_key="contact-hero")
         self.authenticate(self.editor)
         submitted = self.client.post(f"/api/admin/cms/pages/{page.pk}/submit/")
         self.assertEqual(submitted.status_code, 200)
@@ -295,23 +291,23 @@ class CMSV2Tests(APITestCase):
         self.assertEqual(self.client.get("/api/public/cms/news/workflow-news/").status_code, 404)
 
     def test_public_page_snapshot_enforces_section_status_and_visibility(self):
-        page = CMSPage.objects.create(
-            title="Truth table", slug="truth-table", status="published", published_at=timezone.now()
-        )
-        CMSPageSection.objects.create(
-            page=page, section_key="shown", section_type="text", order=1, status="published", is_visible=True
-        )
-        CMSPageSection.objects.create(
-            page=page, section_key="hidden", section_type="text", order=2, status="published", is_visible=False
-        )
-        CMSPageSection.objects.create(
-            page=page, section_key="draft", section_type="text", order=3, status="draft", is_visible=True
-        )
+        page = CMSPage.objects.get(slug="contact")
+        sections = list(page.sections.order_by("order"))
+        page.sections.update(status="draft", is_visible=True)
+        shown, hidden = sections[:2]
+        shown.status = "published"
+        shown.is_visible = True
+        shown.save(update_fields=["status", "is_visible", "updated_at"])
+        hidden.status = "published"
+        hidden.is_visible = False
+        hidden.save(update_fields=["status", "is_visible", "updated_at"])
+        page.status = "published"
+        page.published_at = timezone.now()
         page.published_snapshot_json = build_page_snapshot(page)
-        page.save(update_fields=["published_snapshot_json"])
-        response = self.client.get("/api/public/cms/pages/truth-table/")
+        page.save(update_fields=["status", "published_at", "published_snapshot_json", "updated_at"])
+        response = self.client.get("/api/public/cms/pages/contact/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual([row["sectionKey"] for row in response.data["sections"]], ["shown"])
+        self.assertEqual([row["sectionKey"] for row in response.data["sections"]], [shown.section_key])
 
     def test_publication_category_and_nested_document_can_be_saved_and_published(self):
         section = CMSPageSection.objects.get(page__slug="publications", section_key="publication-catalog")
@@ -361,15 +357,15 @@ class CMSV2Tests(APITestCase):
 
     def test_cms_revision_history_route_is_retired(self):
         self.authenticate(self.admin)
-        page = CMSPage.objects.create(title="Restore page", slug="restore-page")
+        section = CMSPageSection.objects.get(page__slug="contact", section_key="contact-hero")
         created = self.client.post(
             "/api/admin/cms/sections/",
-            {"page": page.pk, "section_key": "restore-me", "section_type": "text", "order": 1, "content_json": {"title": "Return"}},
+            {"page": section.page_id, "section_key": "restore-me", "section_type": "text", "order": 99, "content_json": {"title": "Return"}},
             format="json",
         )
-        old_id = created.data["id"]
-        self.client.delete(f"/api/admin/cms/sections/{old_id}/")
-        self.assertFalse(CMSRevision.objects.filter(content_type__model="cmspagesection", object_id=old_id).exists())
+        self.assertEqual(created.status_code, 405)
+        self.assertEqual(self.client.delete(f"/api/admin/cms/sections/{section.pk}/").status_code, 405)
+        self.assertFalse(CMSRevision.objects.filter(content_type__model="cmspagesection", object_id=section.pk).exists())
         self.assertEqual(self.client.get("/api/admin/cms/revisions/").status_code, 404)
         self.assertEqual(self.client.post("/api/admin/cms/revisions/1/restore-revision/").status_code, 404)
 

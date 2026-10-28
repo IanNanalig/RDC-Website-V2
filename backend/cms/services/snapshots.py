@@ -1,4 +1,5 @@
 from urllib.parse import urlsplit
+from copy import deepcopy
 
 from django.conf import settings
 from django.utils import timezone
@@ -103,3 +104,108 @@ def build_article_draft_snapshot(article):
         "status": article.status,
         "hasUnpublishedChanges": article.has_unpublished_changes,
     }
+
+
+def compose_public_page_snapshot(page):
+    """Overlay normalized published collections onto a fixed page snapshot."""
+    from cms.models import (
+        CMSCarouselItem,
+        CMSLegacyMigrationIssue,
+        CMSPublicationCategory,
+        CMSPublicationDocument,
+        CMSResolution,
+    )
+
+    snapshot = deepcopy(page.published_snapshot_json or {})
+    sections = snapshot.get("sections")
+    if not isinstance(sections, list):
+        return snapshot
+    by_key = {
+        row.get("sectionKey"): row
+        for row in sections
+        if isinstance(row, dict) and isinstance(row.get("content"), dict)
+    }
+    unresolved_sections = set(
+        CMSLegacyMigrationIssue.objects.filter(
+            page_slug=page.slug,
+            resolved_at__isnull=True,
+        ).values_list("section_key", flat=True)
+    )
+
+    if page.slug == "home":
+        carousel = list(
+            CMSCarouselItem.objects.filter(published_at__isnull=False)
+            .exclude(status="archived")
+            .order_by("sort_order", "id")
+            .values_list("published_snapshot_json", flat=True)
+        )
+        if carousel and "hero-carousel" in by_key and "hero-carousel" not in unresolved_sections:
+            by_key["hero-carousel"]["content"]["slides"] = [row for row in carousel if row]
+
+        category_documents = {}
+        for document in (
+            CMSPublicationDocument.objects.filter(published_at__isnull=False)
+            .exclude(status="archived")
+            .select_related("category")
+            .order_by("sort_order", "id")
+        ):
+            if document.published_snapshot_json:
+                category_documents.setdefault(document.category.code, []).append(
+                    document.published_snapshot_json
+                )
+        categories = {}
+        for category in (
+            CMSPublicationCategory.objects.filter(published_at__isnull=False)
+            .exclude(status="archived")
+        ):
+            if not category.published_snapshot_json:
+                continue
+            category_snapshot = deepcopy(category.published_snapshot_json)
+            category_snapshot["documents"] = category_documents.get(category.code, [])
+            categories[category.code] = category_snapshot
+        for section_key in ("development-plans", "investment-programming", "monitoring-evaluation"):
+            section = by_key.get(section_key)
+            if not section:
+                continue
+            code = str(section["content"].get("featuredCategoryCode") or "").strip()
+            category = categories.get(code)
+            if category:
+                section["content"]["featuredCategoryCode"] = code
+                section["content"]["featuredCategory"] = category
+
+    if (
+        page.slug == "publications"
+        and "publication-catalog" in by_key
+        and "publication-catalog" not in unresolved_sections
+    ):
+        documents = {}
+        for row in CMSPublicationDocument.objects.filter(published_at__isnull=False).exclude(status="archived").select_related("category"):
+            if row.published_snapshot_json:
+                documents.setdefault(row.category.code, []).append(row.published_snapshot_json)
+        categories = []
+        for row in CMSPublicationCategory.objects.filter(published_at__isnull=False).exclude(status="archived").order_by("sort_order", "id"):
+            if not row.published_snapshot_json:
+                continue
+            category = deepcopy(row.published_snapshot_json)
+            category["documents"] = sorted(
+                documents.get(row.code, []), key=lambda item: (item.get("sortOrder", 0), item.get("title", ""))
+            )
+            categories.append(category)
+        if categories:
+            by_key["publication-catalog"]["content"]["categories"] = categories
+
+    if (
+        page.slug == "about-rdc"
+        and "resolutions-archive" in by_key
+        and "resolutions-archive" not in unresolved_sections
+    ):
+        years = {}
+        for row in CMSResolution.objects.filter(published_at__isnull=False).exclude(status="archived").order_by("-year", "sort_order", "id"):
+            if row.published_snapshot_json:
+                years.setdefault(row.year, []).append(row.published_snapshot_json)
+        if years:
+            by_key["resolutions-archive"]["content"]["years"] = [
+                {"year": year, "resolutions": rows} for year, rows in sorted(years.items(), reverse=True)
+            ]
+
+    return snapshot

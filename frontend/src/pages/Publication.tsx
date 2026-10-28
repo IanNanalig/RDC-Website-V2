@@ -3,34 +3,7 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import cmsApi, { type CMSPageSnapshot } from "../services/cmsApi";
 import { canDownloadDocument, downloadDocument } from "../utils/documentDownload";
 
-const publicDocument = (fileName: string) => `/assets/Documents/${encodeURIComponent(fileName)}`;
-const publicationCover = (fileName: string) => `/assets/PublicationCovers/${encodeURIComponent(fileName)}`;
 
-const greenprintFull = publicDocument("GREENPRINT-2.pdf");
-const greenprintBrochure = publicDocument("Greeprint-brochure.pdf");
-const rdp2023Full = publicDocument("Full_Version_RDP-NCR_2023-2028.pdf");
-const rdp2023Abridged = publicDocument("Abridged_Version_RDP-NCR_2023-2028.pdf");
-const rdp2023Brochure = publicDocument("Brochure_RDP-NCR_2023-2028.pdf");
-const rdp2017Full = publicDocument("NCR-Regional-Development-Plan-2017-2022-resize (2).pdf");
-const rdp2017Abridged = publicDocument("Abridged-Final-resize.pdf");
-const rdp2017Brochure = publicDocument("RDP-Brochure-Final.pdf");
-const rdip2023 = publicDocument("Regional Development Investment Program 2023-2028_1.pdf");
-const rdip2020 = publicDocument("For_Concurrence_RDIP-NCR_Pre-final_2022.pdf");
-const rdipUpdated2023 = publicDocument("[FY 2023] List of Updated Investment Program.pdf");
-const rdr2023 = publicDocument("RDRNCR2023.pdf");
-const res2021 = publicDocument("res layout_jan 3.pdf");
-const res2022 = publicDocument("RES_2022_v8.pdf");
-const res2023 = publicDocument("Res_2023_Final_Last_version.pdf");
-const rpmesGuidelines = publicDocument("20231016_RPMES-Operational-Guidelines.pdf");
-const rrpFull = publicDocument("RRP-NCR_with_Investment_Program_for_posting.pdf");
-const rrpAbridged = publicDocument("RRP-NCR_Abridged_version_for_posting.pdf");
-const coverGreenprint2030 = publicationCover("Greenprint 2030.png");
-const coverGreenprintBrochure = publicationCover("GP2030 Brochure Cover_page-0001.jpg");
-const coverRdp2023 = publicationCover("Regional Development Plans 2023-2028.png");
-const coverRdpLegacy = publicationCover("Regional Development Plans.png");
-const coverRdip = publicationCover("Regional Development Investment Program .png");
-const coverRdr = publicationCover("Regional Development Report .png");
-const coverRes = publicationCover("Regional Economic Situationer .png");
 
 type DocumentItem = {
   id: string;
@@ -52,290 +25,7 @@ type Category = {
   documents: DocumentItem[];
 };
 
-const CATEGORIES: Category[] = [
-  {
-    id: "greenprint",
-    title: "Greenprint 2030",
-    description:
-      "Strategic environmental and sustainability framework for Metro Manila",
-    icon: "🌱",
-    color: "from-green-600 to-emerald-500",
-    documents: [
-      {
-        id: "gp1",
-        title: "Greenprint 2030 Full Document",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "6.9 MB",
-        url: greenprintFull,
-        coverImage: coverGreenprint2030,
-        coverAlt: "Greenprint 2030 cover",
-      },
-      {
-        id: "gp2",
-        title: "Green Print Brochure",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "2.8 MB",
-        url: greenprintBrochure,
-        coverImage: coverGreenprintBrochure,
-        coverAlt: "Greenprint 2030 brochure cover",
-      },
-    ],
-  },
-  {
-    id: "rdp",
-    title: "Regional Development Plans (RDP-NCR)",
-    description: "Comprehensive development blueprints and strategic plans",
-    icon: "📋",
-    color: "from-blue-600 to-cyan-500",
-    documents: [
-      {
-        id: "rdp1",
-        title: "RDP-NCR 2023–2028 (Full Version)",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "36.4 MB",
-        url: rdp2023Full,
-        coverImage: coverRdp2023,
-        coverAlt: "RDP-NCR 2023-2028 cover",
-      },
-      {
-        id: "rdp2",
-        title: "RDP-NCR 2023–2028 (Abridged Version)",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "10.6 MB",
-        url: rdp2023Abridged,
-        coverImage: coverRdp2023,
-        coverAlt: "RDP-NCR 2023-2028 cover",
-      },
-      {
-        id: "rdp3",
-        title: "RDP-NCR 2023–2028 Brochure",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "2.2 MB",
-        url: rdp2023Brochure,
-        coverImage: coverRdp2023,
-        coverAlt: "RDP-NCR 2023-2028 cover",
-      },
-      {
-        id: "rdp4",
-        title: "RDP-NCR 2017- 2022 (Full Version)",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "8.0 MB",
-        url: rdp2017Full,
-        coverImage: coverRdpLegacy,
-        coverAlt: "RDP-NCR 2017-2022 cover",
-      },
-      {
-        id: "rdp5",
-        title: "RDP-NCR 2017- 2022 (Abridged Version)",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "1.1 MB",
-        url: rdp2017Abridged,
-        coverImage: coverRdpLegacy,
-        coverAlt: "RDP-NCR 2017-2022 cover",
-      },
-      {
-        id: "rdp6",
-        title: "RDP-NCR 2017- 2022 Brochure",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "5.3 MB",
-        url: rdp2017Brochure,
-        coverImage: coverRdpLegacy,
-        coverAlt: "RDP-NCR 2017-2022 cover",
-      },
-    ],
-  },
-  {
-    id: "rdip",
-    title: "Regional Development Investment Program (RDIP)",
-    description: "Priority investment programs and infrastructure projects",
-    icon: "💼",
-    color: "from-purple-600 to-indigo-500",
-    documents: [
-      {
-        id: "rdip1",
-        title: "RDIP-NCR 2023–2028",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "12.4 MB",
-        url: rdip2023,
-        coverImage: coverRdip,
-        coverAlt: "RDIP-NCR cover",
-      },
-      {
-        id: "rdip2",
-        title: "RDIP-NCR 2020–2022",
-        year: "2020",
-        fileType: "PDF",
-        fileSize: "10.4 MB",
-        url: rdip2020,
-        coverImage: coverRdip,
-        coverAlt: "RDIP-NCR cover",
-      },
-      {
-        id: "rdip3",
-        title: "RDIP Updated List 2024",
-        year: "2024",
-        fileType: "PDF",
-        fileSize: "1.9 MB",
-        url: "https://docs.google.com/document/d/1UlpfePYCH1r_M041K3PaUqnlq0rqLNJ5_EEsPFKf8eQ/edit?tab=t.5yre1br7hyj2",
-        coverImage: coverRdip,
-        coverAlt: "RDIP-NCR cover",
-      },
-      {
-        id: "rdip4",
-        title: "RDIP Updated List 2023",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "7.3 MB",
-        url: rdipUpdated2023,
-        coverImage: coverRdip,
-        coverAlt: "RDIP-NCR cover",
-      },
-    ],
-  },
-  {
-    id: "rdr",
-    title: "Regional Development Report (RDR)",
-    description: "Annual progress reports and development outcomes",
-    icon: "📊",
-    color: "from-orange-600 to-red-500",
-    documents: [
-      {
-        id: "rdr1",
-        title: "RDR 2023",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "43.6 MB",
-        url: rdr2023,
-        coverImage: coverRdr,
-        coverAlt: "Regional Development Report cover",
-      },
-    ],
-  },
-  {
-    id: "res",
-    title: "Regional Economic Situationer (RES)",
-    description: "Economic performance and trends analysis",
-    icon: "📈",
-    color: "from-teal-600 to-green-500",
-    documents: [
-      {
-        id: "res1",
-        title: "RES Annual 2021",
-        year: "2024",
-        fileType: "PDF",
-        fileSize: "7.9 MB",
-        url: res2021,
-        coverImage: coverRes,
-        coverAlt: "Regional Economic Situationer cover",
-      },
-      {
-        id: "res2",
-        title: "RES Annual 2022",
-        year: "2024",
-        fileType: "PDF",
-        fileSize: "10.5 MB",
-        url: res2022,
-        coverImage: coverRes,
-        coverAlt: "Regional Economic Situationer cover",
-      },
-      {
-        id: "res4",
-        title: "RES Annual 2023",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "17.8 MB",
-        url: res2023,
-        coverImage: coverRes,
-        coverAlt: "Regional Economic Situationer cover",
-      },
-    ],
-  },
-  {
-    id: "sdg",
-    title: "SDG Catch-Up Plan",
-    description: "Sustainable Development Goals acceleration strategies",
-    icon: "🎯",
-    color: "from-pink-600 to-rose-500",
-    documents: [
-      {
-        id: "sdg1",
-        title: "SDG Catch-Up Plan 2023–2028",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "3.1 MB",
-        url: "https://your-actual-link.com/sdg-catch-up-plan-2023-2028.pdf",
-      },
-      {
-        id: "sdg2",
-        title: "SDG Progress Report 2023",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "2.4 MB",
-        url: "https://your-actual-link.com/sdg-progress-report-2023.pdf",
-      },
-      {
-        id: "sdg3",
-        title: "SDG Monitoring Framework",
-        year: "2024",
-        fileType: "PDF",
-        fileSize: "1.5 MB",
-        url: "https://your-actual-link.com/sdg-monitoring-framework-2024.pdf",
-      },
-    ],
-  },
-  {
-    id: "rpmes",
-    title: "Regional Project Monitoring and Evaluation System (RPMES)",
-    description: "Regional Project Monitoring and Evaluation System",
-    icon: "⚙️",
-    color: "from-slate-600 to-gray-500",
-    documents: [
-      {
-        id: "rpmes3",
-        title: "RPMES Operational Guidelines",
-        year: "2024",
-        fileType: "PDF",
-        fileSize: "8.4 MB",
-        url: rpmesGuidelines,
-      },
-    ],
-  },
-  {
-    id: "rrp",
-    title:
-      "Rehabilitation & Recovery Plan for the National Capital Region (RRP-NCR)",
-    description: "Post-disaster recovery and resilience strategies",
-    icon: "🔄",
-    color: "from-yellow-600 to-orange-500",
-    documents: [
-      {
-        id: "rrp1",
-        title: "RRP-NCR with Investment Program (Full Document)",
-        year: "2024",
-        fileType: "PDF",
-        fileSize: "31.5 MB",
-        url: rrpFull,
-      },
-      {
-        id: "rrp2",
-        title: "RRP-NCR (Abridge Version)",
-        year: "2023",
-        fileType: "PDF",
-        fileSize: "2.5 MB",
-        url: rrpAbridged,
-      },
-    ],
-  },
-];
+
 
 const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value)
@@ -372,11 +62,6 @@ const isVisible = (value: unknown) => {
 
 const getPublicationCatalog = (page: CMSPageSnapshot | null) =>
   page?.sections.find((section) => section.sectionKey === "publication-catalog")?.content ?? null;
-
-const cloneCategory = (category: Category): Category => ({
-  ...category,
-  documents: category.documents.map((document) => ({ ...document })),
-});
 
 const mergeDocuments = (cmsDocuments: unknown[], baseCategory?: Category): DocumentItem[] => {
   const result = baseCategory?.documents.map((document) => ({ ...document })) ?? [];
@@ -421,9 +106,7 @@ const mergeDocuments = (cmsDocuments: unknown[], baseCategory?: Category): Docum
 const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
   const catalog = getPublicationCatalog(page);
   const cmsCategories = asArray(catalog?.categories);
-  if (!cmsCategories.length) return CATEGORIES;
-
-  const result = CATEGORIES.map(cloneCategory);
+  const result: Category[] = [];
 
   cmsCategories.forEach((entry, categoryIndex) => {
     const row = asRecord(entry);
@@ -458,7 +141,7 @@ const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
     else result.push(nextCategory);
   });
 
-  return result.length ? result : CATEGORIES;
+  return result;
 };
 
 export default function Publications() {
@@ -602,6 +285,11 @@ export default function Publications() {
                 </button>
               ))}
             </div>
+            {categories.length === 0 && (
+              <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-slate-600">
+                No publication categories are currently published.
+              </div>
+            )}
           </div>
         ) : (
           // Document Listing View

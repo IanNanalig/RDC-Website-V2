@@ -89,15 +89,15 @@ for (const section of sections) {
   if (activePageId !== section.page) {
     const pageCard = page.locator(`[data-cms-page-id="${section.page}"]`);
     await pageCard.waitFor();
-    await pageCard.getByRole("button", { name: "Edit", exact: true }).click();
+    await pageCard.getByRole("button", { name: "Manage Content", exact: true }).click();
     activePageId = section.page;
   }
 
   const before = await fetchJson(`admin/cms/sections/${section.id}/`);
   const sectionCard = page.locator(`[data-cms-section-id="${section.id}"]`);
   await sectionCard.waitFor();
-  await sectionCard.getByRole("button", { name: "Edit", exact: true }).click();
-  await page.getByRole("heading", { name: "Edit Section Block" }).waitFor();
+  await sectionCard.getByRole("button", { name: "Edit Content", exact: true }).click();
+  await page.getByRole("heading", { name: "Edit Section" }).waitFor();
   assert.equal(await page.locator("pre").count(), 0, `Raw JSON preview visible for ${section.section_type}/${section.section_key}.`);
   assert.equal(await page.locator('textarea[aria-label*="source"]').count(), 0, `Raw source visible for ${section.section_type}/${section.section_key}.`);
   assert.equal(
@@ -111,7 +111,7 @@ for (const section of sections) {
       response.url().includes(`/admin/cms/sections/${section.id}/`) &&
       response.request().method() === "PUT",
     ),
-    page.getByRole("button", { name: "Save Section Draft", exact: true }).click(),
+    page.getByRole("button", { name: "Save Content Draft", exact: true }).click(),
   ]);
   if (!saveResponse.ok()) {
     throw new Error(

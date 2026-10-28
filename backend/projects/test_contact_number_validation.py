@@ -37,7 +37,6 @@ class ContactNumberValidationTests(APITestCase):
             "first_name": "Contact",
             "last_name": "Test User",
             "agency": "DENR",
-            "agency_head": "Agency Head",
             "office": "Main Office",
             "division": "Planning",
             "position": "Officer",

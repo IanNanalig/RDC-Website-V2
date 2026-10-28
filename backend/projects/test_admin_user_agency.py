@@ -8,7 +8,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .models import AccessRequest, PasswordSetupToken, User, UserActivity
+from .models import AccessRequest, Agency, PasswordSetupToken, User, UserActivity
 
 
 class AccountSetupAgencyTests(APITestCase):
@@ -47,7 +47,6 @@ class AccountSetupAgencyTests(APITestCase):
             "first_name": "Agency",
             "last_name": "User",
             "agency": agency,
-            "agency_head": "Agency Head",
             "office": "Main Office",
             "division": "Planning",
             "position": "Officer",
@@ -84,6 +83,7 @@ class AccountSetupAgencyTests(APITestCase):
             user = User.objects.get(email=email)
             self.assertEqual(user.role, "staff" if role == "contributor" else role)
             self.assertEqual(user.agency, "DENR" if role == "contributor" else "RDC-NCR")
+            self.assertEqual(user.agency_record.code, user.agency)
             self.assertFalse(user.is_active)
 
         self.assertEqual(send_mail.call_count, len(roles))
@@ -170,19 +170,11 @@ class AccountSetupAgencyTests(APITestCase):
         self.client.force_authenticate(user=None)
         for suffix, saved_agency in (("legacy-denr", "DENR"), ("legacy-blank", "")):
             user, token = self.make_pending_user(suffix, role="admin", agency=saved_agency)
+            token.token = f"reset_{token.token}"
+            token.save(update_fields=["token"])
             prefill = self.client.get(f"/api/auth/setup-password/?token={token.token}")
-            self.assertTrue(prefill.data["agency_locked"])
-            self.assertEqual(prefill.data["profile"]["agency"], saved_agency)
-
-            changed = self.client.post(
-                "/api/auth/setup-password/", self.setup_payload(token, "RDC-NCR"), format="json"
-            )
-            if saved_agency != "RDC-NCR":
-                self.assertEqual(changed.status_code, status.HTTP_400_BAD_REQUEST, changed.data)
-
-            payload = self.setup_payload(token, saved_agency)
-            if not saved_agency:
-                payload.pop("agency")
+            self.assertEqual(prefill.data["setup_type"], "password_reset")
+            payload = {"token": token.token, "new_password": "ValidSetup123_"}
             completed = self.client.post("/api/auth/setup-password/", payload, format="json")
             self.assertEqual(completed.status_code, status.HTTP_200_OK, completed.data)
             user.refresh_from_db()
@@ -199,6 +191,20 @@ class AccountSetupAgencyTests(APITestCase):
         self.assertEqual(completed.status_code, status.HTTP_200_OK, completed.data)
         user.refresh_from_db()
         self.assertEqual(user.agency, "DENR")
+
+    def test_setup_rejects_head_of_agency_override(self):
+        self.client.force_authenticate(user=None)
+        agency = Agency.objects.get(code="DENR")
+        agency.head_name = "Configured Head"
+        agency.save(update_fields=["head_name"])
+        user, token = self.make_pending_user("head-override")
+        payload = self.setup_payload(token, "DENR")
+        payload["agency_head"] = "Contributor Supplied Head"
+        response = self.client.post("/api/auth/setup-password/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("managed", response.data["agency_head"])
+        user.refresh_from_db()
+        self.assertTrue(user.must_change_password)
 
     def test_setup_accepts_and_normalizes_each_approved_agency(self):
         self.client.force_authenticate(user=None)

@@ -245,6 +245,137 @@ class CMSArticle(models.Model):
         return self.title
 
 
+class CMSManagedContent(models.Model):
+    """Shared review metadata for normalized, repeatable public content."""
+
+    status = models.CharField(max_length=20, choices=CMS_STATUS_CHOICES, default=CMS_STATUS_DRAFT)
+    published_snapshot_json = models.JSONField(default=dict, blank=True)
+    has_unpublished_changes = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    review_notes = models.TextField(blank=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        abstract = True
+
+
+class CMSCarouselItem(CMSManagedContent):
+    stable_key = models.SlugField(max_length=120, unique=True)
+    title = models.CharField(max_length=220)
+    description = models.TextField(blank=True)
+    image = models.ForeignKey(
+        CMSMediaAsset, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="carousel_items",
+    )
+    legacy_image_url = models.CharField(max_length=1000, blank=True)
+    primary_label = models.CharField(max_length=120, blank=True)
+    primary_url = models.CharField(max_length=500, blank=True)
+    secondary_label = models.CharField(max_length=120, blank=True)
+    secondary_url = models.CharField(max_length=500, blank=True)
+    sort_order = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return self.title
+
+
+class CMSPublicationCategory(CMSManagedContent):
+    code = models.SlugField(max_length=80, unique=True)
+    name = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    icon = models.CharField(max_length=80, blank=True)
+    color = models.CharField(max_length=120, blank=True)
+    sort_order = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        ordering = ["sort_order", "name", "id"]
+
+    def __str__(self):
+        return self.name
+
+
+class CMSPublicationDocument(CMSManagedContent):
+    stable_key = models.SlugField(max_length=120, unique=True)
+    category = models.ForeignKey(
+        CMSPublicationCategory, on_delete=models.PROTECT, related_name="documents",
+    )
+    title = models.CharField(max_length=250)
+    description = models.TextField(blank=True)
+    publication_date = models.DateField(null=True, blank=True, db_index=True)
+    document_type = models.CharField(max_length=50, default="PDF")
+    attachment = models.ForeignKey(
+        CMSMediaAsset, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="publication_documents",
+    )
+    external_url = models.CharField(max_length=1000, blank=True)
+    legacy_file_size = models.CharField(max_length=40, blank=True)
+    sort_order = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        ordering = ["category__sort_order", "sort_order", "title", "id"]
+
+    def __str__(self):
+        return self.title
+
+
+class CMSResolution(CMSManagedContent):
+    stable_key = models.SlugField(max_length=120, unique=True)
+    resolution_number = models.CharField(max_length=120)
+    title = models.CharField(max_length=250)
+    description = models.TextField(blank=True)
+    year = models.PositiveSmallIntegerField(db_index=True)
+    resolution_date = models.DateField(null=True, blank=True, db_index=True)
+    attachment = models.ForeignKey(
+        CMSMediaAsset, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="rdc_resolutions",
+    )
+    external_url = models.CharField(max_length=1000, blank=True)
+    sort_order = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        ordering = ["-year", "sort_order", "resolution_number", "id"]
+
+    def __str__(self):
+        return f"{self.resolution_number} ({self.year})"
+
+
+class CMSLegacyMigrationIssue(models.Model):
+    page_slug = models.SlugField(max_length=120)
+    section_key = models.SlugField(max_length=120)
+    item_path = models.CharField(max_length=250, blank=True)
+    reason = models.CharField(max_length=500)
+    legacy_payload = models.JSONField(default=dict, blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["page_slug", "section_key", "item_path", "id"]
+        indexes = [models.Index(fields=["page_slug", "section_key", "resolved_at"])]
+
+    def __str__(self):
+        return f"{self.page_slug}/{self.section_key}: {self.reason}"
+
+
 class CMSContributorForm(models.Model):
     STATUS_DRAFT = CMS_STATUS_DRAFT
     STATUS_SUBMITTED = CMS_STATUS_SUBMITTED

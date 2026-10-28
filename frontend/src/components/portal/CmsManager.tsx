@@ -7,7 +7,7 @@ import cmsApi, {
   type CMSSection,
   type CMSSiteSetting,
 } from "../../services/cmsApi";
-import { ORGANIZATION_NODE_DEFAULTS, RESOLUTIONS_BY_YEAR } from "../../pages/About_RDC";
+import { ORGANIZATION_NODE_DEFAULTS } from "../../pages/About_RDC";
 import RefreshButton from "./RefreshButton";
 const RichTextEditor = React.lazy(() => import("./RichTextEditor"));
 
@@ -540,7 +540,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const [selectedPageId, setSelectedPageId] = useState<number | null>(null);
   const [pageForm, setPageForm] = useState<PageForm>(emptyPageForm);
   const [sectionForm, setSectionForm] = useState<SectionForm>(emptySectionForm);
-  const [sectionEditorTab, setSectionEditorTab] = useState<"basics" | "content" | "advanced">("basics");
+  const [sectionEditorTab, setSectionEditorTab] = useState<"basics" | "content" | "advanced">("content");
   const [sectionErrors, setSectionErrors] = useState<Record<string, string>>({});
   const [sectionReadOnly, setSectionReadOnly] = useState(false);
   const [articleForm, setArticleForm] = useState<ArticleForm>(emptyArticleForm);
@@ -1185,28 +1185,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     }
   };
 
-  const moveSection = async (section: CMSSection, direction: -1 | 1) => {
-    if (!selectedPage) return;
-    const sorted = [...selectedPageSections].sort((a, b) => a.order - b.order || a.id - b.id);
-    const index = sorted.findIndex((item) => item.id === section.id);
-    const nextIndex = index + direction;
-    if (index < 0 || nextIndex < 0 || nextIndex >= sorted.length) return;
-    const swapped = [...sorted];
-    [swapped[index], swapped[nextIndex]] = [swapped[nextIndex], swapped[index]];
-    setLoading(true);
-    setNotice("");
-    try {
-      const reordered = await cmsApi.reorderSections(selectedPage.id, swapped.map((item) => item.id)) as CMSPage;
-      mergePage(reordered);
-      setNotice("Section order updated. Publish the page when ready.");
-    } catch (error) {
-      console.error(error);
-      setNotice(getErrorDetail(error, "Failed to reorder sections."));
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const editArticle = async (article: CMSArticle) => {
     if (articleFormHasChanges && articleForm.id !== article.id && !window.confirm("Discard the unsaved news changes and open another article?")) return;
     void loadMediaAssets().catch((error) => console.error("Failed to load CMS media picker.", error));
@@ -1670,24 +1648,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               <p className="text-xs text-slate-500">Add a year, then add editable resolution titles and optional document links.</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              {years.length === 0 && (
-                <button
-                  type="button"
-                  className="portal-btn portal-btn-ghost"
-                  onClick={() =>
-                    setSectionContent({
-                      ...sectionContent,
-                      years: RESOLUTIONS_BY_YEAR.map((year) => ({
-                        year: year.year,
-                        replaceExisting: true,
-                        resolutions: year.content.map((title) => ({ title, url: "" })),
-                      })),
-                    })
-                  }
-                >
-                  Load Current Public Archive
-                </button>
-              )}
               <button
                 type="button"
                 className="portal-btn portal-btn-ghost"
@@ -1705,7 +1665,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           </div>
           {years.length === 0 && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-              The current hardcoded archive remains public. Select “Load Current Public Archive” to bring every existing resolution into this editor before changing or removing older entries.
+              No resolution records are in this draft. Add a year and its documents before publishing.
             </div>
           )}
           {years.map((yearValue, yearIndex) => {
@@ -1787,6 +1747,19 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       return (
         <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
           <Field label="Overview Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
+
+          <div className="grid min-w-0 gap-3 rounded-xl border border-blue-100 bg-blue-50 p-3 md:grid-cols-3">
+            <Field label="Population (numeric)" value={textValue(sectionContent.population)} onChange={(value) => updateSectionContent("population", value)} helper="Example: 13484462" />
+            <Field label="Population Display Unit" value={textValue(sectionContent.populationUnit)} onChange={(value) => updateSectionContent("populationUnit", value)} helper="Example: people or M" />
+            <Field label="GDP Share (numeric)" value={textValue(sectionContent.gdpShare)} onChange={(value) => updateSectionContent("gdpShare", value)} helper="Example: 36" />
+            <Field label="GDP Display Unit" value={textValue(sectionContent.gdpShareUnit)} onChange={(value) => updateSectionContent("gdpShareUnit", value)} helper="Example: %" />
+            <Field label="Land Area (numeric)" value={textValue(sectionContent.landArea)} onChange={(value) => updateSectionContent("landArea", value)} helper="Example: 619.57" />
+            <Field label="Land Area Display Unit" value={textValue(sectionContent.landAreaUnit)} onChange={(value) => updateSectionContent("landAreaUnit", value)} helper="Example: km²" />
+            <Field label="City Count (numeric)" value={textValue(sectionContent.cityCount)} onChange={(value) => updateSectionContent("cityCount", value)} />
+            <Field label="Municipality Count (numeric)" value={textValue(sectionContent.municipalityCount)} onChange={(value) => updateSectionContent("municipalityCount", value)} />
+            <Field label="Data Year" value={textValue(sectionContent.dataYear)} onChange={(value) => updateSectionContent("dataYear", value)} />
+            <Area label="Data Reference" value={textValue(sectionContent.reference)} onChange={(value) => updateSectionContent("reference", value)} rows={2} />
+          </div>
 
           <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1921,7 +1894,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               <li>Upload publication PDFs and cover images in the Media Library tab first.</li>
               <li>Return here, then choose the uploaded PDF and cover image in each document row.</li>
               <li>Save the section draft, then publish the page when the changes are ready for the public website.</li>
-              <li>If no CMS media is selected, the public page keeps using the built-in fallback file for that document ID.</li>
+              <li>Every published document must use CMS media or a validated external URL.</li>
             </ol>
           </div>
 
@@ -2024,12 +1997,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     ? stringValue(document.mediaAssetId)
                       ? "CMS media document selected"
                       : "Custom/manual document URL"
-                    : "Built-in fallback file";
+                    : "No document selected";
                   const coverSource = textValue(document.coverImage)
                     ? stringValue(document.coverAssetId)
                       ? "CMS cover image selected"
                       : "Custom/manual cover URL"
-                    : "Built-in fallback cover";
+                    : "No cover selected";
                   return (
                     <div key={documentIndex} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                       <div className="mb-3 flex items-center justify-between gap-3">
@@ -2078,7 +2051,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                           assets={media.filter((item) => item.file_type === "document" || item.mime_type === "application/pdf")}
                           value={stringValue(document.mediaAssetId)}
                           onChange={(value) => setPublicationDocumentMedia(categoryIndex, documentIndex, document, value)}
-                          helper="Upload PDFs in Media Library first. Selecting one replaces the built-in fallback after Save Section Draft and Publish Page."
+                          helper="Upload PDFs in Media Library first. The selected file becomes public only after the draft is approved and published."
                         />
                         <MediaAssetPicker
                           label="Cover Image from Media Library"
@@ -2097,7 +2070,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                               url: value,
                             })
                           }
-                          helper="Use this for external or manual file links. Leave blank to use the built-in file for this document ID."
+                          helper="Use this for validated external file links. Leave blank when a CMS media document is selected."
                         />
                         <Field
                           label="Custom Cover URL (optional)"
@@ -2168,6 +2141,16 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       }
       return (
         <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          {["development-plans", "investment-programming", "monitoring-evaluation"].includes(sectionForm.section_key) && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
+              <Field
+                label="Featured Publication Category Code"
+                value={textValue(sectionContent.featuredCategoryCode)}
+                onChange={(value) => updateSectionContent("featuredCategoryCode", value)}
+                helper="Enter the stable code of a published, active Publications category. The three Home feature slots must use different categories."
+              />
+            </div>
+          )}
           <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
             <div className="grid gap-3">
               <Field label="Group Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
@@ -2236,7 +2219,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     label="Destination URL / Link"
                     value={textValue(row.url || row.link)}
                     onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, url: value, link: value }))}
-                    helper="Use for downloadable legal documents, external files, or page links. Leave blank to use the page fallback when available."
+                    helper="Use for downloadable legal documents, external files, or page links."
                   />
                   <Field label="File Type (optional)" value={textValue(row.fileType)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, fileType: value }))} />
                   <Field label="File Size (optional)" value={textValue(row.fileSize)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, fileSize: value }))} />
@@ -2445,6 +2428,19 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           <Field label="Map Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
           <Field label="Map Caption" value={textValue(sectionContent.caption)} onChange={(value) => updateSectionContent("caption", value)} />
           <Field label="Badge Label" value={textValue(sectionContent.badgeLabel)} onChange={(value) => updateSectionContent("badgeLabel", value)} />
+          {sectionForm.section_key === "location-map" && (
+            <>
+              <Area
+                label="Map Address / Search Query"
+                value={textValue(sectionContent.mapQuery)}
+                onChange={(value) => updateSectionContent("mapQuery", value)}
+                rows={2}
+                helper="Used to generate the Google Maps embed safely. HTML and API keys are not accepted."
+              />
+              <Field label="Latitude (optional)" value={textValue(sectionContent.latitude)} onChange={(value) => updateSectionContent("latitude", value)} />
+              <Field label="Longitude (optional)" value={textValue(sectionContent.longitude)} onChange={(value) => updateSectionContent("longitude", value)} />
+            </>
+          )}
         </div>
       );
     }
@@ -2534,7 +2530,17 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           </div>
         </div>
         {notice && (
-          <div role="status" aria-live="polite" className="border-t border-slate-200 px-5 py-3 text-sm text-blue-700">
+          <div
+            role={/failed|error|invalid|cannot|could not/i.test(notice) ? "alert" : "status"}
+            aria-live="polite"
+            className={`border-t px-5 py-3 text-sm ${
+              /failed|error|invalid|cannot|could not/i.test(notice)
+                ? "border-rose-200 bg-rose-50 text-rose-800"
+                : /warning|unsaved|review|locked/i.test(notice)
+                  ? "border-amber-200 bg-amber-50 text-amber-800"
+                  : "border-emerald-200 bg-emerald-50 text-emerald-800"
+            }`}
+          >
             {notice}
           </div>
         )}
@@ -2563,7 +2569,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       {activeTab === "pages" && (
         <div className="flex min-w-0 flex-col gap-4">
           <div className="contents">
-            <form onSubmit={savePage} className="portal-card order-2 min-w-0 overflow-hidden">
+            <form onSubmit={savePage} className="hidden" aria-hidden="true">
               <div className="portal-card-header min-w-0 text-left">
                 <h3 className="font-bold text-slate-900">Edit Page Draft</h3>
               </div>
@@ -2609,8 +2615,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               <div className="portal-card-header min-w-0 text-left">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <h3 className="font-bold text-slate-900">Public Website Pages</h3>
-                    <p className="text-xs text-slate-500">All seven core public pages are managed here. Select Edit to manage that page and its section blocks.</p>
+                    <h3 className="font-bold text-slate-900">Fixed Public Content Modules</h3>
+                    <p className="text-xs text-slate-500">The seven routes, layouts, and section order are application-controlled. Select Manage Content to edit only the information displayed in each fixed section.</p>
                   </div>
                   <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
                     {corePublicPages.filter((definition) => pages.some((page) => page.slug === definition.slug)).length}/{corePublicPages.length} core pages
@@ -2655,7 +2661,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {page.status !== "archived" && (
-                            <button type="button" className="text-sm text-blue-600" onClick={() => editPage(page)}>Edit</button>
+                            <button type="button" className="text-sm text-blue-600" onClick={() => editPage(page)}>Manage Content</button>
                           )}
                           {page.published_at && <button
                             type="button"
@@ -2682,11 +2688,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                               Reject
                             </button>
                           )}
-                          {isAdmin && page.status !== "archived" && (
-                            <button type="button" className="text-sm text-slate-600" onClick={() => runWorkflowAction("page", page.id, "archive", page.title)}>
-                              Archive
-                            </button>
-                          )}
                         </div>
                       </div>
                     </div>
@@ -2697,7 +2698,10 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           </div>
 
           <div className="contents">
-            <form data-section-editor onSubmit={saveSection} className="portal-card order-4 min-w-0 overflow-hidden">
+            {!sectionForm.id && (
+              <div className="portal-card order-4 p-5 text-sm text-slate-600">Choose <strong>Edit Content</strong> from one of the fixed sections to open its content editor.</div>
+            )}
+            <form data-section-editor onSubmit={saveSection} className={`portal-card order-4 min-w-0 overflow-hidden ${sectionForm.id ? "" : "hidden"}`}>
               <div className="portal-card-header flex min-w-0 items-center justify-between gap-3">
                 <div>
                   <h3 className="font-bold text-slate-900">Edit Section</h3>
@@ -2711,7 +2715,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                 </div>
               )}
               <div className="flex flex-wrap gap-2 border-b border-slate-200 px-5 py-3" role="tablist" aria-label="Section editor">
-                {(["basics", "content", "advanced"] as const).map((tab) => (
+                {(["content"] as const).map((tab) => (
                   <button key={tab} type="button" role="tab" aria-selected={sectionEditorTab === tab} onClick={() => setSectionEditorTab(tab)} className={`rounded-lg px-3 py-2 text-sm ${sectionEditorTab === tab ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}>
                     {tab === "basics" ? "Basics" : tab === "content" ? "Content" : "Visibility / Advanced"}{sectionErrors[tab] ? " •" : ""}
                   </button>
@@ -2719,54 +2723,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               </div>
               <fieldset disabled={sectionReadOnly} className="portal-card-body min-w-0 space-y-4 disabled:opacity-70">
                 {sectionErrors[sectionEditorTab] && <p role="alert" className="text-sm text-rose-700">{sectionErrors[sectionEditorTab]}</p>}
-                <div hidden={sectionEditorTab !== "basics"} className="grid min-w-0 gap-3 md:grid-cols-2">
-                  <Select
-                    label="Page"
-                    value={String(sectionForm.page)}
-                    onChange={(value) => {
-                      const pageId = value ? Number(value) : "";
-                      setSelectedPageId(pageId || null);
-                      setSectionForm((prev) => ({ ...prev, page: pageId }));
-                      if (pageId) {
-                        const page = pages.find((item) => item.id === pageId);
-                        if (page && !Array.isArray(page.sections)) {
-                          void loadPageDetail(pageId).catch((error) => {
-                            setNotice(getErrorDetail(error, "Failed to load this page's sections."));
-                          });
-                        }
-                      }
-                    }}
-                    options={sortedPages.map((page) => ({ label: page.title, value: String(page.id) }))}
-                  />
-                  <Select
-                    label="Section Type"
-                    value={sectionForm.section_type}
-                    onChange={(value) =>
-                      setSectionForm((prev) => ({
-                        ...prev,
-                        section_type: value,
-                        section_key: prev.id ? prev.section_key : nextSectionKey(value),
-                        content_json: prev.id ? prev.content_json : formatJson(sectionTemplate(value)),
-                      }))
-                    }
-                    options={sectionTypeOptions}
-                  />
-                </div>
-                {sectionEditorTab === "advanced" && developerMode && isAdmin && (
-                  <div className="grid min-w-0 gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 md:grid-cols-3">
-                    <Field label="Developer: Section Key" value={sectionForm.section_key} onChange={(value) => setSectionForm((prev) => ({ ...prev, section_key: value }))} helper="Unique internal key for this page." />
-                    <Field label="Developer: Order" value={sectionForm.order} onChange={(value) => setSectionForm((prev) => ({ ...prev, order: value }))} />
-                    <Field label="Developer: Schema Version" value={sectionForm.schema_version} onChange={(value) => setSectionForm((prev) => ({ ...prev, schema_version: value }))} />
-                  </div>
-                )}
-                {sectionEditorTab === "advanced" && <label className="flex items-center gap-2 text-sm text-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={sectionForm.is_visible}
-                    onChange={(event) => setSectionForm((prev) => ({ ...prev, is_visible: event.target.checked }))}
-                  />
-                  Visible when page is published
-                </label>}
                 {sectionEditorTab === "content" && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2">
                   <p className="text-sm text-blue-800">
                     Use the form below for normal editing. The public site still updates only after publish.
@@ -2795,7 +2751,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                 </div>}
                 <div className="sticky bottom-0 z-10 flex flex-wrap gap-2 border-t border-slate-200 bg-white/95 py-3 backdrop-blur">
                   <button type="submit" className="portal-btn portal-btn-primary" disabled={loading}>
-                    {sectionForm.id ? "Save Section Draft" : "Add Section"}
+                    Save Content Draft
                   </button>
                   {sectionForm.id && (
                     <button
@@ -2823,7 +2779,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   [...selectedPageSections]
                     .filter((section) => section.status !== "archived")
                     .sort((a, b) => a.order - b.order || a.id - b.id)
-                    .map((section, index, list) => (
+                    .map((section) => (
                       <div data-cms-section-id={section.id} key={section.id} className={`rounded-xl border bg-white p-3 ${sectionForm.id === section.id ? "border-blue-400 ring-2 ring-blue-100" : "border-slate-200"}`}>
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div className="min-w-0">
@@ -2843,23 +2799,14 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                             )}
                           </div>
                           <div className="flex flex-wrap gap-2 text-sm">
-                            <button type="button" className="text-slate-600" disabled={index === 0} onClick={() => moveSection(section, -1)}>
-                              Up
-                            </button>
-                            <button type="button" className="text-slate-600" disabled={index === list.length - 1} onClick={() => moveSection(section, 1)}>
-                              Down
-                            </button>
                             <button type="button" className="text-blue-600" onClick={() => editSection(section)}>
-                              {section.is_locked && !section.locked_by_me ? (isAdmin ? "Take Over & Edit" : "View") : "Edit"}
+                              {section.is_locked && !section.locked_by_me ? (isAdmin ? "Take Over & Edit" : "View") : "Edit Content"}
                             </button>
                             {section.is_locked && !section.locked_by_me && !isAdmin && (
                               <button type="button" className="text-amber-700" onClick={() => requestSectionAccess(section)}>Request Access</button>
                             )}
                             {section.is_locked && section.locked_by_me && (
                               <button type="button" className="text-amber-700" onClick={() => releaseOwnSectionLock(section)}>Release Edit Lock</button>
-                            )}
-                            {isAdmin && section.status !== "archived" && (
-                              <button type="button" className="text-slate-600" onClick={() => runWorkflowAction("section", section.id, "archive", section.section_key)}>Archive</button>
                             )}
                           </div>
                         </div>

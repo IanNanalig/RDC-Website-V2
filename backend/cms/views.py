@@ -23,17 +23,22 @@ from ai_engine.services import get_active_model, sync_training_record, training_
 from cms.form_schema import FormSchemaError, SIMPLIFIED_FORM_KEY, default_simplified_form_schema
 from cms.models import (
     CMSArticle,
+    CMSCarouselItem,
     CMSContributorForm,
     CMSContributorFormVersion,
     CMSMediaAsset,
     CMSPage,
     CMSPageSection,
+    CMSPublicationCategory,
+    CMSPublicationDocument,
+    CMSResolution,
     CMSSiteSetting,
 )
 from cms.serializers import (
     CMSArticleEditorSerializer,
     CMSArticleSerializer,
     CMSArticleSummarySerializer,
+    CMSCarouselItemSerializer,
     CMSContributorFormSerializer,
     CMSContributorFormVersionSummarySerializer,
     CMSContributorFormVersionSerializer,
@@ -44,8 +49,12 @@ from cms.serializers import (
     CMSPageSectionSummarySerializer,
     CMSPageSerializer,
     CMSPageSummarySerializer,
+    CMSPublicationCategorySerializer,
+    CMSPublicationDocumentSerializer,
+    CMSResolutionSerializer,
     CMSSiteSettingSerializer,
 )
+from cms.registry import FIXED_CMS_PAGE_REGISTRY, fixed_page_definition, fixed_section_definition
 from cms.services.locking import (
     acquire_form_lock,
     acquire_section_lock,
@@ -244,6 +253,8 @@ class CMSWorkflowMixin:
         fields += [field for field in ("submitted_by", "review_notes") if hasattr(obj, field)]
         obj.save(update_fields=fields)
         if isinstance(obj, CMSPage):
+            from cms.services.collections import submit_normalized_page_content
+            submit_normalized_page_content(obj, request.user)
             for section_id in obj.sections.values_list("id", flat=True):
                 release_section_lock(section_id, request.user, force=True)
         elif isinstance(obj, CMSPageSection):
@@ -375,6 +386,7 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
             )
             if self.action == "retrieve" and self.request.query_params.get("view") == "editor":
                 queryset = queryset.defer("published_snapshot_json")
+        queryset = queryset.filter(slug__in=FIXED_CMS_PAGE_REGISTRY)
         status_filter = self.request.query_params.get("status")
         if self.action == "list" and not status_filter:
             queryset = queryset.filter(status="archived") if self.request.query_params.get("archived") == "1" else queryset.exclude(status="archived")
@@ -385,17 +397,11 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
             queryset = queryset.filter(Q(title__icontains=search) | Q(slug__icontains=search))
         return queryset.order_by("slug")
 
-    def perform_create(self, serializer):
-        page = serializer.save(created_by=self.request.user, updated_by=self.request.user, has_unpublished_changes=True)
-        _log_cms_activity(self.request, "cms_content_created", {"content_type": "page", "id": page.pk, "slug": page.slug})
+    def create(self, request, *args, **kwargs):
+        return Response({"detail": "Public pages are fixed by the application and cannot be created."}, status=405)
 
-    def perform_update(self, serializer):
-        if serializer.instance.status == "archived":
-            raise PermissionDenied("Archived pages cannot be edited.")
-        if serializer.instance.status == "submitted" and getattr(self.request.user, "role", "") != "admin":
-            raise PermissionDenied("Submitted or archived pages can only be changed by an administrator.")
-        page = serializer.save(updated_by=self.request.user, has_unpublished_changes=True, status="draft")
-        _log_cms_activity(self.request, "cms_content_updated", {"content_type": "page", "id": page.pk, "slug": page.slug})
+    def update(self, request, *args, **kwargs):
+        return Response({"detail": "Page titles, slugs, and structure are fixed by the application."}, status=405)
 
     def destroy(self, request, *args, **kwargs):
         return Response({"detail": "CMS pages are archived instead of hard-deleted."}, status=405)
@@ -411,12 +417,15 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
 
     @action(detail=True, methods=["post"])
     def reorder_sections(self, request, pk=None):
-        section_ids = request.data.get("section_ids") or request.data.get("sections")
-        if not isinstance(section_ids, list) or not section_ids:
-            raise serializers.ValidationError({"section_ids": "Provide the final ordered list of section IDs."})
-        page = reorder_page_sections(self.get_object(), section_ids, user=request.user)
-        _log_cms_activity(request, "cms_content_updated", {"content_type": "page", "id": page.pk, "action": "reorder_sections"})
-        return Response(self._serialize(page))
+        return Response({"detail": "Page section order is fixed by the application."}, status=405)
+
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
+    def archive(self, request, pk=None):
+        return Response({"detail": "Fixed public pages cannot be archived."}, status=405)
+
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
+    def restore(self, request, pk=None):
+        return Response({"detail": "Fixed public pages cannot be restored or replaced."}, status=405)
 
 
 class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
@@ -426,6 +435,10 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = CMSPageSection.objects.select_related("page", "lock_owner")
+        allowed = Q(pk__in=[])
+        for slug, definition in FIXED_CMS_PAGE_REGISTRY.items():
+            allowed |= Q(page__slug=slug, section_key__in=[row[0] for row in definition["sections"]])
+        queryset = queryset.filter(allowed)
         page_id = self.request.query_params.get("page")
         status_filter = self.request.query_params.get("status")
         if self.action == "list" and not status_filter:
@@ -436,13 +449,21 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
             queryset = queryset.filter(status=status_filter)
         return queryset.order_by("page_id", "order", "id")
 
-    def perform_create(self, serializer):
-        section = serializer.save(status="draft")
-        mark_page_changed(section.page, self.request.user)
-        _log_cms_activity(self.request, "cms_content_created", {"content_type": "section", "id": section.pk, "page": section.page_id})
+    def create(self, request, *args, **kwargs):
+        return Response({"detail": "Page sections are fixed by the application and cannot be created."}, status=405)
 
     def update(self, request, *args, **kwargs):
         section = self.get_object()
+        definition = fixed_section_definition(section.page.slug, section.section_key)
+        if not definition:
+            return Response({"detail": "This is not an editable fixed page section."}, status=404)
+        for field, current in (
+            ("page", section.page_id), ("section_key", section.section_key),
+            ("section_type", definition["type"]), ("order", definition["order"]),
+            ("is_visible", True),
+        ):
+            if field in request.data and request.data.get(field) != current:
+                return Response({field: "This structural field is fixed by the application."}, status=400)
         if section.status == "archived":
             raise PermissionDenied("Archived sections cannot be edited.")
         if section.page.status == "submitted" and getattr(request.user, "role", "") != "admin":
@@ -458,16 +479,21 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         section = serializer.save(status="draft", lock_owner=None, lock_acquired_at=None)
+        from cms.services.collections import sync_normalized_section_draft
+        sync_normalized_section_draft(section, self.request.user)
         mark_page_changed(section.page, self.request.user)
         _log_cms_activity(self.request, "cms_content_updated", {"content_type": "section", "id": section.pk, "page": section.page_id})
 
-    def perform_destroy(self, instance):
-        page = instance.page
-        section_id = instance.pk
-        with transaction.atomic():
-            instance.delete()
-            mark_page_changed(page, self.request.user)
-        _log_cms_activity(self.request, "cms_content_updated", {"content_type": "section", "id": section_id, "action": "delete"})
+    def destroy(self, request, *args, **kwargs):
+        return Response({"detail": "Fixed page sections cannot be deleted."}, status=405)
+
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
+    def archive(self, request, pk=None):
+        return Response({"detail": "Fixed page sections cannot be archived."}, status=405)
+
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
+    def restore(self, request, pk=None):
+        return Response({"detail": "Fixed page sections cannot be restored or replaced."}, status=405)
 
     @action(detail=True, methods=["post"])
     def lock(self, request, pk=None):
@@ -598,6 +624,342 @@ class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.Mod
         article = publish_article(article, user=request.user)
         _log_cms_activity(request, "cms_content_published", {"content_type": "article", "id": article.pk, "slug": article.slug})
         return Response(self._serialize(article))
+
+
+from cms.services.collections import managed_content_snapshot
+
+
+class CMSManagedContentViewSet(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated, IsCMSUser]
+    search_fields = ()
+    content_type_key = "content"
+
+    def get_queryset(self):
+        queryset = super().get_queryset().select_related(
+            "created_by", "updated_by", "submitted_by", "reviewed_by"
+        )
+        if self.action == "list" and not self.request.query_params.get("status"):
+            queryset = queryset.filter(status="archived") if self.request.query_params.get("archived") == "1" else queryset.exclude(status="archived")
+        status_filter = str(self.request.query_params.get("status") or "").strip()
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        search = str(self.request.query_params.get("q") or "").strip()
+        if search and self.search_fields:
+            criteria = Q()
+            for field in self.search_fields:
+                criteria |= Q(**{f"{field}__icontains": search})
+            queryset = queryset.filter(criteria)
+        return queryset
+
+    def perform_create(self, serializer):
+        obj = serializer.save(
+            status="draft", created_by=self.request.user, updated_by=self.request.user,
+            has_unpublished_changes=True,
+        )
+        _log_cms_activity(self.request, "cms_content_created", {"content_type": self.content_type_key, "id": obj.pk})
+
+    def perform_update(self, serializer):
+        obj = serializer.instance
+        if obj.status == "archived":
+            raise PermissionDenied("Archived content must be restored before editing.")
+        if obj.status == "submitted" and getattr(self.request.user, "role", "") != "admin":
+            raise PermissionDenied("Submitted content can only be changed after administrator review.")
+        obj = serializer.save(
+            status="draft", updated_by=self.request.user, has_unpublished_changes=True,
+        )
+        _log_cms_activity(self.request, "cms_content_updated", {"content_type": self.content_type_key, "id": obj.pk})
+
+    def destroy(self, request, *args, **kwargs):
+        return Response({"detail": "CMS content is archived instead of hard-deleted."}, status=405)
+
+    @action(detail=True, methods=["post"])
+    def submit(self, request, pk=None):
+        obj = self.get_object()
+        if obj.status not in {"draft", "rejected", "published"}:
+            return Response({"detail": "Only draft, rejected, or edited published content can be submitted."}, status=400)
+        obj.status = "submitted"
+        obj.submitted_by = request.user
+        obj.review_notes = ""
+        obj.save(update_fields=["status", "submitted_by", "review_notes", "updated_at"])
+        _log_cms_activity(request, "cms_content_submitted", {"content_type": self.content_type_key, "id": obj.pk})
+        return Response(self.get_serializer(obj).data)
+
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
+    def publish(self, request, pk=None):
+        with transaction.atomic():
+            obj = self.get_queryset().select_for_update().get(pk=self.get_object().pk)
+            if obj.status == "archived":
+                return Response({"detail": "Archived content cannot be published."}, status=400)
+            obj.published_snapshot_json = managed_content_snapshot(obj)
+            obj.status = "published"
+            obj.has_unpublished_changes = False
+            obj.published_at = timezone.now()
+            obj.archived_at = None
+            obj.reviewed_by = request.user
+            obj.updated_by = request.user
+            obj.review_notes = str(request.data.get("review_notes") or "").strip()
+            obj.save(update_fields=[
+                "published_snapshot_json", "status", "has_unpublished_changes", "published_at",
+                "archived_at", "reviewed_by", "updated_by", "review_notes", "updated_at",
+            ])
+        _log_cms_activity(request, "cms_content_published", {"content_type": self.content_type_key, "id": obj.pk})
+        return Response(self.get_serializer(obj).data)
+
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
+    def reject(self, request, pk=None):
+        obj = self.get_object()
+        if obj.status not in {"submitted", "draft"}:
+            return Response({"detail": "Only submitted or draft content can be rejected."}, status=400)
+        obj.status = "rejected"
+        obj.reviewed_by = request.user
+        obj.review_notes = str(request.data.get("review_notes") or request.data.get("remarks") or "Changes requested.").strip()
+        obj.save(update_fields=["status", "reviewed_by", "review_notes", "updated_at"])
+        _log_cms_activity(request, "cms_content_rejected", {"content_type": self.content_type_key, "id": obj.pk})
+        return Response(self.get_serializer(obj).data)
+
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
+    def archive(self, request, pk=None):
+        obj = self.get_object()
+        if obj.status == "archived":
+            return Response({"detail": "Content is already archived."}, status=409)
+        obj.status = "archived"
+        obj.archived_at = timezone.now()
+        obj.reviewed_by = request.user
+        obj.save(update_fields=["status", "archived_at", "reviewed_by", "updated_at"])
+        _log_cms_activity(request, "cms_content_archived", {"content_type": self.content_type_key, "id": obj.pk})
+        return Response(self.get_serializer(obj).data)
+
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
+    def restore(self, request, pk=None):
+        obj = self.get_queryset().model.objects.filter(pk=pk).first()
+        if not obj:
+            raise Http404("Content not found.")
+        if obj.status != "archived":
+            return Response({"detail": "Only archived content can be restored."}, status=409)
+        obj.status = "draft"
+        obj.archived_at = None
+        obj.has_unpublished_changes = True
+        obj.updated_by = request.user
+        obj.save(update_fields=["status", "archived_at", "has_unpublished_changes", "updated_by", "updated_at"])
+        _log_cms_activity(request, "cms_content_restored", {"content_type": self.content_type_key, "id": obj.pk})
+        return Response(self.get_serializer(obj).data)
+
+
+class AdminCMSCarouselItemViewSet(CMSManagedContentViewSet):
+    queryset = CMSCarouselItem.objects.select_related("image")
+    serializer_class = CMSCarouselItemSerializer
+    search_fields = ("title", "description")
+    content_type_key = "carousel_item"
+
+
+class AdminCMSPublicationCategoryViewSet(CMSManagedContentViewSet):
+    queryset = CMSPublicationCategory.objects.annotate(document_count=Count("documents", distinct=True))
+    serializer_class = CMSPublicationCategorySerializer
+    search_fields = ("code", "name", "description")
+    content_type_key = "publication_category"
+
+    @action(detail=True, methods=["get"])
+    def dependencies(self, request, pk=None):
+        category = self.get_object()
+        serializer = self.get_serializer(category)
+        return Response({
+            "category": {"id": category.pk, "code": category.code, "name": category.name},
+            "documents": category.documents.values("status").annotate(count=Count("id")).order_by("status"),
+            "featured_slots": serializer.data["featured_slots"],
+        })
+
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
+    def archive(self, request, pk=None):
+        category = self.get_object()
+        serialized = self.get_serializer(category).data
+        featured_slots = serialized["featured_slots"]
+        replacement_code = str(request.data.get("replacement_category") or "").strip()
+        replacement = None
+        if featured_slots:
+            replacement = CMSPublicationCategory.objects.filter(
+                code__iexact=replacement_code, status="published",
+            ).exclude(pk=category.pk).first()
+            if not replacement:
+                return Response({
+                    "detail": "Choose a different published category to replace this Home page feature.",
+                    "featured_slots": featured_slots,
+                }, status=409)
+
+        active_documents = category.documents.exclude(status="archived")
+        if active_documents.exists():
+            resolution = str(request.data.get("document_resolution") or "").strip()
+            if resolution == "reassign":
+                target = CMSPublicationCategory.objects.filter(
+                    code__iexact=str(request.data.get("target_category") or "").strip()
+                ).exclude(pk=category.pk).exclude(status="archived").first()
+                if not target:
+                    return Response({"detail": "Choose an active target category for the documents."}, status=409)
+                active_documents.update(category=target, updated_by=request.user, has_unpublished_changes=True)
+            elif resolution == "archive_documents":
+                active_documents.update(status="archived", archived_at=timezone.now(), reviewed_by=request.user)
+            else:
+                return Response({
+                    "detail": "Reassign or archive the associated documents before archiving this category.",
+                    "document_count": active_documents.count(),
+                }, status=409)
+
+        if replacement:
+            home = CMSPage.objects.filter(slug="home").first()
+            if home:
+                for section in home.sections.filter(section_key__in=featured_slots):
+                    content = dict(section.content_json or {})
+                    content["featuredCategoryCode"] = replacement.code
+                    section.content_json = content
+                    section.status = "published"
+                    section.save(update_fields=["content_json", "status", "updated_at"])
+                publish_page(home, user=request.user)
+        return super().archive(request, pk=pk)
+
+
+class AdminCMSPublicationDocumentViewSet(CMSManagedContentViewSet):
+    queryset = CMSPublicationDocument.objects.select_related("category", "attachment")
+    serializer_class = CMSPublicationDocumentSerializer
+    search_fields = ("stable_key", "title", "description", "category__name")
+    content_type_key = "publication_document"
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        category = str(self.request.query_params.get("category") or "").strip()
+        return queryset.filter(category__code=category) if category else queryset
+
+
+class AdminCMSResolutionViewSet(CMSManagedContentViewSet):
+    queryset = CMSResolution.objects.select_related("attachment")
+    serializer_class = CMSResolutionSerializer
+    search_fields = ("stable_key", "resolution_number", "title", "description")
+    content_type_key = "resolution"
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        year = str(self.request.query_params.get("year") or "").strip()
+        return queryset.filter(year=year) if year.isdigit() else queryset
+
+
+def _fixed_module_page(slug):
+    definition = fixed_page_definition(slug)
+    if not definition:
+        raise Http404("Content module not found.")
+    page = CMSPage.objects.prefetch_related("sections").select_related(
+        "created_by", "updated_by", "submitted_by", "reviewed_by"
+    ).filter(slug=slug).first()
+    if not page:
+        raise Http404("The fixed content module has not been provisioned.")
+    return page
+
+
+class AdminCMSModuleListView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsCMSUser]
+
+    def get(self, request):
+        pages = {
+            page.slug: page for page in CMSPage.objects.filter(slug__in=FIXED_CMS_PAGE_REGISTRY)
+        }
+        return Response([
+            {
+                "slug": slug, "title": definition["title"],
+                "status": pages[slug].status if slug in pages else "missing",
+                "has_unpublished_changes": pages[slug].has_unpublished_changes if slug in pages else False,
+                "updated_at": pages[slug].updated_at if slug in pages else None,
+                "section_keys": [item[0] for item in definition["sections"]],
+            }
+            for slug, definition in FIXED_CMS_PAGE_REGISTRY.items()
+        ])
+
+
+class AdminCMSModuleDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsCMSUser]
+
+    def get(self, request, slug):
+        page = _fixed_module_page(slug)
+        return Response(CMSPageEditorSerializer(page, context={"request": request}).data)
+
+    def patch(self, request, slug):
+        page = _fixed_module_page(slug)
+        if page.status == "submitted" and getattr(request.user, "role", "") != "admin":
+            raise PermissionDenied("Submitted content must be returned before it can be edited.")
+        sections_payload = request.data.get("sections")
+        if not isinstance(sections_payload, dict) or not sections_payload:
+            return Response({"sections": "Provide one or more fixed section content objects."}, status=400)
+        definition = fixed_page_definition(slug)
+        allowed = {item[0]: {"type": item[1], "order": index} for index, item in enumerate(definition["sections"], 1)}
+        unknown = sorted(set(sections_payload) - set(allowed))
+        if unknown:
+            return Response({"sections": f"Unknown fixed section keys: {', '.join(unknown)}"}, status=400)
+        with transaction.atomic():
+            locked_page = CMSPage.objects.select_for_update().get(pk=page.pk)
+            expected = str(request.data.get("expected_updated_at") or "").strip()
+            if expected and expected != locked_page.updated_at.isoformat().replace("+00:00", "Z") and expected != locked_page.updated_at.isoformat():
+                return Response({"detail": "This module changed after it was loaded. Refresh before saving."}, status=409)
+            section_rows = {row.section_key: row for row in CMSPageSection.objects.select_for_update().filter(page=locked_page)}
+            for key, content in sections_payload.items():
+                if not isinstance(content, dict):
+                    return Response({"sections": {key: "Section content must be an object."}}, status=400)
+                row = section_rows.get(key)
+                if not row:
+                    return Response({"sections": {key: "The fixed section record is missing."}}, status=409)
+                if lock_is_active(row) and row.lock_owner_id != request.user.id:
+                    return Response({"detail": f"{key} is currently being edited by another user."}, status=423)
+                section_serializer = CMSPageSectionSerializer(
+                    row, data={"content_json": content}, partial=True, context={"request": request},
+                )
+                section_serializer.is_valid(raise_exception=True)
+                row = section_serializer.save(content_json=content)
+                row.section_type = allowed[key]["type"]
+                row.order = allowed[key]["order"]
+                row.is_visible = True
+                row.status = "draft"
+                row.lock_owner = None
+                row.lock_acquired_at = None
+                row.save(update_fields=[
+                    "content_json", "section_type", "order", "is_visible", "status",
+                    "lock_owner", "lock_acquired_at", "updated_at",
+                ])
+                from cms.services.collections import sync_normalized_section_draft
+                sync_normalized_section_draft(row, request.user)
+            locked_page.status = "draft"
+            locked_page.has_unpublished_changes = True
+            locked_page.updated_by = request.user
+            locked_page.save(update_fields=["status", "has_unpublished_changes", "updated_by", "updated_at"])
+        _log_cms_activity(request, "cms_content_updated", {"content_type": "module", "slug": slug, "sections": sorted(sections_payload)})
+        return Response(CMSPageEditorSerializer(_fixed_module_page(slug), context={"request": request}).data)
+
+
+class AdminCMSModuleActionView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsCMSUser]
+
+    def post(self, request, slug, operation):
+        page = _fixed_module_page(slug)
+        if operation == "submit":
+            if page.status not in {"draft", "rejected", "published"}:
+                return Response({"detail": "This module cannot be submitted in its current state."}, status=409)
+            page.status = "submitted"
+            page.submitted_by = request.user
+            page.review_notes = ""
+            page.save(update_fields=["status", "submitted_by", "review_notes", "updated_at"])
+            from cms.services.collections import submit_normalized_page_content
+            submit_normalized_page_content(page, request.user)
+        elif operation == "publish":
+            if getattr(request.user, "role", "") != "admin":
+                raise PermissionDenied("Only Administrators can publish public content.")
+            page = publish_page(page, user=request.user)
+        elif operation == "reject":
+            if getattr(request.user, "role", "") != "admin":
+                raise PermissionDenied("Only Administrators can reject public content.")
+            if page.status not in {"submitted", "draft"}:
+                return Response({"detail": "Only submitted or draft modules can be rejected."}, status=409)
+            page.status = "rejected"
+            page.reviewed_by = request.user
+            page.review_notes = str(request.data.get("review_notes") or "Changes requested.").strip()
+            page.save(update_fields=["status", "reviewed_by", "review_notes", "updated_at"])
+        else:
+            raise Http404("Unsupported module action.")
+        _log_cms_activity(request, f"cms_content_{operation}", {"content_type": "module", "slug": slug})
+        return Response(CMSPageEditorSerializer(page, context={"request": request}).data)
 
 
 class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
@@ -1225,14 +1587,21 @@ class PublicCMSPageView(APIView):
     authentication_classes = []
 
     def get(self, request, slug):
+        if slug not in FIXED_CMS_PAGE_REGISTRY:
+            raise Http404("Published page not found.")
         page = (
-            CMSPage.objects.filter(published_at__isnull=False, published_snapshot_json__slug=slug)
+            CMSPage.objects.filter(
+                slug=slug,
+                published_at__isnull=False,
+                published_snapshot_json__slug=slug,
+            )
             .exclude(status=CMSPage.STATUS_ARCHIVED)
-            .only("published_snapshot_json")
+            .only("slug", "published_snapshot_json")
             .first()
         )
         if page and page.published_snapshot_json:
-            return _with_public_cache(request, page.published_snapshot_json)
+            from cms.services.snapshots import compose_public_page_snapshot
+            return _with_public_cache(request, compose_public_page_snapshot(page))
         raise Http404("Published page not found.")
 
 

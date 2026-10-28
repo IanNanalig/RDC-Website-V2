@@ -31,6 +31,7 @@ import { ncrCityCenters } from "../services/ncrCityCenters";
 
 const PublicProjectCharts = React.lazy(() => import("../components/PublicProjectCharts"));
 const VoronoiBlobMap = React.lazy(() => import("../components/VoronoiBlobMap"));
+const TABLE_PAGE_SIZE = 10;
 
 const money = (value: number | string | null | undefined) => {
   const numeric =
@@ -120,6 +121,7 @@ const Projects: React.FC = () => {
     "title" | "year" | "status" | "budget" | "agency" | "lgu"
   >("title");
   const [sortDesc, setSortDesc] = useState(false);
+  const [tablePage, setTablePage] = useState(1);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
@@ -443,9 +445,34 @@ const Projects: React.FC = () => {
     return sorted;
   }, [displayProjects, sortColumn, sortDesc]);
 
+  const tablePageCount = Math.max(
+    1,
+    Math.ceil(sortedTableProjects.length / TABLE_PAGE_SIZE),
+  );
+  const paginatedTableProjects = useMemo(() => {
+    const start = (tablePage - 1) * TABLE_PAGE_SIZE;
+    return sortedTableProjects.slice(start, start + TABLE_PAGE_SIZE);
+  }, [sortedTableProjects, tablePage]);
+
+  useEffect(() => {
+    setTablePage(1);
+  }, [
+    agencyFilter,
+    debouncedSearch,
+    municipalityFilter,
+    statusFilter,
+    updateFilter,
+    yearFilter,
+  ]);
+
+  useEffect(() => {
+    if (tablePage > tablePageCount) setTablePage(tablePageCount);
+  }, [tablePage, tablePageCount]);
+
   const handleSort = (
     col: "title" | "year" | "status" | "budget" | "agency" | "lgu",
   ) => {
+    setTablePage(1);
     if (sortColumn === col) {
       setSortDesc(!sortDesc);
     } else {
@@ -896,8 +923,8 @@ const Projects: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {sortedTableProjects.length > 0 ? (
-                        sortedTableProjects.map((p, idx) => (
+                      {paginatedTableProjects.length > 0 ? (
+                        paginatedTableProjects.map((p, idx) => (
                           <tr
                             key={p.id}
                             className={`border-b border-gray-100 hover:bg-blue-50 transition ${
@@ -987,6 +1014,36 @@ const Projects: React.FC = () => {
                     </tbody>
                   </table>
                 </div>
+                {sortedTableProjects.length > 0 && (
+                  <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-slate-600">
+                      Showing {(tablePage - 1) * TABLE_PAGE_SIZE + 1}–{Math.min(tablePage * TABLE_PAGE_SIZE, sortedTableProjects.length)} of {sortedTableProjects.length} projects
+                    </p>
+                    <div className="flex items-center justify-between gap-2 sm:justify-end">
+                      <button
+                        type="button"
+                        aria-label="Previous page"
+                        disabled={tablePage === 1}
+                        onClick={() => setTablePage((page) => Math.max(1, page - 1))}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Previous
+                      </button>
+                      <span className="whitespace-nowrap font-medium text-slate-700">
+                        Page {tablePage} of {tablePageCount}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label="Next page"
+                        disabled={tablePage === tablePageCount}
+                        onClick={() => setTablePage((page) => Math.min(tablePageCount, page + 1))}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

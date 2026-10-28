@@ -29,23 +29,6 @@ type HomeNewsArticle = {
   slug: string;
 };
 
-type HomeButton = {
-  text: string;
-  link: string;
-};
-
-type HomeSlide = {
-  imageKey?: string;
-  src: string;
-  avifSrcSet?: string;
-  webpSrcSet?: string;
-  preloadSrc?: string;
-  title: string;
-  subtitle: string;
-  button1: HomeButton;
-  button2: HomeButton;
-};
-
 type DocCard = {
   title: string;
   link: string;
@@ -120,22 +103,24 @@ const iconForCms = (icon: unknown, fallback = "file") => {
 
 const mapCmsDocItems = (
   content: Record<string, unknown> | null,
-  fallback: DocCard[],
 ) => {
-  const baseItems = fallback.map((item) => ({ ...item }));
-  const result = [...baseItems];
+  const result: DocCard[] = [];
+  const featuredCategory = asRecord(content?.featuredCategory);
+  const hasFeaturedCategory = Object.prototype.hasOwnProperty.call(content || {}, "featuredCategory");
+  const sourceItems = hasFeaturedCategory
+    ? asArray(featuredCategory.documents)
+    : asArray(content?.items);
 
-  asArray(content?.items).forEach((item) => {
+  sourceItems.forEach((item) => {
     const row = asRecord(item);
     const title = asString(row.title);
-    const link = asString(row.link);
+    const link = asString(row.url || row.link);
     if (!title && !link) return;
     const matchIndex = result.findIndex(
       (candidate) =>
         (!!link && candidate.link === link) ||
         (!!title && candidate.title.toLowerCase() === title.toLowerCase()),
     );
-    const fallbackItem = matchIndex >= 0 ? result[matchIndex] : undefined;
     if (!isVisible(row)) {
       if (matchIndex >= 0) result.splice(matchIndex, 1);
       return;
@@ -150,11 +135,11 @@ const mapCmsDocItems = (
       .filter(Boolean) as Array<{ label: string; link: string }>;
 
     const nextItem: DocCard = {
-      title: asString(row.title, fallbackItem?.title ?? "Featured Document"),
-      link: asString(row.link, fallbackItem?.link ?? ""),
-      category: asString(row.category, fallbackItem?.category ?? "Featured"),
-      icon: row.icon ? iconForCms(row.icon) : fallbackItem?.icon ?? iconForCms(row.icon),
-      quickLinks: quickLinks.length ? quickLinks : fallbackItem?.quickLinks,
+      title: asString(row.title),
+      link,
+      category: asString(row.category, asString(featuredCategory.title)),
+      icon: iconForCms(row.icon || featuredCategory.icon),
+      quickLinks: quickLinks.length ? quickLinks : undefined,
     };
 
     if (!nextItem.link) return;
@@ -162,7 +147,7 @@ const mapCmsDocItems = (
     else result.push(nextItem);
   });
 
-  return result.length > 0 ? result : fallback;
+  return result;
 };
 
 const formatArticleDate = (value: string) => {
@@ -360,216 +345,38 @@ const Home: React.FC = () => {
     [],
   );
 
-  const fallbackCarouselImages = useMemo<HomeSlide[]>(
-    () => [
-      {
-        ...optimizedHero("photo1"),
-        title: "Regional Development Council NCR",
-        subtitle: "Planning a sustainable and resilient Metro Manila",
-        button1: { text: "View Plans", link: "/plans" },
-        button2: { text: "Latest Reports", link: "/reports" },
-      },
-      {
-        ...optimizedHero("photo2"),
-        title: "Building a Better Future",
-        subtitle: "Collaborative governance for Metro Manila's growth",
-        button1: { text: "View Plans", link: "/plans" },
-        button2: { text: "Latest Reports", link: "/reports" },
-      },
-      {
-        ...optimizedHero("photo3"),
-        title: "Strategic Development",
-        subtitle: "Empowering communities through effective planning",
-        button1: { text: "View Plans", link: "/plans" },
-        button2: { text: "Latest Reports", link: "/reports" },
-      },
-      {
-        ...optimizedHero("photo4"),
-        title: "Infrastructure Excellence",
-        subtitle: "Modern solutions for urban challenges",
-        button1: { text: "View Plans", link: "/plans" },
-        button2: { text: "Latest Reports", link: "/reports" },
-      },
-      {
-        ...optimizedHero("photo5"),
-        title: "Sustainable Growth",
-        subtitle: "Balancing progress with environmental care",
-        button1: { text: "View Plans", link: "/plans" },
-        button2: { text: "Latest Reports", link: "/reports" },
-      },
-      {
-        ...optimizedHero("photo6"),
-        title: "Urban Innovation Hub",
-        subtitle: "Transforming Metro Manila into a smart metropolis",
-        button1: { text: "View Plans", link: "/plans" },
-        button2: { text: "Latest Reports", link: "/reports" },
-      },
-      {
-        ...optimizedHero("photo7"),
-        title: "Community Engagement",
-        subtitle: "Working together for inclusive development",
-        button1: { text: "View Plans", link: "/plans" },
-        button2: { text: "Latest Reports", link: "/reports" },
-      },
-      {
-        ...optimizedHero("photo8"),
-        title: "Economic Resilience",
-        subtitle: "Strengthening NCR's economic foundations",
-        button1: { text: "View Plans", link: "/plans" },
-        button2: { text: "Latest Reports", link: "/reports" },
-      },
-      {
-        ...optimizedHero("photo9"),
-        title: "Future-Ready Infrastructure",
-        subtitle: "Building for tomorrow's needs today",
-        button1: { text: "View Plans", link: "/plans" },
-        button2: { text: "Latest Reports", link: "/reports" },
-      },
-    ],
-    [],
-  );
 
   const heroSection = getHomeSection(homeCmsPage, [
     "hero-carousel",
     "carousel",
   ]);
   const carouselImages = useMemo(() => {
-    const cmsSlides = asArray(heroSection?.slides)
-      .map((slide, index) => {
+    return asArray(heroSection?.slides)
+      .map((slide) => {
         const row = asRecord(slide);
         const imageKey = asString(row.imageKey);
         const imageUrl = asString(row.imageUrl);
+        const keyedImage = /^photo[1-9]$/.test(imageKey) ? optimizedHero(imageKey) : null;
         const button1 = asRecord(row.button1);
         const button2 = asRecord(row.button2);
-        const fallback =
-          fallbackCarouselImages[index % fallbackCarouselImages.length];
-        const keyedImage = /^photo[1-9]$/.test(imageKey) ? optimizedHero(imageKey) : fallback;
         return {
           imageKey,
-          src: imageUrl || keyedImage.src,
-          avifSrcSet: imageUrl ? undefined : keyedImage.avifSrcSet,
-          webpSrcSet: imageUrl ? undefined : keyedImage.webpSrcSet,
-          preloadSrc: imageUrl || keyedImage.preloadSrc || keyedImage.src,
-          title: asString(row.title, fallback.title),
-          subtitle: asString(row.subtitle, fallback.subtitle),
-          button1: {
-            text: asString(button1.text, fallback.button1.text),
-            link: asString(button1.link, fallback.button1.link),
-          },
-          button2: {
-            text: asString(button2.text, fallback.button2.text),
-            link: asString(button2.link, fallback.button2.link),
-          },
+          src: imageUrl || keyedImage?.src || "",
+          avifSrcSet: imageUrl ? undefined : keyedImage?.avifSrcSet,
+          webpSrcSet: imageUrl ? undefined : keyedImage?.webpSrcSet,
+          preloadSrc: imageUrl || keyedImage?.preloadSrc || keyedImage?.src || "",
+          title: asString(row.title),
+          subtitle: asString(row.subtitle),
+          button1: { text: asString(button1.text), link: asString(button1.link) },
+          button2: { text: asString(button2.text), link: asString(button2.link) },
         };
       })
       .filter((slide) => slide.title && slide.src);
+  }, [heroSection]);
 
-    if (cmsSlides.length === 0) return fallbackCarouselImages;
 
-    const customizedImageKeys = new Set(
-      cmsSlides.map((slide) => slide.imageKey).filter(Boolean),
-    );
-    const remainingBuiltInSlides = fallbackCarouselImages.filter(
-      (slide) => !slide.imageKey || !customizedImageKeys.has(slide.imageKey),
-    );
+  const newsArticles = cmsNewsArticles;
 
-    return [...cmsSlides, ...remainingBuiltInSlides];
-  }, [heroSection, fallbackCarouselImages]);
-
-  const fallbackNewsArticles: HomeNewsArticle[] = [
-    {
-      id: "home-news-1",
-      title: "RDC-NCR ELECTS NEW CHAIRPERSON FOR 2025-2026",
-      excerpt:
-        "The Regional Development Council elected a new chairperson during its fourth quarter meeting...",
-      date: "November 17, 2025",
-      image: optimizedHero("photo2").src,
-      category: "Announcement",
-      slug: "new-chairperson-2025",
-    },
-    {
-      id: "home-news-2",
-      title: "NCR BACKS CALL FOR DIGITAL TRANSFORMATION",
-      excerpt:
-        "The Infrastructure Development Committee endorsed support for digital initiatives across the region...",
-      date: "November 12, 2025",
-      image: optimizedHero("photo3").src,
-      category: "Technology",
-      slug: "digital-transformation",
-    },
-    {
-      id: "home-news-3",
-      title: "QUARTERLY ECONOMIC REPORT RELEASED",
-      excerpt:
-        "The latest economic indicators show positive growth trends in the National Capital Region...",
-      date: "November 8, 2025",
-      image: optimizedHero("photo4").src,
-      category: "Report",
-      slug: "q3-economic-report",
-    },
-    {
-      id: "home-news-4",
-      title: "METRO MANILA TRANSPORTATION PLAN UPDATE",
-      excerpt:
-        "New initiatives to improve public transportation and reduce congestion in Metro Manila...",
-      date: "November 5, 2025",
-      image: optimizedHero("photo5").src,
-      category: "Infrastructure",
-      slug: "transportation-plan-update",
-    },
-  ];
-
-  const newsArticles =
-    cmsNewsArticles.length > 0 ? cmsNewsArticles : fallbackNewsArticles;
-
-  const fallbackDevelopmentPlans: DocCard[] = [
-    {
-      title: "Metro Manila Greenprint 2030",
-      category: "Sustainability Framework",
-      icon: <FaLeaf className="w-8 h-8 text-green-500" />,
-      link: "/publications?category=greenprint",
-    },
-    {
-      title: "Regional Development Plan",
-      category: "Comprehensive Plan",
-      icon: <FaFileAlt className="w-8 h-8 text-gray-700" />,
-      link: "/publications?category=rdp",
-    },
-    {
-      title: "SDG Catch-up Plan",
-      category: "Development Goals",
-      icon: <FaBullseye className="w-8 h-8 text-indigo-600" />,
-      link: "/publications?category=sdg",
-    },
-  ];
-
-  const fallbackInvestmentProgramming: DocCard[] = [
-    {
-      title: "Regional Development Investment Program",
-      category: "Investment Portfolio",
-      icon: <FaChartLine className="w-8 h-8 text-green-600" />,
-      link: "/publications?category=rdip",
-      quickLinks: [
-        { label: "RDIP DOCUMENTS", link: "/publications?category=rdip" },
-        { label: "RDIP DASHBOARD", link: "/Projects" },
-      ],
-    },
-  ];
-
-  const fallbackMonitoringEvaluation: DocCard[] = [
-    {
-      title: "Regional Development Report",
-      category: "Annual Report",
-      icon: <FaChartBar className="w-8 h-8 text-purple-600" />,
-      link: "/publications?category=rdr",
-    },
-    {
-      title: "Regional Project Monitoring and Evaluation System",
-      category: "Monitoring System",
-      icon: <FaClipboardList className="w-8 h-8 text-purple-500" />,
-      link: "/publications?category=rpmes",
-    },
-  ];
 
   const developmentPlansSection = getHomeSection(
     homeCmsPage,
@@ -588,15 +395,15 @@ const Home: React.FC = () => {
   const upcomingEventsSection = getHomeSection(homeCmsPage, "upcoming-events");
 
   const developmentPlansTitle = asString(
-    developmentPlansSection?.title,
+    asRecord(developmentPlansSection?.featuredCategory).title || developmentPlansSection?.title,
     "Development Plans and Frameworks",
   );
   const investmentProgrammingTitle = asString(
-    investmentProgrammingSection?.title,
+    asRecord(investmentProgrammingSection?.featuredCategory).title || investmentProgrammingSection?.title,
     "Investment Programming",
   );
   const monitoringEvaluationTitle = asString(
-    monitoringEvaluationSection?.title,
+    asRecord(monitoringEvaluationSection?.featuredCategory).title || monitoringEvaluationSection?.title,
     "Monitoring and Evaluation",
   );
   const dashboardTitle = asString(
@@ -644,14 +451,8 @@ const Home: React.FC = () => {
     "Published schedules from the RDC-NCR public website.",
   );
 
-  const developmentPlans = mapCmsDocItems(
-    developmentPlansSection,
-    fallbackDevelopmentPlans,
-  );
-  const investmentProgramming = mapCmsDocItems(
-    investmentProgrammingSection,
-    fallbackInvestmentProgramming,
-  );
+  const developmentPlans = mapCmsDocItems(developmentPlansSection);
+  const investmentProgramming = mapCmsDocItems(investmentProgrammingSection);
   const investmentQuickLinks = (() => {
     const sectionLinks = asArray(investmentProgrammingSection?.quickLinks)
       .map((value) => {
@@ -664,10 +465,7 @@ const Home: React.FC = () => {
     if (sectionLinks.length) return sectionLinks;
     return investmentProgramming.flatMap((card) => card.quickLinks || []);
   })();
-  const monitoringEvaluation = mapCmsDocItems(
-    monitoringEvaluationSection,
-    fallbackMonitoringEvaluation,
-  );
+  const monitoringEvaluation = mapCmsDocItems(monitoringEvaluationSection);
 
   const formatMoneyCompact = (n: number) => {
     const value = Number(n || 0);
@@ -893,7 +691,7 @@ const Home: React.FC = () => {
   }, [loadBelowFold]);
 
   useEffect(() => {
-    if (isPaused) return;
+    if (isPaused || carouselImages.length < 2) return;
 
     const timer = setInterval(() => {
       setCurrentSlide((prev) => (prev + 1) % carouselImages.length);
@@ -992,10 +790,12 @@ const Home: React.FC = () => {
   };
 
   const nextSlide = () => {
+    if (!carouselImages.length) return;
     setCurrentSlide((prev) => (prev + 1) % carouselImages.length);
   };
 
   const prevSlide = () => {
+    if (!carouselImages.length) return;
     setCurrentSlide(
       (prev) => (prev - 1 + carouselImages.length) % carouselImages.length,
     );
@@ -1180,6 +980,11 @@ const Home: React.FC = () => {
             </div>
             );
           })()}
+          {carouselImages.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-900 px-6 text-center text-white">
+              <div><h1 className="text-3xl font-bold">Home carousel is not configured.</h1><p className="mt-3 text-slate-300">Published carousel content will appear here.</p></div>
+            </div>
+          )}
         </div>
 
         {/* Carousel Controls */}
@@ -1255,6 +1060,7 @@ const Home: React.FC = () => {
               </div>
               <div className="p-5 space-y-5">
                 {developmentPlans.map(renderDocumentCard)}
+                {developmentPlans.length === 0 && <p className="text-sm text-slate-500">No published development-plan links are configured.</p>}
               </div>
             </div>
 
@@ -1303,6 +1109,7 @@ const Home: React.FC = () => {
                     </div>
                   </div>
                 ))}
+                {investmentProgramming.length === 0 && <p className="text-sm text-slate-500">No published investment-programming links are configured.</p>}
                 {investmentQuickLinks.length > 0 && (
                   <div className="border-t pt-5">
                     <h5 className="font-semibold text-gray-700 mb-3">Quick Access:</h5>
@@ -1335,6 +1142,7 @@ const Home: React.FC = () => {
               </div>
               <div className="p-5 space-y-5">
                 {monitoringEvaluation.map(renderDocumentCard)}
+                {monitoringEvaluation.length === 0 && <p className="text-sm text-slate-500">No published monitoring and evaluation links are configured.</p>}
               </div>
             </div>
           </div>
@@ -1551,6 +1359,7 @@ const Home: React.FC = () => {
                       </div>
                     </article>
                   ))}
+                  {newsArticles.length === 0 && <p className="col-span-full text-center text-sm text-slate-500">No published news articles are available.</p>}
                 </div>
               </div>
             </section>

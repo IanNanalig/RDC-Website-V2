@@ -15,155 +15,9 @@ type NewsItem = {
   thumbnail: string;
   slug: string;
   body?: string;
-  source: "cms" | "sample";
+  source: "cms";
 };
 
-const SAMPLE_NEWS: NewsItem[] = [
-  {
-    id: "news-001",
-    title: "RDC-NCR Elects New Chairperson for 2025-2026",
-    category: "Press Release",
-    date: "2024-11-17",
-    summary:
-      "The Regional Development Council elected a new chairperson during its fourth quarter meeting, marking a new chapter in regional governance.",
-    thumbnail:
-      "https://images.unsplash.com/photo-1540910419892-4a36d2c3266c?q=80&w=800&auto=format&fit=crop",
-    slug: "new-chairperson-2025",
-    source: "sample",
-  },
-  {
-    id: "news-002",
-    title: "NCR Backs Call for Digital Transformation Initiative",
-    category: "Committee Announcement",
-    date: "2024-11-12",
-    summary:
-      "The Infrastructure Development Committee endorsed support for digital initiatives across the region to modernize public services.",
-    thumbnail:
-      "https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=800&auto=format&fit=crop",
-    slug: "digital-transformation",
-    source: "sample",
-  },
-  {
-    id: "news-003",
-    title: "Quarterly Economic Report Released: Q3 2024",
-    category: "Press Release",
-    date: "2024-11-08",
-    summary:
-      "The latest economic indicators show positive growth trends in the National Capital Region with 6.2% GDP increase.",
-    thumbnail:
-      "https://images.unsplash.com/photo-1460925895917-adf4e7d5e7a1?q=80&w=800&auto=format&fit=crop",
-    slug: "q3-economic-report",
-    source: "sample",
-  },
-  {
-    id: "news-004",
-    title: "RDC Full Council Meeting - December 15, 2024",
-    category: "Event",
-    date: "2024-11-05",
-    summary:
-      "Save the date! The RDC Full Council Meeting will convene to discuss regional development priorities and review ongoing projects.",
-    thumbnail:
-      "https://images.unsplash.com/photo-1511578314322-379afb476865?q=80&w=800&auto=format&fit=crop",
-    slug: "council-meeting-dec",
-    source: "sample",
-  },
-  {
-    id: "news-005",
-    title: "Resolution No. 2024-15: Infrastructure Investment Approval",
-    category: "Resolution",
-    date: "2024-10-28",
-    summary:
-      "RDC-NCR approves PHP 12.5 billion infrastructure investment program for 2025, focusing on transport and flood control.",
-    thumbnail:
-      "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?q=80&w=800&auto=format&fit=crop",
-    slug: "resolution-2024-15",
-    source: "sample",
-  },
-  {
-    id: "news-006",
-    title: "Public Consultation on Greenprint 2030 Extended",
-    category: "Press Release",
-    date: "2024-10-22",
-    summary:
-      "Due to public demand, the consultation period for Greenprint 2030 has been extended until November 30, 2024.",
-    thumbnail:
-      "https://images.unsplash.com/photo-1497436072909-60f360e1d4b1?q=80&w=800&auto=format&fit=crop",
-    slug: "greenprint-consultation",
-    source: "sample",
-  },
-  {
-    id: "news-007",
-    title: "Innovation Summit 2024: Smart Cities Forum",
-    category: "Event",
-    date: "2024-10-15",
-    summary:
-      "Join us for a two-day summit exploring smart city solutions and digital governance innovations for Metro Manila.",
-    thumbnail:
-      "https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=800&auto=format&fit=crop",
-    slug: "innovation-summit",
-    source: "sample",
-  },
-  {
-    id: "news-008",
-    title: "Housing Committee Announces New Affordable Housing Program",
-    category: "Committee Announcement",
-    date: "2024-10-10",
-    summary:
-      "New program aims to provide 50,000 affordable housing units across NCR by 2026 through public-private partnerships.",
-    thumbnail:
-      "https://images.unsplash.com/photo-1560518883-ce09059eeffa?q=80&w=800&auto=format&fit=crop",
-    slug: "housing-program",
-    source: "sample",
-  },
-  {
-    id: "news-009",
-    title: "Resolution No. 2024-14: Climate Action Plan Adopted",
-    category: "Resolution",
-    date: "2024-09-30",
-    summary:
-      "RDC-NCR formally adopts comprehensive climate action plan aligned with national and international commitments.",
-    thumbnail:
-      "https://images.unsplash.com/photo-1569163139394-de4798aa62b6?q=80&w=800&auto=format&fit=crop",
-    slug: "resolution-2024-14",
-    source: "sample",
-  },
-  {
-    id: "news-010",
-    title: "Regional Development Forum: Stakeholder Engagement Success",
-    category: "Event",
-    date: "2024-09-25",
-    summary:
-      "Over 500 stakeholders participated in the successful Regional Development Forum discussing NCR's future priorities.",
-    thumbnail:
-      "https://images.unsplash.com/photo-1475721027785-f74eccf877e2?q=80&w=800&auto=format&fit=crop",
-    slug: "development-forum",
-    source: "sample",
-  },
-  {
-    id: "news-011",
-    title: "Transportation Committee Updates on Metro Manila Subway",
-    category: "Committee Announcement",
-    date: "2024-09-18",
-    summary:
-      "Latest progress report shows subway project is 45% complete, on track for 2025 partial operations target.",
-    thumbnail:
-      "https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?q=80&w=800&auto=format&fit=crop",
-    slug: "subway-update",
-    source: "sample",
-  },
-  {
-    id: "news-012",
-    title: "RDC-NCR Launches Open Data Portal",
-    category: "Press Release",
-    date: "2024-09-10",
-    summary:
-      "New transparency initiative provides public access to regional development data, statistics, and project information.",
-    thumbnail:
-      "https://images.unsplash.com/photo-1551288049-bebda4e38f71?q=80&w=800&auto=format&fit=crop",
-    slug: "open-data-portal",
-    source: "sample",
-  },
-];
 
 const categoryColors: Record<string, { bg: string; text: string }> = {
   "Press Release": { bg: "bg-blue-100", text: "text-blue-700" },
@@ -248,7 +102,7 @@ export default function NewsPage() {
         console.error(error);
         if (!cancelled) {
           setCmsNews([]);
-          setNewsError("Published CMS news is temporarily unavailable. Showing fallback articles.");
+          setNewsError("Published news is temporarily unavailable.");
         }
       } finally {
         if (!cancelled) setNewsLoading(false);
@@ -260,7 +114,7 @@ export default function NewsPage() {
     };
   }, []);
 
-  const newsItems = cmsNews.length > 0 ? cmsNews : SAMPLE_NEWS;
+  const newsItems = cmsNews;
   const selectedArticle = slug ? newsItems.find((item) => item.slug === slug || item.id === slug) : null;
   const heroContent = getPageSection(cmsPage, "news-hero");
   const listingContent = getPageSection(cmsPage, "news-listing");
