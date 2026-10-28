@@ -7,6 +7,7 @@ import { MobileSortControls, SortableTableHeader } from "../../components/portal
 import { sortRows } from "../../utils/tableSort";
 import { userDisplayName } from "../../utils/userDisplayName";
 import type { SortDirection } from "../../utils/tableSort";
+import BatchRegistrationPanel from "../../components/portal/BatchRegistrationPanel";
 
 type UserRow = {
   id: number;
@@ -44,18 +45,6 @@ type ActivityItem = {
   location_hint?: string;
   created_at: string;
   details?: Record<string, unknown>;
-};
-
-type PasswordResetRequestRow = {
-  id: number;
-  email: string;
-  status: "pending" | "approved" | "rejected";
-  user_email?: string;
-  user_username?: string;
-  requested_ip?: string;
-  requested_user_agent?: string;
-  created_at: string;
-  reviewed_at?: string;
 };
 
 type ChatKnowledgeGap = {
@@ -117,7 +106,6 @@ type PublicEventForm = {
 type AdminUsersTab =
   | "create-account"
   | "encoding-window"
-  | "password-reset-requests"
   | "system-users"
   | "system-audit-log"
   | "chatbot-learning";
@@ -137,7 +125,6 @@ const parseTab = (value: string | null): AdminUsersTab => {
   if (
     value === "create-account" ||
     value === "encoding-window" ||
-    value === "password-reset-requests" ||
     value === "system-users" ||
     value === "system-audit-log"
   )
@@ -164,7 +151,6 @@ const UserManagement = () => {
   const activeTab = parseTab(searchParams.get("tab"));
   useEffect(() => { if (searchParams.get("tab") === "system-audit-log") navigate("/admin/audit-log", { replace: true }); }, [navigate, searchParams]);
   const [users, setUsers] = useState<UserRow[]>([]);
-  const [resetRequests, setResetRequests] = useState<PasswordResetRequestRow[]>([]);
   const [usersRefreshing, setUsersRefreshing] = useState(false);
   const [usersError, setUsersError] = useState("");
   const [userFilters, setUserFilters] = useState({
@@ -177,8 +163,6 @@ const UserManagement = () => {
   const [userPage, setUserPage] = useState(1);
   const [userSortKey, setUserSortKey] = useState<string | null>(null);
   const [userSortDirection, setUserSortDirection] = useState<SortDirection>("asc");
-  const [resetSortKey, setResetSortKey] = useState<string | null>(null);
-  const [resetSortDirection, setResetSortDirection] = useState<SortDirection>("asc");
   const userAgencies = useMemo(() => [...new Set(users.map((user) => user.agency?.trim() || ""))]
     .filter(Boolean)
     .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" })), [users]);
@@ -220,25 +204,6 @@ const UserManagement = () => {
       default: return "";
     }
   }), [filteredUsers, userSortKey, userSortDirection]);
-  const changeResetSort = (key: string) => {
-    if (resetSortKey === key) setResetSortDirection((direction) => direction === "asc" ? "desc" : "asc");
-    else { setResetSortKey(key); setResetSortDirection("asc"); }
-  };
-  const resetSortOptions = [
-    { key: "email", label: "Email" },
-    { key: "user", label: "User" },
-    { key: "status", label: "Status" },
-    { key: "requested", label: "Requested At" },
-  ];
-  const sortedResetRequests = useMemo(() => sortRows(resetRequests, resetSortKey, resetSortDirection, (request, key) => {
-    switch (key) {
-      case "email": return request.email;
-      case "user": return request.user_username || "";
-      case "status": return request.status;
-      case "requested": return new Date(request.created_at).getTime();
-      default: return "";
-    }
-  }), [resetRequests, resetSortKey, resetSortDirection]);
   const userLimit = Number(userFilters.limit) || 10;
   const userPageCount = Math.max(1, Math.ceil(filteredUsers.length / userLimit));
   const currentUserPage = Math.min(userPage, userPageCount);
@@ -276,13 +241,6 @@ const UserManagement = () => {
   const [eventForm, setEventForm] = useState<PublicEventForm>(emptyEventForm);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
-  const [toast, setToast] = useState<{
-    message: string;
-    type: "info" | "success" | "warn" | "error";
-  } | null>(null);
-  const [resetActionLoading, setResetActionLoading] = useState<
-    Record<number, boolean>
-  >({});
   const [form, setForm] = useState({
     email: "",
     role: "contributor",
@@ -297,13 +255,6 @@ const UserManagement = () => {
   const [windowState, setWindowState] = useState<EncodingWindowState | null>(
     null,
   );
-  const [progressWindowForm, setProgressWindowForm] = useState({
-    enabled: false,
-    start_at: "",
-    end_at: "",
-  });
-  const [progressWindowState, setProgressWindowState] =
-    useState<EncodingWindowState | null>(null);
   const [activityFilters, setActivityFilters] = useState({
     role: "",
     event: "",
@@ -617,13 +568,6 @@ const UserManagement = () => {
     return entries.slice(0, 3);
   };
 
-  const showToast = (
-    message: string,
-    type: "info" | "success" | "warn" | "error" = "info",
-  ) => {
-    setToast({ message, type });
-  };
-
   const getErrorDetail = (err: unknown, fallback: string) => {
     if (err instanceof Error && err.message) {
       try {
@@ -645,20 +589,15 @@ const UserManagement = () => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [usersResult, resetResult, winResult, progressWinResult] = await Promise.allSettled([
+      const [usersResult, winResult] = await Promise.allSettled([
         api.get("admin/users/"),
-        api.get("password-reset-requests/"),
         api.get("encoding-window/"),
-        api.get("progress-update-window/"),
       ]);
       if (usersResult.status === "fulfilled") {
         setUsers(Array.isArray(usersResult.value) ? usersResult.value : []);
         setUsersError("");
       } else {
         setUsersError("Unable to load system users. Please refresh to try again.");
-      }
-      if (resetResult.status === "fulfilled") {
-        setResetRequests(Array.isArray(resetResult.value) ? resetResult.value : []);
       }
       if (winResult.status === "fulfilled") {
         const winRes = winResult.value;
@@ -668,15 +607,6 @@ const UserManagement = () => {
           end_at: winRes?.end_at || "",
         });
         setWindowState(winRes || null);
-      }
-      if (progressWinResult.status === "fulfilled") {
-        const progressWinRes = progressWinResult.value;
-        setProgressWindowForm({
-          enabled: Boolean(progressWinRes?.enabled),
-          start_at: progressWinRes?.start_at || "",
-          end_at: progressWinRes?.end_at || "",
-        });
-        setProgressWindowState(progressWinRes || null);
       }
     } catch (error) {
       console.error(error);
@@ -816,19 +746,13 @@ const UserManagement = () => {
     }
     if (
       showLegacyEventsPanel &&
-      ["password-reset-requests", "system-users", "chatbot-learning"].includes(
+      ["system-users", "chatbot-learning"].includes(
         activeTab,
       )
     ) {
       loadEvents();
     }
   }, [activeTab, loadChatGaps, loadEvents, showLegacyEventsPanel]);
-
-  useEffect(() => {
-    if (!toast) return undefined;
-    const timer = window.setTimeout(() => setToast(null), 4000);
-    return () => window.clearTimeout(timer);
-  }, [toast]);
 
   const createAccount = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -872,46 +796,6 @@ const UserManagement = () => {
       await load();
     } catch {
       setNotice("Failed to update user status.");
-    }
-  };
-
-  const resetUserPassword = async (id: number) => {
-    setNotice("");
-    try {
-      await api.post(`admin/users/${id}/reset_password/`, {});
-      setNotice("Password reset link sent to the user's email.");
-    } catch {
-      setNotice("Failed to reset password.");
-    }
-  };
-
-  const reviewResetRequest = async (
-    id: number,
-    action: "approve" | "reject",
-  ) => {
-    setNotice("");
-    try {
-      setResetActionLoading((prev) => ({ ...prev, [id]: true }));
-      await api.post(`password-reset-requests/${id}/${action}/`, {});
-      setNotice(
-        action === "approve"
-          ? "Password reset approved."
-          : "Password reset rejected.",
-      );
-      await load();
-      await loadActivity();
-    } catch (err) {
-      const detail = getErrorDetail(
-        err,
-        "Failed to update password reset request.",
-      );
-      if (detail.toLowerCase().includes("already reviewed")) {
-        showToast(detail, "warn");
-      } else {
-        setNotice(detail);
-      }
-    } finally {
-      setResetActionLoading((prev) => ({ ...prev, [id]: false }));
     }
   };
 
@@ -1089,46 +973,6 @@ const UserManagement = () => {
     }
   };
 
-  const saveProgressWindow = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setNotice("");
-    if (
-      progressWindowForm.enabled &&
-      (!progressWindowForm.start_at || !progressWindowForm.end_at)
-    ) {
-      setNotice(
-        "Start and end date are required for a scheduled progress update window.",
-      );
-      return;
-    }
-    if (
-      progressWindowForm.enabled &&
-      new Date(progressWindowForm.start_at).getTime() >=
-        new Date(progressWindowForm.end_at).getTime()
-    ) {
-      setNotice("Progress update start date must be earlier than end date.");
-      return;
-    }
-    try {
-      const state = await api.post(
-        "progress-update-window/",
-        progressWindowForm,
-      );
-      setProgressWindowState(state || null);
-      setProgressWindowForm({
-        enabled: Boolean(state?.enabled),
-        start_at: state?.start_at || "",
-        end_at: state?.end_at || "",
-      });
-      setNotice("Progress update schedule updated.");
-      await loadActivity();
-    } catch (error) {
-      setNotice(
-        getErrorDetail(error, "Failed to update progress update schedule."),
-      );
-    }
-  };
-
   const scheduleIncomplete =
     windowForm.enabled && (!windowForm.start_at || !windowForm.end_at);
   const scheduleRangeInvalid =
@@ -1137,15 +981,6 @@ const UserManagement = () => {
     Boolean(windowForm.end_at) &&
     new Date(windowForm.start_at).getTime() >=
       new Date(windowForm.end_at).getTime();
-  const progressScheduleIncomplete =
-    progressWindowForm.enabled &&
-    (!progressWindowForm.start_at || !progressWindowForm.end_at);
-  const progressScheduleRangeInvalid =
-    progressWindowForm.enabled &&
-    Boolean(progressWindowForm.start_at) &&
-    Boolean(progressWindowForm.end_at) &&
-    new Date(progressWindowForm.start_at).getTime() >=
-      new Date(progressWindowForm.end_at).getTime();
   const formatWindowDate = (value?: string) =>
     value
       ? new Date(value).toLocaleString("en-PH", {
@@ -1223,23 +1058,6 @@ const UserManagement = () => {
         />
       }
     >
-      {toast && (
-        <div className="fixed top-24 right-6 z-50">
-          <div
-            className={`rounded-lg shadow-lg px-4 py-3 text-sm font-medium ${
-              toast.type === "error"
-                ? "bg-rose-50 text-rose-700 border border-rose-200"
-                : toast.type === "warn"
-                  ? "bg-amber-50 text-amber-700 border border-amber-200"
-                  : toast.type === "success"
-                    ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                    : "bg-slate-50 text-slate-700 border border-slate-200"
-            }`}
-          >
-            {toast.message}
-          </div>
-        </div>
-      )}
       {notice && (
         <div className="portal-card p-3 mb-3 text-sm bg-blue-50 border-blue-200 text-blue-800">
           {notice}
@@ -1265,13 +1083,6 @@ const UserManagement = () => {
             </button>
             <button
               type="button"
-              onClick={() => setActiveTab("password-reset-requests")}
-              className={`portal-btn min-h-11 min-w-0 whitespace-normal sm:min-h-0 ${activeTab === "password-reset-requests" ? "portal-btn-primary" : "portal-btn-ghost"}`}
-            >
-              Password Reset Requests
-            </button>
-            <button
-              type="button"
               onClick={() => setActiveTab("system-users")}
               className={`portal-btn min-h-11 min-w-0 whitespace-normal sm:min-h-0 ${activeTab === "system-users" ? "portal-btn-primary" : "portal-btn-ghost"}`}
             >
@@ -1286,9 +1097,10 @@ const UserManagement = () => {
           <div className="portal-card-header">
             <h2 className="text-lg font-semibold">Create Account</h2>
           </div>
+          <div className="portal-card-body">
           <form
             onSubmit={createAccount}
-            className="portal-card-body grid grid-cols-1 xl:grid-cols-2 gap-3"
+            className="grid grid-cols-1 xl:grid-cols-2 gap-3"
           >
             <label className="block">
               <span className="text-sm text-slate-700">Email</span>
@@ -1326,6 +1138,8 @@ const UserManagement = () => {
               {invitationSending ? "Sending Registration Form..." : "Send Registration Form"}
             </button>
           </form>
+          <BatchRegistrationPanel onComplete={load} />
+          </div>
         </div>
       )}
 
@@ -1465,241 +1279,7 @@ const UserManagement = () => {
               </button>
             </form>
           </div>
-          <div className="portal-card">
-            <div className="portal-card-header">
-              <h2 className="text-lg font-semibold">
-                Project Progress Update Window
-              </h2>
-            </div>
-            <form
-              onSubmit={saveProgressWindow}
-              className="portal-card-body space-y-4"
-            >
-              <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-                      Current Progress Update Access
-                    </p>
-                    <p className="mt-1 text-lg font-semibold text-slate-900">
-                      {windowStatusLabel[
-                        progressWindowState?.status_code ||
-                          "schedule_not_configured"
-                      ] || "Unavailable"}
-                    </p>
-                    <p className="mt-1 text-sm text-slate-600">
-                      {progressWindowState?.message ||
-                        "Contributor progress updates are closed until an administrator sets a schedule."}
-                    </p>
-                  </div>
-                  <span
-                    className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                      progressWindowState?.is_open
-                        ? "bg-emerald-100 text-emerald-700"
-                        : "bg-amber-100 text-amber-700"
-                    }`}
-                  >
-                    {progressWindowState?.is_open
-                      ? "Updates Open"
-                      : "View-Only Mode"}
-                  </span>
-                </div>
-                <div className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
-                  <div>
-                    <p className="text-xs text-slate-500">Timezone</p>
-                    <p className="font-medium">
-                      Philippine Standard Time (UTC+8)
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-slate-500">Opening Date</p>
-                    <p className="font-medium">
-                      {formatWindowDate(progressWindowState?.start_at)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-slate-500">Closing Deadline</p>
-                    <p className="font-medium">
-                      {formatWindowDate(progressWindowState?.end_at)}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <label className="block">
-                <span className="text-sm text-slate-700">
-                  Progress Update Mode
-                </span>
-                <select
-                  className="mt-1 w-full border rounded-xl px-3 py-2"
-                  value={progressWindowForm.enabled ? "open" : "closed"}
-                  onChange={(e) =>
-                    setProgressWindowForm((previous) =>
-                      e.target.value === "open"
-                        ? { ...previous, enabled: true }
-                        : { enabled: false, start_at: "", end_at: "" },
-                    )
-                  }
-                >
-                  <option value="open">Open by schedule</option>
-                  <option value="closed">Closed (view-only)</option>
-                </select>
-              </label>
-
-              {progressWindowForm.enabled && (
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                  <label className="block">
-                    <span className="text-sm text-slate-700">
-                      Opening Date and Time *
-                    </span>
-                    <input
-                      type="datetime-local"
-                      required
-                      className="mt-1 w-full border rounded-xl px-3 py-2"
-                      value={
-                        progressWindowForm.start_at
-                          ? progressWindowForm.start_at.slice(0, 16)
-                          : ""
-                      }
-                      onChange={(e) =>
-                        setProgressWindowForm((p) => ({
-                          ...p,
-                          start_at: e.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="text-sm text-slate-700">
-                      Closing Deadline *
-                    </span>
-                    <input
-                      type="datetime-local"
-                      required
-                      className="mt-1 w-full border rounded-xl px-3 py-2"
-                      value={
-                        progressWindowForm.end_at
-                          ? progressWindowForm.end_at.slice(0, 16)
-                          : ""
-                      }
-                      onChange={(e) =>
-                        setProgressWindowForm((p) => ({
-                          ...p,
-                          end_at: e.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                </div>
-              )}
-
-              {(progressScheduleIncomplete || progressScheduleRangeInvalid) && (
-                <p className="text-sm text-rose-600">
-                  {progressScheduleIncomplete
-                    ? "Set both opening and closing dates."
-                    : "Opening date must be earlier than the closing deadline."}
-                </p>
-              )}
-              <button
-                type="submit"
-                disabled={
-                  progressScheduleIncomplete || progressScheduleRangeInvalid
-                }
-                className="portal-btn portal-btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Save Progress Update Window
-              </button>
-            </form>
-          </div>
         </>
-      )}
-
-      {activeTab === "password-reset-requests" && (
-        <div className="portal-card mb-4 portal-table-wrap">
-          <div className="portal-card-header">
-            <h2 className="text-lg font-semibold">Password Reset Requests</h2>
-          </div>
-          <div className="portal-card-body border-b border-slate-200 bg-slate-50/60 xl:hidden">
-            <MobileSortControls
-              options={resetSortOptions}
-              sortKey={resetSortKey}
-              direction={resetSortDirection}
-              onSortKeyChange={changeResetSort}
-              onToggleDirection={() => setResetSortDirection((direction) => direction === "asc" ? "desc" : "asc")}
-            />
-          </div>
-          {loading ? (
-            <div className="portal-card-body text-slate-500">
-              Loading password reset requests...
-            </div>
-          ) : resetRequests.length === 0 ? (
-            <div className="portal-card-body text-slate-500">
-              No reset requests found.
-            </div>
-          ) : (
-            <table className="portal-table">
-              <thead>
-                <tr>
-                  <SortableTableHeader label="Email" sortKey="email" activeKey={resetSortKey} direction={resetSortDirection} onSort={changeResetSort} />
-                  <SortableTableHeader label="User" sortKey="user" activeKey={resetSortKey} direction={resetSortDirection} onSort={changeResetSort} className="hidden md:table-cell" />
-                  <SortableTableHeader label="Status" sortKey="status" activeKey={resetSortKey} direction={resetSortDirection} onSort={changeResetSort} />
-                  <SortableTableHeader label="Requested At" sortKey="requested" activeKey={resetSortKey} direction={resetSortDirection} onSort={changeResetSort} className="hidden lg:table-cell" />
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedResetRequests.map((r) => (
-                  <tr key={r.id}>
-                    <td>{r.email}</td>
-                    <td className="hidden md:table-cell">
-                      {r.user_username || "-"}
-                    </td>
-                    <td>
-                      <span
-                        className={`px-2 py-1 rounded-full text-xs font-semibold ${
-                          r.status === "approved"
-                            ? "bg-emerald-100 text-emerald-700"
-                            : r.status === "rejected"
-                              ? "bg-rose-100 text-rose-700"
-                              : "bg-amber-100 text-amber-700"
-                        }`}
-                      >
-                        {r.status}
-                      </span>
-                    </td>
-                    <td className="hidden lg:table-cell">
-                      {new Date(r.created_at).toLocaleString()}
-                    </td>
-                    <td className="space-x-2">
-                      {r.status === "pending" ? (
-                        <>
-                          <button
-                            onClick={() => reviewResetRequest(r.id, "approve")}
-                            className={`text-emerald-600 hover:underline ${resetActionLoading[r.id] ? "opacity-50 pointer-events-none" : ""}`}
-                          >
-                            {resetActionLoading[r.id]
-                              ? "Approving..."
-                              : "Approve"}
-                          </button>
-                          <button
-                            onClick={() => reviewResetRequest(r.id, "reject")}
-                            className={`text-rose-600 hover:underline ${resetActionLoading[r.id] ? "opacity-50 pointer-events-none" : ""}`}
-                          >
-                            {resetActionLoading[r.id]
-                              ? "Rejecting..."
-                              : "Reject"}
-                          </button>
-                        </>
-                      ) : (
-                        <span className="text-slate-400">Reviewed</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
       )}
 
       {activeTab === "system-users" && (
@@ -1849,7 +1429,7 @@ const UserManagement = () => {
                         <dd className="break-words text-slate-800">{labelRole(u.role)}</dd>
                       </div>
                     </dl>
-                    <div className="mt-4 grid grid-cols-2 gap-2">
+                    <div className="mt-4 grid gap-2">
                       <Link to={`/admin/profiles/${u.id}`} className="portal-btn portal-btn-ghost col-span-2 text-center">View Profile</Link>
                       <button
                         type="button"
@@ -1857,13 +1437,6 @@ const UserManagement = () => {
                         className="portal-btn portal-btn-ghost min-h-11 min-w-0 whitespace-normal text-blue-700"
                       >
                         {u.is_active ? "Deactivate" : "Activate"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => resetUserPassword(u.id)}
-                        className="portal-btn portal-btn-ghost min-h-11 min-w-0 whitespace-normal text-indigo-700"
-                      >
-                        Reset Password
                       </button>
                     </div>
                   </li>
@@ -1901,12 +1474,6 @@ const UserManagement = () => {
                         className="text-blue-600 hover:underline"
                       >
                         {u.is_active ? "Deactivate" : "Activate"}
-                      </button>
-                      <button
-                        onClick={() => resetUserPassword(u.id)}
-                        className="text-indigo-600 hover:underline"
-                      >
-                        Reset Password
                       </button>
                     </td>
                   </tr>

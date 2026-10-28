@@ -248,7 +248,7 @@ class ContributorFormWorkflowTests(APITestCase):
         self.assertFalse(retired[0]["visible"])
         self.assertEqual(retired[0]["retired_from"]["section_key"], "project_information")
         self.assertEqual(retired[0]["retired_from"]["section_title"], "Project Information")
-        self.assertEqual(retired[0]["retired_from"]["field_order"], 6)
+        self.assertEqual(retired[0]["retired_from"]["field_order"], 7)
 
         reactivated_schema = deepcopy(restored.data["draft_schema_json"])
         retired_section = next(
@@ -273,7 +273,7 @@ class ContributorFormWorkflowTests(APITestCase):
             section for section in reactivated.data["draft_schema_json"]["sections"]
             if section["key"] == "project_information"
         )["fields"]
-        self.assertEqual(restored_project_fields[6]["key"], "custom_reference_number")
+        self.assertEqual(restored_project_fields[7]["key"], "custom_reference_number")
         self.assertTrue(restored_project_fields[6]["visible"])
 
     def test_compact_form_workspace_defers_complete_version_snapshots(self):
@@ -352,7 +352,7 @@ class ContributorFormWorkflowTests(APITestCase):
             if field["key"] == "custom_reference_number"
         )
         self.assertEqual(recovered_field["retired_from"]["section_key"], "project_information")
-        self.assertEqual(recovered_field["retired_from"]["field_order"], 6)
+        self.assertEqual(recovered_field["retired_from"]["field_order"], 7)
 
         reactivated_schema = deepcopy(restored.draft_schema_json)
         retired_section = next(
@@ -435,7 +435,7 @@ class ContributorFormWorkflowTests(APITestCase):
         response = self._save_draft(schema, edit_mode="change")
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("supplied by the contributor account", str(response.data))
+        self.assertIn("managed by the system", str(response.data))
 
     def test_change_mode_can_change_other_workflow_field_types(self):
         schema = deepcopy(self.form.draft_schema_json)
@@ -798,7 +798,7 @@ class ContributorFormWorkflowTests(APITestCase):
         )
         self.assertEqual(new_profile["form_schema"]["version"], live_version)
 
-    def test_validator_can_explicitly_update_an_old_project_form_without_changing_workflow(self):
+    def test_admin_can_prepare_an_old_validated_project_form_without_changing_public_record(self):
         self.assertEqual(self._save_draft(self._draft_with_custom_field(required=True)).status_code, status.HTTP_200_OK)
         self.authenticate(self.admin)
         published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
@@ -845,6 +845,12 @@ class ContributorFormWorkflowTests(APITestCase):
 
         self.authenticate(self.validator)
         available = self.client.get("/api/validator/projects/?view=summary&scope=update_forms")
+        self.assertEqual(available.status_code, status.HTTP_403_FORBIDDEN)
+        forbidden_update = self.client.post(f"/api/validator/projects/{project.id}/update-form/", {}, format="json")
+        self.assertEqual(forbidden_update.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.authenticate(self.admin)
+        available = self.client.get("/api/admin/projects/?view=summary&scope=update_forms")
         self.assertEqual(available.status_code, status.HTTP_200_OK)
         listed = next(item for item in available.data if item["id"] == project.id)
         self.assertEqual(listed["form_version"], 1)
@@ -852,25 +858,24 @@ class ContributorFormWorkflowTests(APITestCase):
         self.assertTrue(listed["uses_outdated_form"])
 
         with CaptureQueriesContext(connection) as update_queries:
-            updated = self.client.post(f"/api/validator/projects/{project.id}/update-form/", {}, format="json")
+            updated = self.client.post(f"/api/admin/projects/{project.id}/update-form/", {}, format="json")
         self.assertEqual(updated.status_code, status.HTTP_200_OK)
-        self.assertEqual(updated.data["previous_form_version"], 1)
-        self.assertEqual(updated.data["form_version"], live_version)
+        self.assertEqual(updated.data["source_version"], 1)
+        self.assertEqual(updated.data["target_version"], live_version)
         project_lock_queries = [
             item["sql"]
             for item in update_queries.captured_queries
             if 'SELECT' in item["sql"].upper() and 'FROM "projects_project"' in item["sql"]
         ]
         self.assertTrue(project_lock_queries)
-        self.assertNotIn('JOIN "projects_user"', project_lock_queries[0])
 
         project.refresh_from_db()
-        self.assertEqual(project.profile_data["form_schema"]["version"], live_version)
+        self.assertEqual(project.profile_data["form_schema"]["version"], 1)
         self.assertEqual(
             project.profile_data["simplified_form"]["custom_fields"]["custom_historical_note"],
             "Preserve this answer",
         )
-        self.assertEqual(project.profile_data["simplified_form"]["location"], ["Pasig", "Quezon City"])
+        self.assertEqual(project.profile_data["simplified_form"]["location"], "Pasig and Quezon City")
         self.assertEqual(project.status, "completed")
         self.assertTrue(project.validated)
         progress_draft.refresh_from_db()
@@ -880,20 +885,14 @@ class ContributorFormWorkflowTests(APITestCase):
             "Preserve this draft answer",
         )
         self.assertEqual(progress_draft.profile_data_snapshot["simplified_form"]["location"], ["Makati"])
-        self.assertEqual(updated.data["updated_progress_drafts"], 1)
         self.assertTrue(UserActivity.objects.filter(
-            user=self.validator,
+            user=self.admin,
             project=project,
             event="project_update",
-            details__operation="contributor_form_version_update",
-        ).exists())
-        self.assertTrue(Notification.objects.filter(
-            recipient=self.contributor,
-            project=project,
-            event_type="project_form_version_updated",
+            details__operation="contributor_form_migration",
         ).exists())
 
-        no_longer_available = self.client.get("/api/validator/projects/?view=summary&scope=update_forms")
+        no_longer_available = self.client.get("/api/admin/projects/?view=summary&scope=update_forms")
         self.assertNotIn(project.id, [item["id"] for item in no_longer_available.data])
 
         self.authenticate(self.contributor)

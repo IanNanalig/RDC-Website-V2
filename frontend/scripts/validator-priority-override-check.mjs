@@ -40,10 +40,12 @@ const incompleteAnalysis = {
   latest_confirmation: null,
 };
 
-async function openReview(endorsed = false, analysisOverride = incompleteAnalysis) {
+async function openReview(endorsed = false, analysisOverride = incompleteAnalysis, simulateDocumentProcessing = false) {
   const context = await browser.newContext({ viewport: { width: 1050, height: 780 } });
   const page = await context.newPage();
   let submitted = null;
+  let analysisRuns = 0;
+  let assessmentChecks = 0;
   await page.addInitScript(() => {
     localStorage.setItem("isLoggedIn", "true");
     localStorage.setItem("accessToken", "priority-override-test");
@@ -70,6 +72,24 @@ async function openReview(endorsed = false, analysisOverride = incompleteAnalysi
         } }),
       });
     }
+    if (url.includes("priority-analysis/run/") && method === "POST" && simulateDocumentProcessing) {
+      analysisRuns += 1;
+      return route.fulfill({
+        status: analysisRuns === 1 ? 202 : 200,
+        contentType: "application/json",
+        headers,
+        body: JSON.stringify(analysisRuns === 1
+          ? { processing: true, detail: "The AI Assistant is reading the supporting documents before scoring the project." }
+          : { eligible: true, reused: false, analysis: analysisOverride }),
+      });
+    }
+    if (url.includes("project-supporting-documents/assessment-status/") && simulateDocumentProcessing) {
+      assessmentChecks += 1;
+      return route.fulfill({
+        status: 200, contentType: "application/json", headers,
+        body: JSON.stringify({ status: "pass", summary: "The evidence is related and sufficient.", document_results: [] }),
+      });
+    }
     if (url.includes("priority-analysis/")) return route.fulfill({
       status: 200, contentType: "application/json", headers,
       body: JSON.stringify({ eligible: true, analyses: [analysisOverride] }),
@@ -90,7 +110,13 @@ async function openReview(endorsed = false, analysisOverride = incompleteAnalysi
   });
   await page.goto(origin + "/validator/projects/1/review/simplified", { waitUntil: "networkidle" });
   await page.getByRole("heading", { name: "AI-Assisted Priority Scorer" }).waitFor();
-  return { context, page, submitted: () => submitted };
+  return {
+    context,
+    page,
+    submitted: () => submitted,
+    analysisRuns: () => analysisRuns,
+    assessmentChecks: () => assessmentChecks,
+  };
 }
 
 try {
@@ -170,6 +196,30 @@ try {
   );
   await documentReview.context.close();
   console.log("PASS non-passing document assessment requires an explicit audited override rationale");
+
+  const combinedAnalysis = {
+    ...incompleteAnalysis,
+    id: 9,
+    suggested_priority: "low",
+    suggested_scores: { ...incompleteAnalysis.suggested_scores, missing_facts: [] },
+    document_assessment: {
+      status: "pass",
+      summary: "The evidence is related and sufficient.",
+      collective_sufficient: true,
+      document_results: [],
+    },
+  };
+  const triggered = await openReview(false, combinedAnalysis, true);
+  const triggeredPanel = triggered.page.locator(".portal-card").filter({
+    has: triggered.page.getByRole("heading", { name: "AI-Assisted Priority Scorer" }),
+  }).first();
+  await triggeredPanel.getByRole("button", { name: "Run AI Scorer" }).click();
+  await triggeredPanel.getByText("The AI Assistant is reading the supporting documents", { exact: false }).waitFor();
+  await triggeredPanel.getByText("Priority analysis completed.", { exact: true }).waitFor();
+  assert.equal(triggered.analysisRuns(), 2, "The scorer resumes once document assessment finishes.");
+  assert.ok(triggered.assessmentChecks() >= 1, "The UI waits for the document assessment status.");
+  await triggered.context.close();
+  console.log("PASS Run AI Scorer reads supporting documents before scoring");
 } finally {
   await browser.close();
   await new Promise((resolve, reject) => server.httpServer.close((error) => error ? reject(error) : resolve()));

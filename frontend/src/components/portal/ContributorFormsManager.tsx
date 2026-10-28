@@ -30,7 +30,8 @@ const fieldTypeOptions: Array<{ value: ContributorFormFieldType; label: string }
 ];
 const documentExtensions = ["pdf", "docx", "xlsx", "csv", "png", "jpg", "jpeg"] as const;
 const choiceFieldTypes: ContributorFormFieldType[] = ["select", "multiselect", "multiselect_dropdown"];
-const fixedFieldTypeKeys = new Set(["agencyName"]);
+const fixedFieldTypeKeys = new Set(["agencyName", "collaboratingAgencies"]);
+const protectedOptionKeys = new Set(["collaboratingAgencies"]);
 
 const errorDetail = (error: unknown, fallback: string) => {
   if (!(error instanceof Error) || !error.message) return fallback;
@@ -223,7 +224,7 @@ const FormPreview = ({ schema }: { schema: ContributorFormSchema }) => {
                             ?.filter((option) => (previewValues[field.key] as string[]).includes(option.value))
                             .map((option) => option.label)
                             .join(", ")
-                          : "Select one or more locations"}
+                          : field.placeholder?.trim() || (field.key === "collaboratingAgencies" ? "Select one or more agencies" : "Select one or more locations")}
                       </span>
                       <span aria-hidden="true" className="h-2 w-2 shrink-0 rotate-45 border-b-2 border-r-2 border-slate-500 transition-transform group-open:rotate-[225deg]" />
                     </summary>
@@ -274,6 +275,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState("");
   const [notice, setNotice] = useState("");
+  const [validationTarget, setValidationTarget] = useState("");
   const [readOnly, setReadOnly] = useState(false);
   const selectedKeyRef = useRef("");
   const editModeRef = useRef<EditMode | null>(null);
@@ -351,6 +353,21 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     };
     window.addEventListener("beforeunload", beforeUnload);
     return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [dirty]);
+
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const protectPortalNavigation = (event: MouseEvent) => {
+      const target = event.target as Element | null;
+      const link = target?.closest("a[href]") as HTMLAnchorElement | null;
+      if (!link || link.target === "_blank" || link.origin !== window.location.origin) return;
+      if (!window.confirm("Leave Contributor Forms? Your unsaved form changes will be lost.")) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    document.addEventListener("click", protectPortalNavigation, true);
+    return () => document.removeEventListener("click", protectPortalNavigation, true);
   }, [dirty]);
 
   useEffect(() => {
@@ -601,6 +618,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     setLoading(true);
     setBusyAction("saving");
     setNotice("");
+    setValidationTarget("");
     try {
       const saved = await cmsApi.updateContributorForm(selected.id, {
         name: schema.title.trim(),
@@ -617,7 +635,14 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
       setSchema(savedSchema);
       setNotice("Contributor form draft saved. Contributors still use the published version.");
     } catch (error) {
-      setNotice(errorDetail(error, "Failed to save the contributor form draft."));
+      const message = errorDetail(error, "Failed to save the contributor form draft.");
+      setNotice(message);
+      const keys = schema.sections.flatMap((section) => section.fields.map((field) => field.key));
+      const affected = keys.find((key) => message.toLowerCase().includes(key.toLowerCase()));
+      if (affected) {
+        setValidationTarget(affected);
+        window.requestAnimationFrame(() => document.querySelector(`[data-form-field-key="${affected}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }));
+      }
     } finally {
       setLoading(false);
       setBusyAction("");
@@ -684,9 +709,24 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     return <div className="portal-card p-5 text-sm text-slate-600">{loading ? "Loading contributor forms..." : notice || "No contributor form definition is available."}</div>;
   }
 
+  const normalizedNotice = notice.toLowerCase();
+  const noticeTone = /failed|invalid|error|cannot|expired/.test(normalizedNotice)
+    ? "error"
+    : /locked|conflict|another editor|former location/.test(normalizedNotice)
+      ? "warning"
+      : /saved|published|sent|restored|returned|submitted/.test(normalizedNotice)
+        ? "success"
+        : "info";
+  const noticeClasses = {
+    error: "border-rose-200 bg-rose-50 text-rose-800",
+    warning: "border-amber-200 bg-amber-50 text-amber-800",
+    success: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    info: "border-blue-200 bg-blue-50 text-blue-800",
+  }[noticeTone];
+
   return (
     <div className="space-y-4">
-      {notice && <div role="status" aria-live="polite" className="portal-card border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">{notice}</div>}
+      {notice && <div role={noticeTone === "error" ? "alert" : "status"} aria-live="polite" className={`portal-card p-3 text-sm ${noticeClasses}`}>{notice}</div>}
       <div className="portal-card overflow-hidden" data-cms-contributor-form-key={selected.key}>
         <div className="portal-card-header flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
@@ -723,10 +763,10 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
           <div className="portal-card overflow-hidden">
             <div className="portal-card-header flex flex-wrap items-center justify-between gap-3">
               <div><h3 className="font-bold text-slate-900">{editMode === "update" ? "Update Form" : "Change Form"}</h3><p className="text-xs text-slate-500">{editMode === "update" ? "Edit wording and add small fields without changing the structure." : "Reorder, hide optional items, and make controlled structural changes."}</p></div>
-              <div className="flex gap-2"><button className="portal-btn portal-btn-ghost" onClick={() => setPreview((value) => !value)}>{preview ? "Hide Preview" : "Preview as Contributor"}</button><button className="portal-btn portal-btn-ghost" onClick={() => void closeEditor()}>Cancel</button></div>
+              <div className="flex gap-2"><button disabled={loading || Boolean(busyAction)} className="portal-btn portal-btn-ghost disabled:opacity-50" onClick={() => setPreview((value) => !value)}>{preview ? "Hide Preview" : "Preview as Contributor"}</button><button disabled={loading || Boolean(busyAction)} className="portal-btn portal-btn-ghost disabled:opacity-50" onClick={() => void closeEditor()}>{busyAction === "discarding" ? "Cancelling..." : "Cancel"}</button></div>
             </div>
             {readOnly && <div className="border-b border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-800">This form is locked by another editor. Your view is read-only.</div>}
-            <fieldset disabled={readOnly} className="portal-card-body space-y-5 disabled:opacity-70">
+            <fieldset disabled={readOnly || loading || Boolean(busyAction)} className="portal-card-body space-y-5 disabled:opacity-70">
               <div className="grid gap-3 md:grid-cols-2">
                 <label className="block"><span className="text-sm font-medium text-slate-700">Form title</span><input className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value={schema.title} onChange={(event) => setSchema({ ...schema, title: event.target.value })} /></label>
                 <label className="block"><span className="text-sm font-medium text-slate-700">Form description</span><input className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value={schema.description || ""} onChange={(event) => setSchema({ ...schema, description: event.target.value })} /></label>
@@ -759,8 +799,9 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                       const retiredOrigin = isRetired ? resolveRetiredOrigin(item) : undefined;
                       const canReorder = !isRetired && (editMode === "change" || (isCustom && !baselineFieldKeys.has(item.key)));
                       const typeIsFixed = fixedFieldTypeKeys.has(item.key);
+                      const optionsAreProtected = protectedOptionKeys.has(item.key);
                       return (
-                        <div key={item.key} data-form-field-key={item.key} className="rounded-xl border border-slate-200 bg-white p-3">
+                        <div key={item.key} data-form-field-key={item.key} className={`rounded-xl border bg-white p-3 ${validationTarget === item.key ? "border-rose-400 ring-2 ring-rose-100" : "border-slate-200"}`}>
                           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                             <label><span className="text-xs font-semibold text-slate-600">Label</span><input className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.label} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, label: event.target.value }))} /></label>
                             <label><span className="text-xs font-semibold text-slate-600">Help text</span><input className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.help_text || ""} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, help_text: event.target.value }))} /></label>
@@ -796,11 +837,11 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                             <label className="block"><span className="text-xs font-semibold text-slate-600">AI sufficiency instructions</span><textarea rows={3} maxLength={4000} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm" value={item.ai_sufficiency_instructions || ""} onChange={(event) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, ai_sufficiency_instructions: event.target.value }))} /></label>
                           </div>}
                           {item.options && <div className="mt-3 space-y-2"><div className="grid gap-2 sm:grid-cols-2">{item.options.map((option, optionIndex) => {
-                            const canChangeOptionOrder = editMode === "change" || !baselineFieldKeys.has(item.key);
+                            const canChangeOptionOrder = !optionsAreProtected && (editMode === "change" || !baselineFieldKeys.has(item.key));
                             const controlsCondition = conditionalOptionValues.get(item.key)?.has(option.value) === true;
                             const canRemoveOption = canChangeOptionOrder && item.options!.length > 1 && !controlsCondition;
-                            return <label key={`${option.value}-${optionIndex}`} data-form-option-value={option.value}><span className="text-xs text-slate-500">Option label · Order {optionIndex + 1}</span><div className="flex gap-2"><input className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5" value={option.label} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: (fieldValue.options || []).map((value, index) => index === optionIndex ? { ...value, label: event.target.value } : value) }))} />{canChangeOptionOrder && <div className="mt-1 flex items-center gap-1"><button type="button" disabled={optionIndex === 0} className="rounded px-1.5 py-1 text-xs font-semibold text-blue-700 disabled:text-slate-300" aria-label={`Move option ${option.label} up`} onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: move(fieldValue.options || [], optionIndex, -1) }))}>Up</button><button type="button" disabled={optionIndex === item.options!.length - 1} className="rounded px-1.5 py-1 text-xs font-semibold text-blue-700 disabled:text-slate-300" aria-label={`Move option ${option.label} down`} onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: move(fieldValue.options || [], optionIndex, 1) }))}>Down</button></div>}{canRemoveOption && <button type="button" className="text-xs font-semibold text-rose-700" aria-label={`Remove option ${option.label}`} onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: (fieldValue.options || []).filter((_, index) => index !== optionIndex) }))}>Remove</button>}</div>{controlsCondition && <span className="mt-1 block text-xs text-amber-700">Used by a conditional question and cannot be removed.</span>}</label>;
-                          })}</div>{(editMode === "change" || !baselineFieldKeys.has(item.key)) && <button type="button" className="text-xs font-semibold text-blue-700" onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => { const current = fieldValue.options || []; const value = nextOptionValue(fieldValue); return { ...fieldValue, options: [...current, { value, label: `Option ${value.replace("option_", "")}` }] }; })}>Add option</button>}</div>}
+                            return <label key={`${option.value}-${optionIndex}`} data-form-option-value={option.value}><span className="text-xs text-slate-500">Option label · Order {optionIndex + 1}</span><div className="flex gap-2"><input disabled={optionsAreProtected} title={optionsAreProtected ? "Agency choices are managed by the Agency catalog." : undefined} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500" value={option.label} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: (fieldValue.options || []).map((value, index) => index === optionIndex ? { ...value, label: event.target.value } : value) }))} />{canChangeOptionOrder && <div className="mt-1 flex items-center gap-1"><button type="button" disabled={optionIndex === 0} className="rounded px-1.5 py-1 text-xs font-semibold text-blue-700 disabled:text-slate-300" aria-label={`Move option ${option.label} up`} onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: move(fieldValue.options || [], optionIndex, -1) }))}>Up</button><button type="button" disabled={optionIndex === item.options!.length - 1} className="rounded px-1.5 py-1 text-xs font-semibold text-blue-700 disabled:text-slate-300" aria-label={`Move option ${option.label} down`} onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: move(fieldValue.options || [], optionIndex, 1) }))}>Down</button></div>}{canRemoveOption && <button type="button" className="text-xs font-semibold text-rose-700" aria-label={`Remove option ${option.label}`} onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: (fieldValue.options || []).filter((_, index) => index !== optionIndex) }))}>Remove</button>}</div>{controlsCondition && <span className="mt-1 block text-xs text-amber-700">Used by a conditional question and cannot be removed.</span>}{optionsAreProtected && <span className="mt-1 block text-xs text-slate-500">Managed by the Agency catalog.</span>}</label>;
+                          })}</div>{!optionsAreProtected && (editMode === "change" || !baselineFieldKeys.has(item.key)) && <button type="button" className="text-xs font-semibold text-blue-700" onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => { const current = fieldValue.options || []; const value = nextOptionValue(fieldValue); return { ...fieldValue, options: [...current, { value, label: `Option ${value.replace("option_", "")}` }] }; })}>Add option</button>}</div>}
                         </div>
                       );
                     })}

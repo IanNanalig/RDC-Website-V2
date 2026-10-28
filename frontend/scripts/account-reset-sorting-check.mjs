@@ -44,13 +44,21 @@ async function mockApi(page, onReset = () => {}, onRequest = () => {}, options =
     if (options.failAuxiliary && path.endsWith("/encoding-window/")) {
       return route.fulfill({ status: 503, contentType: "application/json", headers, body: '{"detail":"Temporary schedule error"}' });
     }
-    if (path.endsWith("/password-reset-requests/") && request.method() === "POST") {
+    if (path.endsWith("/auth/password-reset/request/") && request.method() === "POST") {
       onRequest(JSON.parse(request.postData() || "{}"));
-      return route.fulfill({ status: 201, contentType: "application/json", headers, body: '{"detail":"Request received"}' });
+      return route.fulfill({ status: 202, contentType: "application/json", headers, body: '{"detail":"If this email is registered, a password reset code has been sent. Check your inbox and spam folder.","resend_after_seconds":60}' });
+    }
+    if (path.endsWith("/auth/password-reset/verify/") && request.method() === "POST") {
+      options.onVerify?.(JSON.parse(request.postData() || "{}"));
+      return route.fulfill({ status: 200, contentType: "application/json", headers, body: '{"reset_token":"browser-reset-token","expires_in":600}' });
+    }
+    if (path.endsWith("/auth/password-reset/complete/") && request.method() === "POST") {
+      onReset(JSON.parse(request.postData() || "{}"));
+      return route.fulfill({ status: 200, contentType: "application/json", headers, body: '{"status":"ok"}' });
     }
     if (path.endsWith("/auth/setup-password/")) {
       if (request.method() === "POST") {
-        onReset(JSON.parse(request.postData() || "{}"));
+        options.onLegacyReset?.(JSON.parse(request.postData() || "{}"));
         return route.fulfill({ status: 200, contentType: "application/json", headers, body: '{"status":"ok"}' });
       }
       return route.fulfill({ status: 200, contentType: "application/json", headers, body: '{"email":"tester@example.test","setup_type":"password_reset"}' });
@@ -69,8 +77,7 @@ async function mockApi(page, onReset = () => {}, onRequest = () => {}, options =
         return route.fulfill({ status: 503, contentType: "application/json", headers, body: '{"detail":"Temporary user-list error"}' });
       }
     }
-    const body = path.endsWith("/admin/users/") ? users
-      : path.endsWith("/password-reset-requests/") ? [] : {};
+    const body = path.endsWith("/admin/users/") ? users : {};
     return route.fulfill({ status: 200, contentType: "application/json", headers, body: JSON.stringify(body) });
   });
   return { getUserLoads: () => userLoads, failNextUsersLoad: () => { failNextUsersLoad = true; } };
@@ -81,23 +88,39 @@ try {
   const page = await mobile.newPage();
   let resetPayload;
   let requestPayload;
-  await mockApi(page, (payload) => { resetPayload = payload; }, (payload) => { requestPayload = payload; });
+  let verifyPayload;
+  let legacyResetPayload;
+  await mockApi(
+    page,
+    (payload) => { resetPayload = payload; },
+    (payload) => { requestPayload = payload; },
+    {
+      onVerify: (payload) => { verifyPayload = payload; },
+      onLegacyReset: (payload) => { legacyResetPayload = payload; },
+    },
+  );
   await page.goto(`${origin}/login`);
   await page.getByRole("link", { name: "Forgot password?" }).click();
   await page.waitForURL("**/request-password-reset");
   await page.getByLabel("Email", { exact: true }).fill("tester@example.test");
-  await page.getByRole("button", { name: "Send Reset Request" }).click();
-  await page.getByText(/If this email is registered/).waitFor();
+  await page.getByRole("button", { name: "Send Reset Code" }).click();
+  await page.waitForURL("**/reset-password");
   assert.deepEqual(requestPayload, { email: "tester@example.test" }, "Reset request still submits the email");
-  assert.ok(await page.getByRole("button", { name: "Back" }).isVisible());
-  assert.equal(await page.getByText("Back to login").count(), 0);
-  await page.getByRole("button", { name: "Back" }).click();
-  await page.waitForURL("**/login");
-  await page.goto(`${origin}/request-password-reset`);
-  await page.getByRole("button", { name: "Back" }).click();
-  await page.waitForURL("**/login");
-  await page.goto(`${origin}/forgot-password`);
-  await page.waitForURL("**/request-password-reset");
+  assert.equal(await page.getByLabel("Account email").inputValue(), "tester@example.test");
+  await page.getByLabel("Six-digit code").fill("123456");
+  await page.getByRole("button", { name: "Verify Code" }).click();
+  await page.getByText("Code verified. Create your new password.").waitFor();
+  assert.deepEqual(verifyPayload, { email: "tester@example.test", otp: "123456" });
+  await page.getByLabel("New Password", { exact: true }).fill("NewPassword123!");
+  await page.getByLabel("Confirm Password", { exact: true }).fill("NewPassword123!");
+  await page.getByRole("button", { name: "Save New Password" }).click();
+  await page.getByText("Password updated. Redirecting to login...").waitFor();
+  assert.deepEqual(resetPayload, {
+    reset_token: "browser-reset-token",
+    new_password: "NewPassword123!",
+    confirm_password: "NewPassword123!",
+  });
+
   await page.goto(`${origin}/reset-password?token=reset_browser-test`);
   await page.getByRole("heading", { name: "Reset Your Password" }).waitFor();
   assert.equal(await page.getByLabel("Account email").inputValue(), "tester@example.test");
@@ -107,7 +130,7 @@ try {
   await page.getByLabel("Confirm Password", { exact: true }).fill("NewPassword123!");
   await page.getByRole("button", { name: "Save New Password" }).click();
   await page.getByText("Password updated. Redirecting to login...").waitFor();
-  assert.deepEqual(resetPayload, { token: "reset_browser-test", new_password: "NewPassword123!" });
+  assert.deepEqual(legacyResetPayload, { token: "reset_browser-test", new_password: "NewPassword123!" });
   await mobile.close();
 
   const direct = await browser.newContext({ viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true });
@@ -202,8 +225,11 @@ try {
     await adminPage.getByRole("button", { name: "Refresh Users" }).click();
     await recoveredRefresh;
     await adminPage.getByRole("alert").filter({ hasText: "Temporary user-list error" }).waitFor({ state: "hidden" });
-    await items.first().getByRole("button", { name: "Reset Password" }).click();
-    await adminPage.getByText("Password reset link sent to the user's email.").waitFor();
+    assert.equal(
+      await items.first().getByRole("button", { name: /reset/i }).count(),
+      0,
+      "Users & Access does not expose an Administrator password-reset action",
+    );
     await items.first().getByRole("button", { name: "Deactivate" }).click();
     await adminPage.getByText("No users match the selected filters.").waitFor();
     await adminPage.getByRole("button", { name: "Clear Filters" }).click();

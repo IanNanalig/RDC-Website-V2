@@ -11,7 +11,12 @@ from cms.models import (
     CMSPage,
     CMSPageSection,
 )
-from cms.form_schema import FormSchemaError, normalize_system_managed_sections, validate_form_schema
+from cms.form_schema import (
+    FormSchemaError,
+    build_form_migration_plan,
+    normalize_system_managed_sections,
+    validate_form_schema,
+)
 from cms.services.snapshots import (
     build_article_snapshot,
     build_page_snapshot,
@@ -86,6 +91,12 @@ def publish_contributor_form(form, user=None):
             form=locked_form,
             version_number=next_number,
             schema_json=schema,
+            based_on_version=locked_form.current_published_version,
+            migration_plan_json=(
+                build_form_migration_plan(published_schema, schema)
+                if isinstance(published_schema, dict)
+                else {"format": 1, "rules": [], "attention_fields": [], "incompatible_changes": []}
+            ),
             published_by=user if getattr(user, "is_authenticated", False) else None,
         )
         locked_form.status = CMSContributorForm.STATUS_PUBLISHED

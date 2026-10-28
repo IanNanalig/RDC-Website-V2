@@ -129,6 +129,8 @@ class ContributorFundingDashboardTests(APITestCase):
     @patch("projects.views._resolve_encoding_window_state", return_value={"is_open": True, "message": ""})
     @patch("projects.views._manila_funding_year", return_value=2026)
     def test_existing_protected_amounts_and_agency_are_preserved(self, _year, _window):
+        self.user.agency = "DPWH"
+        self.user.save(update_fields=["agency"])
         actual = {"2024": "100", "2025": "200", "2026": "300", "2027": "400"}
         project = self.project("DPWH", self.user, actual=actual)
         payload = {"title": "Funding Test Project", "agency": "DPWH", "profile_data": self.profile("DPWH", actual)}

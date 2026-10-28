@@ -27,6 +27,7 @@ const RequestAccess = lazy(() => import("./pages/RequestAccess"));
 const RequestPasswordReset = lazy(() => import("./pages/RequestPasswordReset"));
 const SetupPassword = lazy(() => import("./pages/SetupPassword"));
 const ResetPassword = lazy(() => import("./pages/ResetPassword"));
+const ReportProjectConcern = lazy(() => import("./pages/ReportProjectConcern"));
 
 const Dashboard = lazy(() => import("./pages/EmployesPortal/Dashboard"));
 const AdminDashboard = lazy(() => import("./pages/EmployesPortal/AdminDashboard"));
@@ -40,6 +41,9 @@ const AdminProjects = lazy(() => import("./pages/EmployesPortal/AdminProjects"))
 const AdminValidatorDiffs = lazy(() => import("./pages/EmployesPortal/AdminValidatorDiffs"));
 const UserManagement = lazy(() => import("./pages/EmployesPortal/UserManagement"));
 const AuditLog = lazy(() => import("./pages/EmployesPortal/AuditLog"));
+const AdminDataExports = lazy(() => import("./pages/EmployesPortal/AdminDataExports"));
+const AdminProjectUpdatePeriod = lazy(() => import("./pages/EmployesPortal/AdminProjectUpdatePeriod"));
+const AdminProjectConcerns = lazy(() => import("./pages/EmployesPortal/AdminProjectConcerns"));
 const ProfilePage = lazy(() => import("./pages/EmployesPortal/ProfilePage"));
 const ContentManagement = lazy(() => import("./pages/EmployesPortal/ContentManagement"));
 const ContributorFormsManager = lazy(() => import("./components/portal/ContributorFormsManager"));
@@ -236,6 +240,7 @@ const NewsWithLayout = withLayout(NewsPage);
 const PublicationWithLayout = withLayout(Publication);
 const ProjectDetailsWithLayout = withLayout(ProjectDetails);
 const RegionalProfileWithLayout = withLayout(RegionalProfile);
+const ReportProjectConcernWithLayout = withLayout(ReportProjectConcern);
 const ContactWithNavbarOnly = withNavbarOnly(Contact);
 const ProjectsWithNavbarOnly = withNavbarOnly(Projects);
 
@@ -346,6 +351,7 @@ export default function App() {
         <Route path="/publications" element={<PublicationWithLayout />} />
         <Route path="/projects" element={<ProjectsWithNavbarOnly />} />
         <Route path="/projects/:id" element={<ProjectDetailsWithLayout />} />
+        <Route path="/report-project" element={<ReportProjectConcernWithLayout />} />
         <Route
           path="/regional-profile"
           element={<RegionalProfileWithLayout />}
@@ -451,14 +457,7 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-        <Route
-          path="/validator/projects/update-forms"
-          element={
-            <ProtectedRoute roles={["validator"]}>
-              <UpdateProjectFormsPage />
-            </ProtectedRoute>
-          }
-        />
+        <Route path="/validator/projects/update-forms" element={<ProtectedRoute roles={["validator"]}><Navigate to="/validator/dashboard" replace /></ProtectedRoute>} />
         <Route
           path="/validator/projects/:id/review"
           element={
@@ -490,6 +489,24 @@ export default function App() {
           element={
             <ProtectedRoute roles={["admin"]}>
               <ProjectsPageComponent />
+            </ProtectedRoute>
+          }
+        />
+        <Route path="/admin/projects/update-forms" element={<ProtectedRoute roles={["admin"]}><UpdateProjectFormsPage /></ProtectedRoute>} />
+        <Route path="/admin/project-update-period" element={<ProtectedRoute roles={["admin"]}><AdminProjectUpdatePeriod /></ProtectedRoute>} />
+        <Route
+          path="/admin/exports"
+          element={
+            <ProtectedRoute roles={["admin"]}>
+              <AdminDataExports />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/project-concerns/*"
+          element={
+            <ProtectedRoute roles={["admin"]}>
+              <AdminProjectConcerns />
             </ProtectedRoute>
           }
         />
@@ -617,6 +634,15 @@ export default function App() {
         />
 
         {/* ===== CATCH-ALL ROUTE ===== */}
+        {/* Keep unknown portal URLs inside their authenticated workspace. */}
+        <Route
+          path="/admin/*"
+          element={
+            <ProtectedRoute roles={["admin"]}>
+              <Navigate to="/admin/dashboard" replace />
+            </ProtectedRoute>
+          }
+        />
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
       </Suspense>

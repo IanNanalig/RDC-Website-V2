@@ -197,17 +197,16 @@ class AuditCoverageTests(APITestCase):
     def test_anonymous_password_reset_attempt_is_not_attributed_to_target_user(self):
         self.client.force_authenticate(user=None)
         response = self.client.post(
-            "/api/password-reset-requests/", {"email": self.contributor.email}, format="json"
+            "/api/auth/password-reset/request/", {"email": self.contributor.email}, format="json"
         )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         activity = UserActivity.objects.get(event="auth_reset_request")
         self.assertIsNone(activity.user_id)
         self.assertEqual(activity.role, "unauthenticated")
-        self.assertEqual(activity.details["attempted_email"], self.contributor.email)
+        self.assertEqual(activity.details["target_user_id"], self.contributor.id)
+        self.assertNotIn(self.contributor.email, str(activity.details))
         self.as_user(self.admin)
-        audit_list = self.client.get(
-            f"/api/admin/activity/?user={self.contributor.email}&event=auth_reset_request"
-        )
+        audit_list = self.client.get("/api/admin/activity/?event=auth_reset_request")
         self.assertEqual(audit_list.status_code, 200)
         self.assertEqual(audit_list.data[0]["id"], activity.id)
 

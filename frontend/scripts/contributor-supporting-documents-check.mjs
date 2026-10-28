@@ -141,7 +141,9 @@ await page.route("**/api/**", async (route) => {
       body: JSON.stringify(existingDocument
         ? existingDocument.extraction_status === "ready"
           ? { status: "pending", required: true, document_results: [] }
-          : { status: "processing", required: true, document_results: [], summary: "Document processing must finish before the AI assessment can run." }
+          : existingDocument.processing_error
+            ? { status: "unavailable", required: true, document_results: [], summary: "Failed to upload. Retry or remove the affected file." }
+            : { status: "processing", required: true, document_results: [], summary: "Supporting documents are being prepared." }
         : { status: "missing", required: true, document_results: [] }),
     });
   }
@@ -239,6 +241,8 @@ try {
   };
   await page.goto(`${origin}/employee/projects/99/edit/simplified`, { waitUntil: "networkidle" });
   await page.getByText("uploaded-evidence.pdf", { exact: true }).waitFor();
+  await page.getByText("Failed to upload", { exact: true }).first().waitFor();
+  await page.getByText("Document processing must finish before the AI assessment can run.", { exact: true }).waitFor({ state: "detached" });
 
   const retryButton = page.getByRole("button", { name: "Retry processing uploaded-evidence.pdf" });
   assert.equal(await retryButton.isEnabled(), true, "Retry is an enabled native button.");

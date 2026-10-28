@@ -70,11 +70,15 @@ class ValidatorReadOnlyReviewTests(APITestCase):
         for query in (
             "",
             "?scope=history",
-            "?scope=update_forms",
         ):
             response = self.client.get(f"/api/validator/projects/{query}")
             self.assertEqual(response.status_code, 200, response.data)
             self.assertNotIn(draft.id, {row["id"] for row in response.data})
+
+        self.assertEqual(
+            self.client.get("/api/validator/projects/?scope=update_forms").status_code,
+            403,
+        )
 
         self.assertEqual(
             self.client.get(f"/api/validator/projects/{draft.id}/").status_code,
@@ -82,7 +86,7 @@ class ValidatorReadOnlyReviewTests(APITestCase):
         )
         self.assertEqual(
             self.client.post(f"/api/validator/projects/{draft.id}/update-form/").status_code,
-            404,
+            403,
         )
         revision_queue = self.client.get("/api/project-revisions/")
         self.assertEqual(revision_queue.status_code, 200, revision_queue.data)

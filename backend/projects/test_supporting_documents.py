@@ -10,7 +10,12 @@ from rest_framework.test import APIClient
 
 from ai_engine.document_assessment import GroqUnavailable, assess_project_documents
 from ai_engine.groq_client import GroqCompletion
-from .document_assessments import current_document_source_hash
+from .document_assessments import (
+    current_document_source_hash,
+    dispatch_document_assessment,
+    dispatch_document_processing,
+    serialize_document_assessment,
+)
 from .document_policy import validate_project_documents_for_submit
 from .document_processing import DocumentProcessingError, extract_document_text
 from .models import (
@@ -86,7 +91,8 @@ class SupportingDocumentApiTests(TestCase):
         self.client.force_authenticate(self.contributor)
 
     @override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True)
-    def test_local_eager_upload_finishes_processing_before_response(self):
+    @patch("projects.tasks.process_supporting_document.delay", side_effect=AssertionError("Broker must not be used"))
+    def test_local_eager_upload_finishes_processing_before_response(self, _delay):
         upload = SimpleUploadedFile(
             "project-evidence.csv",
             b"project,budget\nRiver rehabilitation,300000000\n",
@@ -103,6 +109,20 @@ class SupportingDocumentApiTests(TestCase):
         self.assertEqual(response.data["processing_error"], "")
         document = ProjectSupportingDocument.objects.get(pk=response.data["id"])
         self.assertIn("River rehabilitation", document.extracted_text)
+
+    @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
+    @patch("projects.tasks.process_supporting_document.run", return_value={"status": "ready"})
+    @patch("projects.tasks.process_supporting_document.delay", side_effect=AssertionError("Broker must not be used"))
+    def test_eager_document_dispatch_bypasses_broker(self, _delay, run):
+        self.assertTrue(dispatch_document_processing(321))
+        run.assert_called_once_with(321)
+
+    @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
+    @patch("projects.tasks.assess_supporting_documents.run", return_value={"status": "pass"})
+    @patch("projects.tasks.assess_supporting_documents.delay", side_effect=AssertionError("Broker must not be used"))
+    def test_eager_assessment_dispatch_bypasses_broker(self, _delay, run):
+        self.assertTrue(dispatch_document_assessment(654))
+        run.assert_called_once_with(654)
 
     @patch("projects.views.dispatch_document_processing", return_value=True)
     def test_contributor_uploads_valid_csv_and_duplicate_is_rejected(self, _dispatch):
@@ -211,6 +231,44 @@ class SupportingDocumentApiTests(TestCase):
         document.save(update_fields=["extraction_status", "extracted_text"])
         self.assertIsNone(validate_project_documents_for_submit(self.project))
 
+    def test_ready_documents_explain_that_ai_starts_with_validator_analysis(self):
+        ProjectSupportingDocument.objects.create(
+            project=self.project,
+            original_filename="ready.csv",
+            content_type="text/csv",
+            extension="csv",
+            size_bytes=12,
+            checksum_sha256="f" * 64,
+            content=b"scope,budget\n",
+            extraction_status="ready",
+            extracted_text="River rehabilitation budget evidence.",
+            uploaded_by=self.contributor,
+        )
+
+        assessment = serialize_document_assessment(self.project)
+
+        self.assertEqual(assessment["status"], "pending")
+        self.assertIn("Validator runs the AI Assistant analysis", assessment["summary"])
+
+    def test_worker_dispatch_error_is_reported_as_failed_upload(self):
+        ProjectSupportingDocument.objects.create(
+            project=self.project,
+            original_filename="capture.png",
+            content_type="image/png",
+            extension="png",
+            size_bytes=12,
+            checksum_sha256="1" * 64,
+            content=b"png contents",
+            extraction_status="queued",
+            processing_error="The document worker is unavailable.",
+            uploaded_by=self.contributor,
+        )
+
+        assessment = serialize_document_assessment(self.project)
+
+        self.assertEqual(assessment["status"], "unavailable")
+        self.assertEqual(assessment["summary"], "Failed to upload. Retry or remove the affected file.")
+
     def test_validator_can_view_submitted_document_but_content_editor_cannot(self):
         self.project.status = "proposed"
         self.project.save(update_fields=["status"])
@@ -239,7 +297,7 @@ class SupportingDocumentApiTests(TestCase):
         self.assertEqual(len(response.data), 0)
 
     @patch("projects.views.dispatch_document_assessment", return_value=True)
-    def test_submit_queues_assessment_after_every_document_is_ready(self, dispatch):
+    def test_submit_does_not_run_ai_document_assessment(self, dispatch):
         SystemSetting.objects.update_or_create(
             key="portal_encoding_window",
             defaults={"value": (
@@ -267,9 +325,97 @@ class SupportingDocumentApiTests(TestCase):
         response = self.client.post(f"/api/employee/projects/{self.project.id}/submit/", {}, format="json")
 
         self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(self.project.document_assessments.exists())
+        dispatch.assert_not_called()
+
+    @patch("projects.views.dispatch_document_assessment", return_value=True)
+    def test_ai_scorer_starts_document_assessment(self, dispatch):
+        self.project.status = "proposed"
+        self.project.save(update_fields=["status"])
+        ProjectSupportingDocument.objects.create(
+            project=self.project,
+            original_filename="evidence.csv",
+            content_type="text/csv",
+            extension="csv",
+            size_bytes=4,
+            checksum_sha256="8" * 64,
+            content=b"a,b\n",
+            extraction_status="ready",
+            extracted_text="River rehabilitation budget evidence.",
+            uploaded_by=self.contributor,
+        )
+        self.client.force_authenticate(self.validator)
+
+        response = self.client.post(
+            f"/api/validator/projects/{self.project.id}/priority-analysis/run/",
+            {"supplements": {}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 202, response.data)
+        self.assertTrue(response.data["processing"])
         assessment = self.project.document_assessments.get()
         self.assertEqual(assessment.status, "queued")
         dispatch.assert_called_once_with(assessment.id)
+
+    @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
+    @patch("projects.views.analyze_project")
+    @patch("projects.tasks.assess_project_documents")
+    def test_eager_ai_scorer_reads_documents_then_scores_project(self, assess_documents, analyze):
+        self.project.status = "proposed"
+        self.project.save(update_fields=["status"])
+        document = ProjectSupportingDocument.objects.create(
+            project=self.project,
+            original_filename="evidence.csv",
+            content_type="text/csv",
+            extension="csv",
+            size_bytes=4,
+            checksum_sha256="7" * 64,
+            content=b"a,b\n",
+            extraction_status="ready",
+            extracted_text="River rehabilitation budget evidence.",
+            uploaded_by=self.contributor,
+        )
+        assess_documents.return_value = {
+            "status": "pass",
+            "document_results": [{
+                "document_id": document.id,
+                "filename": document.original_filename,
+                "related": True,
+                "explanation": "The file supports the project budget.",
+                "citations": ["River rehabilitation budget evidence"],
+            }],
+            "collective_sufficient": True,
+            "summary": "The supporting evidence is related and sufficient.",
+            "provider": "groq",
+            "model": "test-model",
+            "used_backup_model": False,
+        }
+        rule_set = PriorityRuleSet.objects.create(version="combined-analysis-test", is_active=True)
+        analysis = ProjectPriorityAnalysis.objects.create(
+            project=self.project,
+            validator=self.validator,
+            rule_set=rule_set,
+            source_hash="6" * 64,
+            input_snapshot=profile(),
+            suggested_scores={"missing_facts": []},
+            suggested_priority="low",
+            base_score=25,
+        )
+        analyze.return_value = (analysis, False)
+        self.client.force_authenticate(self.validator)
+
+        response = self.client.post(
+            f"/api/validator/projects/{self.project.id}/priority-analysis/run/",
+            {"supplements": {}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.project.document_assessments.get().status, "pass")
+        evidence = analyze.call_args.args[3]["supporting_document_evidence"]
+        self.assertEqual(evidence["status"], "pass")
+        self.assertEqual(evidence["files"][0]["filename"], "evidence.csv")
 
 
 class DocumentAssessmentOverrideTests(TestCase):

@@ -28,6 +28,7 @@ type YesNo = "Yes" | "No";
 
 type SimplifiedForm = {
   agencyName: string;
+  collaboratingAgencies: string[];
   program: string;
   projectActivity: string;
   location: string | string[];
@@ -88,6 +89,7 @@ type DiffField = {
 
 const initialForm: SimplifiedForm = {
   agencyName: "",
+  collaboratingAgencies: [],
   program: "",
   projectActivity: "",
   location: [],
@@ -518,16 +520,17 @@ const MultiSelectDropdown: React.FC<{
   diffBefore?: string;
   editMeta?: EditMeta;
   required?: boolean;
+  placeholder?: string;
   helpText?: string;
   disabled?: boolean;
-}> = ({ label, options, values, onChange, diffBefore, editMeta, required, helpText, disabled }) => {
+}> = ({ label, options, values, onChange, diffBefore, editMeta, required, placeholder, helpText, disabled }) => {
   const selectedLabels = options
     .filter((option) => values.includes(typeof option === "string" ? option : option.value))
     .map((option) => typeof option === "string" ? option : option.label);
   const unknownValues = values.filter((value) => !options.some((option) =>
     (typeof option === "string" ? option : option.value) === value,
   ));
-  const summary = [...selectedLabels, ...unknownValues].join(", ") || "Select one or more locations";
+  const summary = [...selectedLabels, ...unknownValues].join(", ") || placeholder?.trim() || "Select one or more options";
   const hasEditMeta = Boolean(editMeta && (editMeta.name || editMeta.by || editMeta.at));
 
   return (
@@ -658,6 +661,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const [currentFormVersion, setCurrentFormVersion] = useState<number | null>(null);
   const [usesOutdatedForm, setUsesOutdatedForm] = useState(false);
   const [revisionState, setRevisionState] = useState<string>("");
+  const [formMigration, setFormMigration] = useState<{ source_version?: number; target_version?: number; attention_fields?: string[] } | null>(null);
   const [formReady, setFormReady] = useState(false);
   const [legacyFormError, setLegacyFormError] = useState("");
   const [localDraftHydrated, setLocalDraftHydrated] = useState(false);
@@ -678,6 +682,8 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const [documentBusy, setDocumentBusy] = useState(false);
   const [documentAction, setDocumentAction] = useState("");
   const [documentNotice, setDocumentNotice] = useState("");
+  const [projectAccessLevel, setProjectAccessLevel] = useState("");
+  const [readOnlyReason, setReadOnlyReason] = useState("");
   const isValidator = user?.role === "validator";
   const isAdmin = user?.role === "admin";
   const isEmployee = user?.role === "employee";
@@ -710,7 +716,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
     [formSchema],
   );
   const canChangeSupportingDocuments = Boolean(
-    isEmployee && !isRevisionMode && (
+    isEmployee && projectAccessLevel !== "collaborator" && !isRevisionMode && (
       !isEditMode || projectStatus === "planning" || canReviseSubmitted && documentField && editableFields.includes(documentField.key)
     ),
   );
@@ -796,6 +802,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
           data = await api.get(`project-revisions/${revisionId}/`);
           const state = String(data?.state || "").toLowerCase();
           setRevisionState(state);
+          setFormMigration(data?.form_migration && typeof data.form_migration === "object" ? data.form_migration : null);
           setProjectStatus(state === "draft" ? "planning" : state === "endorsed" ? "completed" : "proposed");
           setWorkflowStatus(state === "endorsed" ? "validated" : state === "rejected" ? "rejected" : "pending_validation");
           setWorkflowStatusLabel(state === "endorsed" ? "Validated" : state === "rejected" ? "Rejected" : "Pending Validation");
@@ -815,6 +822,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
           setOfficialPriorityLabel(String(data?.official_priority_label || ""));
           setValidationComment(String(data?.validation_comment || ""));
           setRevisionState("");
+          setFormMigration(null);
           if (data?.updated_at) {
             setServerUpdatedAt(String(data.updated_at));
           }
@@ -880,6 +888,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
           ? rawEditableFields.map((field) => String(field))
           : [];
         setEditableFields(loadedEditableFields);
+        if (!isRevisionMode) {
+          setProjectAccessLevel(String(data?.access_level || ""));
+          setReadOnlyReason(String(data?.read_only_reason || ""));
+        }
         const contributorSnapshot =
           pd?.contributor_snapshot && typeof pd.contributor_snapshot === "object"
             ? (pd.contributor_snapshot as Record<string, unknown>)
@@ -1014,7 +1026,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
     if (!supportingDocuments.some((document) =>
       ["queued", "processing"].includes(document.extraction_status) && !document.processing_error
     )) return;
-    const timer = window.setInterval(() => { void loadSupportingDocuments(); }, 4000);
+    const timer = window.setInterval(() => { void loadSupportingDocuments(); }, 2000);
     return () => window.clearInterval(timer);
   }, [loadSupportingDocuments, supportingDocuments]);
 
@@ -1298,6 +1310,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
   const isReadOnly =
     isAdmin ||
+    projectAccessLevel === "collaborator" ||
     (isEmployee && !canWriteCurrentForm && !canReviseSubmitted && !canReviseProgress) ||
     (isEmployee && isRevisionMode && revisionState !== "draft" && !canReviseProgress) ||
     (isEmployee && isEditMode && !isRevisionMode && projectStatus !== "planning" && !canReviseSubmitted) ||
@@ -1700,6 +1713,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
     const editMeta = editMetaOf(trackingKey);
     const rawValue = configuredFieldValue(field);
     const value = Array.isArray(rawValue) ? rawValue : String(rawValue);
+    const fieldOptions = field.key === "collaboratingAgencies"
+      ? (field.options || []).filter((option) => option.value.toLowerCase() !== form.agencyName.toLowerCase())
+      : field.options || [];
     const common = {
       label: field.label,
       required,
@@ -1733,10 +1749,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
           </div>}
           {supportingDocuments.length > 0 ? <div className="space-y-2">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Uploaded evidence</p>
-            {supportingDocuments.map((document) => <div key={document.id} className="rounded-lg border border-slate-200 bg-white p-3 text-sm"><div className="flex flex-wrap items-center justify-between gap-3"><div className="min-w-0"><strong className="break-all">{document.original_filename}</strong><p className="text-xs text-slate-500">{(document.size_bytes / 1024 / 1024).toFixed(2)} MB · <span className={document.extraction_status === "ready" ? "text-emerald-700" : document.extraction_status === "failed" ? "text-rose-700" : "text-amber-700"}>{document.extraction_status === "ready" ? "Ready" : document.extraction_status === "failed" ? "Processing failed" : document.extraction_status === "processing" ? "Processing..." : "Queued"}</span></p></div><div className="flex flex-wrap items-center gap-2"><a href={document.download_url} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2" onClick={(event) => { event.preventDefault(); void projectDocumentsApi.download(document).catch((error) => setDocumentNotice(error instanceof Error ? error.message : "Download failed.")); }}>Download</a>{(document.extraction_status === "failed" || Boolean(document.processing_error)) && canChangeSupportingDocuments && <button type="button" aria-label={`Retry processing ${document.original_filename}`} disabled={documentBusy} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 transition hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void retrySupportingDocument(document)}>{documentAction === `retry-${document.id}` ? "Retrying..." : "Retry"}</button>}{canChangeSupportingDocuments && <button type="button" aria-label={`Remove ${document.original_filename}`} disabled={documentBusy} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void removeSupportingDocument(document)}>{documentAction === `remove-${document.id}` ? "Removing..." : "Remove"}</button>}</div></div>{document.processing_error && <p className="mt-2 text-xs text-rose-700">{document.processing_error}</p>}</div>)}
+            {supportingDocuments.map((document) => <div key={document.id} className="rounded-lg border border-slate-200 bg-white p-3 text-sm"><div className="flex flex-wrap items-center justify-between gap-3"><div className="min-w-0"><strong className="break-all">{document.original_filename}</strong><p className="text-xs text-slate-500">{(document.size_bytes / 1024 / 1024).toFixed(2)} MB · <span className={document.extraction_status === "ready" ? "text-emerald-700" : document.extraction_status === "failed" || Boolean(document.processing_error) ? "text-rose-700" : "text-amber-700"}>{document.extraction_status === "ready" ? "Ready" : document.processing_error && document.extraction_status === "queued" ? "Failed to upload" : document.extraction_status === "failed" ? "Processing failed" : document.extraction_status === "processing" ? "Processing..." : "Queued"}</span></p></div><div className="flex flex-wrap items-center gap-2"><a href={document.download_url} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2" onClick={(event) => { event.preventDefault(); void projectDocumentsApi.download(document).catch((error) => setDocumentNotice(error instanceof Error ? error.message : "Download failed.")); }}>Download</a>{(document.extraction_status === "failed" || Boolean(document.processing_error)) && canChangeSupportingDocuments && <button type="button" aria-label={`Retry processing ${document.original_filename}`} disabled={documentBusy} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 transition hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void retrySupportingDocument(document)}>{documentAction === `retry-${document.id}` ? "Retrying..." : "Retry"}</button>}{canChangeSupportingDocuments && <button type="button" aria-label={`Remove ${document.original_filename}`} disabled={documentBusy} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void removeSupportingDocument(document)}>{documentAction === `remove-${document.id}` ? "Removing..." : "Remove"}</button>}</div></div>{document.processing_error && <p className="mt-2 text-xs text-rose-700">{document.processing_error}</p>}</div>)}
           </div> : queuedDocuments.length === 0 && <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-500">No supporting documents attached.</p>}
           {documentNotice && <p role="status" className="text-xs font-medium text-amber-700">{documentNotice}</p>}
-          {documentAssessment && ["pass", "fail", "unavailable", "processing"].includes(documentAssessment.status) && <div className={`rounded-lg border p-3 text-sm ${documentAssessment.status === "pass" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : documentAssessment.status === "fail" ? "border-rose-200 bg-rose-50 text-rose-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}><strong>AI document assessment: {documentAssessment.status === "pass" ? "Pass" : documentAssessment.status === "fail" ? "Fail" : documentAssessment.status === "processing" ? "Processing" : "Unavailable"}</strong>{documentAssessment.summary && <p className="mt-1 text-xs">{documentAssessment.summary}</p>}{documentAssessment.document_results?.map((result) => <div key={result.document_id} className="mt-2 border-t border-current/20 pt-2 text-xs"><strong>{result.filename}: {result.related ? "Related" : "Unrelated"}</strong><p>{result.explanation}</p>{result.citations?.length ? <p className="mt-1">Evidence: {result.citations.join(" · ")}</p> : null}</div>)}</div>}
+          {documentAssessment && ["pass", "fail", "unavailable", "processing", "pending"].includes(documentAssessment.status) && <div className={`rounded-lg border p-3 text-sm ${documentAssessment.status === "pass" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : documentAssessment.status === "fail" || documentAssessment.status === "unavailable" && !documentAssessment.id ? "border-rose-200 bg-rose-50 text-rose-800" : documentAssessment.status === "pending" ? "border-blue-200 bg-blue-50 text-blue-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}><strong>{documentAssessment.status === "processing" && !documentAssessment.id ? "Supporting documents: Processing" : documentAssessment.status === "unavailable" && !documentAssessment.id ? "Supporting documents: Failed to upload" : documentAssessment.status === "pending" ? "Supporting documents: Ready" : `AI document assessment: ${documentAssessment.status === "pass" ? "Pass" : documentAssessment.status === "fail" ? "Fail" : documentAssessment.status === "processing" ? "Processing" : "Unavailable"}`}</strong>{documentAssessment.summary && <p className="mt-1 text-xs">{documentAssessment.summary}</p>}{documentAssessment.document_results?.map((result) => <div key={result.document_id} className="mt-2 border-t border-current/20 pt-2 text-xs"><strong>{result.filename}: {result.related ? "Related" : "Unrelated"}</strong><p>{result.explanation}</p>{result.citations?.length ? <p className="mt-1">Evidence: {result.citations.join(" · ")}</p> : null}</div>)}</div>}
         </div>
       );
     }
@@ -1802,7 +1818,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       return <TextAreaField {...common} value={String(value)} rows={4} placeholder={field.placeholder} onChange={(next) => setConfiguredFieldValue(field, next)} />;
     }
     if (field.type === "select") {
-      return <SelectField {...common} value={String(value)} options={field.key === "status" ? statusOptions : field.options || []} showLegacyValue={field.key === "status"} onChange={(next) => setConfiguredFieldValue(field, next)} />;
+      return <SelectField {...common} value={String(value)} options={field.key === "status" ? statusOptions : fieldOptions} showLegacyValue={field.key === "status"} onChange={(next) => setConfiguredFieldValue(field, next)} />;
     }
     if (field.type === "multiselect_dropdown") {
       const selectedValues = Array.isArray(value)
@@ -1810,10 +1826,16 @@ const SimplifiedProjectSubmission: React.FC = () => {
         : String(value || "").trim()
         ? [String(value).trim()]
         : [];
-      return <MultiSelectDropdown {...common} values={selectedValues} options={field.options || []} onChange={(next) => setConfiguredFieldValue(field, next)} />;
+      return <MultiSelectDropdown
+        {...common}
+        values={selectedValues}
+        options={fieldOptions}
+        placeholder={field.placeholder || (field.key === "collaboratingAgencies" ? "Select one or more agencies" : "Select one or more locations")}
+        onChange={(next) => setConfiguredFieldValue(field, next)}
+      />;
     }
     if (field.type === "multiselect") {
-      return <CheckboxGroup {...common} values={Array.isArray(value) ? value : []} options={field.options || []} onChange={(next) => setConfiguredFieldValue(field, next)} />;
+      return <CheckboxGroup {...common} values={Array.isArray(value) ? value : []} options={fieldOptions} onChange={(next) => setConfiguredFieldValue(field, next)} />;
     }
     if (field.type === "number" || field.type === "year") {
       return <NumberField {...common} value={String(value)} placeholder={field.placeholder} onChange={(next) => setConfiguredFieldValue(field, next)} />;
@@ -1930,6 +1952,12 @@ const SimplifiedProjectSubmission: React.FC = () => {
         </>
       }
     >
+      {projectAccessLevel === "collaborator" && (
+        <div className="portal-card p-3 mb-3 border-cyan-200 bg-cyan-50 text-cyan-900" role="status">
+          <strong>Read-only collaborating agency access.</strong>{" "}
+          {readOnlyReason || "Only the primary agency can modify this project."}
+        </div>
+      )}
       {isEmployee && !canWriteCurrentForm && !canReviseSubmitted && (
         <div className="portal-card p-3 mb-3 border-amber-200 bg-amber-50 text-amber-800">
           {currentWindowMessage || "This workflow is currently closed by admin."}
@@ -1938,6 +1966,12 @@ const SimplifiedProjectSubmission: React.FC = () => {
       {isRevisionMode && isEmployee && revisionState !== "draft" && !canReviseProgress && (
         <div className="portal-card p-3 mb-3 border-blue-200 bg-blue-50 text-blue-800">
           This progress update has already been submitted and is now view-only for contributors.
+        </div>
+      )}
+      {isRevisionMode && formMigration && (
+        <div className="portal-card p-3 mb-3 border-cyan-200 bg-cyan-50 text-cyan-900 text-sm" role="status">
+          This update draft was migrated from contributor form version {formMigration.source_version ?? "an older version"} to version {formMigration.target_version ?? "the latest"}.
+          {formMigration.attention_fields?.length ? ` Complete these newly required fields before submission: ${formMigration.attention_fields.join(", ")}.` : " Existing compatible answers were preserved."}
         </div>
       )}
       {isEditMode && !isRevisionMode && isEmployee && projectStatus !== "planning" && (
@@ -2343,7 +2377,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                 ))
               )}
             </div>
-            <div className="border-t pt-3">
+            {projectAccessLevel !== "collaborator" && <div className="border-t pt-3">
               <label className="block text-sm text-slate-700 mb-2">Add a comment</label>
               <textarea
                 value={commentInput}
@@ -2362,7 +2396,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                   {commentLoading ? "Posting..." : "Post Comment"}
                 </button>
               </div>
-            </div>
+            </div>}
           </div>
         </div>
       )}

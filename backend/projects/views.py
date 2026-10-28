@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import io
+import csv
 import os
 import re
 import string
@@ -9,8 +10,8 @@ import difflib
 import urllib.parse
 import urllib.request
 import hashlib
+import hmac
 import secrets
-import zipfile
 from pathlib import Path
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -19,6 +20,7 @@ from zoneinfo import ZoneInfo
 from django.conf import settings
 from django.core.cache import cache
 from django.core.mail import send_mail, EmailMessage
+from django.contrib.auth.hashers import check_password, make_password
 from django.core import signing
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
@@ -27,7 +29,7 @@ from django.utils import timezone
 from django.utils.crypto import get_random_string
 from django.utils.text import slugify
 from django.db import IntegrityError, connection, transaction
-from django.db.models import Count, Max, Prefetch, Q, Value, TextField, CharField
+from django.db.models import Count, Exists, Max, OuterRef, Prefetch, Q, Value, TextField, CharField
 from django.db.models.functions import Cast, Coalesce, Concat, NullIf
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -41,8 +43,9 @@ from rest_framework_simplejwt.tokens import AccessToken
 from .authentication import SESSION_IDLE_TIMEOUT
 from .models import (
     AccessRequest,
+    Agency,
     Notification,
-    PasswordResetRequest,
+    PasswordResetChallenge,
     PasswordSetupToken,
     PortalSession,
     ProfileEditRequest,
@@ -50,22 +53,24 @@ from .models import (
     ProjectPriorityConfirmation,
     ProjectSupportingDocument,
     Project,
+    ProjectCollaboratingAgency,
     ProjectComment,
     ProjectRevision,
     PublicEvent,
     SystemSetting,
     User,
+    UserInvitation,
     UserActivity,
 )
 from .serializers import (
     AccessRequestSerializer,
     NotificationSerializer,
-    PasswordResetRequestSerializer,
     ProjectCommentSerializer,
     PublicEventSerializer,
     PublicProjectSerializer,
     PublicProjectSummarySerializer,
     ProjectSerializer,
+    ProjectFormMigrationSummarySerializer,
     ProjectSummarySerializer,
     ProjectRevisionSerializer,
     ProjectRevisionSummarySerializer,
@@ -94,6 +99,13 @@ from .document_assessments import (
     serialize_document_assessment,
 )
 from .utils import derive_ncr_lgus, format_project_locations
+from .form_migrations import (
+    analyze_profile_migration,
+    migration_eligibility,
+    prepare_project_migration,
+    saved_form_marker,
+)
+from .file_validation import validate_uploaded_document
 
 
 ENCODING_WINDOW_KEY = "portal_encoding_window"
@@ -101,10 +113,18 @@ PROGRESS_UPDATE_WINDOW_KEY = "portal_progress_update_window"
 PASSWORD_SETUP_TTL_HOURS = 24
 REGISTRATION_INVITE_PREFIX = "invite:"
 REGISTRATION_INVITE_SALT = "rdc-registration-invite-v1"
+BATCH_INVITE_PREVIEW_SALT = "rdc-batch-registration-preview-v1"
+BATCH_ARCHIVE_PREVIEW_SALT = "rdc-batch-archive-preview-v1"
+BATCH_FORM_MIGRATION_PREVIEW_SALT = "rdc-batch-form-migration-preview-v1"
 PASSWORD_RESET_WINDOW_SECONDS = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_WINDOW", 3600))
-PASSWORD_RESET_LIMIT_EMAIL = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_EMAIL", 2))
-PASSWORD_RESET_LIMIT_IP = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_IP", 5))
+PASSWORD_RESET_LIMIT_EMAIL = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_EMAIL", 3))
+PASSWORD_RESET_LIMIT_IP = int(getattr(settings, "PASSWORD_RESET_RATE_LIMIT_IP", 10))
+PASSWORD_RESET_OTP_TTL_SECONDS = int(getattr(settings, "PASSWORD_RESET_OTP_TTL_SECONDS", 600))
+PASSWORD_RESET_TOKEN_TTL_SECONDS = int(getattr(settings, "PASSWORD_RESET_TOKEN_TTL_SECONDS", 600))
+PASSWORD_RESET_RESEND_COOLDOWN_SECONDS = int(getattr(settings, "PASSWORD_RESET_RESEND_COOLDOWN_SECONDS", 60))
+PASSWORD_RESET_MAX_ATTEMPTS = int(getattr(settings, "PASSWORD_RESET_MAX_ATTEMPTS", 5))
 ACCOUNT_AGENCIES = {
+    "MMDA": "Metropolitan Manila Development Authority",
     "DPWH": "Department of Public Works and Highways",
     "DENR": "Department of Environment and Natural Resources",
     "RDC-NCR": "Regional Development Council National Capital Region",
@@ -132,6 +152,18 @@ INTERNAL_ACCOUNT_ROLES = {"admin", "validator", "content_editor"}
 
 def _normalize_account_agency(value):
     normalized = " ".join(str(value or "").strip().split())
+    if not normalized:
+        return ""
+    try:
+        agency = Agency.objects.filter(
+            Q(code__iexact=normalized) | Q(name__iexact=normalized),
+            is_active=True,
+        ).only("code").first()
+        if agency:
+            return agency.code
+    except Exception:
+        # Keep startup and historical migrations compatible before the catalog table exists.
+        pass
     normalized_value = normalized.casefold()
     return next(
         (
@@ -141,6 +173,125 @@ def _normalize_account_agency(value):
         ),
         "",
     )
+
+
+def _active_agency_options():
+    try:
+        rows = list(Agency.objects.filter(is_active=True).order_by("code").values("code", "name"))
+        if rows:
+            return rows
+    except Exception:
+        pass
+    return [{"code": code, "name": name} for code, name in ACCOUNT_AGENCIES.items()]
+
+
+def _agency_for_value(value, *, active_only=False):
+    normalized = " ".join(str(value or "").strip().split())
+    if not normalized:
+        return None
+    queryset = Agency.objects.all()
+    if active_only:
+        queryset = queryset.filter(is_active=True)
+    return queryset.filter(Q(code__iexact=normalized) | Q(name__iexact=normalized)).first()
+
+
+def _project_primary_agency_code(project):
+    agency = getattr(project, "primary_agency", None)
+    if agency is not None:
+        return agency.code
+    raw = str(getattr(project, "agency", "") or "").strip()
+    return _normalize_account_agency(raw) or raw
+
+
+def _is_primary_agency_contributor(user, project):
+    if getattr(user, "role", "") not in ("staff", "employee"):
+        return False
+    user_code = _normalize_account_agency(getattr(user, "agency", ""))
+    primary_code = _project_primary_agency_code(project)
+    return bool(user_code and primary_code and user_code.casefold() == primary_code.casefold())
+
+
+def _is_collaborating_agency_contributor(user, project):
+    if getattr(user, "role", "") not in ("staff", "employee") or project.status == "planning":
+        return False
+    user_code = _normalize_account_agency(getattr(user, "agency", ""))
+    return bool(
+        user_code
+        and ProjectCollaboratingAgency.objects.filter(
+            project=project,
+            agency__code__iexact=user_code,
+            agency__is_active=True,
+        ).exists()
+    )
+
+
+def _validate_collaborating_agencies(profile_data, primary_agency):
+    simplified = _simplified_from_profile(profile_data)
+    if "collaboratingAgencies" not in simplified:
+        return None
+    values = simplified.get("collaboratingAgencies")
+    if values in (None, ""):
+        values = []
+    if not isinstance(values, list):
+        return "Collaborating Agencies must be a list."
+    if len(values) > 20:
+        return "Select no more than 20 collaborating agencies."
+    normalized = [str(value or "").strip() for value in values]
+    if any(not value for value in normalized):
+        return "Collaborating Agencies contains an empty selection."
+    if len({value.casefold() for value in normalized}) != len(normalized):
+        return "A collaborating agency can only be selected once."
+    primary_code = getattr(primary_agency, "code", "") or str(primary_agency or "")
+    resolved = []
+    for value in normalized:
+        agency = _agency_for_value(value, active_only=True)
+        if agency is None:
+            return f"Unknown or inactive collaborating agency: {value}."
+        if primary_code and agency.code.casefold() == primary_code.casefold():
+            return "The primary agency cannot also be a collaborating agency."
+        resolved.append(agency)
+    return resolved
+
+
+def _sync_project_collaborators(project, profile_data, actor=None):
+    simplified = _simplified_from_profile(profile_data)
+    if "collaboratingAgencies" not in simplified:
+        return
+    resolved = _validate_collaborating_agencies(profile_data, project.primary_agency or project.agency)
+    if isinstance(resolved, str):
+        raise ValidationError(resolved)
+    target_ids = {agency.id for agency in resolved}
+    existing_links = list(
+        ProjectCollaboratingAgency.objects.filter(project=project).select_related("agency")
+    )
+    existing_ids = {link.agency_id for link in existing_links}
+    existing_codes = sorted(link.agency.code for link in existing_links)
+    ProjectCollaboratingAgency.objects.filter(project=project).exclude(agency_id__in=target_ids).delete()
+    ProjectCollaboratingAgency.objects.bulk_create(
+        [
+            ProjectCollaboratingAgency(project=project, agency=agency, added_by=actor)
+            for agency in resolved
+            if agency.id not in existing_ids
+        ],
+        ignore_conflicts=True,
+    )
+    target_codes = sorted(agency.code for agency in resolved)
+    if actor and existing_codes != target_codes:
+        UserActivity.objects.create(
+            user=actor,
+            actor_username=getattr(actor, "username", "") or "",
+            actor_full_name=_user_display_name(actor),
+            role=getattr(actor, "role", "") or "",
+            event="api_action",
+            project=project,
+            project_id_snapshot=project.id,
+            project_title_snapshot=_project_title(project),
+            details={
+                "action": "project_collaborators_updated",
+                "before": existing_codes,
+                "after": target_codes,
+            },
+        )
 
 
 def _same_saved_account_agency(left, right):
@@ -1039,11 +1190,134 @@ def _filter_projects_for_workflow(qs, workflow):
     return Project.objects.filter(id__in=ids)
 
 
+def _filter_admin_project_selection(qs, data):
+    """Apply the same user-facing filters used by the administrator project list."""
+    search = str(data.get("search") or data.get("q") or "").strip()
+    if search:
+        qs = qs.filter(
+            Q(name__icontains=search)
+            | Q(description__icontains=search)
+            | Q(agency__icontains=search)
+            | Q(implementing_agency__icontains=search)
+            | Q(created_by__username__icontains=search)
+            | Q(created_by__first_name__icontains=search)
+            | Q(created_by__last_name__icontains=search)
+        )
+    workflow = data.get("workflow") or data.get("status")
+    return _filter_projects_for_workflow(qs, workflow)
+
+
+def _selected_admin_projects(data, *, include_archived=False):
+    raw_ids = data.get("project_ids")
+    if raw_ids is None:
+        raw_ids = data.get("ids")
+    if isinstance(raw_ids, str):
+        raw_ids = [item.strip() for item in raw_ids.split(",") if item.strip()]
+    if raw_ids is not None and not isinstance(raw_ids, list):
+        raise ValueError("project_ids must be a list.")
+    if raw_ids:
+        try:
+            ids = list(dict.fromkeys(int(item) for item in raw_ids))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Project identifiers must be numbers.") from exc
+        if len(ids) > 5000:
+            raise ValueError("A batch can contain at most 5,000 projects.")
+        return Project.objects.filter(id__in=ids).order_by("id")
+    if str(data.get("all_matching") or "").lower() not in {"1", "true", "yes"}:
+        raise ValueError("Select at least one project or choose all matching projects.")
+    qs = Project.objects.all()
+    if not include_archived:
+        qs = qs.filter(archived=False, is_active=True)
+    return _filter_admin_project_selection(qs, data).order_by("id")
+
+
+def _archive_ineligibility(project):
+    if project.archived or not project.is_active:
+        return "This project is already archived."
+    if project.status == "proposed" or _project_needs_revision(project):
+        return "Projects pending validation or returned for correction cannot be archived."
+    active_update = project.revisions.filter(
+        revision_type="progress_update",
+        state__in=("draft", "submitted", "validator_draft", "reviewed"),
+    ).exists()
+    if active_update:
+        return "This project has an active progress update."
+    return ""
+
+
+def _archive_project(request, project):
+    """Archive one eligible project. The caller must lock the row for batch use."""
+    reason = _archive_ineligibility(project)
+    if reason:
+        return False, reason
+    profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+    simplified = profile.get("simplified_form") if isinstance(profile.get("simplified_form"), dict) else {}
+    implementation_status = canonical_implementation_status(simplified.get("status")) if simplified else ""
+    project.archived = True
+    project.is_active = False
+    project.save(update_fields=["archived", "is_active", "updated_at"])
+    _log_activity(request, "project_archive", project, {
+        "archived": True,
+        "implementation_status": implementation_status,
+    })
+    _notify_many(
+        _project_employee_recipients(project),
+        event_type="project_archived",
+        title="Project archived",
+        message=(
+            f"{_project_title(project)} was archived by an administrator. "
+            "It is no longer shown in your active projects list."
+        ),
+        project=project,
+        actor=request.user,
+        link_path="/employee/projects",
+        dedupe_key=f"project:{project.id}:archived:{project.updated_at.isoformat()}",
+    )
+    return True, ""
+
+
+def _batch_project_row(project, reason=""):
+    marker = saved_form_marker(project.profile_data)
+    return {
+        "id": project.id,
+        "title": _project_title(project),
+        "agency": project.agency or project.implementing_agency or "",
+        "workflow_status": _workflow_status_for_project(project),
+        "form_version": marker[1] if marker else None,
+        "eligible": not bool(reason),
+        "reason": reason,
+    }
+
+
+def _migration_preview_row(project, *, version_cache=None):
+    eligible, reason = migration_eligibility(project)
+    source_profile = project.profile_data
+    draft = project.revisions.filter(
+        revision_type="progress_update", state="draft"
+    ).order_by("-updated_at").first()
+    if draft is not None:
+        source_profile = draft.profile_data_snapshot
+    analysis = analyze_profile_migration(source_profile, version_cache=version_cache) if eligible else {}
+    if eligible and not analysis.get("compatible"):
+        reason = "; ".join(analysis.get("issues") or ["This form cannot be migrated safely."])
+    if eligible and analysis.get("already_current"):
+        reason = "This project already uses the latest contributor form."
+    row = _batch_project_row(project, reason)
+    row.update({
+        "source_version": analysis.get("source_version", row["form_version"]),
+        "target_version": analysis.get("target_version"),
+        "attention_fields": analysis.get("attention_fields", []),
+        "eligible": eligible and analysis.get("compatible", False) and not analysis.get("already_current", False),
+    })
+    return row
+
+
 def _get_window_config(key):
     default = {
         "configured": False,
         "config_error": False,
         "enabled": False,
+        "manual_open": False,
         "start_at": "",
         "end_at": "",
     }
@@ -1056,6 +1330,7 @@ def _get_window_config(key):
             "configured": True,
             "config_error": False,
             "enabled": bool(data.get("enabled", False)),
+            "manual_open": bool(data.get("manual_open", False)),
             "start_at": str(data.get("start_at", "") or ""),
             "end_at": str(data.get("end_at", "") or ""),
         }
@@ -1082,6 +1357,7 @@ def _parse_iso_datetime(raw):
 def _resolve_window_state(config, label, action_label):
     public_config = {
         "enabled": config["enabled"],
+        "manual_open": config.get("manual_open", False),
         "start_at": config["start_at"],
         "end_at": config["end_at"],
     }
@@ -1105,6 +1381,9 @@ def _resolve_window_state(config, label, action_label):
 
     if not config["enabled"]:
         return state("closed_by_admin", f"{label} is currently closed by the administrator.")
+
+    if config.get("manual_open"):
+        return state("open_by_admin", f"{action_label} is open until an administrator closes it.", is_open=True)
 
     if not config["start_at"] or not config["end_at"]:
         return state("schedule_not_configured", f"{label} is closed until a complete schedule is configured.")
@@ -1151,38 +1430,154 @@ def _resolve_progress_update_window_state():
     )
 
 
-def _send_setup_email(user: User, token: PasswordSetupToken, purpose: str = "create"):
-    frontend_base = getattr(settings, "FRONTEND_BASE_URL", "http://localhost:5173")
-    is_reset = purpose == "reset"
-    link = f"{frontend_base.rstrip('/')}/{'reset-password' if is_reset else 'setup-password'}?token={urllib.parse.quote(token.token, safe='')}"
-    subject = "RDC Portal Password Reset" if is_reset else "RDC Portal Account Setup"
-    if is_reset:
-        message = (
-            "A password reset was approved for your RDC Portal account.\n\n"
-            "Please click the link below to set a new password (valid for 24 hours):\n"
-            f"{link}\n\n"
-            "If you did not request this reset, please contact the RDC Portal administrator immediately."
-        )
-    else:
-        message = (
-            "Your RDC Portal account has been created.\n\n"
-            "Please click the link below to complete your profile and set your password (valid for 24 hours):\n"
-            f"{link}\n\n"
-            "If you did not request this account, please contact the RDC Portal administrator."
-        )
-    delivered = send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=False)
-    if not delivered:
-        raise RuntimeError("The password email was not delivered.")
-
-
 RESET_PASSWORD_TOKEN_PREFIX = "reset_"
 
 
-def _create_password_reset_token(user: User):
-    return PasswordSetupToken.objects.create(
-        user=user,
-        token=f"{RESET_PASSWORD_TOKEN_PREFIX}{get_random_string(48)}",
-        expires_at=timezone.now() + timedelta(hours=PASSWORD_SETUP_TTL_HOURS),
+PASSWORD_RESET_GENERIC_MESSAGE = (
+    "If this email is registered, a password reset code has been sent. "
+    "Check your inbox and spam folder."
+)
+
+
+def _password_reset_email_fingerprint(email: str) -> str:
+    normalized = str(email or "").strip().casefold().encode("utf-8")
+    return hmac.new(
+        settings.SECRET_KEY.encode("utf-8"),
+        b"rdc-password-reset:" + normalized,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _record_password_reset_event(request, event, challenge, details=None):
+    payload = {
+        "challenge_id": challenge.pk,
+        "email_fingerprint": challenge.email_fingerprint,
+        **(details or {}),
+    }
+    if challenge.user_id:
+        payload["target_user_id"] = challenge.user_id
+    actor = getattr(request, "user", None)
+    if actor and actor.is_authenticated:
+        UserActivity.objects.create(
+            user=actor,
+            role=actor.role,
+            event=event,
+            ip_address=_client_ip(request)[:64],
+            location_hint=_location_hint(request)[:255],
+            details=payload,
+        )
+    else:
+        _log_unauthenticated_activity(request, event, payload)
+
+
+def _send_password_reset_otp(user: User, otp: str):
+    message = (
+        "A password reset was requested for your RDC Portal account.\n\n"
+        f"Your one-time verification code is: {otp}\n\n"
+        "This code expires in 10 minutes and can be used once. "
+        "If you did not request this reset, you can ignore this email."
+    )
+    delivered = send_mail(
+        "RDC Portal Password Reset Code",
+        message,
+        settings.DEFAULT_FROM_EMAIL,
+        [user.email],
+        fail_silently=False,
+    )
+    if not delivered:
+        raise RuntimeError("The password reset email was not delivered.")
+
+
+def _issue_password_reset_challenge(request, email: str):
+    normalized_email = str(email or "").strip().lower()
+    validate_email(normalized_email)
+    now = timezone.now()
+    fingerprint = _password_reset_email_fingerprint(normalized_email)
+    ip = _client_ip(request)[:64]
+    window_start = now - timedelta(seconds=PASSWORD_RESET_WINDOW_SECONDS)
+
+    latest = PasswordResetChallenge.objects.filter(
+        email_fingerprint=fingerprint,
+    ).order_by("-created_at").first()
+    if latest and latest.resend_available_at > now:
+        retry_after = max(1, int((latest.resend_available_at - now).total_seconds()))
+        return None, Response(
+            {"detail": f"Please wait {retry_after} seconds before requesting another code.", "retry_after": retry_after},
+            status=429,
+        )
+    if PasswordResetChallenge.objects.filter(
+        email_fingerprint=fingerprint,
+        created_at__gte=window_start,
+    ).count() >= PASSWORD_RESET_LIMIT_EMAIL:
+        return None, Response({"detail": "Too many requests. Please try again later."}, status=429)
+    if ip and PasswordResetChallenge.objects.filter(
+        requested_ip=ip,
+        created_at__gte=window_start,
+    ).count() >= PASSWORD_RESET_LIMIT_IP:
+        return None, Response({"detail": "Too many requests. Please try again later."}, status=429)
+
+    user = User.objects.filter(email__iexact=normalized_email).first()
+    otp = f"{secrets.randbelow(1_000_000):06d}"
+    with transaction.atomic():
+        superseded_at = timezone.now()
+        PasswordResetChallenge.objects.select_for_update().filter(
+            email_fingerprint=fingerprint,
+            status__in=[PasswordResetChallenge.STATUS_PENDING, PasswordResetChallenge.STATUS_VERIFIED],
+        ).update(
+            status=PasswordResetChallenge.STATUS_SUPERSEDED,
+            superseded_at=superseded_at,
+            otp_digest="",
+            reset_token_digest="",
+        )
+        if user:
+            PasswordSetupToken.objects.filter(
+                user=user,
+                token__startswith=RESET_PASSWORD_TOKEN_PREFIX,
+                used_at__isnull=True,
+            ).update(used_at=superseded_at)
+        challenge = PasswordResetChallenge.objects.create(
+            user=user,
+            email_fingerprint=fingerprint,
+            otp_digest=make_password(otp),
+            delivery_status=(
+                PasswordResetChallenge.DELIVERY_PENDING
+                if user
+                else PasswordResetChallenge.DELIVERY_NOT_APPLICABLE
+            ),
+            expires_at=now + timedelta(seconds=PASSWORD_RESET_OTP_TTL_SECONDS),
+            resend_available_at=now + timedelta(seconds=PASSWORD_RESET_RESEND_COOLDOWN_SECONDS),
+            requested_ip=ip,
+            requested_user_agent=(request.META.get("HTTP_USER_AGENT", "") or "")[:255],
+        )
+
+    delivered = False
+    if user:
+        try:
+            _send_password_reset_otp(user, otp)
+            delivered = True
+            challenge.delivery_status = PasswordResetChallenge.DELIVERY_SENT
+        except Exception:
+            challenge.delivery_status = PasswordResetChallenge.DELIVERY_FAILED
+        challenge.save(update_fields=["delivery_status"])
+    _record_password_reset_event(
+        request,
+        "auth_reset_request",
+        challenge,
+        {"action": "otp_requested", "delivery_status": challenge.delivery_status},
+    )
+    return {"challenge": challenge, "delivered": delivered}, None
+
+
+def _send_password_changed_notice(user: User):
+    send_mail(
+        "RDC Portal Password Changed",
+        (
+            "The password for your RDC Portal account was changed successfully.\n\n"
+            "If you did not make this change, contact the RDC Portal administrator immediately."
+        ),
+        settings.DEFAULT_FROM_EMAIL,
+        [user.email],
+        fail_silently=False,
     )
 
 
@@ -1204,15 +1599,52 @@ def _send_registration_invitation(email: str, token: str):
         raise RuntimeError("The registration invitation email was not delivered.")
 
 
-def _issue_registration_invitation(request, email: str, role: str):
+def _issue_registration_invitation(request, email: str, role: str, agency: str = "", batch_key: str = ""):
+    email = str(email or "").strip().lower()
+    normalized_agency = _normalize_account_agency(agency)
+    agency_locked = role in INTERNAL_ACCOUNT_ROLES or bool(normalized_agency)
+    if role in INTERNAL_ACCOUNT_ROLES:
+        normalized_agency = "RDC-NCR"
     signed = signing.dumps(
-        {"email": email, "role": role, "nonce": get_random_string(32)},
+        {
+            "email": email,
+            "role": role,
+            "agency": normalized_agency,
+            "agency_locked": agency_locked,
+            "nonce": get_random_string(32),
+        },
         salt=REGISTRATION_INVITE_SALT,
     )
     token = f"{REGISTRATION_INVITE_PREFIX}{signed}"
-    _send_registration_invitation(email, token)
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
     actor = request.user
-    return UserActivity.objects.create(
+    with transaction.atomic():
+        now = timezone.now()
+        UserInvitation.objects.select_for_update().filter(
+            email__iexact=email,
+            status=UserInvitation.STATUS_SENT,
+            expires_at__gte=now,
+        ).update(status=UserInvitation.STATUS_REVOKED, revoked_at=now)
+        invitation = UserInvitation.objects.create(
+            email=email,
+            role=role,
+            agency=normalized_agency,
+            agency_locked=agency_locked,
+            token_digest=digest,
+            status=UserInvitation.STATUS_PENDING,
+            invited_by=actor,
+            batch_key=str(batch_key or "")[:64],
+            expires_at=now + timedelta(hours=PASSWORD_SETUP_TTL_HOURS),
+        )
+    try:
+        _send_registration_invitation(email, token)
+    except Exception:
+        UserInvitation.objects.filter(pk=invitation.pk).update(status=UserInvitation.STATUS_DELIVERY_FAILED)
+        raise
+    invitation.status = UserInvitation.STATUS_SENT
+    invitation.sent_at = timezone.now()
+    invitation.save(update_fields=["status", "sent_at"])
+    activity = UserActivity.objects.create(
         user=actor,
         actor_username=actor.username,
         actor_full_name=_user_display_name(actor),
@@ -1223,9 +1655,14 @@ def _issue_registration_invitation(request, email: str, role: str):
         details={
             "email": email,
             "role": role,
-            "token_digest": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            "agency": normalized_agency,
+            "agency_locked": agency_locked,
+            "invitation_record_id": invitation.id,
+            "token_digest": digest,
+            "batch_key": str(batch_key or "")[:64],
         },
     )
+    return activity
 
 
 def _registration_invitation(token: str):
@@ -1246,6 +1683,19 @@ def _registration_invitation(token: str):
     if not email or role not in ("admin", "validator", "staff", "content_editor") or not payload.get("nonce"):
         return None
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    invitation = UserInvitation.objects.filter(
+        token_digest=digest,
+        email__iexact=email,
+        role=role,
+        status=UserInvitation.STATUS_SENT,
+        expires_at__gte=timezone.now(),
+    ).first()
+    if invitation:
+        payload["agency"] = invitation.agency
+        payload["agency_locked"] = invitation.agency_locked
+        if User.objects.filter(email__iexact=email).exists():
+            return None
+        return payload, invitation
     invitations = UserActivity.objects.filter(event="registration_invitation_sent", details__email=email)
     latest = invitations.order_by("-id").first()
     if not latest or latest.details.get("token_digest") != digest or latest.details.get("role") != role:
@@ -2620,8 +3070,17 @@ def _manila_funding_year():
 
 def _contributor_project_scope(user, prefix=""):
     scope = Q(**{f"{prefix}created_by": user})
-    agency = str(getattr(user, "agency", "") or "").strip()
+    agency = _normalize_account_agency(getattr(user, "agency", ""))
     if agency:
+        scope |= Q(**{f"{prefix}primary_agency__code__iexact": agency})
+        # Collaboration becomes official only after submission; planning drafts
+        # remain private to the primary agency even if draft answers name a
+        # future collaborator.
+        collaborator_scope = Q(
+            **{f"{prefix}collaborating_agency_links__agency__code__iexact": agency}
+        ) & ~Q(**{f"{prefix}status": "planning"})
+        scope |= collaborator_scope
+        # Compatibility for projects not backfilled yet.
         scope |= Q(**{f"{prefix}agency__iexact": agency})
     return scope
 
@@ -2656,10 +3115,27 @@ def _validate_contributor_simplified_write(user, incoming_profile, *, project=No
         account_agency = str(getattr(user, "agency", "") or "").strip()
         if not account_agency:
             return "Your account has no agency. Ask an administrator to update it before creating a project."
+        account_agency_record = _agency_for_value(account_agency, active_only=True)
+        if account_agency_record is None:
+            return "Your account agency is not active in the agency catalog. Ask an administrator to correct it."
         if not _same_agency_value(incoming_agency, account_agency) or not _same_agency_value(simplified.get("agencyName"), account_agency):
             return "Agency Name must match your account agency."
         previous = {}
+        primary_agency = account_agency_record
     else:
+        if not project.primary_agency_id:
+            # The data migration normally fills this relation. Retain a safe
+            # compatibility path for known active catalog values created by
+            # older integrations between deployments; unknown/inactive values
+            # still require Administrator correction.
+            legacy_primary_code = _normalize_account_agency(project.agency)
+            if not legacy_primary_code:
+                return "This project has no valid primary agency. Ask an administrator to correct it before editing."
+            primary_agency = legacy_primary_code
+        else:
+            primary_agency = project.primary_agency
+        if not _is_primary_agency_contributor(user, project):
+            return "Only contributors from the primary agency can modify this project."
         previous = existing_profile.get("simplified_form") if isinstance(existing_profile, dict) else {}
         if not isinstance(previous, dict):
             previous = {}
@@ -2669,6 +3145,10 @@ def _validate_contributor_simplified_write(user, incoming_profile, *, project=No
         legacy_agency_fill = not saved_form_agency and _same_agency_value(incoming_form_agency, project.agency)
         if not unchanged_agency and not legacy_agency_fill:
             return "Agency Name is locked and cannot be changed by a contributor."
+
+    collaborators = _validate_collaborating_agencies(incoming_profile, primary_agency)
+    if isinstance(collaborators, str):
+        return collaborators
 
     incoming_actual = simplified.get("actualFundingByYear") or {}
     previous_actual = previous.get("actualFundingByYear") or {}
@@ -2914,6 +3394,7 @@ def _apply_revision_to_project(revision, user):
             "updated_at",
         ]
     )
+    _sync_project_collaborators(project, profile, user)
     ProjectRevision.objects.filter(project=project, state="endorsed", is_public_current=True).exclude(
         id=revision.id
     ).update(is_public_current=False)
@@ -2950,25 +3431,11 @@ class ProjectPermission(permissions.BasePermission):
         if role in ("admin", "validator"):
             return True
         if request.method in permissions.SAFE_METHODS:
-            if obj.created_by_id == request.user.id:
-                return True
             if role in ("staff", "employee"):
-                user_agency = (getattr(request.user, "agency", "") or "").strip().lower()
-                project_agency = (getattr(obj, "agency", "") or "").strip().lower()
-                return bool(user_agency and user_agency == project_agency)
+                return _is_primary_agency_contributor(request.user, obj) or _is_collaborating_agency_contributor(request.user, obj)
             return False
-        if obj.created_by_id == request.user.id:
-            return True
-        if role in ("staff", "employee") and (
-            getattr(obj, "status", "") == "planning" or _project_needs_revision(obj)
-        ):
-            user_agency = (getattr(request.user, "agency", "") or "").strip().lower()
-            project_agency = (getattr(obj, "agency", "") or "").strip().lower()
-            return bool(user_agency and user_agency == project_agency)
-        if role in ("staff", "employee") and getattr(view, "action", "") == "start_update":
-            user_agency = (getattr(request.user, "agency", "") or "").strip().lower()
-            project_agency = (getattr(obj, "agency", "") or "").strip().lower()
-            return bool(user_agency and user_agency == project_agency)
+        if role in ("staff", "employee"):
+            return _is_primary_agency_contributor(request.user, obj)
         return False
 
 
@@ -3048,7 +3515,9 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 def _project_queryset_with_related(qs, *, prefetch_priority=True):
-    qs = qs.select_related("created_by")
+    qs = qs.select_related("created_by", "primary_agency").prefetch_related(
+        "collaborating_agency_links__agency"
+    )
     if not prefetch_priority:
         return qs
     latest_confirmations = ProjectPriorityConfirmation.objects.order_by("-created_at")
@@ -3064,7 +3533,7 @@ def _project_summary_queryset(qs, *, prefetch_priority=True):
     """Load only columns required by the compact project-list serializer."""
     qs = qs.only(
         "id", "name", "agency", "budget", "completion", "status", "updated_at",
-        "validated", "profile_data", "created_by_id", "created_by__username",
+        "validated", "profile_data", "primary_agency_id", "created_by_id", "created_by__username",
         "created_by__first_name", "created_by__last_name",
     )
     return _project_queryset_with_related(qs, prefetch_priority=prefetch_priority)
@@ -3085,13 +3554,12 @@ def _can_access_project_documents(user, project):
     if role == "validator":
         return project.status == "proposed"
     if role in ("staff", "employee"):
-        agency = str(getattr(user, "agency", "") or "").strip().casefold()
-        return project.created_by_id == user.id or bool(agency and agency == str(project.agency or "").strip().casefold())
+        return _is_primary_agency_contributor(user, project) or _is_collaborating_agency_contributor(user, project)
     return False
 
 
 def _can_change_project_documents(user, project, field_key):
-    if getattr(user, "role", "") not in ("staff", "employee") or not _can_access_project_documents(user, project):
+    if getattr(user, "role", "") not in ("staff", "employee") or not _is_primary_agency_contributor(user, project):
         return False
     if project.status == "planning":
         return True
@@ -3104,51 +3572,7 @@ def _can_change_project_documents(user, project, field_key):
 
 
 def _validate_uploaded_document(filename, content_type, data, extension):
-    """Validate file signatures instead of trusting the browser's MIME label."""
-    if extension == "pdf":
-        valid = data.startswith(b"%PDF-")
-        canonical = "application/pdf"
-    elif extension == "png":
-        valid = data.startswith(b"\x89PNG\r\n\x1a\n")
-        canonical = "image/png"
-    elif extension in {"jpg", "jpeg"}:
-        valid = data.startswith(b"\xff\xd8\xff")
-        canonical = "image/jpeg"
-    elif extension in {"docx", "xlsx"}:
-        valid = False
-        canonical = (
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            if extension == "docx"
-            else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        try:
-            with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                names = set(archive.namelist())
-                valid = "[Content_Types].xml" in names and any(
-                    value.startswith("word/" if extension == "docx" else "xl/") for value in names
-                )
-                expanded_size = sum(item.file_size for item in archive.infolist())
-                if len(names) > 20000 or expanded_size > 200 * 1024 * 1024 or expanded_size > max(len(data) * 100, 20 * 1024 * 1024):
-                    valid = False
-        except (zipfile.BadZipFile, OSError):
-            valid = False
-    elif extension == "csv":
-        canonical = "text/csv"
-        valid = b"\x00" not in data
-        if valid:
-            try:
-                data.decode("utf-8-sig")
-            except UnicodeDecodeError:
-                try:
-                    data.decode("cp1252")
-                except UnicodeDecodeError:
-                    valid = False
-    else:
-        valid = False
-        canonical = str(content_type or "application/octet-stream")
-    if not valid:
-        raise ValueError(f"{filename} does not match its .{extension} file type or is corrupt.")
-    return canonical
+    return validate_uploaded_document(filename, content_type, data, extension)
 
 
 class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
@@ -3158,7 +3582,7 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = ProjectSupportingDocument.objects.filter(removed_at__isnull=True).select_related(
-            "project", "project__created_by", "uploaded_by"
+            "project", "project__created_by", "project__primary_agency", "uploaded_by"
         )
         project_id = self.request.query_params.get("project")
         if project_id:
@@ -3169,11 +3593,10 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
         if role == "validator":
             return queryset.filter(project__status="proposed", project__archived=False, project__is_active=True)
         if role in ("staff", "employee"):
-            agency = str(getattr(self.request.user, "agency", "") or "").strip()
-            scope = Q(project__created_by=self.request.user)
-            if agency:
-                scope |= Q(project__agency__iexact=agency)
-            return queryset.filter(scope, project__archived=False)
+            return queryset.filter(
+                _contributor_project_scope(self.request.user, prefix="project__"),
+                project__archived=False,
+            ).distinct()
         return queryset.none()
 
     def create(self, request, *args, **kwargs):
@@ -3343,6 +3766,13 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         super().perform_create(serializer)
         project = serializer.instance
+        if getattr(self.request.user, "role", "") in ("staff", "employee"):
+            agency = _agency_for_value(getattr(self.request.user, "agency", ""), active_only=True)
+            if agency and project.primary_agency_id != agency.id:
+                project.primary_agency = agency
+                project.agency = agency.code
+                project.implementing_agency = agency.code
+                project.save(update_fields=["primary_agency", "agency", "implementing_agency", "updated_at"])
         if getattr(self.request.user, "role", "") not in ("staff", "employee"):
             return
         if project.status == "planning":
@@ -3371,6 +3801,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
 
     def get_serializer_class(self):
         if getattr(self, "action", "") == "list" and self.request.query_params.get("view") == "summary":
+            if (self.request.query_params.get("scope") or "").strip().lower() == "update_forms":
+                return ProjectFormMigrationSummarySerializer
             return ProjectSummarySerializer
         return ProjectSerializer
 
@@ -3393,13 +3825,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
         project = self.get_object()
-        same_agency_staff = (
-            getattr(request.user, "role", "") in ("staff", "employee")
-            and (getattr(request.user, "agency", "") or "").strip().lower()
-            and (getattr(request.user, "agency", "") or "").strip().lower() == (project.agency or "").strip().lower()
-        )
-        if project.created_by_id != request.user.id and request.user.role != "admin" and not same_agency_staff:
-            raise PermissionDenied("Only owner or admin can submit")
+        if request.user.role != "admin" and not _is_primary_agency_contributor(request.user, project):
+            raise PermissionDenied("Only contributors from the primary agency or an administrator can submit this project.")
         if not _is_simplified_profile(project.profile_data):
             return Response({"detail": "Only projects created with the simplified form can be submitted."}, status=400)
         project_form_marker = project.profile_data.get("form_schema") if isinstance(project.profile_data, dict) else None
@@ -3414,6 +3841,9 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             validate_simplified_answers(project.profile_data, require_complete=versioned_form)
         except FormSchemaError as exc:
             return Response({"detail": str(exc)}, status=400)
+        collaborators = _validate_collaborating_agencies(project.profile_data, project.primary_agency or project.agency)
+        if isinstance(collaborators, str):
+            return Response({"detail": collaborators}, status=400)
         document_error = validate_project_documents_for_submit(project)
         if document_error:
             return Response({"detail": document_error, "code": "supporting_documents_not_ready"}, status=400)
@@ -3431,6 +3861,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 project.save(update_fields=["status", "profile_data", "updated_at"])
             else:
                 project.save(update_fields=["status", "updated_at"])
+            _sync_project_collaborators(project, project.profile_data, request.user)
             _log_activity(request, "project_submit", project, {"status": project.status})
             _notify_user(
                 request.user,
@@ -3463,6 +3894,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 project.save(update_fields=["profile_data", "updated_at"])
             else:
                 project.save(update_fields=["updated_at"])
+            _sync_project_collaborators(project, project.profile_data, request.user)
             _log_activity(request, "project_submit", project, {"status": project.status, "revision_resubmitted": True})
             _notify_many(
                 _active_validators(),
@@ -3473,12 +3905,6 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 actor=request.user,
                 dedupe_key=f"project:{project.id}:revision-resubmitted:{project.updated_at.isoformat()}",
             )
-        assessment, created = ensure_queued_assessment(project)
-        if assessment and (created or assessment.status in {"queued", "unavailable"}):
-            if not dispatch_document_assessment(assessment.id):
-                assessment.status = "unavailable"
-                assessment.error_message = "The document assessment worker is unavailable. Retry when it is online."
-                assessment.save(update_fields=["status", "error_message", "updated_at"])
         return Response({"status": project.status})
 
     @action(detail=True, methods=["post"])
@@ -3758,9 +4184,33 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if project.status not in ("proposed", "planning"):
             return Response({"detail": "Priority analysis is available before endorsement only."}, status=400)
         document_assessment = serialize_document_assessment(project)
-        if document_assessment.get("status") in {"missing", "pending", "processing"}:
+        if document_assessment.get("status") == "missing":
             return Response(
-                {"detail": "Wait for the supporting-document assessment before running priority analysis.", "document_assessment": document_assessment},
+                {"detail": "Upload the required supporting documents before running AI Assistant analysis.", "document_assessment": document_assessment},
+                status=409,
+            )
+        if document_assessment.get("status") == "pending":
+            assessment, _created = ensure_queued_assessment(project)
+            if assessment and not dispatch_document_assessment(assessment.id):
+                assessment.status = "unavailable"
+                assessment.error_message = "The document assessment worker is unavailable. Retry when it is online."
+                assessment.save(update_fields=["status", "error_message", "updated_at"])
+            document_assessment = serialize_document_assessment(project)
+        if document_assessment.get("status") in {"queued", "processing"}:
+            return Response(
+                {
+                    "processing": True,
+                    "detail": "The AI Assistant is reading the supporting documents before scoring the project.",
+                    "document_assessment": document_assessment,
+                },
+                status=202,
+            )
+        if document_assessment.get("status") == "unavailable" and not document_assessment.get("id"):
+            return Response(
+                {
+                    "detail": "Retry or replace the supporting documents that could not be prepared before running AI Assistant analysis.",
+                    "document_assessment": document_assessment,
+                },
                 status=409,
             )
 
@@ -3929,32 +4379,22 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
     def archive(self, request, pk=None):
         if getattr(request.user, "role", "") != "admin":
             raise PermissionDenied("Only admin can archive")
-        project = self.get_object()
-        if project.archived:
-            return Response({"detail": "Project is already archived."}, status=400)
-        profile = project.profile_data if isinstance(project.profile_data, dict) else {}
-        simplified = profile.get("simplified_form") if isinstance(profile.get("simplified_form"), dict) else {}
-        implementation_status = canonical_implementation_status(simplified.get("status")) if simplified else ""
         if request.data.get("confirm_archive") is not True:
             return Response({"detail": "Archive confirmation is required."}, status=400)
-        if str(request.data.get("expected_implementation_status") or "").strip() != implementation_status:
-            return Response({"detail": "Project status changed. Review the archive warning again.", "implementation_status": implementation_status}, status=409)
-        project.archived = True
-        project.is_active = False
-        project.save(update_fields=["archived", "is_active", "updated_at"])
-        _log_activity(request, "project_archive", project, {"archived": True, "implementation_status": implementation_status})
-        _notify_many(
-            _project_employee_recipients(project),
-            event_type="project_archived",
-            title="Project archived",
-            message=(
-                f"{_project_title(project)} was archived by an administrator. "
-                "It is no longer shown in your active projects list."
-            ),
-            project=project,
-            actor=request.user,
-            link_path="/employee/projects",
-        )
+        with transaction.atomic():
+            project = Project.objects.select_for_update().get(pk=self.get_object().pk)
+            profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+            simplified = profile.get("simplified_form") if isinstance(profile.get("simplified_form"), dict) else {}
+            implementation_status = canonical_implementation_status(simplified.get("status")) if simplified else ""
+            expected = request.data.get("expected_implementation_status")
+            if expected is not None and str(expected).strip() != implementation_status:
+                return Response({
+                    "detail": "Project status changed. Review the archive warning again.",
+                    "implementation_status": implementation_status,
+                }, status=409)
+            archived, reason = _archive_project(request, project)
+            if not archived:
+                return Response({"detail": reason}, status=409)
         return Response({"status": "archived"})
 
     @action(detail=True, methods=["post"])
@@ -3974,13 +4414,15 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
     def comments(self, request, pk=None):
         project = self.get_object()
         role = getattr(request.user, "role", "")
-        if role not in ("admin", "validator", "staff"):
+        if role not in ("admin", "validator", "staff", "employee"):
             raise PermissionDenied("Unauthorized")
-        if role == "staff":
-            user_agency = (request.user.agency or "").strip()
-            project_agency = (project.agency or "").strip()
-            if not user_agency or user_agency.lower() != project_agency.lower():
-                raise PermissionDenied("Only same-agency contributors can access comments.")
+        if role in ("staff", "employee"):
+            primary = _is_primary_agency_contributor(request.user, project)
+            collaborator = _is_collaborating_agency_contributor(request.user, project)
+            if not primary and not collaborator:
+                raise PermissionDenied("You do not have access to these project comments.")
+            if request.method.lower() == "post" and not primary:
+                raise PermissionDenied("Collaborating agencies have read-only access and cannot post comments.")
 
         if request.method.lower() == "get":
             qs = ProjectComment.objects.filter(project=project).select_related("user")
@@ -4009,7 +4451,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 comment=comment,
                 dedupe_key=f"comment:{comment.id}:employee",
             )
-        elif role == "staff":
+        elif role in ("staff", "employee"):
             _notify_many(
                 _active_validators(),
                 event_type="project_message",
@@ -4104,7 +4546,7 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
     def get_queryset(self):
         # The scope is an OR over plain columns, so it cannot create duplicate rows;
         # avoid DISTINCT's extra sort/hash step on large contributor lists.
-        qs = Project.objects.filter(_contributor_project_scope(self.request.user), archived=False).order_by("-created_at")
+        qs = Project.objects.filter(_contributor_project_scope(self.request.user), archived=False).distinct().order_by("-created_at")
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
         qs = _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
         return _project_list_queryset(
@@ -4350,27 +4792,75 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             revision_type="progress_update",
             state__in=["draft", "submitted", "validator_draft", "reviewed"],
         ).order_by("-updated_at").first()
-        if active:
-            if active.state in ("draft", "reviewed"):
-                upgraded_profile, form_change = _upgrade_profile_form_marker(
-                    active.profile_data_snapshot,
-                    project.profile_data,
-                )
-                if form_change:
-                    active.profile_data_snapshot = upgraded_profile
-                    active.save(update_fields=["profile_data_snapshot", "updated_at"])
-                    _log_activity(
-                        request,
-                        "project_revision_updated",
-                        project,
-                        {
-                            "operation": "progress_draft_form_version_sync",
-                            "revision_id": active.id,
-                            "revision_number": active.revision_number,
-                            **form_change,
-                        },
+        source_profile = active.profile_data_snapshot if active and active.state == "draft" else project.profile_data
+        migration = analyze_profile_migration(source_profile)
+        if not migration.get("compatible"):
+            issues = migration.get("issues") or ["The saved form cannot be migrated safely."]
+            issue_key = hashlib.sha256("|".join(issues).encode("utf-8")).hexdigest()[:16]
+            _notify_many(
+                _admins(),
+                event_type="project_form_migration_blocked",
+                title="Project form needs manual migration review",
+                message=f"{_project_title(project)} could not be prepared for updating: {'; '.join(issues)}",
+                project=project,
+                actor=request.user,
+                dedupe_key=f"project:{project.id}:form-migration-blocked:{issue_key}",
+                link_path="/admin/projects/update-forms",
+            )
+            return Response({
+                "detail": "This project cannot be opened for updating until an administrator resolves its form migration.",
+                "code": "form_migration_required",
+                "issues": issues,
+            }, status=409)
+        if migration.get("already_current"):
+            if active:
+                return Response(ProjectRevisionSerializer(active).data)
+        else:
+            prepared = prepare_project_migration(project, user=request.user, trigger="contributor_update")
+            if prepared.get("status") == "prepared" and prepared.get("revision") is not None:
+                revision = prepared["revision"]
+                existing_draft_reused = active is not None and active.id == revision.id
+                _log_activity(request, "project_revision_updated" if existing_draft_reused else "project_revision_created", project, {
+                    "operation": "automatic_form_migration",
+                    "revision_id": revision.id,
+                    "revision_number": revision.revision_number,
+                    "source_version": prepared.get("source_version"),
+                    "target_version": prepared.get("target_version"),
+                    "attention_fields": prepared.get("attention_fields") or [],
+                })
+                if not existing_draft_reused:
+                    _notify_many(
+                        _admins(),
+                        event_type="contributor_progress_draft_created",
+                        title="Contributor progress draft created",
+                        message=(
+                            f"{_user_display_name(request.user)} created progress update "
+                            f"v{revision.revision_number} for {_project_title(project)}."
+                        ),
+                        project=project,
+                        actor=request.user,
+                        dedupe_key=f"project:{project.id}:revision:{revision.id}:contributor-draft:admins",
+                        link_path=_revision_review_link(revision, "admin"),
                     )
-            return Response(ProjectRevisionSerializer(active).data)
+                return Response(ProjectRevisionSerializer(revision).data, status=200 if existing_draft_reused else 201)
+            if prepared.get("status") not in {"current", "migrated"}:
+                issues = prepared.get("issues") or [prepared.get("reason") or "The form cannot be migrated safely."]
+                issue_key = hashlib.sha256("|".join(issues).encode("utf-8")).hexdigest()[:16]
+                _notify_many(
+                    _admins(),
+                    event_type="project_form_migration_blocked",
+                    title="Project form needs manual migration review",
+                    message=f"{_project_title(project)} could not be prepared for updating: {'; '.join(issues)}",
+                    project=project,
+                    actor=request.user,
+                    dedupe_key=f"project:{project.id}:form-migration-blocked:{issue_key}",
+                    link_path="/admin/projects/update-forms",
+                )
+                return Response({
+                    "detail": "This project cannot be opened for updating until an administrator resolves its form migration.",
+                    "code": "form_migration_required",
+                    "issues": issues,
+                }, status=409)
 
         current = _ensure_public_revision(project, request.user)
         base_profile = deepcopy(current.profile_data_snapshot if current else project.profile_data)
@@ -4427,7 +4917,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                 "created_by__username", "created_by__first_name",
                 "created_by__last_name", "submitted_by_id", "submitted_by__username",
                 "submitted_by__first_name", "submitted_by__last_name",
-                "updated_at",
+                "form_migration", "updated_at",
             ).order_by("-updated_at")
         else:
             qs = ProjectRevision.objects.select_related(
@@ -4451,19 +4941,20 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                 return qs.filter(state__in=["reviewed", "endorsed", "rejected", "superseded"])
             return qs.filter(state__in=["submitted", "validator_draft", "reviewed"])
         if role in ("staff", "employee"):
-            agency = (self.request.user.agency or "").strip()
+            agency = _normalize_account_agency(self.request.user.agency)
             if not agency:
                 return qs.none()
-            return qs.filter(project__agency__iexact=agency)
+            return qs.filter(
+                Q(project__primary_agency__code__iexact=agency)
+                | Q(project__primary_agency__isnull=True, project__agency__iexact=agency)
+            )
         return qs.none()
 
     def _same_agency_or_admin_validator(self, revision):
         role = getattr(self.request.user, "role", "")
         if role in ("admin", "validator"):
             return True
-        user_agency = (self.request.user.agency or "").strip().lower()
-        project_agency = (revision.project.agency or "").strip().lower()
-        return bool(user_agency and user_agency == project_agency)
+        return _is_primary_agency_contributor(self.request.user, revision.project)
 
     def get_object(self):
         obj = super().get_object()
@@ -4479,6 +4970,8 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
     def _ensure_contributor_editable(self, revision):
         if getattr(self.request.user, "role", "") not in ("staff", "employee"):
             raise PermissionDenied("Only contributors can edit progress update drafts.")
+        if not _is_primary_agency_contributor(self.request.user, revision.project):
+            raise PermissionDenied("Only contributors from the primary agency can edit this progress update.")
         profile = revision.profile_data_snapshot if isinstance(revision.profile_data_snapshot, dict) else {}
         access = profile.get("validator_revision_access")
         revision_requested = (
@@ -4849,6 +5342,8 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
     def get_queryset(self):
         user = self.request.user
         scope = (self.request.query_params.get("scope") or "").strip().lower()
+        if scope == "update_forms" or self.action == "update_form":
+            raise PermissionDenied("Contributor-form migration is available only to administrators.")
         # Match both numeric and legacy string IDs. This lets the database filter
         # reviewer-owned records without loading every project's JSON payload into
         # Python on each Validation Queue, history, or detail request.
@@ -4858,43 +5353,7 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
         )
         visible_project_states = ("draft", "reviewed", "endorsed", "validated", "rejected")
 
-        if self.action == "update_form":
-            return _project_queryset_with_related(
-                Project.objects.filter(archived=False, is_active=True)
-                .exclude(status="planning")
-                .order_by("-created_at"),
-                prefetch_priority=False,
-            )
-
         if self.action == "list":
-            if scope == "update_forms":
-                # Imported lazily to keep the project/CMS dependency one-way.
-                from cms.models import CMSContributorForm
-
-                live_versions = dict(
-                    CMSContributorForm.objects.filter(
-                        current_published_version__isnull=False,
-                    ).values_list("key", "current_published_version__version_number")
-                )
-                outdated_ids = []
-                all_projects = (
-                    Project.objects.filter(archived=False, is_active=True)
-                    .exclude(status="planning")
-                    .only("id", "profile_data")
-                )
-                for project in all_projects:
-                    marker = _saved_contributor_form_marker(project.profile_data)
-                    if marker is None:
-                        continue
-                    key, saved_version = marker
-                    live_version = live_versions.get(key)
-                    if live_version is not None and saved_version < live_version:
-                        outdated_ids.append(project.id)
-                return _project_list_queryset(
-                    Project.objects.filter(id__in=outdated_ids).order_by("-updated_at"),
-                    self.request,
-                    prefetch_priority=False,
-                )
             if scope == "history":
                 qs = Project.objects.filter(archived=False).exclude(status="planning").filter(
                     reviewed_by_user,
@@ -4939,120 +5398,7 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
 
     @action(detail=True, methods=["post"], url_path="update-form")
     def update_form(self, request, pk=None):
-        """Opt a pinned simplified project into the latest published form."""
-        from cms.models import CMSContributorForm
-
-        with transaction.atomic():
-            project = (
-                Project.objects.select_for_update()
-                .filter(pk=pk, archived=False, is_active=True)
-                .exclude(status="planning")
-                .first()
-            )
-            if project is None:
-                return Response({"detail": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
-
-            profile_data = deepcopy(project.profile_data) if isinstance(project.profile_data, dict) else {}
-            marker = _saved_contributor_form_marker(profile_data)
-            if marker is None:
-                return Response(
-                    {"detail": "Only projects using the simplified contributor form can be updated."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            form_key, previous_version = marker
-            contributor_form = (
-                CMSContributorForm.objects.select_related("current_published_version")
-                .filter(key=form_key)
-                .first()
-            )
-            live_version = (
-                contributor_form.current_published_version.version_number
-                if contributor_form and contributor_form.current_published_version
-                else None
-            )
-            if live_version is None:
-                return Response(
-                    {"detail": "No published contributor form is available for this project."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            if previous_version >= live_version:
-                return Response(
-                    {"detail": "This project already uses the latest contributor form."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            live_schema = contributor_form.current_published_version.schema_json
-            profile_data, location_error = _normalize_location_for_form_schema(profile_data, live_schema)
-            if location_error:
-                return Response({"detail": location_error}, status=status.HTTP_400_BAD_REQUEST)
-            profile_data["form_schema"] = {"key": form_key, "version": live_version}
-
-            updated_progress_drafts = []
-            progress_updates = []
-            editable_progress_revisions = ProjectRevision.objects.select_for_update().filter(
-                project=project,
-                revision_type="progress_update",
-                state__in=["draft", "reviewed"],
-            )
-            for revision in editable_progress_revisions:
-                upgraded_profile, form_change = _upgrade_profile_form_marker(
-                    revision.profile_data_snapshot,
-                    profile_data,
-                    live_schema,
-                )
-                if form_change and form_change.get("error"):
-                    return Response({"detail": form_change["error"]}, status=status.HTTP_400_BAD_REQUEST)
-                if not form_change:
-                    continue
-                progress_updates.append((revision, upgraded_profile))
-                updated_progress_drafts.append({
-                    "revision_id": revision.id,
-                    "revision_number": revision.revision_number,
-                    **form_change,
-                })
-
-            project.profile_data = profile_data
-            project.save(update_fields=["profile_data", "updated_at"])
-            for revision, upgraded_profile in progress_updates:
-                revision.profile_data_snapshot = upgraded_profile
-                revision.save(update_fields=["profile_data_snapshot", "updated_at"])
-
-            _log_activity(
-                request,
-                "project_update",
-                project,
-                {
-                    "operation": "contributor_form_version_update",
-                    "form_key": form_key,
-                    "previous_form_version": previous_version,
-                    "new_form_version": live_version,
-                    "project_status_unchanged": True,
-                    "updated_progress_drafts": updated_progress_drafts,
-                },
-            )
-            _notify_many(
-                _project_employee_recipients(project),
-                event_type="project_form_version_updated",
-                title="Project contributor form updated",
-                message=(
-                    f"{_project_title(project)} now uses contributor form version {live_version}. "
-                    "Existing answers were preserved; newly added fields may need to be completed "
-                    "if the validator requests revisions."
-                ),
-                project=project,
-                actor=request.user,
-                dedupe_key=f"project:{project.id}:form-version:{live_version}",
-            )
-
-        return Response({
-            "detail": "The project now uses the latest contributor form. Existing answers were preserved.",
-            "project_id": project.id,
-            "previous_form_version": previous_version,
-            "form_version": live_version,
-            "current_form_version": live_version,
-            "uses_outdated_form": False,
-            "updated_progress_drafts": len(updated_progress_drafts),
-        })
+        raise PermissionDenied("Contributor-form migration is available only to administrators.")
 
 
 class AdminProjectViewSet(BaseProjectViewSet):
@@ -5071,12 +5417,198 @@ class AdminProjectViewSet(BaseProjectViewSet):
         qs = Project.objects.all().order_by("-created_at")
         if self.action == "list":
             qs = qs.filter(archived=self.request.query_params.get("archived") in {"1", "true", "yes"})
+            if (self.request.query_params.get("scope") or "").strip().lower() == "update_forms":
+                outdated_ids = []
+                draft_profiles = {}
+                version_cache = {}
+                for project_id, profile in ProjectRevision.objects.filter(
+                    project_id__in=qs.values("id"),
+                    revision_type="progress_update",
+                    state="draft",
+                ).order_by("project_id", "-updated_at").values_list("project_id", "profile_data_snapshot"):
+                    draft_profiles.setdefault(project_id, profile)
+                for project in qs.only("id", "profile_data"):
+                    source_profile = draft_profiles.get(project.id, project.profile_data)
+                    analysis = analyze_profile_migration(source_profile, version_cache=version_cache)
+                    if not analysis.get("already_current") and analysis.get("target_version"):
+                        outdated_ids.append(project.id)
+                qs = Project.objects.filter(id__in=outdated_ids)
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
         return _project_list_queryset(
             _filter_projects_for_workflow(qs, workflow).order_by("-created_at"),
             self.request,
-            prefetch_priority=getattr(self, "action", "") == "list",
+            prefetch_priority=getattr(self, "action", "") == "list"
+            and (self.request.query_params.get("scope") or "").strip().lower() != "update_forms",
         )
+
+    @action(detail=False, methods=["post"], url_path="batch-archive-preview")
+    def batch_archive_preview(self, request):
+        try:
+            projects = list(_selected_admin_projects(request.data))
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        rows = []
+        eligible_ids = []
+        for project in projects:
+            reason = _archive_ineligibility(project)
+            rows.append(_batch_project_row(project, reason))
+            if not reason:
+                eligible_ids.append(project.id)
+        token = signing.dumps(
+            {"project_ids": [project.id for project in projects]},
+            salt=BATCH_ARCHIVE_PREVIEW_SALT,
+        ) if projects else ""
+        return Response({
+            "rows": rows,
+            "total": len(rows),
+            "eligible": len(eligible_ids),
+            "skipped": len(rows) - len(eligible_ids),
+            "preview_token": token,
+        })
+
+    @action(detail=False, methods=["post"], url_path="batch-archive")
+    def batch_archive(self, request):
+        try:
+            payload = signing.loads(
+                str(request.data.get("preview_token") or ""),
+                salt=BATCH_ARCHIVE_PREVIEW_SALT,
+                max_age=15 * 60,
+            )
+        except signing.BadSignature:
+            return Response({"detail": "The archive preview expired. Preview the selection again."}, status=400)
+        ids = payload.get("project_ids") if isinstance(payload, dict) else None
+        if not isinstance(ids, list) or not ids:
+            return Response({"detail": "The archive preview is invalid."}, status=400)
+        rows = []
+        archived = skipped = failed = 0
+        for project_id in ids:
+            try:
+                with transaction.atomic():
+                    project = Project.objects.select_for_update().get(pk=project_id)
+                    success, reason = _archive_project(request, project)
+                    if success:
+                        archived += 1
+                        rows.append({**_batch_project_row(project), "status": "archived"})
+                    else:
+                        skipped += 1
+                        rows.append({**_batch_project_row(project, reason), "status": "skipped"})
+            except Project.DoesNotExist:
+                skipped += 1
+                rows.append({"id": project_id, "title": "", "status": "skipped", "reason": "Project no longer exists."})
+            except Exception:
+                failed += 1
+                rows.append({"id": project_id, "title": "", "status": "failed", "reason": "The project could not be archived."})
+        _log_activity(request, "api_action", details={
+            "operation": "batch_project_archive",
+            "archived": archived,
+            "skipped": skipped,
+            "failed": failed,
+            "requested": len(ids),
+        })
+        return Response({"archived": archived, "skipped": skipped, "failed": failed, "rows": rows})
+
+    @action(detail=False, methods=["post"], url_path="form-migration-preview")
+    def form_migration_preview(self, request):
+        try:
+            projects = list(_selected_admin_projects(request.data))
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        version_cache = {}
+        rows = [_migration_preview_row(project, version_cache=version_cache) for project in projects]
+        token = signing.dumps(
+            {"project_ids": [project.id for project in projects]},
+            salt=BATCH_FORM_MIGRATION_PREVIEW_SALT,
+        ) if projects else ""
+        return Response({
+            "rows": rows,
+            "total": len(rows),
+            "eligible": sum(1 for row in rows if row["eligible"]),
+            "blocked": sum(1 for row in rows if not row["eligible"]),
+            "preview_token": token,
+        })
+
+    @action(detail=False, methods=["post"], url_path="migrate-forms")
+    def migrate_forms(self, request):
+        try:
+            payload = signing.loads(
+                str(request.data.get("preview_token") or ""),
+                salt=BATCH_FORM_MIGRATION_PREVIEW_SALT,
+                max_age=15 * 60,
+            )
+        except signing.BadSignature:
+            return Response({"detail": "The migration preview expired. Preview the selection again."}, status=400)
+        ids = payload.get("project_ids") if isinstance(payload, dict) else None
+        if not isinstance(ids, list) or not ids:
+            return Response({"detail": "The migration preview is invalid."}, status=400)
+        counts = {"migrated": 0, "prepared": 0, "attention": 0, "skipped": 0, "blocked": 0, "failed": 0}
+        rows = []
+        for project_id in ids:
+            try:
+                project = Project.objects.get(pk=project_id)
+                result = prepare_project_migration(project, user=request.user, trigger="admin_batch")
+                result_status = result.get("status", "failed")
+                if result_status in counts:
+                    counts[result_status] += 1
+                elif result_status == "current":
+                    counts["skipped"] += 1
+                else:
+                    counts["failed"] += 1
+                attention = result.get("attention_fields") or []
+                if result_status in {"migrated", "prepared"} and attention:
+                    counts["attention"] += 1
+                if result_status in {"migrated", "prepared"}:
+                    _log_activity(request, "project_update", project, {
+                        "operation": "contributor_form_migration",
+                        "trigger": "admin_batch",
+                        "migration_status": result_status,
+                        "source_version": result.get("source_version"),
+                        "target_version": result.get("target_version"),
+                        "attention_fields": attention,
+                        "revision_id": getattr(result.get("revision"), "id", None),
+                    })
+                rows.append({
+                    "id": project.id,
+                    "title": _project_title(project),
+                    "status": result_status,
+                    "source_version": result.get("source_version"),
+                    "target_version": result.get("target_version"),
+                    "attention_fields": attention,
+                    "reason": result.get("reason") or "; ".join(result.get("issues") or []),
+                    "revision_id": getattr(result.get("revision"), "id", None),
+                })
+            except Project.DoesNotExist:
+                counts["skipped"] += 1
+                rows.append({"id": project_id, "title": "", "status": "skipped", "reason": "Project no longer exists."})
+            except Exception:
+                counts["failed"] += 1
+                rows.append({"id": project_id, "title": "", "status": "failed", "reason": "The form could not be migrated."})
+        _log_activity(request, "api_action", details={"operation": "batch_form_migration", **counts, "requested": len(ids)})
+        return Response({**counts, "rows": rows})
+
+    @action(detail=True, methods=["post"], url_path="update-form")
+    def update_form(self, request, pk=None):
+        project = self.get_object()
+        preview = _migration_preview_row(project)
+        if not preview["eligible"]:
+            return Response({"detail": preview["reason"], "migration": preview}, status=409)
+        result = prepare_project_migration(project, user=request.user, trigger="admin_single")
+        if result.get("status") not in {"migrated", "prepared", "current"}:
+            return Response({"detail": result.get("reason") or "; ".join(result.get("issues") or [])}, status=409)
+        _log_activity(request, "project_update", project, {
+            "operation": "contributor_form_migration",
+            "migration_status": result.get("status"),
+            "source_version": result.get("source_version"),
+            "target_version": result.get("target_version"),
+        })
+        return Response({
+            "detail": "A latest-form update draft was prepared." if result.get("status") == "prepared" else "The project form was migrated.",
+            "status": result.get("status"),
+            "project_id": project.id,
+            "source_version": result.get("source_version"),
+            "target_version": result.get("target_version"),
+            "attention_fields": result.get("attention_fields") or [],
+            "revision_id": getattr(result.get("revision"), "id", None),
+        })
 
 
 class AdminUserViewSet(viewsets.ModelViewSet):
@@ -5123,20 +5655,6 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         )
         return Response({"id": user.id, "is_active": user.is_active})
 
-    @action(detail=True, methods=["post"])
-    def reset_password(self, request, pk=None):
-        user = self.get_object()
-        if not user.email:
-            return Response({"detail": "User has no email set."}, status=400)
-        try:
-            with transaction.atomic():
-                token = _create_password_reset_token(user)
-                _send_setup_email(user, token, purpose="reset")
-        except Exception:
-            return Response({"detail": "Failed to send the password reset email. Please try again."}, status=503)
-        _log_activity(request, "auth_reset_approve", details={"email": user.email, "source": "admin_reset"})
-        return Response({"id": user.id, "setup_link_sent": True})
-
     def create(self, request, *args, **kwargs):
         email = (request.data.get("email") or "").strip().lower()
         role = (request.data.get("role") or "").strip().lower()
@@ -5154,12 +5672,15 @@ class AdminUserViewSet(viewsets.ModelViewSet):
             role = "content_editor"
         if role not in ("admin", "validator", "staff", "content_editor"):
             return Response({"detail": "Invalid role."}, status=400)
+        agency = "RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else _normalize_account_agency(request.data.get("agency"))
         if role in INTERNAL_ACCOUNT_ROLES and "agency" in request.data:
             if _normalize_account_agency(request.data.get("agency")) != "RDC-NCR":
                 return Response({"detail": "Agency must be RDC-NCR for this user type."}, status=400)
+        elif request.data.get("agency") and not agency:
+            return Response({"detail": "Invalid agency."}, status=400)
 
         try:
-            _issue_registration_invitation(request, email, role)
+            _issue_registration_invitation(request, email, role, agency=agency)
         except Exception:
             return Response({"detail": "Failed to send or record the registration invitation."}, status=500)
 
@@ -5168,6 +5689,191 @@ class AdminUserViewSet(viewsets.ModelViewSet):
              "role": "contributor" if role == "staff" else role, "invitation_sent": True},
             status=status.HTTP_202_ACCEPTED,
         )
+
+
+def _normalize_invitation_role(value):
+    role = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return {
+        "contributor": "staff",
+        "employee": "staff",
+        "project_validator": "validator",
+        "contenteditor": "content_editor",
+    }.get(role, role)
+
+
+def _has_pending_registration_invitation(email, now=None):
+    now = now or timezone.now()
+    if UserInvitation.objects.filter(
+        email__iexact=email,
+        status=UserInvitation.STATUS_SENT,
+        expires_at__gte=now,
+    ).exists():
+        return True
+    legacy = UserActivity.objects.filter(
+        event="registration_invitation_sent",
+        details__email=email,
+        created_at__gte=now - timedelta(hours=PASSWORD_SETUP_TTL_HOURS),
+    ).order_by("-id").first()
+    if legacy is None:
+        return False
+    return not UserActivity.objects.filter(
+        event="registration_completed", details__invitation_id=legacy.id,
+    ).exists()
+
+
+def _batch_invitation_entries(request):
+    upload = request.FILES.get("file") if hasattr(request, "FILES") else None
+    if upload:
+        if not str(upload.name or "").lower().endswith(".csv"):
+            raise ValueError("Upload a CSV file.")
+        if upload.size > 1024 * 1024:
+            raise ValueError("The CSV file must be 1 MB or smaller.")
+        try:
+            text = upload.read().decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise ValueError("The CSV must use UTF-8 encoding.") from exc
+        reader = csv.DictReader(io.StringIO(text))
+        headers = {str(item or "").strip().lower() for item in (reader.fieldnames or [])}
+        if "email" not in headers or not headers.issubset({"email", "role", "agency"}):
+            raise ValueError("CSV headers must be email, role, and agency.")
+        return [
+            {str(key or "").strip().lower(): value for key, value in row.items()}
+            for row in reader
+        ]
+    entries = request.data.get("entries", [])
+    if isinstance(entries, str):
+        try:
+            entries = json.loads(entries)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Entries must be a JSON list.") from exc
+    if not isinstance(entries, list):
+        raise ValueError("Entries must be a list.")
+    return entries
+
+
+class BatchInvitationOptionsView(APIView):
+    permission_classes = [IsAuthenticated, AdminOnlyPermission]
+
+    def get(self, request):
+        return Response({
+            "roles": [
+                {"value": "contributor", "label": "Contributor"},
+                {"value": "validator", "label": "Validator"},
+                {"value": "content_editor", "label": "Content Editor"},
+                {"value": "admin", "label": "Administrator"},
+            ],
+            "agencies": _active_agency_options(),
+            "max_rows": 100,
+            "csv_headers": ["email", "role", "agency"],
+        })
+
+
+class BatchInvitationPreviewView(APIView):
+    permission_classes = [IsAuthenticated, AdminOnlyPermission]
+
+    def post(self, request):
+        try:
+            entries = _batch_invitation_entries(request)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        if not entries:
+            return Response({"detail": "Add at least one invitation entry."}, status=400)
+        if len(entries) > 100:
+            return Response({"detail": "A batch can contain at most 100 entries."}, status=400)
+
+        default_role = _normalize_invitation_role(request.data.get("default_role") or "contributor")
+        default_agency_raw = str(request.data.get("default_agency") or "").strip()
+        resend_pending = str(request.data.get("resend_pending") or "").lower() in {"1", "true", "yes"}
+        seen = set()
+        results = []
+        valid = []
+        now = timezone.now()
+        for index, raw in enumerate(entries, start=1):
+            raw = raw if isinstance(raw, dict) else {"email": str(raw or "")}
+            email = str(raw.get("email") or "").strip().lower()
+            role = _normalize_invitation_role(raw.get("role") or default_role)
+            agency_raw = str(raw.get("agency") or default_agency_raw).strip()
+            agency = "RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else _normalize_account_agency(agency_raw)
+            row = {"row": index, "email": email, "role": "contributor" if role == "staff" else role, "agency": agency}
+            reason = ""
+            row_status = "valid"
+            try:
+                validate_email(email)
+            except ValidationError:
+                row_status, reason = "invalid", "Enter a valid email address."
+            if row_status == "valid" and email in seen:
+                row_status, reason = "duplicate", "This email is repeated in the batch."
+            seen.add(email)
+            if row_status == "valid" and role not in {"admin", "validator", "staff", "content_editor"}:
+                row_status, reason = "invalid", "Select a valid user role."
+            if row_status == "valid" and role == "staff" and agency_raw and not agency:
+                row_status, reason = "invalid", "Select an approved agency."
+            if row_status == "valid" and User.objects.filter(email__iexact=email).exists():
+                row_status, reason = "existing_account", "An account already uses this email."
+            pending = row_status == "valid" and _has_pending_registration_invitation(email, now)
+            if pending and not resend_pending:
+                row_status, reason = "pending_invitation", "A valid invitation is already pending."
+            row.update({"status": row_status, "reason": reason})
+            results.append(row)
+            if row_status == "valid":
+                valid.append({"row": index, "email": email, "role": role, "agency": agency})
+        batch_key = get_random_string(32)
+        preview_token = signing.dumps(
+            {"batch_key": batch_key, "entries": valid}, salt=BATCH_INVITE_PREVIEW_SALT,
+        ) if valid else ""
+        return Response({
+            "rows": results,
+            "counts": {
+                "total": len(results),
+                "valid": len(valid),
+                "skipped": len(results) - len(valid),
+            },
+            "preview_token": preview_token,
+        })
+
+
+class BatchInvitationSendView(APIView):
+    permission_classes = [IsAuthenticated, AdminOnlyPermission]
+
+    def post(self, request):
+        token = str(request.data.get("preview_token") or "")
+        try:
+            payload = signing.loads(token, salt=BATCH_INVITE_PREVIEW_SALT, max_age=15 * 60)
+        except signing.BadSignature:
+            return Response({"detail": "The invitation preview expired. Preview the batch again."}, status=400)
+        entries = payload.get("entries") if isinstance(payload, dict) else None
+        batch_key = str(payload.get("batch_key") or "") if isinstance(payload, dict) else ""
+        if not isinstance(entries, list) or not entries or len(entries) > 100:
+            return Response({"detail": "The invitation preview is invalid."}, status=400)
+        results = []
+        sent = failed = skipped = 0
+        for raw in entries:
+            email = str(raw.get("email") or "").strip().lower()
+            role = _normalize_invitation_role(raw.get("role"))
+            agency = str(raw.get("agency") or "")
+            if User.objects.filter(email__iexact=email).exists():
+                skipped += 1
+                results.append({"row": raw.get("row"), "email": email, "status": "skipped", "reason": "Account already exists."})
+                continue
+            if UserInvitation.objects.filter(email__iexact=email, batch_key=batch_key, status=UserInvitation.STATUS_SENT).exists():
+                skipped += 1
+                results.append({"row": raw.get("row"), "email": email, "status": "skipped", "reason": "This batch already sent the invitation."})
+                continue
+            try:
+                _issue_registration_invitation(request, email, role, agency=agency, batch_key=batch_key)
+                sent += 1
+                results.append({"row": raw.get("row"), "email": email, "status": "sent", "reason": ""})
+            except Exception:
+                failed += 1
+                results.append({"row": raw.get("row"), "email": email, "status": "failed", "reason": "The email could not be delivered."})
+        _log_activity(request, "api_action", details={
+            "operation": "batch_registration_invitation",
+            "batch_key": batch_key,
+            "sent": sent,
+            "failed": failed,
+            "skipped": skipped,
+        })
+        return Response({"sent": sent, "failed": failed, "skipped": skipped, "rows": results})
 
 
 class AccessRequestViewSet(viewsets.ModelViewSet):
@@ -5234,88 +5940,170 @@ class AccessRequestViewSet(viewsets.ModelViewSet):
         return Response({"status": "rejected"})
 
 
-class PasswordResetRequestViewSet(viewsets.ModelViewSet):
-    queryset = PasswordResetRequest.objects.all().order_by("-created_at")
-    serializer_class = PasswordResetRequestSerializer
+class PasswordResetOTPRequestView(APIView):
+    permission_classes = [AllowAny]
 
-    def get_permissions(self):
-        if self.action == "create":
-            return [AllowAny()]
-        return [IsAuthenticated(), AdminOnlyPermission()]
-
-    def create(self, request, *args, **kwargs):
-        email = (request.data.get("email") or "").strip().lower()
-        captcha_token = (request.data.get("captcha_token") or "").strip()
+    def post(self, request):
+        email = str(request.data.get("email") or "").strip().lower()
+        captcha_token = str(request.data.get("captcha_token") or "").strip()
         if not email:
             return Response({"detail": "Email is required."}, status=400)
-
-        ip = _client_ip(request)
-        if _rate_limit(f"pwdreset:ip:{ip}", PASSWORD_RESET_LIMIT_IP, PASSWORD_RESET_WINDOW_SECONDS):
-            return Response({"detail": "Too many requests. Please try again later."}, status=429)
-        if _rate_limit(f"pwdreset:email:{email}", PASSWORD_RESET_LIMIT_EMAIL, PASSWORD_RESET_WINDOW_SECONDS):
-            return Response({"detail": "Too many requests. Please try again later."}, status=429)
-
         if getattr(settings, "TURNSTILE_REQUIRED", False):
-            if not _verify_turnstile(captcha_token, ip):
+            if not _verify_turnstile(captcha_token, _client_ip(request)):
                 return Response({"detail": "Captcha verification failed."}, status=400)
-
-        user = User.objects.filter(email__iexact=email).first()
-        if user:
-            PasswordResetRequest.objects.create(
-                email=email,
-                user=user,
-                requested_ip=ip,
-                requested_user_agent=request.META.get("HTTP_USER_AGENT", "")[:255],
-            )
-        if getattr(request.user, "is_authenticated", False):
-            _log_activity(request, "auth_reset_request", details={"email": email})
-        else:
-            _log_unauthenticated_activity(request, "auth_reset_request", {"attempted_email": email})
-
+        try:
+            _, error = _issue_password_reset_challenge(request, email)
+        except ValidationError:
+            return Response({"detail": "Enter a valid email address."}, status=400)
+        if error:
+            return error
         return Response(
-            {"detail": "If this email is registered, your request has been sent to the administrator."},
-            status=201,
+            {
+                "detail": PASSWORD_RESET_GENERIC_MESSAGE,
+                "resend_after_seconds": PASSWORD_RESET_RESEND_COOLDOWN_SECONDS,
+            },
+            status=status.HTTP_202_ACCEPTED,
         )
 
-    @action(detail=True, methods=["post"])
-    def approve(self, request, pk=None):
-        try:
-            with transaction.atomic():
-                reset_request = PasswordResetRequest.objects.select_for_update().filter(id=pk).first()
-                if not reset_request or reset_request.status != "pending":
-                    return Response({"detail": "Request already reviewed."}, status=400)
-                user = reset_request.user
-                if not user or not user.email:
-                    reset_request.status = "rejected"
-                    reset_request.reviewed_by = request.user
-                    reset_request.reviewed_at = timezone.now()
-                    reset_request.review_notes = "No matching user/email."
-                    reset_request.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_notes"])
-                    return Response({"detail": "No matching user/email."}, status=400)
-                token = _create_password_reset_token(user)
-                _send_setup_email(user, token, purpose="reset")
-                reset_request.status = "approved"
-                reset_request.reviewed_by = request.user
-                reset_request.reviewed_at = timezone.now()
-                reset_request.save(update_fields=["status", "reviewed_by", "reviewed_at"])
-        except Exception:
-            return Response({"detail": "Failed to send the password reset email. Request remains pending."}, status=503)
-        _log_activity(request, "auth_reset_approve", details={"email": reset_request.email})
-        return Response({"status": "approved", "setup_link_sent": True})
 
-    @action(detail=True, methods=["post"])
-    def reject(self, request, pk=None):
+class PasswordResetOTPVerifyView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = str(request.data.get("email") or "").strip().lower()
+        otp = str(request.data.get("otp") or "").strip()
+        if not email or not re.fullmatch(r"\d{6}", otp):
+            return Response({"detail": "The code is invalid or expired."}, status=400)
+        try:
+            validate_email(email)
+        except ValidationError:
+            return Response({"detail": "The code is invalid or expired."}, status=400)
+        fingerprint = _password_reset_email_fingerprint(email)
+        now = timezone.now()
         with transaction.atomic():
-            reset_request = PasswordResetRequest.objects.select_for_update().filter(id=pk).first()
-            if not reset_request or reset_request.status != "pending":
-                return Response({"detail": "Request already reviewed."}, status=400)
-            reset_request.status = "rejected"
-            reset_request.reviewed_by = request.user
-            reset_request.reviewed_at = timezone.now()
-            reset_request.review_notes = str(request.data.get("review_notes") or "")
-            reset_request.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_notes"])
-        _log_activity(request, "auth_reset_reject", details={"email": reset_request.email})
-        return Response({"status": "rejected"})
+            challenge = PasswordResetChallenge.objects.select_for_update().filter(
+                email_fingerprint=fingerprint,
+                status=PasswordResetChallenge.STATUS_PENDING,
+            ).order_by("-created_at").first()
+            if challenge is None:
+                return Response({"detail": "The code is invalid or expired."}, status=400)
+            if challenge.expires_at <= now:
+                challenge.status = PasswordResetChallenge.STATUS_EXPIRED
+                challenge.otp_digest = ""
+                challenge.save(update_fields=["status", "otp_digest"])
+                return Response({"detail": "The code is invalid or expired."}, status=400)
+            if challenge.failed_attempts >= PASSWORD_RESET_MAX_ATTEMPTS:
+                challenge.status = PasswordResetChallenge.STATUS_LOCKED
+                challenge.otp_digest = ""
+                challenge.save(update_fields=["status", "otp_digest"])
+                return Response({"detail": "Too many invalid attempts. Request a new code."}, status=429)
+            valid = bool(challenge.user_id and challenge.otp_digest and check_password(otp, challenge.otp_digest))
+            if not valid:
+                challenge.failed_attempts += 1
+                fields = ["failed_attempts"]
+                if challenge.failed_attempts >= PASSWORD_RESET_MAX_ATTEMPTS:
+                    challenge.status = PasswordResetChallenge.STATUS_LOCKED
+                    challenge.otp_digest = ""
+                    fields.extend(["status", "otp_digest"])
+                challenge.save(update_fields=fields)
+                _record_password_reset_event(
+                    request,
+                    "api_action_failed",
+                    challenge,
+                    {
+                        "action": "password_reset_otp_verify",
+                        "attempts": challenge.failed_attempts,
+                        "locked": challenge.status == PasswordResetChallenge.STATUS_LOCKED,
+                    },
+                )
+                if challenge.status == PasswordResetChallenge.STATUS_LOCKED:
+                    return Response({"detail": "Too many invalid attempts. Request a new code."}, status=429)
+                return Response({"detail": "The code is invalid or expired."}, status=400)
+
+            reset_token = secrets.token_urlsafe(32)
+            challenge.status = PasswordResetChallenge.STATUS_VERIFIED
+            challenge.verified_at = now
+            challenge.expires_at = now + timedelta(seconds=PASSWORD_RESET_TOKEN_TTL_SECONDS)
+            challenge.otp_digest = ""
+            challenge.reset_token_digest = hashlib.sha256(reset_token.encode("utf-8")).hexdigest()
+            challenge.save(update_fields=[
+                "status", "verified_at", "expires_at", "otp_digest", "reset_token_digest",
+            ])
+        _record_password_reset_event(
+            request,
+            "api_action",
+            challenge,
+            {"action": "password_reset_otp_verified"},
+        )
+        return Response({"reset_token": reset_token, "expires_in": PASSWORD_RESET_TOKEN_TTL_SECONDS})
+
+
+class PasswordResetOTPCompleteView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        reset_token = str(request.data.get("reset_token") or "").strip()
+        new_password = str(request.data.get("new_password") or "")
+        confirm_password = str(request.data.get("confirm_password") or "")
+        if not reset_token:
+            return Response({"detail": "The password reset session is invalid or expired."}, status=400)
+        token_digest = hashlib.sha256(reset_token.encode("utf-8")).hexdigest()
+        now = timezone.now()
+        with transaction.atomic():
+            challenge = PasswordResetChallenge.objects.select_for_update().filter(
+                reset_token_digest=token_digest,
+                status=PasswordResetChallenge.STATUS_VERIFIED,
+            ).first()
+            if challenge is None or challenge.expires_at <= now or not challenge.user_id:
+                if challenge is not None and challenge.expires_at <= now:
+                    challenge.status = PasswordResetChallenge.STATUS_EXPIRED
+                    challenge.reset_token_digest = ""
+                    challenge.save(update_fields=["status", "reset_token_digest"])
+                return Response({"detail": "The password reset session is invalid or expired."}, status=400)
+            if new_password != confirm_password:
+                return Response({"detail": "Passwords do not match."}, status=400)
+            policy_error = _validate_password_policy(new_password)
+            if policy_error:
+                return Response({"detail": policy_error}, status=400)
+
+            user = User.objects.select_for_update().get(pk=challenge.user_id)
+            user.set_password(new_password)
+            user.must_change_password = False
+            user.last_password_change = now
+            user.save(update_fields=["password", "must_change_password", "last_password_change"])
+            _advance_user_session(user, request, revocation_reason="credential_change")
+            challenge.status = PasswordResetChallenge.STATUS_USED
+            challenge.used_at = now
+            challenge.reset_token_digest = ""
+            challenge.save(update_fields=["status", "used_at", "reset_token_digest"])
+            PasswordResetChallenge.objects.filter(
+                user=user,
+                status__in=[PasswordResetChallenge.STATUS_PENDING, PasswordResetChallenge.STATUS_VERIFIED],
+            ).exclude(pk=challenge.pk).update(
+                status=PasswordResetChallenge.STATUS_SUPERSEDED,
+                superseded_at=now,
+                otp_digest="",
+                reset_token_digest="",
+            )
+            PasswordSetupToken.objects.filter(
+                user=user,
+                token__startswith=RESET_PASSWORD_TOKEN_PREFIX,
+                used_at__isnull=True,
+            ).update(used_at=now)
+
+        notification_sent = True
+        try:
+            _send_password_changed_notice(user)
+        except Exception:
+            notification_sent = False
+        challenge.user = user
+        _record_password_reset_event(
+            request,
+            "auth_password_setup",
+            challenge,
+            {"action": "otp_password_reset", "notification_sent": notification_sent},
+        )
+        return Response({"status": "ok"})
 
 
 class EncodingWindowView(APIView):
@@ -5389,28 +6177,49 @@ class EncodingWindowView(APIView):
 class ProgressUpdateWindowView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @staticmethod
+    def _eligible_count():
+        return sum(
+            1
+            for project in Project.objects.filter(
+                archived=False, is_active=True, validated=True
+            ).only("id", "profile_data")
+            if not _is_completed_rdip_project(project)
+        )
+
     def get(self, request):
         state = _resolve_progress_update_window_state()
-        role = getattr(request.user, "role", "")
-        can_update = state["is_open"] or role in ("admin", "validator")
         return Response(
             {
                 **state,
-                "can_encode": can_update,
-                "can_update": can_update,
+                "can_encode": state["is_open"],
+                "can_update": state["is_open"],
+                "can_manage": getattr(request.user, "role", "") == "admin",
+                "eligible_project_count": self._eligible_count(),
             }
         )
 
     def post(self, request):
         if getattr(request.user, "role", "") != "admin":
             raise PermissionDenied("Only admin can update progress update window.")
+        action_value = str(request.data.get("action") or "").strip().lower()
         enabled = bool(request.data.get("enabled", False))
+        if action_value == "open":
+            enabled = True
+        elif action_value == "close":
+            enabled = False
+        manual_open = action_value == "open" or bool(request.data.get("manual_open", False))
         start_at = str(request.data.get("start_at") or "").strip()
         end_at = str(request.data.get("end_at") or "").strip()
 
-        if enabled and (not start_at or not end_at):
+        previous = _resolve_progress_update_window_state()
+        if action_value in {"open", "close"} and not start_at and not end_at:
+            start_at = previous.get("start_at", "")
+            end_at = previous.get("end_at", "")
+
+        if enabled and not manual_open and (not start_at or not end_at):
             return Response({"detail": "Start and end date are required for scheduled progress updates."}, status=400)
-        if enabled:
+        if enabled and not manual_open:
             try:
                 parsed_start = _parse_iso_datetime(start_at)
                 parsed_end = _parse_iso_datetime(end_at)
@@ -5419,8 +6228,12 @@ class ProgressUpdateWindowView(APIView):
             if not parsed_start or not parsed_end or parsed_start >= parsed_end:
                 return Response({"detail": "Start date must be earlier than end date."}, status=400)
 
-        previous = _resolve_progress_update_window_state()
-        payload = {"enabled": enabled, "start_at": start_at, "end_at": end_at}
+        payload = {
+            "enabled": enabled,
+            "manual_open": manual_open if enabled else False,
+            "start_at": start_at,
+            "end_at": end_at,
+        }
         SystemSetting.objects.update_or_create(
             key=PROGRESS_UPDATE_WINDOW_KEY,
             defaults={"value": json.dumps(payload)},
@@ -5444,7 +6257,13 @@ class ProgressUpdateWindowView(APIView):
                 },
             },
         )
-        return Response({**current, "can_encode": current["is_open"], "can_update": current["is_open"]})
+        return Response({
+            **current,
+            "can_encode": current["is_open"],
+            "can_update": current["is_open"],
+            "can_manage": True,
+            "eligible_project_count": self._eligible_count(),
+        })
 
 
 class DashboardView(APIView):
@@ -5767,12 +6586,12 @@ class LogoutView(APIView):
         return Response({"status": "ok"})
 
 
-def _validate_setup_profile(request, role, saved_agency, new_password):
+def _validate_setup_profile(request, role, saved_agency, new_password, agency_locked=None):
     required_fields = [
-        "first_name", "last_name", "agency_head", "office", "division", "position",
+        "first_name", "last_name", "agency_head", "division", "position",
         "contact_number", "phone_number",
     ]
-    agency_locked = role in INTERNAL_ACCOUNT_ROLES
+    agency_locked = role in INTERNAL_ACCOUNT_ROLES if agency_locked is None else bool(agency_locked)
     if not agency_locked:
         required_fields.append("agency")
     for field in ("first_name", "last_name"):
@@ -5802,6 +6621,10 @@ def _validate_setup_profile(request, role, saved_agency, new_password):
         return None, Response({"detail": policy_error}, status=400)
     profile = {field: str(request.data.get(field) or "").strip() for field in required_fields if field != "agency"}
     profile["agency"] = agency
+    # Registration exposes one canonical Agency / Office selection. Mirror the
+    # normalized value into both legacy model fields so existing profile,
+    # reporting, and export code remains compatible without divergent values.
+    profile["office"] = agency
     return profile, None
 
 
@@ -5818,11 +6641,14 @@ class SetupPasswordView(APIView):
                 return Response({"detail": "Invitation is invalid, expired, or replaced. Ask an administrator to resend it."}, status=400)
             payload, _ = invitation
             role = payload["role"]
+            assigned_agency = str(payload.get("agency") or ("RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else ""))
+            agency_locked = bool(payload.get("agency_locked", role in INTERNAL_ACCOUNT_ROLES))
             return Response({
                 "email": payload["email"],
                 "setup_type": "invitation",
-                "agency_locked": role in INTERNAL_ACCOUNT_ROLES,
-                "profile": {"agency": "RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else ""},
+                "agency_locked": agency_locked,
+                "agencies": _active_agency_options(),
+                "profile": {"agency": assigned_agency},
             })
         token = PasswordSetupToken.objects.select_related("user").filter(token=token_value).first()
         if not token or not token.is_valid():
@@ -5835,6 +6661,7 @@ class SetupPasswordView(APIView):
                 "email": user.email,
                 "setup_type": "existing_account",
                 "agency_locked": user.role in INTERNAL_ACCOUNT_ROLES,
+                "agencies": _active_agency_options(),
                 "profile": {
                     "first_name": user.first_name,
                     "last_name": user.last_name,
@@ -5860,23 +6687,29 @@ class SetupPasswordView(APIView):
                 return Response({"detail": "Invitation is invalid, expired, or replaced. Ask an administrator to resend it."}, status=400)
             payload, activity = invitation
             role = payload["role"]
+            assigned_agency = str(payload.get("agency") or ("RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else ""))
+            agency_locked = bool(payload.get("agency_locked", role in INTERNAL_ACCOUNT_ROLES))
             profile, error = _validate_setup_profile(
-                request, role, "RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else "", new_password,
+                request, role, assigned_agency, new_password, agency_locked=agency_locked,
             )
             if error:
                 return error
             try:
                 with transaction.atomic():
-                    UserActivity.objects.select_for_update().get(pk=activity.pk)
+                    if isinstance(activity, UserInvitation):
+                        activity = UserInvitation.objects.select_for_update().get(pk=activity.pk)
+                    else:
+                        activity = UserActivity.objects.select_for_update().get(pk=activity.pk)
                     if not _registration_invitation(token_value):
                         return Response({"detail": "Invitation is no longer available."}, status=400)
+                    invited_by = activity.invited_by if isinstance(activity, UserInvitation) else activity.user
                     user = User(
                         username=_build_unique_username(
                             payload["email"], f"{profile['first_name']} {profile['last_name']}".strip()
                         ),
                         email=payload["email"],
                         role=role,
-                        created_by=activity.user,
+                        created_by=invited_by,
                         is_staff=role == "admin",
                         is_active=False,
                         must_change_password=False,
@@ -5898,6 +6731,10 @@ class SetupPasswordView(APIView):
                         details={"email": user.email, "role": role, "is_active": False,
                                  "invitation_id": activity.id},
                     )
+                    if isinstance(activity, UserInvitation):
+                        activity.status = UserInvitation.STATUS_COMPLETED
+                        activity.completed_at = timezone.now()
+                        activity.save(update_fields=["status", "completed_at"])
                     _notify_many(
                         _admins(),
                         event_type="registration_awaiting_activation",
@@ -6335,7 +7172,9 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
         endorsed_revisions = ProjectRevision.objects.filter(state="endorsed").order_by(
             "-endorsed_at", "-revision_number"
         )
-        qs = Project.objects.filter(validated=True, archived=False, is_active=True)
+        qs = Project.objects.filter(validated=True, archived=False, is_active=True).select_related(
+            "primary_agency"
+        ).prefetch_related("collaborating_agency_links__agency")
         if getattr(self, "action", "") == "list" and self.request.query_params.get("view") == "summary":
             latest_progress = endorsed_revisions.filter(revision_type="progress_update")[:1]
             return qs.annotate(
@@ -6374,11 +7213,19 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
 
         q = (request.query_params.get("q") or "").strip()
         if q:
-            qs = qs.filter(Q(name__icontains=q) | Q(description__icontains=q) | Q(agency__icontains=q))
+            qs = qs.filter(
+                Q(name__icontains=q) | Q(description__icontains=q) | Q(agency__icontains=q)
+                | Q(collaborating_agency_links__agency__code__icontains=q)
+                | Q(collaborating_agency_links__agency__name__icontains=q)
+            ).distinct()
 
         agency = (request.query_params.get("agency") or "").strip()
         if agency and agency.lower() != "all":
-            qs = qs.filter(Q(agency__iexact=agency) | Q(profile_data__simplified_form__agencyName__iexact=agency))
+            qs = qs.filter(
+                Q(agency__iexact=agency) | Q(profile_data__simplified_form__agencyName__iexact=agency)
+                | Q(collaborating_agency_links__agency__code__iexact=agency)
+                | Q(collaborating_agency_links__agency__name__iexact=agency)
+            ).distinct()
 
         year_raw = (request.query_params.get("year") or "").strip()
         if year_raw and year_raw.lower() != "all":

@@ -43,7 +43,6 @@ const openPage = async (path, width) => {
   });
   const page = await context.newPage();
   let projects = [...initialProjects];
-  const updatedIds = [];
   await page.addInitScript(() => {
     localStorage.setItem("user", JSON.stringify({ role: "validator", username: "Pagination Tester" }));
     localStorage.setItem("isLoggedIn", "true");
@@ -56,27 +55,17 @@ const openPage = async (path, width) => {
     if (apiPath.endsWith("/validator/projects/") && url.searchParams.get("scope") === "history") {
       return respond(route, projects);
     }
-    if (apiPath.endsWith("/validator/projects/") && url.searchParams.get("scope") === "update_forms") {
-      return respond(route, projects);
-    }
-    if (/\/validator\/projects\/\d+\/update-form\/$/.test(apiPath) && route.request().method() === "POST") {
-      const id = Number(apiPath.match(/\/projects\/(\d+)\/update-form\/$/)?.[1]);
-      updatedIds.push(id);
-      projects = projects.filter((project) => project.id !== id);
-      return respond(route, { detail: "Project form updated." });
-    }
     if (apiPath.endsWith("/notifications/")) return respond(route, { results: [], unread_count: 0 });
     return respond(route, []);
   });
   await page.goto(`${origin}${path}`);
-  return { context, page, updatedIds, setProjects: (next) => { projects = next; } };
+  return { context, page, setProjects: (next) => { projects = next; } };
 };
 
 try {
-  for (const path of ["/validator/projects/history", "/validator/projects/update-forms"]) {
+  for (const path of ["/validator/projects/history"]) {
     for (const width of [320, 1280]) {
-      const { context, page, updatedIds, setProjects } = await openPage(path, width);
-      const isUpdate = path.endsWith("update-forms");
+      const { context, page, setProjects } = await openPage(path, width);
       const rowCount = () => page.locator("table.portal-table tbody tr").count();
       const cardCount = () => page.locator("article").count();
       try {
@@ -90,24 +79,14 @@ try {
         assert.equal(await rowCount(), 4);
         assert.equal(await cardCount(), 4);
 
-        if (isUpdate) {
-          const lastRow = width < 600 ? page.locator("article").last() : page.locator("table.portal-table tbody tr").last();
-          await lastRow.getByRole("button", { name: "Update Form" }).click();
-          await expectFooter(page, 21, 23, 23, 3, 3);
-          assert.deepEqual(updatedIds, [24], "The last-page Update Form action sends the correct project ID");
-          assert.equal(await cardCount(), 3);
-        }
-
-        const search = page.getByPlaceholder(isUpdate
-          ? "Search by project title, contributor, or agency"
-          : "Search by title, agency, or contributor");
+        const search = page.getByPlaceholder("Search by title, agency, or contributor");
         await search.fill("Project 11");
         await expectFooter(page, 1, 1, 1, 1, 1);
         await search.fill("no matching project");
-        await page.getByText(isUpdate ? "No matching projects found." : "No reviewed/endorsed projects found yet.").waitFor();
+        await page.getByText("No reviewed/endorsed projects found yet.").waitFor();
         assert.equal(await page.getByRole("button", { name: "Next" }).count(), 0);
         await search.fill("");
-        await expectFooter(page, 1, 10, isUpdate ? 23 : 24, 1, 3);
+        await expectFooter(page, 1, 10, 24, 1, 3);
         await page.getByRole("button", { name: "Next" }).click();
         await page.getByRole("button", { name: "Next" }).click();
         setProjects(initialProjects.slice(0, 11));
@@ -116,11 +95,9 @@ try {
         assert.equal(await rowCount(), 1);
         assert.equal(await cardCount(), 1);
 
-        if (!isUpdate) {
-          const lastRow = width < 600 ? page.locator("article").last() : page.locator("table.portal-table tbody tr").last();
-          await lastRow.getByRole("button", { name: "View" }).click();
-          await page.waitForURL("**/validator/projects/11/review");
-        }
+        const lastRow = width < 600 ? page.locator("article").last() : page.locator("table.portal-table tbody tr").last();
+        await lastRow.getByRole("button", { name: "View" }).click();
+        await page.waitForURL("**/validator/projects/11/review/simplified");
 
         const documentWidth = await page.evaluate(() => document.documentElement.scrollWidth);
         assert.ok(documentWidth <= width + 1, `${path} fits ${width}px: ${documentWidth}`);
@@ -129,7 +106,7 @@ try {
       }
     }
   }
-  console.log("PASS validator history and older-form pagination browser checks");
+  console.log("PASS validator history pagination browser checks");
 } finally {
   await browser.close();
   await new Promise((resolve) => server.httpServer.close(resolve));

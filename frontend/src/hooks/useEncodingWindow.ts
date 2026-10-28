@@ -63,13 +63,15 @@ const usePortalWindow = (endpoint: string, shouldLoad = true) => {
   useEffect(() => {
     refresh();
     if (!shouldLoad) return undefined;
-
-    const onFocus = () => refresh();
-    const pollId = window.setInterval(refresh, 60_000);
-    window.addEventListener("focus", onFocus);
+    const onDataChanged = () => refresh();
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === "portal_window_changed") refresh();
+    };
+    window.addEventListener("portal:data-changed", onDataChanged);
+    window.addEventListener("storage", onStorage);
     return () => {
-      window.clearInterval(pollId);
-      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("portal:data-changed", onDataChanged);
+      window.removeEventListener("storage", onStorage);
     };
   }, [refresh, shouldLoad]);
 

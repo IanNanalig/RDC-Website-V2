@@ -9,6 +9,7 @@ const navLinks = [
   { to: "/regional-profile", label: "Region Profile" },
   { to: "/documents", label: "Publications" },
   { to: "/projects", label: "Dashboard" },
+  { to: "/report-project", label: "Report Concern" },
   { to: "/news", label: "News" },
   { to: "/about", label: "About RDC" },
   { to: "/contact", label: "Contact Us" },
@@ -114,19 +115,19 @@ const Navbar: React.FC = () => {
         </div>
       </div>
 
-      {/* Navigation (no duplicate logo/title, login removed) */}
+      {/* Navigation (no duplicate logo/title) */}
       <nav className="bg-green-700">
         <div className="container mx-auto px-4 py-3 flex items-center">
           {/* Left spacer aligns nav with header logo */}
           <div className="hidden md:block w-16" />
 
           {/* Desktop Navigation */}
-          <ul className="hidden lg:flex space-x-8 flex-1">
+          <ul className="hidden lg:flex flex-1 space-x-4 xl:space-x-7">
             {navLinks.map((link) => (
               <li key={link.to}>
                 <Link
                   to={link.to}
-                  className={`font-semibold transition-colors duration-200 ${
+                  className={`text-sm font-semibold transition-colors duration-200 xl:text-base ${
                     location.pathname === link.to
                       ? "text-white border-b-2 border-white"
                       : "text-white/90 hover:text-white"
@@ -186,10 +187,12 @@ const Navbar: React.FC = () => {
           </div>
         </div>
 
-        {/* Mobile Navigation Menu (login entry removed) */}
+        {/* Mobile Navigation Menu */}
         <div
-          className={`lg:hidden overflow-hidden transition-all duration-300 ease-in-out ${
-            isMobileMenuOpen ? "max-h-96 border-t border-gray-200" : "max-h-0"
+          className={`lg:hidden transition-all duration-300 ease-in-out ${
+            isMobileMenuOpen
+              ? "max-h-[calc(100dvh-10rem)] overflow-y-auto border-t border-gray-200"
+              : "max-h-0 overflow-hidden"
           }`}
         >
           <ul className="flex flex-col py-4 space-y-2">

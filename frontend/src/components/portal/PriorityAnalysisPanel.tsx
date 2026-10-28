@@ -23,7 +23,7 @@ type Confirmation = {
 };
 
 type DocumentAssessment = {
-  status: "not_required" | "missing" | "pending" | "processing" | "pass" | "fail" | "unavailable";
+  status: "not_required" | "missing" | "pending" | "queued" | "processing" | "pass" | "fail" | "unavailable";
   summary?: string;
   error_message?: string;
   collective_sufficient?: boolean;
@@ -303,10 +303,31 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
     setBusy(true);
     setNotice("");
     try {
-      const response = await api.post(`validator/projects/${projectId}/priority-analysis/run/`, {
+      let response = await api.post(`validator/projects/${projectId}/priority-analysis/run/`, {
         supplements,
       });
+      if (response?.processing) {
+        setNotice(response.detail || "The AI Assistant is reading the supporting documents...");
+        for (let attempt = 0; attempt < 45; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 2000));
+          const documentStatus = await api.get(
+            `project-supporting-documents/assessment-status/?project=${projectId}`,
+            true,
+          ) as DocumentAssessment;
+          if (!["queued", "processing"].includes(documentStatus.status)) {
+            response = await api.post(`validator/projects/${projectId}/priority-analysis/run/`, {
+              supplements,
+            });
+            break;
+          }
+        }
+      }
+      if (response?.processing) {
+        setNotice("The AI Assistant is still reading the supporting documents. Please try again shortly.");
+        return;
+      }
       const next = response?.analysis as Analysis;
+      if (!next?.id) throw new Error("The AI Assistant did not return a completed analysis.");
       setAnalysis(next);
       setAnalyses((prev) => [next, ...prev.filter((item) => item.id !== next.id)]);
       setNotice(response?.reused ? "Identical inputs detected. Reused the existing deterministic scorecard." : "Priority analysis completed.");

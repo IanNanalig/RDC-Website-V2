@@ -196,7 +196,7 @@ async function checkAdminInvitation() {
       await invitationHold;
       return respond(route, { detail: "Registration invitation sent." });
     }
-    if (request.url().includes("admin/users/") || request.url().includes("password-reset-requests/")) return respond(route, []);
+    if (request.url().includes("admin/users/")) return respond(route, []);
     return respond(route, {});
   });
   await page.goto(origin + "/admin/users?tab=create-account", { waitUntil: "networkidle" });

@@ -6,7 +6,6 @@ from .project_status import canonical_implementation_status
 from .models import (
     AccessRequest,
     Notification,
-    PasswordResetRequest,
     PublicEvent,
     PriorityRuleSet,
     Project,
@@ -257,6 +256,11 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
     official_priority_label = serializers.SerializerMethodField()
     validation_comment = serializers.SerializerMethodField()
     document_assessment = serializers.SerializerMethodField()
+    primary_agency = serializers.SerializerMethodField()
+    collaborating_agencies = serializers.SerializerMethodField()
+    access_level = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
+    read_only_reason = serializers.SerializerMethodField()
 
     form_version = serializers.SerializerMethodField()
     current_form_version = serializers.SerializerMethodField()
@@ -270,6 +274,11 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
             "name",
             "description",
             "agency",
+            "primary_agency",
+            "collaborating_agencies",
+            "access_level",
+            "can_edit",
+            "read_only_reason",
             "budget",
             "completion",
             "profile_data",
@@ -315,6 +324,11 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
             "validation_comment",
             "supporting_document_policy",
             "document_assessment",
+            "primary_agency",
+            "collaborating_agencies",
+            "access_level",
+            "can_edit",
+            "read_only_reason",
         ]
         extra_kwargs = {
             "name": {"required": False},
@@ -330,6 +344,55 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
     def get_validated_by(self, obj):
         # Current schema has no validated_by foreign key.
         return None
+
+    def get_primary_agency(self, obj):
+        agency = getattr(obj, "primary_agency", None)
+        if agency:
+            return {"code": agency.code, "name": agency.name}
+        value = str(getattr(obj, "agency", "") or "").strip()
+        return {"code": value, "name": value} if value else None
+
+    def get_collaborating_agencies(self, obj):
+        return [
+            {"code": link.agency.code, "name": link.agency.name}
+            for link in obj.collaborating_agency_links.all()
+            if getattr(link, "agency", None)
+        ]
+
+    def _access_level(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request else None
+        role = getattr(user, "role", "")
+        if role in ("admin", "validator"):
+            return "administrative" if role == "admin" else "reviewer"
+        if role not in ("staff", "employee"):
+            return ""
+        user_agency = str(getattr(user, "agency", "") or "").strip().casefold()
+        primary = self.get_primary_agency(obj) or {}
+        if user_agency and user_agency in {
+            str(primary.get("code") or "").casefold(),
+            str(primary.get("name") or "").casefold(),
+        }:
+            return "primary"
+        if obj.status != "planning":
+            for agency in self.get_collaborating_agencies(obj):
+                if user_agency in {
+                    str(agency.get("code") or "").casefold(),
+                    str(agency.get("name") or "").casefold(),
+                }:
+                    return "collaborator"
+        return ""
+
+    def get_access_level(self, obj):
+        return self._access_level(obj)
+
+    def get_can_edit(self, obj):
+        return self._access_level(obj) == "primary"
+
+    def get_read_only_reason(self, obj):
+        if self._access_level(obj) == "collaborator":
+            return "You have read-only access as a collaborating agency. Only the primary agency can modify this project."
+        return ""
 
     def get_submission_type(self, obj):
         profile = obj.profile_data if isinstance(obj.profile_data, dict) else {}
@@ -657,6 +720,29 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
         return project
 
 
+class ProjectFormMigrationSummarySerializer(ContributorFormVersionStatusMixin, serializers.ModelSerializer):
+    """Minimal projection for the Administrator's older-form migration list."""
+
+    title = serializers.CharField(source="name", read_only=True)
+    submitted_by_name = serializers.SerializerMethodField()
+    form_version = serializers.SerializerMethodField()
+    current_form_version = serializers.SerializerMethodField()
+    uses_outdated_form = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Project
+        fields = [
+            "id", "title", "name", "agency", "submitted_by_name",
+            "form_version", "current_form_version", "uses_outdated_form",
+        ]
+        read_only_fields = fields
+
+    def get_submitted_by_name(self, obj):
+        if not obj.created_by:
+            return ""
+        return _user_display_name(obj.created_by) or obj.created_by.username
+
+
 class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.ModelSerializer):
     """Compact, additive projection used only when list callers request view=summary."""
 
@@ -676,6 +762,11 @@ class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.Mo
     form_version = serializers.SerializerMethodField()
     current_form_version = serializers.SerializerMethodField()
     uses_outdated_form = serializers.SerializerMethodField()
+    primary_agency = serializers.SerializerMethodField()
+    collaborating_agencies = serializers.SerializerMethodField()
+    access_level = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
+    read_only_reason = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
@@ -684,6 +775,11 @@ class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.Mo
             "title",
             "name",
             "agency",
+            "primary_agency",
+            "collaborating_agencies",
+            "access_level",
+            "can_edit",
+            "read_only_reason",
             "budget",
             "completion",
             "status",
@@ -738,6 +834,21 @@ class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.Mo
 
     def get_validation_comment(self, obj):
         return self._full().get_validation_comment(obj)
+
+    def get_primary_agency(self, obj):
+        return self._full().get_primary_agency(obj)
+
+    def get_collaborating_agencies(self, obj):
+        return self._full().get_collaborating_agencies(obj)
+
+    def get_access_level(self, obj):
+        return self._full().get_access_level(obj)
+
+    def get_can_edit(self, obj):
+        return self._full().get_can_edit(obj)
+
+    def get_read_only_reason(self, obj):
+        return self._full().get_read_only_reason(obj)
 
     def get_submission_type(self, obj):
         profile = self._profile(obj)
@@ -906,6 +1017,7 @@ class ProjectRevisionSerializer(ContributorFormVersionStatusMixin, serializers.M
             "profile_data_snapshot",
             "public_summary_snapshot",
             "changed_fields",
+            "form_migration",
             "public_note",
             "is_public_current",
             "created_by_name",
@@ -971,6 +1083,7 @@ class ProjectRevisionSummarySerializer(ProjectRevisionSerializer):
             "form_version",
             "current_form_version",
             "uses_outdated_form",
+            "form_migration",
         ]
         read_only_fields = fields
 
@@ -996,6 +1109,7 @@ class PublicProjectSerializer(serializers.ModelSerializer):
     # Public-safe projection for the public website dashboard.
     title = serializers.CharField(source="name", read_only=True)
     agency = serializers.SerializerMethodField()
+    collaborating_agencies = serializers.SerializerMethodField()
     implementation_status = serializers.SerializerMethodField()
     year = serializers.SerializerMethodField()
     lgu = serializers.SerializerMethodField()
@@ -1020,6 +1134,7 @@ class PublicProjectSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "agency",
+            "collaborating_agencies",
             "implementation_status",
             "budget",
             "year",
@@ -1056,6 +1171,13 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         if value:
             return value
         return str(getattr(obj, "agency", "") or "").strip()
+
+    def get_collaborating_agencies(self, obj):
+        return [
+            {"code": link.agency.code, "name": link.agency.name}
+            for link in obj.collaborating_agency_links.all()
+            if getattr(link, "agency", None)
+        ]
 
     def get_implementation_status(self, obj):
         # Prefer RDIP status from the simplified form; keep old names grouped without rewriting history.
@@ -1323,6 +1445,7 @@ class PublicProjectSummarySerializer(PublicProjectSerializer):
             "id",
             "title",
             "agency",
+            "collaborating_agencies",
             "implementation_status",
             "budget",
             "year",
@@ -1481,38 +1604,3 @@ class NotificationSerializer(serializers.ModelSerializer):
 
     def get_is_read(self, obj):
         return bool(obj.read_at)
-
-
-class PasswordResetRequestSerializer(serializers.ModelSerializer):
-    reviewed_by = UserSerializer(read_only=True)
-    user_email = serializers.CharField(source="user.email", read_only=True)
-    user_username = serializers.CharField(source="user.username", read_only=True)
-
-    class Meta:
-        model = PasswordResetRequest
-        fields = [
-            "id",
-            "email",
-            "user",
-            "user_email",
-            "user_username",
-            "status",
-            "requested_ip",
-            "requested_user_agent",
-            "reviewed_by",
-            "reviewed_at",
-            "review_notes",
-            "created_at",
-        ]
-        read_only_fields = [
-            "status",
-            "requested_ip",
-            "requested_user_agent",
-            "reviewed_by",
-            "reviewed_at",
-            "review_notes",
-            "created_at",
-            "user",
-            "user_email",
-            "user_username",
-        ]

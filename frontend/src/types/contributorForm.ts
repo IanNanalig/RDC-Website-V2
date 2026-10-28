@@ -88,6 +88,19 @@ export const NCR_LOCATION_OPTIONS = [
   "Taguig",
   "Valenzuela",
 ] as const;
+export const AGENCY_OPTIONS: ContributorFormOption[] = [
+  ["MMDA", "Metropolitan Manila Development Authority"],
+  ["DPWH", "Department of Public Works and Highways"], ["DENR", "Department of Environment and Natural Resources"],
+  ["RDC-NCR", "Regional Development Council National Capital Region"], ["DILG", "Department of the Interior and Local Government"],
+  ["DEPDev", "Department of Economy, Planning, and Development"], ["DBM", "Department of Budget and Management"],
+  ["DA", "Department of Agriculture"], ["DAR", "Department of Agrarian Reform"], ["DepEd", "Department of Education"],
+  ["DOH", "Department of Health"], ["DHSUD", "Department of Human Settlements and Urban Development"],
+  ["DICT", "Department of Information and Communications Technology"], ["DOLE", "Department of Labor and Employment"],
+  ["DOST", "Department of Science and Technology"], ["DSWD", "Department of Social Welfare and Development"],
+  ["DOT", "Department of Tourism"], ["DTI", "Department of Trade and Industry"], ["DOTr", "Department of Transportation"],
+  ["TESDA", "Technical Education and Skills Development Authority"], ["CHED", "Commission on Higher Education"],
+  ["PSA", "Philippine Statistics Authority"],
+].map(([value, label]) => ({ value, label }));
 
 const field = (
   key: string,
@@ -114,6 +127,10 @@ export const DEFAULT_CONTRIBUTOR_FORM_SCHEMA: ContributorFormSchema = {
       title: "Project Information",
       fields: [
         field("agencyName", "Agency Name", "text", { required: true }),
+        field("collaboratingAgencies", "Collaborating Agencies", "multiselect_dropdown", {
+          help_text: "Optionally select other agencies participating in this project.",
+          options: AGENCY_OPTIONS,
+        }),
         field("program", "Program", "text", { required: true }),
         field("projectActivity", "Project/Activity", "text", { required: true }),
         field("location", "Location", "multiselect_dropdown", {

@@ -139,7 +139,7 @@ const ProjectReview: React.FC = () => {
 
   const onArchive = async () => {
     if (!id || !isAdmin) return;
-    await api.post(`admin/projects/${id}/archive/`, {});
+    await api.post(`admin/projects/${id}/archive/`, { confirm_archive: true });
     localStorage.setItem("projects_last_update", Date.now().toString());
     navigate("/admin/projects");
   };

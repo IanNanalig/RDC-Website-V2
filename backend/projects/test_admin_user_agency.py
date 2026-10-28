@@ -278,7 +278,7 @@ class AccountSetupAgencyTests(APITestCase):
 
     def test_setup_rejects_missing_blank_and_unsupported_agencies(self):
         self.client.force_authenticate(user=None)
-        entries = (("missing", None), ("blank", "   "), ("unsupported", "MMDA"))
+        entries = (("missing", None), ("blank", "   "), ("unsupported", "Not An Agency"))
 
         for suffix, agency in entries:
             user, token = self.make_pending_user(suffix)
@@ -287,7 +287,7 @@ class AccountSetupAgencyTests(APITestCase):
                 payload.pop("agency")
             response = self.client.post("/api/auth/setup-password/", payload, format="json")
             self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-            if agency == "MMDA":
+            if agency == "Not An Agency":
                 self.assertEqual(
                     response.data["detail"],
                     "This is an invalid Agency",

@@ -1,5 +1,6 @@
 // src/pages/Projects.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   getPublicProjects,
   getPublicProject,
@@ -1012,13 +1013,22 @@ const Projects: React.FC = () => {
                           : ""}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      className="px-3 py-1.5 border rounded-lg text-sm hover:bg-slate-50"
-                      onClick={closeProjectDetail}
-                    >
-                      Close
-                    </button>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Link
+                        to={`/report-project?project=${detailProject.id}`}
+                        onClick={closeProjectDetail}
+                        className="rounded-lg bg-green-700 px-3 py-1.5 text-sm font-semibold text-white hover:bg-green-800"
+                      >
+                        Report Concern
+                      </Link>
+                      <button
+                        type="button"
+                        className="px-3 py-1.5 border rounded-lg text-sm hover:bg-slate-50"
+                        onClick={closeProjectDetail}
+                      >
+                        Close
+                      </button>
+                    </div>
                   </div>
                   <div role="tablist" aria-label="Project details" className="grid grid-cols-2 gap-2 border-b px-4 py-2 sm:flex sm:px-5">
                     {(["overview", "history"] as const).map((tab) => (

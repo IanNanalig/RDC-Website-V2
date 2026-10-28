@@ -9,6 +9,7 @@ from django.utils import timezone
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
+from cms.models import CMSContributorForm
 from .priority_scoring import _priority_for, _priority_with_regional_budget, confirm_analysis
 from .models import (
     Notification,
@@ -576,6 +577,9 @@ class PortalWorkflowTests(APITestCase):
             username="validator_progress_inactive", password="password", role="validator",
             email="validator_progress_inactive@example.com", is_active=False,
         )
+        live_form_version = CMSContributorForm.objects.get(
+            key="simplified-rdip"
+        ).current_published_version.version_number
         project = Project.objects.create(
             name="Contributor Progress Notifications",
             implementing_agency="MMDA",
@@ -587,7 +591,14 @@ class PortalWorkflowTests(APITestCase):
             agency="MMDA",
             budget=100000,
             created_by=self.employee,
-            profile_data={"simplified_form": {"projectActivity": "Progress Notifications"}},
+            profile_data={
+                "form_schema": {
+                    "key": "simplified-rdip",
+                    "version": live_form_version,
+                    "legacy": True,
+                },
+                "simplified_form": {"projectActivity": "Progress Notifications"},
+            },
         )
         self._as(self.employee)
         started = self.client.post(f"/api/employee/projects/{project.id}/start-update/", {}, format="json")
@@ -664,9 +675,10 @@ class PortalWorkflowTests(APITestCase):
         self._as(self.employee)
         opened = self.client.post(f"/api/employee/projects/{project.id}/start-update/", {}, format="json")
         self.assertEqual(opened.status_code, status.HTTP_200_OK, opened.data)
-        self.assertEqual(opened.data["profile_data_snapshot"]["form_schema"]["version"], 6)
+        live_version = opened.data["current_form_version"]
+        self.assertEqual(opened.data["profile_data_snapshot"]["form_schema"]["version"], live_version)
         draft.refresh_from_db()
-        self.assertEqual(draft.profile_data_snapshot["form_schema"]["version"], 6)
+        self.assertEqual(draft.profile_data_snapshot["form_schema"]["version"], live_version)
         self.assertEqual(
             draft.profile_data_snapshot["simplified_form"]["projectActivity"],
             "Preserved draft response",
@@ -675,7 +687,7 @@ class PortalWorkflowTests(APITestCase):
             user=self.employee,
             project=project,
             event="project_revision_updated",
-            details__operation="progress_draft_form_version_sync",
+            details__operation="automatic_form_migration",
         ).exists())
 
     def test_needs_revision_requires_comment_unlocks_edit_and_notifies(self):
@@ -1135,7 +1147,8 @@ class PortalWorkflowTests(APITestCase):
             name="Archive Candidate",
             implementing_agency="MMDA",
             municipality="NCR",
-            status="proposed",
+            status="completed",
+            validated=True,
             cost=5000,
             description="to archive",
             latitude=14.5,

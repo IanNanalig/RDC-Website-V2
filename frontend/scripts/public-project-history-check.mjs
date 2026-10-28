@@ -111,6 +111,9 @@ try {
   assert.deepEqual(await page.evaluate(() => window.__longRefreshIntervals), [], "Public home should not schedule recurring data refreshes.");
   console.log("PASS public home and project dashboard do not schedule periodic data refreshes");
 
+  await page.goto(origin + "/projects", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /Table/ }).click();
+
   dialog = await open(2);
   await dialog.getByRole("tab", { name: "History" }).click();
   await dialog.getByText("Version 1").waitFor();

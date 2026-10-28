@@ -65,6 +65,12 @@ EMAIL_HOST_PASSWORD=your-google-app-password
 EMAIL_USE_TLS=true
 DEFAULT_FROM_EMAIL=RDC Portal <your-gmail-address@gmail.com>
 CONTACT_RECEIVER_EMAIL=your-receiver-email@example.com
+PROJECT_CONCERN_RECEIVER_EMAIL=your-project-concern-inbox@example.com
+PROJECT_CONCERN_MAX_FILES=5
+PROJECT_CONCERN_MAX_FILE_BYTES=5242880
+PROJECT_CONCERN_MAX_TOTAL_BYTES=15728640
+PROJECT_CONCERN_RATE_LIMIT_HOURLY=5
+PROJECT_CONCERN_RATE_LIMIT_DAILY=20
 
 GROQ_API_KEY=your-rotated-groq-api-key
 GROQ_PRIMARY_MODEL=llama-3.1-8b-instant
@@ -77,6 +83,7 @@ Place frontend values in `frontend/.env`:
 
 ```text
 VITE_API_BASE_URL=http://127.0.0.1:8000/api
+VITE_TURNSTILE_SITE_KEY=your-cloudflare-turnstile-site-key
 ```
 
 ## Render Staging Env
@@ -111,6 +118,7 @@ EMAIL_HOST_PASSWORD=your-google-app-password
 EMAIL_USE_TLS=true
 DEFAULT_FROM_EMAIL=RDC Portal <your-gmail-address@gmail.com>
 CONTACT_RECEIVER_EMAIL=your-receiver-email@example.com
+PROJECT_CONCERN_RECEIVER_EMAIL=your-project-concern-inbox@example.com
 ```
 
 Optional staging values:
@@ -155,6 +163,7 @@ EMAIL_HOST_PASSWORD=client-google-app-password
 EMAIL_USE_TLS=true
 DEFAULT_FROM_EMAIL=RDC Portal <client-production-sender@gmail.com>
 CONTACT_RECEIVER_EMAIL=client-receiver@example.com
+PROJECT_CONCERN_RECEIVER_EMAIL=client-project-concern-inbox@example.com
 
 GROQ_API_KEY=your-rotated-production-groq-api-key
 GROQ_PRIMARY_MODEL=llama-3.1-8b-instant
@@ -200,6 +209,7 @@ Required Vercel environment variable:
 
 ```text
 VITE_API_BASE_URL=https://your-render-service.onrender.com/api
+VITE_TURNSTILE_SITE_KEY=your-cloudflare-turnstile-site-key
 ```
 
 Install command:
@@ -219,6 +229,14 @@ Output directory:
 ```text
 dist
 ```
+
+Project concern notification retries use the existing Celery worker. Production should run a worker service with the same backend environment and database configuration:
+
+```text
+celery -A rdc_site worker --loglevel=INFO --concurrency=2
+```
+
+Set `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND` for both the web and worker services. The web request attempts the initial email synchronously; reports remain stored and Administrators can retry delivery even when the worker is unavailable.
 
 The `frontend/vercel.json` rewrite sends direct route refreshes back to `index.html`, so routes like `/login` and `/employee/dashboard` work after deployment.
 

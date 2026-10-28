@@ -91,6 +91,33 @@ SDG_OPTIONS = _options([
     "12 - Responsible consumption and production", "13 - Climate action", "14 - Life below water",
     "15 - Life on land", "16 - Peace, justice and strong institutions", "17 - Partnerships for the goals",
 ])
+AGENCY_OPTIONS = sorted([
+    {"value": code, "label": name}
+    for code, name in [
+        ("MMDA", "Metropolitan Manila Development Authority"),
+        ("DPWH", "Department of Public Works and Highways"),
+        ("DENR", "Department of Environment and Natural Resources"),
+        ("RDC-NCR", "Regional Development Council National Capital Region"),
+        ("DILG", "Department of the Interior and Local Government"),
+        ("DEPDev", "Department of Economy, Planning, and Development"),
+        ("DBM", "Department of Budget and Management"),
+        ("DA", "Department of Agriculture"),
+        ("DAR", "Department of Agrarian Reform"),
+        ("DepEd", "Department of Education"),
+        ("DOH", "Department of Health"),
+        ("DHSUD", "Department of Human Settlements and Urban Development"),
+        ("DICT", "Department of Information and Communications Technology"),
+        ("DOLE", "Department of Labor and Employment"),
+        ("DOST", "Department of Science and Technology"),
+        ("DSWD", "Department of Social Welfare and Development"),
+        ("DOT", "Department of Tourism"),
+        ("DTI", "Department of Trade and Industry"),
+        ("DOTr", "Department of Transportation"),
+        ("TESDA", "Technical Education and Skills Development Authority"),
+        ("CHED", "Commission on Higher Education"),
+        ("PSA", "Philippine Statistics Authority"),
+    ]
+], key=lambda option: option["value"].casefold())
 
 
 def _field(key, label, field_type="text", required=False, options=None, **extra):
@@ -121,6 +148,13 @@ DEFAULT_SIMPLIFIED_FORM_SCHEMA = {
             "visible": True,
             "fields": [
                 _field("agencyName", "Agency Name", required=True),
+                _field(
+                    "collaboratingAgencies",
+                    "Collaborating Agencies",
+                    "multiselect_dropdown",
+                    options=AGENCY_OPTIONS,
+                    help_text="Optionally select other agencies participating in this project.",
+                ),
                 _field("program", "Program", required=True),
                 _field("projectActivity", "Project/Activity", required=True),
                 _field(
@@ -247,7 +281,9 @@ REQUIRED_CORE_FIELDS = {key for key, field in CORE_FIELDS.items() if field.get("
 CONDITION_REQUIRED_CORE_FIELDS = {key for key, field in CORE_FIELDS.items() if field.get("condition_required")}
 FIXED_FIELD_TYPES = {
     "agencyName": "text",
+    "collaboratingAgencies": "multiselect_dropdown",
 }
+PROTECTED_OPTION_FIELDS = {"collaboratingAgencies"}
 
 
 class FormSchemaError(ValueError):
@@ -305,6 +341,51 @@ def _field_map(schema):
         if isinstance(section, dict)
         for field in section.get("fields", [])
         if isinstance(field, dict) and field.get("key")
+    }
+
+
+def build_form_migration_plan(previous_schema, next_schema):
+    """Describe deterministic, non-destructive migration rules between versions."""
+    old_fields = _field_map(previous_schema or {})
+    new_fields = _field_map(next_schema or {})
+    rules = []
+    incompatible = []
+    attention = []
+
+    for key, target in new_fields.items():
+        source = old_fields.get(key)
+        if source is None:
+            rule = {"field": key, "action": "add", "required": bool(target.get("required"))}
+            rules.append(rule)
+            if rule["required"] and target.get("visible") is not False:
+                attention.append(key)
+            continue
+        source_type = str(source.get("type") or "")
+        target_type = str(target.get("type") or "")
+        if source_type != target_type:
+            if key == "location" and target_type == "multiselect_dropdown":
+                rules.append({"field": key, "action": "transform_location", "from": source_type, "to": target_type})
+            else:
+                item = {"field": key, "reason": f"Field type changed from {source_type} to {target_type}."}
+                incompatible.append(item)
+                rules.append({"field": key, "action": "unsupported", **item})
+            continue
+        removed_values = []
+        if target_type in {"select", "multiselect", "multiselect_dropdown"}:
+            old_values = {str(item.get("value")) for item in source.get("options", []) if isinstance(item, dict)}
+            new_values = {str(item.get("value")) for item in target.get("options", []) if isinstance(item, dict)}
+            removed_values = sorted(old_values - new_values)
+        rules.append({"field": key, "action": "copy", "removed_option_values": removed_values})
+
+    for key, source in old_fields.items():
+        if key not in new_fields:
+            rules.append({"field": key, "action": "retain_hidden", "source_type": source.get("type")})
+
+    return {
+        "format": 1,
+        "rules": rules,
+        "attention_fields": attention,
+        "incompatible_changes": incompatible,
     }
 
 
@@ -443,7 +524,13 @@ def validate_form_schema(schema, published_schema=None):
     for key, field_type in FIXED_FIELD_TYPES.items():
         candidate = current.get(key)
         if candidate is not None and candidate.get("type") != field_type:
-            raise FormSchemaError("Agency Name is supplied by the contributor account, so its field type cannot be changed.")
+            raise FormSchemaError(f"The field type for {key} is managed by the system and cannot be changed.")
+
+    for key in PROTECTED_OPTION_FIELDS:
+        candidate = current.get(key)
+        original = CORE_FIELDS.get(key)
+        if candidate is not None and original is not None and candidate.get("options") != original.get("options"):
+            raise FormSchemaError("Collaborating Agency choices are managed by the Agency catalog and cannot be edited in the form builder.")
 
     for field in current.values():
         condition = field.get("condition") if isinstance(field.get("condition"), dict) else None
@@ -538,7 +625,7 @@ def schema_fields(schema):
                 yield field
 
 
-def validate_simplified_answers(profile_data, require_complete=False, legacy_status=None):
+def validate_simplified_answers(profile_data, require_complete=False, legacy_status=None, schema_version=None):
     if not isinstance(profile_data, dict) or not isinstance(profile_data.get("simplified_form"), dict):
         return profile_data
     from cms.models import CMSContributorForm, CMSContributorFormVersion
@@ -551,8 +638,8 @@ def validate_simplified_answers(profile_data, require_complete=False, legacy_sta
         version_number = int(marker.get("version") or 0)
     except (TypeError, ValueError):
         version_number = 0
-    version = None
-    if version_number:
+    version = schema_version
+    if version is None and version_number:
         version = CMSContributorFormVersion.objects.filter(
             form__key=key, version_number=version_number,
         ).first()

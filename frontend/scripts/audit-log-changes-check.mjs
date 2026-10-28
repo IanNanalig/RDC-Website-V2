@@ -52,7 +52,7 @@ try {
     const body = path === "/api/admin/activity/" ? {
       results: sortedAuditRows,
       count: sortedAuditRows.length,
-    } : path === "/api/admin/users/" || path === "/api/password-reset-requests/" ? [] : {};
+    } : path === "/api/admin/users/" ? [] : {};
     await route.fulfill({ status: 200, contentType: "application/json", headers, body: JSON.stringify(body) });
   });
 

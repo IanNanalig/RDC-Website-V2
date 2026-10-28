@@ -161,13 +161,18 @@ try {
       const firstCard = users.locator("li").first();
       assert.match(await firstCard.innerText(), /Email.*matt\.angelo@example\.com.*Agency.*DOH.*Role.*Contributor/s);
       const inactiveCard = users.locator("li").filter({ hasText: "Gabriel Cantor" });
-      for (const action of ["Activate", "Reset Password"]) {
+      for (const action of ["Activate"]) {
         const button = inactiveCard.getByRole("button", { name: action });
         const bounds = await button.boundingBox();
         assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width + 1,
           `${action} fits within ${width}px: ${JSON.stringify(bounds)}`);
         assert.ok(bounds.height >= 44, `${action} has a mobile-sized touch target`);
       }
+      assert.equal(
+        await inactiveCard.getByRole("button", { name: /reset/i }).count(),
+        0,
+        "Administrator user cards do not expose password-reset actions",
+      );
       if (width === 320) {
         const mattCard = users.locator("li").filter({ hasText: "Matt Angelo" });
         let updatePayload;
@@ -178,8 +183,6 @@ try {
         await mattCard.getByRole("button", { name: "Deactivate" }).click();
         await page.getByText("User deactivated.").waitFor();
         assert.deepEqual(updatePayload, { active: false }, "Mobile Deactivate uses the existing user action");
-        await mattCard.getByRole("button", { name: "Reset Password" }).click();
-        await page.getByText("Password reset link sent to the user's email.").waitFor();
       }
     } else {
       assert.equal(await users.isVisible(), false, "User cards are hidden on desktop");
@@ -273,9 +276,7 @@ try {
     "/validator/dashboard",
     "/validator/projects",
     "/validator/projects/history",
-    "/validator/projects/update-forms",
     "/validator/projects/1/review/simplified",
-    "/validator/projects/2/review",
   ]) {
     const { context: validatorContext, page: validatorPage } = await openPortal(
       { width: 320, height: 568 }, "validator", path,
@@ -287,8 +288,7 @@ try {
     await validatorPage.getByRole("button", { name: "Close navigation" }).click();
     const documentWidth = await validatorPage.evaluate(() => document.documentElement.scrollWidth);
     assert.ok(documentWidth <= 321, `Validator page ${path} must not overflow: ${documentWidth}`);
-    const actionName = path.endsWith("update-forms") ? "Update Form"
-      : path.endsWith("history") ? "View"
+    const actionName = path.endsWith("history") ? "View"
       : path.endsWith("projects") ? "Review" : null;
     if (actionName) {
       const action = validatorPage.getByRole("button", { name: actionName, exact: true }).first();
@@ -319,7 +319,6 @@ try {
 
   for (const [kind, path] of [
     ["simplified", "/validator/projects/1/review/simplified"],
-    ["detailed", "/validator/projects/2/review"],
   ]) {
     const { context, page } = await openPortal({ width: 390, height: 844 }, "validator", path);
     const submissions = [];
@@ -327,23 +326,13 @@ try {
       submissions.push(JSON.parse(route.request().postData() || "{}"));
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ review_status: "reviewed" }) });
     });
-    if (kind === "simplified") {
-      await page.getByText("Project Information", { exact: true }).waitFor();
-      const revisionCheckbox = page.getByLabel("Contributor may edit this field").first();
-      assert.equal(await revisionCheckbox.isEnabled(), true, "Revision selection remains editable");
-      await revisionCheckbox.check();
-      const notes = page.getByPlaceholder("Required when requesting revisions or rejecting");
-      assert.equal(await notes.isEnabled(), true, "Validator notes remain editable");
-      await notes.fill("Please update the project description.");
-    } else {
-      const access = page.locator("details").filter({ hasText: "Contributor Revision Access" });
-      const revisionCheckbox = access.locator('input[type="checkbox"]').first();
-      assert.equal(await revisionCheckbox.isEnabled(), true, "Revision selection remains editable");
-      await revisionCheckbox.check();
-      const notes = page.locator("#validator-notes");
-      assert.equal(await notes.isEnabled(), true, "Validator notes remain editable");
-      await notes.fill("Please update the project description.");
-    }
+    await page.getByText("Project Information", { exact: true }).waitFor();
+    const revisionCheckbox = page.getByLabel("Contributor may edit this field").first();
+    assert.equal(await revisionCheckbox.isEnabled(), true, "Revision selection remains editable");
+    await revisionCheckbox.check();
+    const notes = page.getByPlaceholder("Required when requesting revisions or rejecting");
+    assert.equal(await notes.isEnabled(), true, "Validator notes remain editable");
+    await notes.fill("Please update the project description.");
     assert.equal(await page.locator("form fieldset:disabled input:not([type='checkbox'])").first().isDisabled(), true,
       `${kind} contributor answers must be read-only`);
     const requestRevision = page.getByRole("button", { name: "Request Revision" });

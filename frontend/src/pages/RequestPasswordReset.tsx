@@ -34,25 +34,23 @@ const RequestPasswordReset: React.FC = () => {
     }
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/password-reset-requests/`, {
+      const normalizedEmail = email.trim().toLowerCase();
+      const res = await fetch(`${API_BASE_URL}/auth/password-reset/request/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: email.trim(),
+          email: normalizedEmail,
           captcha_token: captchaToken || undefined,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data?.detail || "Failed to send reset request.");
+        throw new Error(data?.detail || "Failed to send the reset code.");
       }
-      setNotice(
-        "If this email is registered, your request has been sent to the administrator. You will receive a reset link once approved.",
-      );
-      setEmail("");
-      setCaptchaToken("");
+      setNotice(data?.detail || "If this email is registered, a reset code has been sent.");
+      navigate("/reset-password", { state: { email: normalizedEmail } });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to send reset request.";
+      const message = err instanceof Error ? err.message : "Failed to send the reset code.";
       setError(message);
     } finally {
       setLoading(false);
@@ -64,7 +62,7 @@ const RequestPasswordReset: React.FC = () => {
       <div className="w-full max-w-md space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-lg sm:p-7">
         <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Request Password Reset</h1>
         <p className="text-sm leading-relaxed text-slate-600">
-          Enter your email to request a password reset. An administrator will review the request.
+          Enter your email and we will send a six-digit reset code. The code expires in 10 minutes.
         </p>
 
         {notice && (
@@ -102,7 +100,7 @@ const RequestPasswordReset: React.FC = () => {
             disabled={loading}
             className="portal-btn portal-btn-primary min-h-11 w-full disabled:cursor-wait disabled:opacity-60"
           >
-            {loading ? "Sending..." : "Send Reset Request"}
+            {loading ? "Sending code..." : "Send Reset Code"}
           </button>
         </form>
 

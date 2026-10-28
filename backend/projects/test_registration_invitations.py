@@ -71,6 +71,7 @@ class RegistrationInvitationTests(APITestCase):
         self.assertEqual((user.first_name, user.last_name), ("Invited", "Person"))
         self.assertEqual(user.role, "staff")
         self.assertEqual(user.agency, "DENR")
+        self.assertEqual(user.office, "DENR")
         self.assertEqual(user.created_by_id, self.admin.id)
         self.assertFalse(user.is_active)
         self.assertFalse(user.must_change_password)

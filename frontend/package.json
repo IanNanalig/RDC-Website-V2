@@ -26,6 +26,9 @@
     "test:contributor-supporting-documents": "node scripts/contributor-supporting-documents-check.mjs",
     "test:validator-priority-override": "node scripts/validator-priority-override-check.mjs",
     "test:performance-smoke": "node scripts/performance-smoke-check.mjs",
+    "test:admin-exports": "node scripts/admin-exports-check.mjs",
+    "test:batch-administration": "node scripts/batch-administration-check.mjs",
+    "test:project-concerns": "node scripts/project-concerns-check.mjs",
     "optimize:images": "node scripts/optimize-images.mjs",
     "preview": "vite preview"
   },

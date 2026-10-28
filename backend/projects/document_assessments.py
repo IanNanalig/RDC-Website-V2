@@ -1,10 +1,15 @@
 import hashlib
 import json
+import logging
 
+from django.conf import settings
 from django.db import IntegrityError
 
 from .document_policy import active_project_documents, resolve_project_document_policy
 from .models import ProjectDocumentAssessment
+
+
+logger = logging.getLogger(__name__)
 
 
 def current_document_source_hash(project, policy=None, documents=None):
@@ -81,13 +86,28 @@ def serialize_document_assessment(project):
         }
     assessment = current_document_assessment(project)
     if not assessment:
-        processing = any(item.extraction_status in {"queued", "processing"} for item in documents)
+        upload_failed = any(
+            item.extraction_status == "queued" and bool(str(item.processing_error or "").strip())
+            for item in documents
+        )
+        processing = any(
+            item.extraction_status in {"queued", "processing"} and not item.processing_error
+            for item in documents
+        )
         failed = any(item.extraction_status == "failed" for item in documents)
+        if upload_failed:
+            summary = "Failed to upload. Retry or remove the affected file."
+        elif processing:
+            summary = "Supporting documents are being prepared. AI assessment starts after the project is submitted."
+        elif failed:
+            summary = "One or more supporting documents could not be prepared. Retry or replace them before submitting."
+        else:
+            summary = "Supporting documents are ready. The files will be read when the Validator runs the AI Assistant analysis."
         return {
-            "status": "processing" if processing else "unavailable" if failed else "pending",
+            "status": "unavailable" if upload_failed or failed else "processing" if processing else "pending",
             "required": bool(policy.get("required")),
             "document_results": [],
-            "summary": "Document processing must finish before the AI assessment can run.",
+            "summary": summary,
         }
     return {
         "id": assessment.id,
@@ -110,9 +130,15 @@ def dispatch_document_processing(document_id):
     try:
         from .tasks import process_supporting_document
 
+        if settings.CELERY_TASK_ALWAYS_EAGER:
+            # Local/eager environments do not need Redis. Calling the task
+            # directly also avoids a queue connection delaying the upload.
+            process_supporting_document.run(document_id)
+            return True
         process_supporting_document.delay(document_id)
         return True
     except Exception:
+        logger.exception("Could not dispatch supporting document %s for processing", document_id)
         return False
 
 
@@ -120,7 +146,13 @@ def dispatch_document_assessment(assessment_id):
     try:
         from .tasks import assess_supporting_documents
 
+        if settings.CELERY_TASK_ALWAYS_EAGER:
+            # Match document extraction: complete the assessment immediately
+            # when this installation explicitly opts into eager execution.
+            assess_supporting_documents.run(assessment_id)
+            return True
         assess_supporting_documents.delay(assessment_id)
         return True
     except Exception:
+        logger.exception("Could not dispatch supporting document assessment %s", assessment_id)
         return False

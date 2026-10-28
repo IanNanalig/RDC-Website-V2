@@ -170,7 +170,7 @@ const AdminDashboard: React.FC = () => {
           <div className="portal-card-header">
             <h2 className="text-lg font-semibold">Administration Workflows</h2>
           </div>
-          <div className="portal-card-body grid grid-cols-1 xl:grid-cols-3 gap-3">
+          <div className="portal-card-body grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
             <Link to="/admin/users" className="portal-card p-4 hover:shadow-md transition-shadow">
               <p className="font-semibold">User & Access Control</p>
               <p className="text-sm text-slate-500 mt-1">Approve requests, create users, set roles, manage deadlines.</p>
@@ -182,6 +182,22 @@ const AdminDashboard: React.FC = () => {
             <Link to="/admin/validator-diffs" className="portal-card p-4 hover:shadow-md transition-shadow">
               <p className="font-semibold">Validator Tracker</p>
               <p className="text-sm text-slate-500 mt-1">Review edited fields, reviewed copies, and validator decisions.</p>
+            </Link>
+            <Link to="/admin/exports" className="portal-card p-4 hover:shadow-md transition-shadow">
+              <p className="font-semibold">Data Exports</p>
+              <p className="text-sm text-slate-500 mt-1">Download filtered project and user reports as CSV or PDF.</p>
+            </Link>
+            <Link to="/admin/project-concerns" className="portal-card p-4 hover:shadow-md transition-shadow">
+              <p className="font-semibold">Project Concern Reports</p>
+              <p className="text-sm text-slate-500 mt-1">Review delivery status, retry failed notifications, and securely download evidence.</p>
+            </Link>
+            <Link to="/admin/projects/update-forms" className="portal-card p-4 hover:shadow-md transition-shadow">
+              <p className="font-semibold">Update Older Forms</p>
+              <p className="text-sm text-slate-500 mt-1">Preview and safely prepare projects for the latest contributor form.</p>
+            </Link>
+            <Link to="/admin/project-update-period" className="portal-card p-4 hover:shadow-md transition-shadow">
+              <p className="font-semibold">Project Update Period</p>
+              <p className="text-sm text-slate-500 mt-1">Open, schedule, or close contributor access to validated project updates.</p>
             </Link>
           </div>
         </div>

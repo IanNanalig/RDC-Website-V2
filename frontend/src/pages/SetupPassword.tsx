@@ -5,53 +5,31 @@ import { passwordRules, validatePassword } from "../utils/passwordPolicy";
 import { contactNumberError, formatContactNumber, sanitizeContactNumber } from "../utils/contactNumbers";
 import { personNameError } from "../utils/personName";
 
-const ACCOUNT_AGENCIES = [
-  { code: "DPWH", name: "Department of Public Works and Highways" },
-  { code: "DENR", name: "Department of Environment and Natural Resources" },
-  { code: "RDC-NCR", name: "Regional Development Council National Capital Region" },
-  { code: "DILG", name: "Department of the Interior and Local Government" },
-  { code: "DEPDev", name: "Department of Economy, Planning, and Development" },
-  { code: "DBM", name: "Department of Budget and Management" },
-  { code: "DA", name: "Department of Agriculture" },
-  { code: "DAR", name: "Department of Agrarian Reform" },
-  { code: "DepEd", name: "Department of Education" },
-  { code: "DOH", name: "Department of Health" },
-  { code: "DHSUD", name: "Department of Human Settlements and Urban Development" },
-  { code: "DICT", name: "Department of Information and Communications Technology" },
-  { code: "DOLE", name: "Department of Labor and Employment" },
-  { code: "DOST", name: "Department of Science and Technology" },
-  { code: "DSWD", name: "Department of Social Welfare and Development" },
-  { code: "DOT", name: "Department of Tourism" },
-  { code: "DTI", name: "Department of Trade and Industry" },
-  { code: "DOTr", name: "Department of Transportation" },
-  { code: "TESDA", name: "Technical Education and Skills Development Authority" },
-  { code: "CHED", name: "Commission on Higher Education" },
-  { code: "PSA", name: "Philippine Statistics Authority" },
-] as const;
+type AgencyOption = { code: string; name: string };
 
-const normalizeAgency = (value: string) => {
+const normalizeAgency = (value: string, agencies: AgencyOption[]) => {
   const normalized = value.trim().replace(/\s+/g, " ").toLowerCase();
-  return ACCOUNT_AGENCIES.find(
+  return agencies.find(
     (agency) =>
       agency.code.toLowerCase() === normalized ||
       agency.name.toLowerCase() === normalized,
   )?.code;
 };
 
-const hasAgencySearchMatch = (value: string) => {
+const hasAgencySearchMatch = (value: string, agencies: AgencyOption[]) => {
   const normalized = value.trim().replace(/\s+/g, " ").toLowerCase();
   if (!normalized) return true;
-  return ACCOUNT_AGENCIES.some(
+  return agencies.some(
     (agency) =>
       agency.code.toLowerCase().includes(normalized) ||
       agency.name.toLowerCase().includes(normalized),
   );
 };
 
-const searchAgencies = (value: string) => {
+const searchAgencies = (value: string, agencies: AgencyOption[]) => {
   const normalized = value.trim().replace(/\s+/g, " ").toLowerCase();
-  if (!normalized) return ACCOUNT_AGENCIES;
-  return ACCOUNT_AGENCIES.filter(
+  if (!normalized) return agencies;
+  return agencies.filter(
     (agency) =>
       agency.code.toLowerCase().includes(normalized) ||
       agency.name.toLowerCase().includes(normalized),
@@ -65,13 +43,13 @@ const SetupPassword: React.FC = () => {
 
   const [email, setEmail] = useState("");
   const [agencyLocked, setAgencyLocked] = useState(false);
+  const [agencies, setAgencies] = useState<AgencyOption[]>([]);
   const [setupType, setSetupType] = useState("existing_account");
   const [profile, setProfile] = useState({
     first_name: "",
     last_name: "",
     agency: "",
     agency_head: "",
-    office: "",
     division: "",
     position: "",
     contact_number: "02",
@@ -116,6 +94,9 @@ const SetupPassword: React.FC = () => {
         setEmail(String(data?.email || ""));
         setSetupType(String(data?.setup_type || "existing_account"));
         setAgencyLocked(data?.agency_locked === true);
+        if (Array.isArray(data?.agencies) && data.agencies.length) {
+          setAgencies(data.agencies.map((agency: AgencyOption) => ({ code: String(agency.code || ""), name: String(agency.name || "") })).filter((agency: AgencyOption) => agency.code && agency.name));
+        }
         if (data?.profile) {
           setProfile((prev) => ({
             ...prev,
@@ -137,12 +118,12 @@ const SetupPassword: React.FC = () => {
     [password, confirm],
   );
   const agencyOptions = useMemo(
-    () => searchAgencies(agencySearchDirty ? profile.agency : ""),
-    [agencySearchDirty, profile.agency],
+    () => searchAgencies(agencySearchDirty ? profile.agency : "", agencies),
+    [agencySearchDirty, profile.agency, agencies],
   );
   const agencyUnavailable =
-    !hasAgencySearchMatch(profile.agency) ||
-    (agencyTouched && !normalizeAgency(profile.agency));
+    !hasAgencySearchMatch(profile.agency, agencies) ||
+    (agencyTouched && !normalizeAgency(profile.agency, agencies));
 
   React.useEffect(() => {
     if (!agencyOpen) return;
@@ -213,7 +194,7 @@ const SetupPassword: React.FC = () => {
   };
 
   const openAgencyList = () => {
-    setAgencySearchDirty(!normalizeAgency(profile.agency) && Boolean(profile.agency.trim()));
+    setAgencySearchDirty(!normalizeAgency(profile.agency, agencies) && Boolean(profile.agency.trim()));
     setAgencyActiveIndex(0);
     setAgencyOpen(true);
   };
@@ -221,9 +202,8 @@ const SetupPassword: React.FC = () => {
   const profileRequired = [
     { key: "first_name", label: "First Name" },
     { key: "last_name", label: "Last Name" },
-    { key: "agency", label: "Agency" },
+    { key: "agency", label: "Agency / Office" },
     { key: "agency_head", label: "Current Head of Agency/Local Chief Executive" },
-    { key: "office", label: "Office" },
     { key: "division", label: "Division" },
     { key: "position", label: "Position" },
     { key: "contact_number", label: "Office Contact No." },
@@ -257,7 +237,7 @@ const SetupPassword: React.FC = () => {
       setError(`Please complete: ${missing.map((m) => m.label).join(", ")}.`);
       return;
     }
-    const agency = agencyLocked ? profile.agency : normalizeAgency(profile.agency);
+    const agency = agencyLocked ? profile.agency : normalizeAgency(profile.agency, agencies);
     if (!agencyLocked && !agency) {
       setAgencyTouched(true);
       setError("This is an invalid Agency");
@@ -287,6 +267,7 @@ const SetupPassword: React.FC = () => {
           first_name: profile.first_name.trim(),
           last_name: profile.last_name.trim(),
           agency,
+          office: agency,
         }),
       });
       const data = await res.json();
@@ -343,9 +324,10 @@ const SetupPassword: React.FC = () => {
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
             <h2 className="text-sm font-semibold text-slate-700 mb-3">Profile Information</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <label className="block">
-                <span className="text-sm text-slate-700">First Name</span>
+              <div className="block">
+                <label htmlFor="registration-first-name" className="text-sm text-slate-700">First Name</label>
                 <input
+                  id="registration-first-name"
                   name="first_name"
                   type="text"
                   value={profile.first_name}
@@ -354,15 +336,17 @@ const SetupPassword: React.FC = () => {
                   maxLength={150}
                   placeholder="Enter first name"
                   aria-invalid={nameFieldsTouched.first_name && Boolean(personNameError(profile.first_name, "first_name"))}
-                  aria-describedby="registration-first-name-error"
+                  aria-describedby={nameFieldsTouched.first_name && personNameError(profile.first_name, "first_name") ? "registration-first-name-example registration-first-name-error" : "registration-first-name-example"}
                   className="mt-1 w-full border rounded-lg px-3 py-2"
                   required
                 />
+                <span id="registration-first-name-example" className="mt-1 block text-xs text-slate-500">Ex. Juan</span>
                 {nameFieldsTouched.first_name && personNameError(profile.first_name, "first_name") && <span id="registration-first-name-error" role="alert" className="mt-1 block text-xs text-rose-600">{personNameError(profile.first_name, "first_name")}</span>}
-              </label>
-              <label className="block">
-                <span className="text-sm text-slate-700">Last Name</span>
+              </div>
+              <div className="block">
+                <label htmlFor="registration-last-name" className="text-sm text-slate-700">Last Name</label>
                 <input
+                  id="registration-last-name"
                   name="last_name"
                   type="text"
                   value={profile.last_name}
@@ -371,15 +355,16 @@ const SetupPassword: React.FC = () => {
                   maxLength={150}
                   placeholder="Enter last name"
                   aria-invalid={nameFieldsTouched.last_name && Boolean(personNameError(profile.last_name, "last_name"))}
-                  aria-describedby="registration-last-name-error"
+                  aria-describedby={nameFieldsTouched.last_name && personNameError(profile.last_name, "last_name") ? "registration-last-name-example registration-last-name-error" : "registration-last-name-example"}
                   className="mt-1 w-full border rounded-lg px-3 py-2"
                   required
                 />
+                <span id="registration-last-name-example" className="mt-1 block text-xs text-slate-500">Ex. Dela Cruz</span>
                 {nameFieldsTouched.last_name && personNameError(profile.last_name, "last_name") && <span id="registration-last-name-error" role="alert" className="mt-1 block text-xs text-rose-600">{personNameError(profile.last_name, "last_name")}</span>}
-              </label>
+              </div>
               {agencyLocked ? (
                 <div className="block min-w-0">
-                  <label htmlFor="registration-agency" className="text-sm text-slate-700">Agency</label>
+                  <label htmlFor="registration-agency" className="text-sm text-slate-700">Agency / Office</label>
                   <input
                     id="registration-agency"
                     name="agency"
@@ -392,13 +377,13 @@ const SetupPassword: React.FC = () => {
                   />
                   <p id="registration-agency-help" className="mt-1 text-xs text-slate-500">
                     {profile.agency
-                      ? "This agency is saved on your account and cannot be changed here."
-                      : "No agency is saved on your account. Contact an administrator to update it."}
+                      ? "This agency and office are saved on your account and cannot be changed here."
+                      : "No agency or office is saved on your account. Contact an administrator to update it."}
                   </p>
                 </div>
               ) : (
               <div className="block min-w-0" ref={agencyPickerRef}>
-                <label htmlFor="registration-agency" className="text-sm text-slate-700">Agency</label>
+                <label htmlFor="registration-agency" className="text-sm text-slate-700">Agency / Office</label>
                 <div className="relative mt-1">
                   <input
                     ref={agencyInputRef}
@@ -492,46 +477,44 @@ const SetupPassword: React.FC = () => {
                 </p>
               </div>
               )}
-              <label className="block md:col-span-2">
-                <span className="text-sm text-slate-700">Current Head of Agency/Local Chief Executive</span>
+              <div className="block md:col-span-2">
+                <label htmlFor="registration-agency-head" className="text-sm text-slate-700">Current Head of Agency/Local Chief Executive</label>
                 <input
+                  id="registration-agency-head"
                   type="text"
                   value={profile.agency_head}
                   onChange={(e) => setProfile((p) => ({ ...p, agency_head: e.target.value }))}
                   className="mt-1 w-full border rounded-lg px-3 py-2"
                   required
                 />
-              </label>
-              <label className="block">
-                <span className="text-sm text-slate-700">Office</span>
+                <span className="mt-1 block text-xs text-slate-500">Ex. Mayor Vico Sotto</span>
+              </div>
+              <div className="block">
+                <label htmlFor="registration-division" className="text-sm text-slate-700">Division</label>
                 <input
-                  type="text"
-                  value={profile.office}
-                  onChange={(e) => setProfile((p) => ({ ...p, office: e.target.value }))}
-                  className="mt-1 w-full border rounded-lg px-3 py-2"
-                  required
-                />
-              </label>
-              <label className="block">
-                <span className="text-sm text-slate-700">Division</span>
-                <input
+                  id="registration-division"
                   type="text"
                   value={profile.division}
                   onChange={(e) => setProfile((p) => ({ ...p, division: e.target.value }))}
+                  aria-required="true"
                   className="mt-1 w-full border rounded-lg px-3 py-2"
                   required
                 />
-              </label>
-              <label className="block">
-                <span className="text-sm text-slate-700">Position</span>
+                <span className="mt-1 block text-xs text-slate-500">Ex. Planning Office</span>
+              </div>
+              <div className="block">
+                <label htmlFor="registration-position" className="text-sm text-slate-700">Position</label>
                 <input
+                  id="registration-position"
                   type="text"
                   value={profile.position}
                   onChange={(e) => setProfile((p) => ({ ...p, position: e.target.value }))}
+                  aria-required="true"
                   className="mt-1 w-full border rounded-lg px-3 py-2"
                   required
                 />
-              </label>
+                <span className="mt-1 block text-xs text-slate-500">Ex. Validator</span>
+              </div>
               <label className="block">
                 <span className="text-sm text-slate-700">Office Contact No.</span>
                 <input

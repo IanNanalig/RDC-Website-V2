@@ -5,6 +5,16 @@ from ai_engine.document_assessment import GroqUnavailable, assess_project_docume
 from .document_assessments import ensure_queued_assessment
 from .document_processing import DocumentProcessingError, extract_document_text
 from .models import ProjectDocumentAssessment, ProjectSupportingDocument, UserActivity
+from .concern_delivery import deliver_project_concern
+
+
+@shared_task(bind=True, autoretry_for=(), max_retries=3)
+def retry_project_concern_delivery(self, report_id):
+    result = deliver_project_concern(report_id)
+    if result.get("status") == "pending_retry" and self.request.retries < self.max_retries:
+        delays = [60, 300, 900]
+        raise self.retry(countdown=delays[min(self.request.retries, len(delays) - 1)])
+    return result
 
 
 @shared_task(bind=True, autoretry_for=(), max_retries=0)

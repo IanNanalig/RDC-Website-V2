@@ -306,6 +306,10 @@ class CMSContributorFormVersion(models.Model):
     form = models.ForeignKey(CMSContributorForm, on_delete=models.PROTECT, related_name="versions")
     version_number = models.PositiveIntegerField()
     schema_json = models.JSONField(default=dict)
+    based_on_version = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="derived_versions",
+    )
+    migration_plan_json = models.JSONField(default=dict, blank=True)
     published_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="published_cms_contributor_form_versions",

@@ -95,6 +95,19 @@ const ProjectDetails: React.FC = () => {
             project.
           </p>
         </div>
+
+        <div className="mt-7 rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <h3 className="font-semibold text-slate-900">Concern about this project?</h3>
+          <p className="mt-1 text-sm text-slate-600">
+            Members of the public may submit a concern anonymously or provide an email for follow-up.
+          </p>
+          <Link
+            to={`/report-project?project=${project.id}`}
+            className="mt-3 inline-flex rounded-lg bg-green-700 px-4 py-2.5 font-semibold text-white hover:bg-green-800"
+          >
+            Report a Project Concern
+          </Link>
+        </div>
       </div>
     </div>
   );

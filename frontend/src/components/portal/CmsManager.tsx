@@ -399,6 +399,7 @@ const friendlySettingNames: Record<string, string> = {
   "media-upload-allowed-types": "Allowed Upload Types",
   "media-upload-max-bytes": "Upload Size Limits",
   "media-categories": "Media Editorial Categories",
+  "project-concern-categories": "Project Concern Categories",
 };
 
 const sectionContentSummary = (section: CMSSection) => {
@@ -3367,6 +3368,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
             { title: "Branding and Contact", detail: "Public logo, footer wording, office address, and contact information.", keys: ["site-logo", "footer-text", "contact-details", "office-address"] },
             { title: "Navigation and Messages", detail: "Public links and the homepage announcement.", keys: ["social-links", "quick-links", "homepage-announcement-banner"] },
             { title: "Media Upload Rules", detail: "File types, size limits, and editorial categories for CMS media.", keys: ["media-upload-allowed-types", "media-upload-max-bytes", "media-categories"] },
+            { title: "Public Project Reporting", detail: "Concern categories displayed on the public project reporting form.", keys: ["project-concern-categories"] },
           ].map((group) => {
             const rows = group.keys.map((key) => settingsRows.find((row) => row.key === key)).filter((row): row is CMSSiteSetting => Boolean(row));
             if (!rows.length) return null;
@@ -3709,6 +3711,51 @@ const SiteSettingFields = ({
         <div className="flex flex-col gap-2 sm:flex-row">
           <input aria-label="New media category" className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm" value={newCategory} disabled={disabled} onChange={(event) => setNewCategory(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addCategory(); } }} placeholder="New category name" />
           <button type="button" className="portal-btn portal-btn-ghost" disabled={disabled || !newCategory.trim()} onClick={addCategory}>Add Category</button>
+        </div>
+      </div>
+    );
+  } else if (row.key === "project-concern-categories") {
+    const categories = Array.isArray(objectValue.categories)
+      ? objectValue.categories.map((item) => parseRecord(item)).filter((item) => stringValue(item.code) && stringValue(item.label))
+      : [];
+    const updateConcernCategories = (next: Record<string, unknown>[]) => onChange({ ...objectValue, categories: next });
+    const addConcernCategory = () => {
+      const label = newCategory.trim();
+      if (!label) return;
+      const base = label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 70) || "category";
+      let code = base;
+      let suffix = 2;
+      while (categories.some((item) => stringValue(item.code) === code)) {
+        code = `${base}_${suffix}`;
+        suffix += 1;
+      }
+      updateConcernCategories([...categories, { code, label, active: true }]);
+      setNewCategory("");
+    };
+    fields = (
+      <div className="space-y-3">
+        <p className="text-sm text-slate-600">Codes are permanent identifiers after use. Deactivate a historical category instead of deleting it.</p>
+        {categories.map((category, index) => (
+          <div key={stringValue(category.code)} className="grid min-w-0 gap-3 rounded-lg border border-slate-200 p-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-end">
+            <Field
+              label={`Category (${stringValue(category.code)})`}
+              value={stringValue(category.label)}
+              onChange={(next) => updateConcernCategories(categories.map((item, itemIndex) => itemIndex === index ? { ...item, label: next } : item))}
+            />
+            <label className="flex min-h-11 items-center gap-2 text-sm font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={category.active !== false}
+                onChange={(event) => updateConcernCategories(categories.map((item, itemIndex) => itemIndex === index ? { ...item, active: event.target.checked } : item))}
+              />
+              Active
+            </label>
+            <button type="button" className="min-h-11 text-sm font-semibold text-rose-700" onClick={() => updateConcernCategories(categories.filter((_, itemIndex) => itemIndex !== index))}>Remove</button>
+          </div>
+        ))}
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input aria-label="New project concern category" className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm" value={newCategory} disabled={disabled} onChange={(event) => setNewCategory(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addConcernCategory(); } }} placeholder="New concern category" />
+          <button type="button" className="portal-btn portal-btn-ghost" disabled={disabled || !newCategory.trim()} onClick={addConcernCategory}>Add Category</button>
         </div>
       </div>
     );

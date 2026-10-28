@@ -332,7 +332,10 @@ class CMSContributorFormVersionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = CMSContributorFormVersion
-        fields = ["id", "form", "version_number", "schema_json", "published_by_name", "published_at"]
+        fields = [
+            "id", "form", "version_number", "schema_json", "based_on_version",
+            "migration_plan_json", "published_by_name", "published_at",
+        ]
         read_only_fields = fields
 
     def get_published_by_name(self, obj):
@@ -350,7 +353,7 @@ class CMSContributorFormVersionSummarySerializer(serializers.ModelSerializer):
         model = CMSContributorFormVersion
         fields = [
             "id", "form", "version_number", "published_by_name", "published_at",
-            "schema_summary", "field_origins",
+            "schema_summary", "field_origins", "based_on_version", "migration_plan_json",
         ]
         read_only_fields = fields
 
@@ -566,7 +569,52 @@ class CMSSiteSettingSerializer(serializers.ModelSerializer):
         attrs = super().validate(attrs)
         instance = self.instance
         key = instance.key if instance else attrs.get("key")
-        if key != "media-categories" or "value_json" not in attrs:
+        if "value_json" not in attrs:
+            return attrs
+        if key == "project-concern-categories":
+            from projects.concern_categories import CODE_PATTERN
+            from projects.models import ProjectConcernReport
+
+            value = attrs["value_json"]
+            raw_categories = value.get("categories") if isinstance(value, dict) else None
+            if not isinstance(raw_categories, list) or not raw_categories:
+                raise serializers.ValidationError({"value_json": "Add at least one project concern category."})
+            categories = []
+            seen = set()
+            for item in raw_categories:
+                if not isinstance(item, dict):
+                    raise serializers.ValidationError({"value_json": "Every concern category must include a code and label."})
+                code = str(item.get("code") or "").strip().lower()
+                label = " ".join(str(item.get("label") or "").split())
+                if not CODE_PATTERN.fullmatch(code):
+                    raise serializers.ValidationError({"value_json": "Category codes may contain lowercase letters, numbers, and underscores."})
+                if code in seen:
+                    raise serializers.ValidationError({"value_json": f"Category code {code} is duplicated."})
+                if not label or len(label) > 200:
+                    raise serializers.ValidationError({"value_json": "Category labels must contain 1 to 200 characters."})
+                seen.add(code)
+                categories.append({"code": code, "label": label, "active": bool(item.get("active", True))})
+            if not any(item["active"] for item in categories):
+                raise serializers.ValidationError({"value_json": "Keep at least one concern category active."})
+            if instance:
+                old = instance.value_json if isinstance(instance.value_json, dict) else {}
+                old_codes = {
+                    str(item.get("code") or "").strip().lower()
+                    for item in old.get("categories", [])
+                    if isinstance(item, dict)
+                }
+                removed_used = set(
+                    ProjectConcernReport.objects.filter(category_code__in=old_codes - seen)
+                    .values_list("category_code", flat=True)
+                    .distinct()
+                )
+                if removed_used:
+                    raise serializers.ValidationError(
+                        {"value_json": "Used concern category codes cannot be removed; deactivate them instead."}
+                    )
+            attrs["value_json"] = {**value, "categories": categories}
+            return attrs
+        if key != "media-categories":
             return attrs
         value = attrs["value_json"]
         if not isinstance(value, dict) or not isinstance(value.get("categories", []), list):

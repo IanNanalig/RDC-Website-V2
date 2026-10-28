@@ -1,6 +1,24 @@
+import uuid
+
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils import timezone
+
+
+class Agency(models.Model):
+    code = models.CharField(max_length=50, unique=True)
+    name = models.CharField(max_length=255)
+    is_active = models.BooleanField(default=True, db_index=True)
+    is_legacy = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["code"]
+        verbose_name_plural = "agencies"
+
+    def __str__(self):
+        return f"{self.code} - {self.name}"
 
 
 class User(AbstractUser):
@@ -36,6 +54,48 @@ class User(AbstractUser):
 
     def __str__(self):
         return f"{self.username} ({self.role})"
+
+
+class UserInvitation(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_SENT = "sent"
+    STATUS_COMPLETED = "completed"
+    STATUS_REVOKED = "revoked"
+    STATUS_DELIVERY_FAILED = "delivery_failed"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending delivery"),
+        (STATUS_SENT, "Sent"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_REVOKED, "Revoked"),
+        (STATUS_DELIVERY_FAILED, "Delivery failed"),
+    ]
+
+    email = models.EmailField(db_index=True)
+    role = models.CharField(max_length=20, choices=User.ROLE_CHOICES)
+    agency = models.CharField(max_length=200, blank=True, default="")
+    agency_locked = models.BooleanField(default=False)
+    token_digest = models.CharField(max_length=64, unique=True)
+    status = models.CharField(max_length=24, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    invited_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="issued_invitations"
+    )
+    batch_key = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    expires_at = models.DateTimeField()
+    sent_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["email", "status"], name="projects_us_email_56010e_idx")]
+
+    @property
+    def is_pending(self):
+        return self.status == self.STATUS_SENT and self.expires_at >= timezone.now()
+
+    def __str__(self):
+        return f"{self.email} ({self.role}) - {self.status}"
 
 
 class ProfileEditRequest(models.Model):
@@ -84,6 +144,19 @@ class Project(models.Model):
 
     # Added by existing migration 0003.
     agency = models.CharField(max_length=200, null=True, blank=True)
+    primary_agency = models.ForeignKey(
+        Agency,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="primary_projects",
+    )
+    collaborating_agencies = models.ManyToManyField(
+        Agency,
+        through="ProjectCollaboratingAgency",
+        related_name="collaborating_projects",
+        blank=True,
+    )
     budget = models.BigIntegerField(default=0)
     completion = models.IntegerField(default=0)
     profile_data = models.JSONField(null=True, blank=True)
@@ -109,6 +182,39 @@ class Project(models.Model):
         return self.name
 
 
+class ProjectCollaboratingAgency(models.Model):
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="collaborating_agency_links",
+    )
+    agency = models.ForeignKey(
+        Agency,
+        on_delete=models.PROTECT,
+        related_name="project_collaboration_links",
+    )
+    added_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="project_collaborations_added",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["agency__code"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "agency"],
+                name="unique_project_collaborating_agency",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.project_id}: {self.agency.code}"
+
+
 class ProjectRevision(models.Model):
     REVISION_TYPE_CHOICES = [
         ("initial_submission", "Initial Submission"),
@@ -131,6 +237,7 @@ class ProjectRevision(models.Model):
     profile_data_snapshot = models.JSONField(default=dict, blank=True)
     public_summary_snapshot = models.JSONField(default=dict, blank=True)
     changed_fields = models.JSONField(default=list, blank=True)
+    form_migration = models.JSONField(default=dict, blank=True)
     public_note = models.TextField(blank=True)
     is_public_current = models.BooleanField(default=False)
     created_by = models.ForeignKey(
@@ -584,6 +691,168 @@ class PasswordResetRequest(models.Model):
 
     def __str__(self):
         return f"{self.email} - {self.status}"
+
+
+class PasswordResetChallenge(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_VERIFIED = "verified"
+    STATUS_USED = "used"
+    STATUS_SUPERSEDED = "superseded"
+    STATUS_LOCKED = "locked"
+    STATUS_EXPIRED = "expired"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_VERIFIED, "Verified"),
+        (STATUS_USED, "Used"),
+        (STATUS_SUPERSEDED, "Superseded"),
+        (STATUS_LOCKED, "Locked"),
+        (STATUS_EXPIRED, "Expired"),
+    ]
+    DELIVERY_PENDING = "pending"
+    DELIVERY_SENT = "sent"
+    DELIVERY_FAILED = "failed"
+    DELIVERY_NOT_APPLICABLE = "not_applicable"
+    DELIVERY_CHOICES = [
+        (DELIVERY_PENDING, "Pending"),
+        (DELIVERY_SENT, "Sent"),
+        (DELIVERY_FAILED, "Failed"),
+        (DELIVERY_NOT_APPLICABLE, "Not applicable"),
+    ]
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="password_reset_challenges",
+    )
+    email_fingerprint = models.CharField(max_length=64, db_index=True)
+    otp_digest = models.CharField(max_length=255, blank=True)
+    reset_token_digest = models.CharField(max_length=64, blank=True, db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    delivery_status = models.CharField(
+        max_length=20,
+        choices=DELIVERY_CHOICES,
+        default=DELIVERY_PENDING,
+    )
+    failed_attempts = models.PositiveSmallIntegerField(default=0)
+    expires_at = models.DateTimeField()
+    resend_available_at = models.DateTimeField()
+    verified_at = models.DateTimeField(null=True, blank=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+    superseded_at = models.DateTimeField(null=True, blank=True)
+    requested_ip = models.CharField(max_length=64, blank=True)
+    requested_user_agent = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["email_fingerprint", "-created_at"], name="pwdreset_email_created_idx"),
+            models.Index(fields=["requested_ip", "-created_at"], name="pwdreset_ip_created_idx"),
+        ]
+
+    def __str__(self):
+        return f"Password reset challenge {self.pk}: {self.status}"
+
+
+class ProjectConcernReport(models.Model):
+    MODE_ANONYMOUS = "anonymous"
+    MODE_EMAIL = "email"
+    MODE_CHOICES = [
+        (MODE_ANONYMOUS, "Anonymous"),
+        (MODE_EMAIL, "Email-enabled"),
+    ]
+
+    DELIVERY_PENDING = "pending"
+    DELIVERY_SENDING = "sending"
+    DELIVERY_SENT = "sent"
+    DELIVERY_FAILED = "failed"
+    DELIVERY_NOT_APPLICABLE = "not_applicable"
+    DELIVERY_CHOICES = [
+        (DELIVERY_PENDING, "Pending"),
+        (DELIVERY_SENDING, "Sending"),
+        (DELIVERY_SENT, "Sent"),
+        (DELIVERY_FAILED, "Failed"),
+        (DELIVERY_NOT_APPLICABLE, "Not applicable"),
+    ]
+
+    reference_code = models.CharField(max_length=40, unique=True, db_index=True)
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="public_concern_reports",
+    )
+    project_id_snapshot = models.PositiveIntegerField()
+    project_title_snapshot = models.CharField(max_length=200)
+    project_agency_snapshot = models.CharField(max_length=255, blank=True, default="")
+    reporting_mode = models.CharField(max_length=16, choices=MODE_CHOICES)
+    reporter_email = models.EmailField(null=True, blank=True)
+    category_code = models.SlugField(max_length=80)
+    category_label_snapshot = models.CharField(max_length=200)
+    description = models.TextField()
+    client_submission_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    abuse_fingerprint = models.CharField(max_length=64, db_index=True)
+    receiver_delivery_status = models.CharField(
+        max_length=20,
+        choices=DELIVERY_CHOICES,
+        default=DELIVERY_PENDING,
+        db_index=True,
+    )
+    acknowledgement_delivery_status = models.CharField(
+        max_length=20,
+        choices=DELIVERY_CHOICES,
+        default=DELIVERY_NOT_APPLICABLE,
+        db_index=True,
+    )
+    receiver_delivery_attempts = models.PositiveSmallIntegerField(default=0)
+    acknowledgement_delivery_attempts = models.PositiveSmallIntegerField(default=0)
+    receiver_sent_at = models.DateTimeField(null=True, blank=True)
+    acknowledgement_sent_at = models.DateTimeField(null=True, blank=True)
+    receiver_last_error = models.CharField(max_length=300, blank=True, default="")
+    acknowledgement_last_error = models.CharField(max_length=300, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["project", "-created_at"], name="concern_project_created_idx"),
+            models.Index(fields=["abuse_fingerprint", "-created_at"], name="concern_abuse_created_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.reference_code}: {self.project_title_snapshot}"
+
+
+class ProjectConcernEvidence(models.Model):
+    report = models.ForeignKey(
+        ProjectConcernReport,
+        on_delete=models.CASCADE,
+        related_name="evidence_files",
+    )
+    original_filename = models.CharField(max_length=255)
+    storage_name = models.CharField(max_length=100, unique=True)
+    content_type = models.CharField(max_length=120)
+    extension = models.CharField(max_length=12)
+    size_bytes = models.PositiveIntegerField()
+    checksum_sha256 = models.CharField(max_length=64)
+    content = models.BinaryField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["report", "checksum_sha256"],
+                name="unique_concern_evidence_hash",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.report.reference_code}: {self.original_filename}"
 
 
 class PublicEvent(models.Model):

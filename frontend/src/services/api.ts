@@ -49,11 +49,12 @@ function isPublicRequest(path: string, method: string) {
     path === "analytics/" ||
     (path === "contact/" && m === "POST") ||
     path.startsWith("public/projects/") ||
+    path.startsWith("public/project-concerns/") ||
     path.startsWith("public/events/") ||
     path.startsWith("public/cms/") ||
     path === "token/refresh/" ||
     (path === "access-requests/" && m === "POST") ||
-    (path === "password-reset-requests/" && m === "POST") ||
+    (path.startsWith("auth/password-reset/") && m === "POST") ||
     (path === "auth/login/" && m === "POST")
   );
 }
@@ -304,6 +305,48 @@ async function request(path: string, options: RequestInit = {}, hasRetried = fal
   return res.text();
 }
 
+async function download(path: string, hasRetried = false): Promise<{ blob: Blob; fileName: string }> {
+  const normalizedPath = normalizePath(path);
+  const requestGeneration = authGeneration;
+  const headers: Record<string, string> = {};
+  if (Date.now() - lastUserActivityAt < 120_000) {
+    headers["X-Portal-User-Activity"] = "1";
+  }
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE_URL}/${normalizedPath}`, {
+    method: "GET",
+    cache: "no-store",
+    headers,
+  });
+  if (res.status === 401 && !hasRetried) {
+    const unauthorizedMessage = await errorMessageFromResponse(res);
+    const refreshedAccess = await refreshAccessToken();
+    if (intentionalLogout || requestGeneration !== authGeneration) {
+      throw new Error(unauthorizedMessage);
+    }
+    if (refreshedAccess) return download(normalizedPath, true);
+    const message = lastAuthFailureMessage || unauthorizedMessage || DEFAULT_SESSION_EXPIRED_MESSAGE;
+    lastAuthFailureMessage = "";
+    clearAuthStorage(message);
+    redirectToLoginIfNeeded();
+    throw new Error(message);
+  }
+  if (!res.ok) throw new Error(await requestErrorMessageFromResponse(res));
+
+  const disposition = res.headers.get("content-disposition") || "";
+  const utfName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  const plainName = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+  let fileName = "download";
+  try {
+    fileName = decodeURIComponent(utfName || plainName || fileName);
+  } catch {
+    fileName = plainName || fileName;
+  }
+  return { blob: await res.blob(), fileName };
+}
+
 function get(path: string, force = false) {
   const key = `${normalizePath(path)}|${getToken() || "public"}`;
   const existing = getRequestsInFlight.get(key);
@@ -318,6 +361,7 @@ function get(path: string, force = false) {
 
 export const api = {
   get,
+  download,
   post: (path: string, body?: unknown) =>
     request(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
   postForm: (path: string, body: FormData) =>

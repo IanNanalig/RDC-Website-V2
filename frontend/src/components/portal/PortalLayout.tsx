@@ -59,6 +59,10 @@ const navByRole: Record<Role, NavItem[]> = {
   admin: [
     { label: "Dashboard", to: "/admin/dashboard" },
     { label: "Projects", to: "/admin/projects" },
+    { label: "Update Older Forms", to: "/admin/projects/update-forms" },
+    { label: "Project Update Period", to: "/admin/project-update-period" },
+    { label: "Data Exports", to: "/admin/exports" },
+    { label: "Project Concern Reports", to: "/admin/project-concerns" },
     { label: "Validator Tracker", to: "/admin/validator-diffs" },
     { label: "Content Management", to: "/admin/content" },
     { label: "Contributor Forms", to: "/admin/forms" },
@@ -70,7 +74,6 @@ const navByRole: Record<Role, NavItem[]> = {
     { label: "Dashboard", to: "/validator/dashboard" },
     { label: "Review Queue", to: "/validator/projects" },
     { label: "Reviewed & Endorsed", to: "/validator/projects/history" },
-    { label: "Update Older Forms", to: "/validator/projects/update-forms" },
   ],
   employee: [
     { label: "Dashboard", to: "/employee/dashboard" },
@@ -127,6 +130,11 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
   const location = useLocation();
   const navigate = useNavigate();
   const navItems = useMemo(() => navByRole[role], [role]);
+  const activeNavPath = useMemo(() => (
+    navItems
+      .filter((item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`))
+      .sort((left, right) => right.to.length - left.to.length)[0]?.to || ""
+  ), [location.pathname, navItems]);
   const encodingWindow = useEncodingWindow(role === "employee");
   const workspaceLabel = useMemo(() => {
     try {
@@ -311,11 +319,7 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
             <p className="portal-side-label">Navigation</p>
             <nav className="space-y-1">
               {navItems.map((item) => {
-                const active =
-                  location.pathname === item.to ||
-                  (item.to === "/validator/projects" &&
-                    /^\/validator\/projects\/\d+\/review(?:\/simplified)?\/?$/.test(location.pathname)) ||
-                  (item.to !== "/validator/projects" && location.pathname.startsWith(`${item.to}/`));
+                const active = item.to === activeNavPath;
                 const encodingDisabled =
                   role === "employee" && item.to === "/employee/projects/new" && !encodingWindow.can_encode;
                 return (

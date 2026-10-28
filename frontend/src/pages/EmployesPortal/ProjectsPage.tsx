@@ -14,6 +14,11 @@ type ApiProject = {
   title?: string;
   name?: string;
   agency?: string;
+  primary_agency?: { code?: string; name?: string } | null;
+  collaborating_agencies?: Array<{ code?: string; name?: string }>;
+  access_level?: "primary" | "collaborator" | "administrative" | "reviewer" | "";
+  can_edit?: boolean;
+  read_only_reason?: string;
   budget?: number;
   completion?: number;
   status?: string;
@@ -69,6 +74,14 @@ type ProjectRevisionRow = {
   form_version?: number | null;
   current_form_version?: number | null;
   uses_outdated_form?: boolean;
+};
+type BatchArchivePreviewRow = {
+  id: number;
+  title: string;
+  agency: string;
+  workflow_status: string;
+  eligible: boolean;
+  reason: string;
 };
 
 const projectListCache = new Map<string, ApiProject[]>();
@@ -171,6 +184,11 @@ const ProjectsPage: React.FC = () => {
   const [archiveTarget, setArchiveTarget] = useState<ApiProject | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveError, setArchiveError] = useState("");
+  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<number>>(new Set());
+  const [batchArchivePreview, setBatchArchivePreview] = useState<BatchArchivePreviewRow[] | null>(null);
+  const [batchArchiveToken, setBatchArchiveToken] = useState("");
+  const [batchArchiveBusy, setBatchArchiveBusy] = useState<"preview" | "archive" | "">("");
+  const [batchArchiveNotice, setBatchArchiveNotice] = useState("");
   useEffect(() => {
     if (!archiveTarget) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -328,7 +346,7 @@ const ProjectsPage: React.FC = () => {
 
     const q = query.trim().toLowerCase();
     if (!q) return list;
-    return list.filter((p) => `${p.title || p.name || ""} ${p.agency || ""}`.toLowerCase().includes(q));
+    return list.filter((p) => `${p.title || p.name || ""} ${p.agency || ""} ${(p.collaborating_agencies || []).map((agency) => `${agency.code || ""} ${agency.name || ""}`).join(" ")}`.toLowerCase().includes(q));
   }, [projects, selectedWorkflow, query]);
   const sortOptions = useMemo(() => [
     { key: "title", label: "Title" },
@@ -370,6 +388,19 @@ const ProjectsPage: React.FC = () => {
   const pageStart = sortedProjects.length ? (currentPage - 1) * PAGE_SIZE + 1 : 0;
   const pageEnd = Math.min(currentPage * PAGE_SIZE, sortedProjects.length);
   const visibleProjects = sortedProjects.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  // Revision rows still represent the same underlying project and can be
+  // archived through the project-level archive endpoint. Keep every row
+  // selectable, while de-duplicating IDs for the batch payload and counts.
+  const selectableProjects = useMemo(
+    () => Array.from(new Map(sortedProjects.map((project) => [project.id, project])).values()),
+    [sortedProjects],
+  );
+  const selectableVisibleProjects = useMemo(
+    () => Array.from(new Map(visibleProjects.map((project) => [project.id, project])).values()),
+    [visibleProjects],
+  );
+  const allPageSelected = selectableVisibleProjects.length > 0 && selectableVisibleProjects.every((project) => selectedProjectIds.has(project.id));
+  const allMatchingSelected = selectableProjects.length > 0 && selectableProjects.every((project) => selectedProjectIds.has(project.id));
 
   useEffect(() => {
     setPage((current) => Math.min(current, pageCount));
@@ -411,6 +442,57 @@ const ProjectsPage: React.FC = () => {
     localStorage.setItem("projects_last_update", Date.now().toString());
   };
 
+  const toggleProjectSelection = (id: number) => setSelectedProjectIds((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const togglePageSelection = () => setSelectedProjectIds((current) => {
+    const next = new Set(current);
+    selectableVisibleProjects.forEach((project) => allPageSelected ? next.delete(project.id) : next.add(project.id));
+    return next;
+  });
+
+  const selectAllMatching = () => setSelectedProjectIds((current) => {
+    const next = new Set(current);
+    selectableProjects.forEach((project) => allMatchingSelected ? next.delete(project.id) : next.add(project.id));
+    return next;
+  });
+
+  const previewBatchArchive = async () => {
+    if (!selectedProjectIds.size) return;
+    setBatchArchiveBusy("preview");
+    setArchiveError("");
+    setBatchArchiveNotice("");
+    try {
+      const data = await api.post("admin/projects/batch-archive-preview/", { project_ids: [...selectedProjectIds] });
+      setBatchArchivePreview(Array.isArray(data?.rows) ? data.rows : []);
+      setBatchArchiveToken(String(data?.preview_token || ""));
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error.message : "Could not preview the archive selection.");
+    } finally {
+      setBatchArchiveBusy("");
+    }
+  };
+
+  const confirmBatchArchive = async () => {
+    if (!batchArchiveToken || batchArchiveBusy) return;
+    setBatchArchiveBusy("archive");
+    try {
+      const data = await api.post("admin/projects/batch-archive/", { preview_token: batchArchiveToken });
+      setBatchArchiveNotice(`${Number(data?.archived || 0)} project(s) archived, ${Number(data?.skipped || 0)} skipped, and ${Number(data?.failed || 0)} failed.`);
+      setBatchArchivePreview(null);
+      setBatchArchiveToken("");
+      setSelectedProjectIds(new Set());
+      await loadProjects(false, true);
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error.message : "Could not archive the selected projects.");
+    } finally {
+      setBatchArchiveBusy("");
+    }
+  };
+
   const formStatus = (p: ApiProject) => {
     const pd = p.profile_data as Record<string, any> | undefined;
     const sf = pd?.simplified_form as Record<string, any> | undefined;
@@ -419,18 +501,24 @@ const ProjectsPage: React.FC = () => {
 
   const canStartProgressUpdate = (p: ApiProject) =>
     role === "employee" &&
+    p.access_level !== "collaborator" &&
+    p.can_edit !== false &&
     !p.is_revision &&
     Boolean(p.validated) &&
     formStatus(p).toLowerCase() !== "completed";
 
   const canEditProject = (p: ApiProject) =>
     role === "employee" &&
+    p.access_level !== "collaborator" &&
+    p.can_edit !== false &&
     !p.is_revision &&
     (p.status === "planning" || p.workflow_status === "needs_revision") &&
     (canEncode || p.workflow_status === "needs_revision");
 
   const canSubmitProject = (p: ApiProject) =>
     role === "employee" &&
+    p.access_level !== "collaborator" &&
+    p.can_edit !== false &&
     !p.is_revision &&
     canEncode &&
     p.status === "planning";
@@ -546,6 +634,21 @@ const ProjectsPage: React.FC = () => {
           {refreshError}
         </p>
       )}
+      {batchArchiveNotice && role === "admin" && !archivedView && (
+        <p className="mb-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{batchArchiveNotice}</p>
+      )}
+      {role === "admin" && !archivedView && (
+        <div className="portal-card mb-3">
+          <div className="portal-card-body flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <label className="flex items-center gap-2"><input type="checkbox" checked={allPageSelected} onChange={togglePageSelection} /> Select current page</label>
+              <button type="button" onClick={selectAllMatching} className="font-medium text-blue-700 hover:underline">{allMatchingSelected ? "Clear all matching" : `Select all ${selectableProjects.length} matching projects`}</button>
+              <span className="text-slate-600">{selectedProjectIds.size} selected</span>
+            </div>
+            <button type="button" disabled={!selectedProjectIds.size || Boolean(batchArchiveBusy)} onClick={previewBatchArchive} className="portal-btn portal-btn-ghost disabled:cursor-not-allowed disabled:opacity-50">{batchArchiveBusy === "preview" ? "Checking..." : "Archive Selected"}</button>
+          </div>
+        </div>
+      )}
 
       <div className="portal-card">
         {loading ? (
@@ -595,6 +698,7 @@ const ProjectsPage: React.FC = () => {
           <table className={`portal-table ${role === "validator" ? "hidden lg:table" : ""}`}>
             <thead>
               <tr>
+                {role === "admin" && !archivedView && <th><span className="sr-only">Select</span></th>}
                 <SortableTableHeader label="Title" sortKey="title" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
                 {(role === "admin" || role === "validator" || role === "employee") && (
                   <SortableTableHeader label="Contributor" sortKey="contributor" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="min-w-[160px]" />
@@ -611,8 +715,21 @@ const ProjectsPage: React.FC = () => {
             <tbody>
               {visibleProjects.map((p) => (
                 <tr key={p.is_revision ? `revision-${p.revision_id}` : `project-${p.id}`}>
+                  {role === "admin" && !archivedView && (
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${p.title || p.name || "project"}`}
+                        checked={selectedProjectIds.has(p.id)}
+                        onChange={() => toggleProjectSelection(p.id)}
+                      />
+                    </td>
+                  )}
                   <td className="max-w-[240px]" title={p.title || p.name || "Untitled"}>
                     <div className="truncate">{p.title || p.name || "Untitled"}</div>
+                    {p.access_level === "collaborator" && (
+                      <div className="mt-1 text-xs font-semibold text-cyan-700" title={p.read_only_reason || "Read-only collaborating agency access"}>Collaborating agency · Read only</div>
+                    )}
                     {p.uses_outdated_form && (
                       <div
                         className="mt-1 text-xs font-semibold text-amber-700"
@@ -745,6 +862,17 @@ const ProjectsPage: React.FC = () => {
           </div>
         );
       })()}
+      {batchArchivePreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !batchArchiveBusy) setBatchArchivePreview(null); }}>
+          <div role="alertdialog" aria-modal="true" aria-labelledby="batch-archive-title" className="max-h-[85vh] w-full max-w-3xl overflow-auto rounded-2xl bg-white p-6 shadow-2xl">
+            <h2 id="batch-archive-title" className="text-lg font-semibold text-slate-900">Archive selected projects?</h2>
+            <p className="mt-2 text-sm text-slate-600">{batchArchivePreview.filter((row) => row.eligible).length} project(s) are eligible. Ineligible projects will be skipped and remain active.</p>
+            <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200"><table className="portal-table min-w-[640px]"><thead><tr><th>Project</th><th>Agency</th><th>Result</th></tr></thead><tbody>{batchArchivePreview.map((row) => <tr key={row.id}><td>{row.title}</td><td>{row.agency || "—"}</td><td><span className={`rounded-full px-2 py-1 text-xs font-semibold ${row.eligible ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{row.eligible ? "Will archive" : "Will skip"}</span>{row.reason && <p className="mt-1 text-xs text-slate-600">{row.reason}</p>}</td></tr>)}</tbody></table></div>
+            {archiveError && <p role="alert" className="mt-3 text-sm text-rose-700">{archiveError}</p>}
+            <div className="mt-6 flex justify-end gap-2"><button type="button" disabled={Boolean(batchArchiveBusy)} onClick={() => setBatchArchivePreview(null)} className="portal-btn portal-btn-ghost">Cancel</button><button type="button" disabled={Boolean(batchArchiveBusy) || !batchArchivePreview.some((row) => row.eligible)} onClick={confirmBatchArchive} className="portal-btn portal-btn-primary disabled:opacity-50">{batchArchiveBusy === "archive" ? "Archiving..." : "Confirm Batch Archive"}</button></div>
+          </div>
+        </div>
+      )}
     </PortalLayout>
   );
 };

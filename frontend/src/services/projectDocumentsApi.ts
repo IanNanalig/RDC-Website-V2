@@ -25,7 +25,7 @@ export type SupportingDocument = {
 
 export type DocumentAssessment = {
   id?: number;
-  status: "not_required" | "missing" | "pending" | "processing" | "pass" | "fail" | "unavailable";
+  status: "not_required" | "missing" | "pending" | "queued" | "processing" | "pass" | "fail" | "unavailable";
   required?: boolean;
   collective_sufficient?: boolean;
   summary?: string;

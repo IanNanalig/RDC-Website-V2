@@ -46,6 +46,12 @@ async function newRegistration(viewport, prefilledAgency = "", agencyLocked = fa
       body: JSON.stringify({
         email: "registration@example.com", setup_type: setupType,
         agency_locked: agencyLocked, profile: { agency: prefilledAgency },
+        agencies: [
+          { code: "DENR", name: "Department of Environment and Natural Resources" },
+          { code: "DOH", name: "Department of Health" },
+          { code: "DPWH", name: "Department of Public Works and Highways" },
+          { code: "RDC-NCR", name: "Regional Development Council National Capital Region" },
+        ],
       }),
     });
   });
@@ -55,6 +61,13 @@ async function newRegistration(viewport, prefilledAgency = "", agencyLocked = fa
   assert.equal(await page.getByLabel("Full Name").count(), 0, "The old Full Name field is removed");
   assert.equal(await page.getByLabel("First Name").count(), 1);
   assert.equal(await page.getByLabel("Last Name").count(), 1);
+  assert.match(await page.getByLabel("First Name", { exact: true }).locator("..").innerText(), /Ex\. Juan/, "First name shows its example");
+  assert.match(await page.getByLabel("Last Name", { exact: true }).locator("..").innerText(), /Ex\. Dela Cruz/, "Last name shows its example");
+  assert.equal(await page.getByLabel("Agency / Office", { exact: true }).count(), 1);
+  assert.equal(await page.getByLabel("Office", { exact: true }).count(), 0, "Agency and Office use one registration field");
+  assert.match(await page.getByLabel("Current Head of Agency/Local Chief Executive", { exact: true }).locator("..").innerText(), /Ex\. Mayor Vico Sotto/, "Agency head shows its example");
+  assert.match(await page.getByLabel("Division", { exact: true }).locator("..").innerText(), /Ex\. Planning Office/, "Division shows its example");
+  assert.match(await page.getByLabel("Position", { exact: true }).locator("..").innerText(), /Ex\. Validator/, "Position shows its example");
   const firstBox = await page.getByLabel("First Name").boundingBox();
   const lastBox = await page.getByLabel("Last Name").boundingBox();
   assert.ok(firstBox && lastBox);
@@ -66,7 +79,6 @@ async function fillOtherFields(page) {
   await page.locator('input[name="first_name"]').fill("Test");
   await page.locator('input[name="last_name"]').fill("User");
   await page.getByLabel("Current Head of Agency/Local Chief Executive", { exact: true }).fill("Agency Head");
-  await page.getByLabel("Office", { exact: true }).fill("Main Office");
   await page.getByLabel("Division", { exact: true }).fill("Planning");
   await page.getByLabel("Position", { exact: true }).fill("Officer");
   await page.getByPlaceholder("02 xxxx xxxx").fill("0212345678");
@@ -129,6 +141,7 @@ try {
     await page.getByRole("button", { name: "Set Password" }).click();
     assert.equal(posts.length, 1, "Exact full name can submit");
     assert.equal(posts[0].agency, "DOH", "Request sends canonical agency code");
+    assert.equal(posts[0].office, "DOH", "The canonical agency is also saved as the office");
     assert.equal(posts[0].first_name, "Test");
     assert.equal(posts[0].last_name, "User");
     assert.equal("full_name" in posts[0], false);
@@ -152,6 +165,7 @@ try {
   await page.getByRole("button", { name: "Set Password" }).click();
   assert.equal(posts.length, 1, "Exact typed acronym can submit");
   assert.equal(posts[0].agency, "DPWH", "Typed acronym is normalized");
+  assert.equal(posts[0].office, "DPWH", "Agency and office cannot diverge");
   assert.equal(posts[0].first_name, "Test");
   assert.equal(posts[0].last_name, "User");
   await context.close();
