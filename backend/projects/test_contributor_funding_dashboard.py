@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from django.test import SimpleTestCase
 from rest_framework.test import APITestCase
 
-from .models import Project, User, UserActivity
+from .models import Agency, Project, User, UserActivity
 from .views import _manila_funding_year, _validate_contributor_simplified_write
 
 
@@ -16,7 +16,8 @@ class ContributorFundingRuleTests(SimpleTestCase):
             self.assertEqual(_manila_funding_year(), 2027)
 
     def test_past_years_stay_editable_after_manila_year_rollover(self):
-        user = User(role="staff", agency="DENR")
+        agency = Agency(id=1, code="DENR", name="Department of Environment and Natural Resources")
+        user = User(role="staff", agency="DENR", agency_record=agency)
         existing = {
             "simplified_form": {
                 "agencyName": "DENR",
@@ -29,7 +30,7 @@ class ContributorFundingRuleTests(SimpleTestCase):
                 "actualFundingByYear": {"2025": "11", "2026": "20", "2027": "30"},
             }
         }
-        project = Project(agency="DENR")
+        project = Project(agency="DENR", primary_agency=agency)
         with patch("projects.views._manila_funding_year", return_value=2026):
             self.assertIsNone(_validate_contributor_simplified_write(
                 user, incoming, project=project, existing_profile=existing, incoming_agency="DENR"
