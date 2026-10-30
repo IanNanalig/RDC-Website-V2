@@ -4,7 +4,7 @@ The CMS may edit content for these records, but it must never create, remove,
 rename, hide, or reorder the structural records themselves.
 """
 
-FIXED_CMS_PAGE_REGISTRY = {
+PUBLIC_CMS_PAGE_REGISTRY = {
     "home": {
         "title": "Home",
         "sections": (
@@ -63,13 +63,45 @@ FIXED_CMS_PAGE_REGISTRY = {
     },
 }
 
+# News landing-page copy and Projects Dashboard copy remain publicly served for
+# backward compatibility, but their content is no longer editable as a CMS page.
+EDITABLE_CMS_PAGE_SLUGS = (
+    "home",
+    "regional-profile",
+    "publications",
+    "about-rdc",
+    "contact",
+)
+EDITABLE_CMS_PAGE_REGISTRY = {
+    slug: PUBLIC_CMS_PAGE_REGISTRY[slug]
+    for slug in EDITABLE_CMS_PAGE_SLUGS
+}
+
+# Kept as a compatibility alias for seed/audit/public rendering code that needs
+# the complete application-owned public structure.
+FIXED_CMS_PAGE_REGISTRY = PUBLIC_CMS_PAGE_REGISTRY
+
 
 def fixed_page_definition(slug):
-    return FIXED_CMS_PAGE_REGISTRY.get(str(slug or "").strip())
+    return PUBLIC_CMS_PAGE_REGISTRY.get(str(slug or "").strip())
+
+
+def editable_page_definition(slug):
+    return EDITABLE_CMS_PAGE_REGISTRY.get(str(slug or "").strip())
 
 
 def fixed_section_definition(page_slug, section_key):
     page = fixed_page_definition(page_slug)
+    if not page:
+        return None
+    for order, (key, section_type) in enumerate(page["sections"], start=1):
+        if key == section_key:
+            return {"key": key, "type": section_type, "order": order}
+    return None
+
+
+def editable_section_definition(page_slug, section_key):
+    page = editable_page_definition(page_slug)
     if not page:
         return None
     for order, (key, section_type) in enumerate(page["sections"], start=1):

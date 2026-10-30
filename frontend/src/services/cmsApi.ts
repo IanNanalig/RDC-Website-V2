@@ -104,6 +104,16 @@ export type CMSSiteSetting = {
   updated_at: string;
 };
 
+export type CMSManagedCollectionItem = {
+  id: number;
+  status: CMSStatus;
+  stable_key?: string;
+  code?: string;
+  title?: string;
+  name?: string;
+  published_at?: string | null;
+};
+
 export type CMSContributorForm = {
   id: number;
   key: string;
@@ -509,6 +519,20 @@ export const cmsApi = {
   uploadMedia: (formData: FormData) => api.postForm("admin/cms/media/", formData),
   archiveMedia: (id: number) => api.post(`admin/cms/media/${id}/archive/`),
   restoreMedia: (id: number) => api.post(`admin/cms/media/${id}/restore/`),
+
+  listManagedCollection: async (
+    kind: "carousel-items" | "publication-categories" | "publication-documents" | "resolutions",
+    search: string,
+  ) => listFromResponse<CMSManagedCollectionItem>(await api.get(`admin/cms/${kind}/?q=${encodeURIComponent(search)}&page_size=100`)),
+  archiveManagedCollection: (
+    kind: "carousel-items" | "publication-categories" | "publication-documents" | "resolutions",
+    id: number,
+    payload: Record<string, unknown> = {},
+  ) => api.post(`admin/cms/${kind}/${id}/archive/`, payload),
+  getPublicationCategoryDependencies: (id: number) => api.get(`admin/cms/publication-categories/${id}/dependencies/`) as Promise<{
+    documents: Array<{ status: CMSStatus; count: number }>;
+    featured_slots: string[];
+  }>,
 
   listSettings: async () => listFromResponse<CMSSiteSetting>(await api.get("admin/cms/settings/")),
   updateSetting: (key: string, payload: Pick<CMSSiteSetting, "value_json" | "description">) =>

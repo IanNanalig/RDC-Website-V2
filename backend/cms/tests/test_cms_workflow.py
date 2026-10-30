@@ -137,7 +137,6 @@ class CMSWorkflowTests(APITestCase):
         cases = (
             ("contact", "contact-hero"),
             ("regional-profile", "regional-overview"),
-            ("news", "news-listing"),
         )
 
         for page_slug, section_key in cases:
@@ -217,10 +216,10 @@ class CMSWorkflowTests(APITestCase):
 
     def test_summary_lists_are_paginated_searchable_and_keep_details_complete(self):
         self.authenticate()
-        target = CMSPage.objects.get(slug="projects-dashboard")
-        target.published_snapshot_json = {"slug": "projects-dashboard", "body": "x" * 5000}
+        target = CMSPage.objects.get(slug="contact")
+        target.published_snapshot_json = {"slug": "contact", "body": "x" * 5000}
         target.save(update_fields=["published_snapshot_json", "updated_at"])
-        large_section = target.sections.get(section_key="projects-hero")
+        large_section = target.sections.get(section_key="contact-hero")
         large_section.content_json = {**large_section.content_json, "items": [{"body": "y" * 5000}]}
         large_section.save(update_fields=["content_json", "updated_at"])
         for index in range(4):
@@ -228,14 +227,14 @@ class CMSWorkflowTests(APITestCase):
 
         with CaptureQueriesContext(connection) as captured:
             response = self.client.get(
-                "/api/admin/cms/pages/?view=summary&page_size=2&q=Projects%20Dashboard"
+                "/api/admin/cms/pages/?view=summary&page_size=2&q=Contact"
             )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["page"], 1)
-        self.assertEqual(response.data["results"][0]["section_count"], 3)
-        self.assertEqual(response.data["results"][0]["published_slug"], "projects-dashboard")
+        self.assertEqual(response.data["results"][0]["section_count"], 4)
+        self.assertEqual(response.data["results"][0]["published_slug"], "contact")
         self.assertNotIn("published_snapshot_json", response.data["results"][0])
         self.assertNotIn("sections", response.data["results"][0])
         self.assertLessEqual(len(captured), 8)
@@ -244,13 +243,13 @@ class CMSWorkflowTests(APITestCase):
         detail = self.client.get(f"/api/admin/cms/pages/{target.pk}/")
         self.assertEqual(detail.status_code, status.HTTP_200_OK)
         self.assertIn("published_snapshot_json", detail.data)
-        detail_section = next(row for row in detail.data["sections"] if row["section_key"] == "projects-hero")
+        detail_section = next(row for row in detail.data["sections"] if row["section_key"] == "contact-hero")
         self.assertEqual(detail_section["content_json"]["items"][0]["body"], "y" * 5000)
 
         editor_detail = self.client.get(f"/api/admin/cms/pages/{target.pk}/?view=editor")
         self.assertEqual(editor_detail.status_code, status.HTTP_200_OK)
         self.assertNotIn("published_snapshot_json", editor_detail.data)
-        editor_section = next(row for row in editor_detail.data["sections"] if row["section_key"] == "projects-hero")
+        editor_section = next(row for row in editor_detail.data["sections"] if row["section_key"] == "contact-hero")
         self.assertEqual(editor_section["content_json"]["items"][0]["body"], "y" * 5000)
         self.assertLess(
             len(json.dumps(editor_detail.data, default=str)),

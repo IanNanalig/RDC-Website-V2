@@ -164,10 +164,8 @@ async function requestErrorMessageFromResponse(res: Response) {
         return data.detail.trim();
       }
       if (typeof data === "object" && data !== null) {
-        const firstError = Object.values(data).flat().find(Boolean);
-        if (firstError) {
-          return String(firstError);
-        }
+        const messages = flattenApiValidationErrors(data);
+        if (messages.length) return messages.slice(0, 8).join(" ");
       }
     } catch {
       // Fall through to the generic status message.
@@ -179,6 +177,23 @@ async function requestErrorMessageFromResponse(res: Response) {
     return `${res.status} ${res.statusText || "Server error"}`.trim();
   }
   return text || res.statusText || "Request failed";
+}
+
+function flattenApiValidationErrors(value: unknown, path = ""): string[] {
+  if (typeof value === "string" && value.trim()) {
+    return [path && path !== "detail" ? `${path}: ${value.trim()}` : value.trim()];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) =>
+      flattenApiValidationErrors(item, path ? `${path}[${index + 1}]` : ""),
+    );
+  }
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) => {
+    if (["code", "content_type"].includes(key) && typeof child === "string") return [];
+    const childPath = path ? `${path}.${key}` : key;
+    return flattenApiValidationErrors(child, childPath);
+  });
 }
 
 async function refreshAccessToken() {

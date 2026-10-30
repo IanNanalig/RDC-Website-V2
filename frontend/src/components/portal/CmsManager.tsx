@@ -347,6 +347,23 @@ const mediaFileKey = (file: File) => `${file.name}\u0000${file.size}\u0000${file
 const mediaDisplayName = (item: CMSMediaAsset) =>
   item.caption || item.alt_text || item.file?.split(/[\\/]/).pop() || `Media #${item.id}`;
 
+const mediaMatchesSearch = (item: CMSMediaAsset, search: string) => {
+  const terms = search.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return true;
+  const haystack = [
+    mediaDisplayName(item),
+    item.original_filename,
+    item.file?.split(/[\\/]/).pop(),
+    item.alt_text,
+    item.caption,
+    item.category,
+    ...(item.tags || []),
+    item.mime_type,
+    item.file_type,
+  ].filter(Boolean).join(" ").toLocaleLowerCase();
+  return terms.every((term) => haystack.includes(term));
+};
+
 const formatMediaSize = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return "";
   if (bytes >= 1024 * 1024) {
@@ -478,8 +495,6 @@ const corePublicPages = [
   { slug: "about-rdc", label: "About RDC", path: "/about", scope: "Hero, legal basis, committees, organization structure, and resolutions archive headings" },
   { slug: "regional-profile", label: "Region Profile", path: "/regional-profile", scope: "Hero, regional overview and statistics, geographic coverage, and LGU directory" },
   { slug: "publications", label: "Publications", path: "/publications", scope: "Page introduction, publication categories, documents, covers, and download links" },
-  { slug: "news", label: "News", path: "/news", scope: "News landing-page hero and listing introduction; individual articles are managed in the News tab" },
-  { slug: "projects-dashboard", label: "Projects Dashboard", path: "/projects", scope: "Dashboard headings and explanatory copy; project figures remain sourced from endorsed portal data" },
   { slug: "contact", label: "Contact", path: "/contact", scope: "Hero, office details, location text, and public contact-form labels and messages" },
 ] as const;
 
@@ -489,6 +504,14 @@ const corePageIndex = new Map<string, number>(
 const corePageDetails = new Map<string, (typeof corePublicPages)[number]>(
   corePublicPages.map((page) => [page.slug, page]),
 );
+
+const sectionsWithoutBodyEditor = new Set([
+  "region-hero",
+  "about-hero",
+  "organization-structure",
+  "resolutions-archive",
+  "contact-hero",
+]);
 
 const pagePublicPath = (slug: string) => {
   return corePageDetails.get(slug)?.path || `/${slug}`;
@@ -526,6 +549,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const [pages, setPages] = useState<CMSPage[]>([]);
   const [articles, setArticles] = useState<CMSArticle[]>([]);
   const [media, setMedia] = useState<CMSMediaAsset[]>([]);
+  const [mediaPickerLoading, setMediaPickerLoading] = useState(false);
+  const [mediaPickerError, setMediaPickerError] = useState("");
   const [archivedMedia, setArchivedMedia] = useState<CMSMediaAsset[]>([]);
   const [mediaLibrary, setMediaLibrary] = useState<{ results: CMSMediaAsset[]; count: number; total_pages: number }>({ results: [], count: 0, total_pages: 1 });
   const [mediaLibraryPage, setMediaLibraryPage] = useState(1);
@@ -538,6 +563,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const [reviewQueue, setReviewQueue] = useState<CMSReviewQueue>({ pages: [], sections: [], news: [], forms: [], events: [] });
   const [pageReviewPreview, setPageReviewPreview] = useState<CMSPage | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<number | null>(null);
+  const [openingPageId, setOpeningPageId] = useState<number | null>(null);
   const [pageForm, setPageForm] = useState<PageForm>(emptyPageForm);
   const [sectionForm, setSectionForm] = useState<SectionForm>(emptySectionForm);
   const [sectionEditorTab, setSectionEditorTab] = useState<"basics" | "content" | "advanced">("content");
@@ -576,6 +602,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const settingsLoadedRef = useRef(false);
   const settingsLoadPromiseRef = useRef<Promise<CMSSiteSetting[]> | null>(null);
   const tabLoadRequestRef = useRef(0);
+  const pageOpenRequestRef = useRef(0);
   const searchTimerRef = useRef<number | null>(null);
 
   const isAdmin = mode === "admin";
@@ -608,6 +635,20 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     };
     window.addEventListener("beforeunload", warnBeforeUnload);
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [hasUnsavedChanges]);
+  useEffect(() => {
+    if (!hasUnsavedChanges) return undefined;
+    const protectPortalNavigation = (event: MouseEvent) => {
+      const target = event.target as Element | null;
+      const link = target?.closest("a[href]") as HTMLAnchorElement | null;
+      if (!link || link.target === "_blank" || link.origin !== window.location.origin) return;
+      if (!window.confirm("Leave Content Management? Your unsaved CMS changes will be lost.")) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    document.addEventListener("click", protectPortalNavigation, true);
+    return () => document.removeEventListener("click", protectPortalNavigation, true);
   }, [hasUnsavedChanges]);
   const selectedPage = useMemo(
     () => pages.find((page) => page.id === selectedPageId) || null,
@@ -792,16 +833,27 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     }
     const request = cmsApi.listMedia();
     mediaLoadPromiseRef.current = request;
+    setMediaPickerLoading(true);
+    setMediaPickerError("");
     try {
       const rows = await request;
       setMedia(rows);
       setListPages((current) => ({ ...current, media: 1 }));
       setHasMoreRows((current) => ({ ...current, media: false }));
       mediaLoadedRef.current = true;
+    } catch (error) {
+      setMediaPickerError(getErrorDetail(error, "Media Library files could not be loaded."));
+      throw error;
     } finally {
       if (mediaLoadPromiseRef.current === request) mediaLoadPromiseRef.current = null;
+      setMediaPickerLoading(false);
     }
   }, []);
+  const mediaPickerStatus = {
+    loading: mediaPickerLoading,
+    error: mediaPickerError,
+    onRetry: () => { void loadMediaAssets(true).catch(() => undefined); },
+  };
 
   useEffect(() => {
     if (activeTab !== "media") return;
@@ -875,6 +927,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     }));
   }, []);
 
+  const markPageUnpublished = useCallback((pageId: number) => {
+    setPages((current) => current.map((page) => page.id === pageId
+      ? { ...page, status: "draft", has_unpublished_changes: true }
+      : page));
+  }, []);
+
   const mergeArticle = useCallback((nextArticle: CMSArticle) => {
     setArticles((current) => {
       const existing = current.some((article) => article.id === nextArticle.id);
@@ -940,6 +998,30 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     }, 300);
   };
 
+  const changeActiveTab = (tab: ResourceTab) => {
+    if (tab === activeTab) return;
+    if (hasUnsavedChanges && !window.confirm("Discard unsaved CMS changes and switch workspaces?")) return;
+    const sectionId = sectionForm.id;
+    if (sectionId && !sectionReadOnly) {
+      void cmsApi.unlockSection(sectionId).catch(() => undefined);
+    }
+    setPageForm(emptyPageForm);
+    setPageFormBaseline(JSON.stringify(emptyPageForm));
+    const nextSectionForm = { ...emptySectionForm, page: selectedPageId || "" };
+    setSectionForm(nextSectionForm);
+    setSectionFormBaseline(JSON.stringify(nextSectionForm));
+    setSectionReadOnly(false);
+    setArticleForm(emptyArticleForm);
+    setArticleFormBaseline(JSON.stringify(emptyArticleForm));
+    setMediaFiles([]);
+    setSettingDrafts(Object.fromEntries(settingsRows.map((row) => [row.id, row.value_json])));
+    setSettingSourceDrafts(Object.fromEntries(settingsRows.map((row) => [row.id, JSON.stringify(row.value_json, null, 2)])));
+    if (searchText) loadedTabsRef.current.delete(activeTab);
+    if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
+    setSearchText("");
+    setActiveTab(tab);
+  };
+
   useEffect(() => () => {
     if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
   }, []);
@@ -987,25 +1069,40 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
 
   const editPage = async (page: CMSPage) => {
     if (pageFormHasChanges && pageForm.id !== page.id && !window.confirm("Discard the unsaved page changes and open another page?")) return;
-    if (sectionFormHasChanges && sectionForm.page !== page.id) {
-      setNotice("Save or discard the open section changes before switching to another page.");
+    const changingPage = Number(sectionForm.page) !== page.id;
+    if (changingPage && sectionFormHasChanges && !window.confirm("Discard the unsaved section changes and open another page?")) {
       return;
     }
-    setLoading(true);
+    const requestId = ++pageOpenRequestRef.current;
+    setOpeningPageId(page.id);
+    setNotice("");
     let fullPage = page;
     try {
-      if (!Array.isArray(page.sections)) fullPage = await loadPageDetail(page.id);
+      if (!Array.isArray(page.sections)) fullPage = await cmsApi.getPage(page.id);
+      if (pageOpenRequestRef.current !== requestId) return;
     } catch (error) {
+      if (pageOpenRequestRef.current !== requestId) return;
       setNotice(getErrorDetail(error, "Failed to open the page draft."));
       return;
     } finally {
-      setLoading(false);
+      if (pageOpenRequestRef.current === requestId) setOpeningPageId(null);
     }
+    const previousSectionId = changingPage ? sectionForm.id : undefined;
+    const previousSectionWasWritable = changingPage && !sectionReadOnly;
+    mergePage(fullPage);
     const nextForm = { id: fullPage.id, title: fullPage.title, slug: fullPage.slug };
     setPageForm(nextForm);
     setPageFormBaseline(JSON.stringify(nextForm));
     setSelectedPageId(fullPage.id);
-    setSectionForm((prev) => ({ ...prev, page: fullPage.id }));
+    if (changingPage) {
+      const nextSectionForm = { ...emptySectionForm, page: fullPage.id };
+      setSectionForm(nextSectionForm);
+      setSectionFormBaseline(JSON.stringify(nextSectionForm));
+      setSectionReadOnly(false);
+      if (previousSectionId && previousSectionWasWritable) {
+        void cmsApi.unlockSection(previousSectionId).then((unlocked) => mergeSection(unlocked as CMSSection)).catch(() => undefined);
+      }
+    }
   };
 
   const savePage = async (event: React.FormEvent) => {
@@ -1172,6 +1269,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         setNotice("Section created. Publish the page when ready.");
       }
       mergeSection(saved);
+      markPageUnpublished(Number(sectionForm.page));
       const nextForm = { ...emptySectionForm, page: Number(sectionForm.page) };
       setSectionForm(nextForm);
       setSectionFormBaseline(JSON.stringify(nextForm));
@@ -1491,6 +1589,58 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     }
   };
 
+  const removeManagedCollectionItem = async (
+    kind: "carousel-items" | "publication-categories" | "publication-documents" | "resolutions",
+    stableKey: string,
+    label: string,
+    removeFromEditor: () => void,
+  ) => {
+    if (!stableKey) {
+      removeFromEditor();
+      return;
+    }
+    setLoading(true);
+    setNotice("");
+    try {
+      const rows = await cmsApi.listManagedCollection(kind, stableKey);
+      const row = rows.find((item) => (item.stable_key || item.code) === stableKey);
+      if (!row || !row.published_at) {
+        removeFromEditor();
+        return;
+      }
+      if (!isAdmin) {
+        setNotice(`"${label}" has already been published. Ask an Administrator to archive it before removing it.`);
+        return;
+      }
+      const payload: Record<string, unknown> = {};
+      if (kind === "publication-categories") {
+        const dependencies = await cmsApi.getPublicationCategoryDependencies(row.id);
+        const documentCount = dependencies.documents
+          .filter((entry) => entry.status !== "archived")
+          .reduce((total, entry) => total + Number(entry.count || 0), 0);
+        if (documentCount > 0) {
+          const archiveDocuments = window.confirm(`"${label}" contains ${documentCount} active document${documentCount === 1 ? "" : "s"}. Archive the category and those documents together?`);
+          if (!archiveDocuments) return;
+          payload.document_resolution = "archive_documents";
+        }
+        if (dependencies.featured_slots.length > 0) {
+          const replacement = window.prompt("This category is featured on Home. Enter the stable code of a different published category to use instead:", "");
+          if (!replacement?.trim()) return;
+          payload.replacement_category = replacement.trim();
+        }
+      }
+      if (!window.confirm(`Archive "${label}"? It remains recoverable from Archived Content.`)) return;
+      await cmsApi.archiveManagedCollection(kind, row.id, payload);
+      removeFromEditor();
+      if (selectedPageId) markPageUnpublished(selectedPageId);
+      setNotice(`${label} archived. Save and publish the page draft when ready.`);
+    } catch (error) {
+      setNotice(getErrorDetail(error, `Could not archive ${label}.`));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const applySettingSource = (row: CMSSiteSetting) => {
     try {
       const parsed = JSON.parse(settingSourceDrafts[row.id] || "null") as unknown;
@@ -1529,10 +1679,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     <button
                       type="button"
                       className="text-sm text-red-600"
-                      onClick={() => {
-                        const next = slides.filter((_, slideIndex) => slideIndex !== index);
-                        setSectionContent({ ...sectionContent, slides: next });
-                      }}
+                      onClick={() => void removeManagedCollectionItem(
+                        "carousel-items",
+                        textValue(row.id || row.key),
+                        textValue(row.title) || `Slide ${index + 1}`,
+                        () => setSectionContent({ ...sectionContent, slides: slides.filter((_, slideIndex) => slideIndex !== index) }),
+                      )}
                     >
                       Remove
                     </button>
@@ -1542,6 +1694,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     <Field label="Subtitle" value={textValue(row.subtitle)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, subtitle: value }))} />
                     {developerMode && isAdmin && <Field label="Developer: Built-in Image Key" value={textValue(row.imageKey)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, imageKey: value }))} />}
                     <MediaAssetPicker
+                      {...mediaPickerStatus}
                       label="Uploaded Image"
                       assets={media.filter((item) => item.file_type === "image")}
                       value={stringValue(row.mediaAssetId || row.imageAssetId)}
@@ -1692,7 +1845,13 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     >
                       Add Resolution
                     </button>
-                    <button type="button" className="font-semibold text-red-600" onClick={() => setSectionContent({ ...sectionContent, years: years.filter((_, index) => index !== yearIndex) })}>
+                    <button type="button" className="font-semibold text-red-600" onClick={() => {
+                      if (resolutions.length) {
+                        setNotice("Remove or archive each resolution before removing its year group.");
+                        return;
+                      }
+                      setSectionContent({ ...sectionContent, years: years.filter((_, index) => index !== yearIndex) });
+                    }}>
                       Remove Year
                     </button>
                   </div>
@@ -1711,7 +1870,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                       <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(220px,0.45fr)_auto] md:items-end">
                         <Area label={`Resolution ${resolutionIndex + 1} Title`} value={textValue(resolution.title)} onChange={(value) => updateResolution({ ...resolution, title: value })} rows={3} />
                         <Field label="Document URL (optional)" value={textValue(resolution.url)} onChange={(value) => updateResolution({ ...resolution, url: value })} />
-                        <button type="button" className="pb-2 text-sm font-semibold text-red-600" onClick={() => updateYear(yearIndex, { ...year, resolutions: resolutions.filter((_, index) => index !== resolutionIndex) })}>
+                        <button type="button" className="pb-2 text-sm font-semibold text-red-600" onClick={() => void removeManagedCollectionItem(
+                          "resolutions",
+                          textValue(resolution.id),
+                          textValue(resolution.title || resolution.number) || `Resolution ${resolutionIndex + 1}`,
+                          () => updateYear(yearIndex, { ...year, resolutions: resolutions.filter((_, index) => index !== resolutionIndex) }),
+                        )}>
                           Remove
                         </button>
                       </div>
@@ -1730,7 +1894,9 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         <div className="grid min-w-0 gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-2">
           <Field label="Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
           <Field label="Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
-          <Area label="Body Content" value={textValue(sectionContent.body)} onChange={(value) => updateSectionContent("body", value)} rows={5} />
+          {!sectionsWithoutBodyEditor.has(sectionForm.section_key) && (
+            <Area label="Body Content" value={textValue(sectionContent.body)} onChange={(value) => updateSectionContent("body", value)} rows={5} />
+          )}
           {sectionForm.section_key === "resolutions-archive" && (
             <>
               <Field label="Document Legend Heading" value={textValue(sectionContent.legendTitle)} onChange={(value) => updateSectionContent("legendTitle", value)} />
@@ -1907,12 +2073,10 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               type="button"
               className="portal-btn portal-btn-ghost"
               onClick={() => {
-                const categoryId = nextUniqueId(categories, "category");
                 setSectionContent({
                   ...sectionContent,
                   categories: [
                     {
-                      id: categoryId,
                       title: "New Publication Category",
                       description: "Short public category description",
                       icon: "file",
@@ -1940,10 +2104,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   <button
                     type="button"
                     className="text-sm text-red-600"
-                    onClick={() => {
-                      const next = categories.filter((_, itemIndex) => itemIndex !== categoryIndex);
-                      setSectionContent({ ...sectionContent, categories: next });
-                    }}
+                      onClick={() => void removeManagedCollectionItem(
+                        "publication-categories",
+                        textValue(category.code || category.id),
+                        textValue(category.title || category.name) || `Category ${categoryIndex + 1}`,
+                        () => setSectionContent({ ...sectionContent, categories: categories.filter((_, itemIndex) => itemIndex !== categoryIndex) }),
+                      )}
                   >
                     Remove
                   </button>
@@ -1971,10 +2137,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     type="button"
                     className="text-sm font-semibold text-blue-600"
                     onClick={() => {
-                      const categoryId = textValue(category.id) || `category-${categoryIndex + 1}`;
                       const nextDocuments = [
                         {
-                          id: nextUniqueId(documents, `${categoryId}-document`),
                           title: "New document",
                           year: String(new Date().getFullYear()),
                           fileType: "PDF",
@@ -2010,10 +2174,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                         <button
                           type="button"
                           className="text-sm text-red-600"
-                          onClick={() => {
-                            const nextDocuments = documents.filter((_, itemIndex) => itemIndex !== documentIndex);
-                            updateCategory(categoryIndex, { ...category, documents: nextDocuments });
-                          }}
+                          onClick={() => void removeManagedCollectionItem(
+                            "publication-documents",
+                            textValue(document.id),
+                            textValue(document.title) || `Document ${documentIndex + 1}`,
+                            () => updateCategory(categoryIndex, { ...category, documents: documents.filter((_, itemIndex) => itemIndex !== documentIndex) }),
+                          )}
                         >
                           Remove
                         </button>
@@ -2047,6 +2213,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                           ]}
                         />
                         <MediaAssetPicker
+                          {...mediaPickerStatus}
                           label="PDF / Document from Media Library"
                           assets={media.filter((item) => item.file_type === "document" || item.mime_type === "application/pdf")}
                           value={stringValue(document.mediaAssetId)}
@@ -2054,6 +2221,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                           helper="Upload PDFs in Media Library first. The selected file becomes public only after the draft is approved and published."
                         />
                         <MediaAssetPicker
+                          {...mediaPickerStatus}
                           label="Cover Image from Media Library"
                           assets={media.filter((item) => item.file_type === "image")}
                           value={stringValue(document.coverAssetId)}
@@ -2193,6 +2361,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     options={iconOptions.map((icon) => ({ label: icon, value: icon }))}
                   />
                   <MediaAssetPicker
+                    {...mediaPickerStatus}
                     label="CMS Document / PDF"
                     assets={media.filter((item) => item.file_type === "document" || item.mime_type === "application/pdf")}
                     value={stringValue(row.mediaAssetId || row.documentAssetId)}
@@ -2273,6 +2442,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
             <Area label="Main Content" value={textValue(sectionContent.body || sectionContent.description)} onChange={(value) => updateSectionContent(sectionContent.description !== undefined ? "description" : "body", value)} rows={6} />
             <div className="space-y-3">
               <MediaAssetPicker
+                {...mediaPickerStatus}
                 label="Section Image"
                 assets={media.filter((item) => item.file_type === "image")}
                 value={stringValue(sectionContent.mediaAssetId || sectionContent.imageAssetId)}
@@ -2489,12 +2659,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               <button
                 key={tab}
                 type="button"
-                onClick={() => {
-                  if (tab !== activeTab && searchText) loadedTabsRef.current.delete(activeTab);
-                  if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
-                  setSearchText("");
-                  setActiveTab(tab);
-                }}
+                onClick={() => changeActiveTab(tab)}
                 className={`portal-btn ${activeTab === tab ? "portal-btn-primary" : "portal-btn-ghost"}`}
               >
                 {{
@@ -2616,7 +2781,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h3 className="font-bold text-slate-900">Fixed Public Content Modules</h3>
-                    <p className="text-xs text-slate-500">The seven routes, layouts, and section order are application-controlled. Select Manage Content to edit only the information displayed in each fixed section.</p>
+                    <p className="text-xs text-slate-500">The five editable routes, layouts, and section order are application-controlled. News articles remain in the News tab, while project data remains in Projects.</p>
                   </div>
                   <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
                     {corePublicPages.filter((definition) => pages.some((page) => page.slug === definition.slug)).length}/{corePublicPages.length} core pages
@@ -2661,7 +2826,9 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {page.status !== "archived" && (
-                            <button type="button" className="text-sm text-blue-600" onClick={() => editPage(page)}>Manage Content</button>
+                            <button type="button" disabled={openingPageId !== null} className="text-sm text-blue-600 disabled:text-slate-400" onClick={() => editPage(page)}>
+                              {openingPageId === page.id ? "Opening..." : "Manage Content"}
+                            </button>
                           )}
                           {page.published_at && <button
                             type="button"
@@ -2853,6 +3020,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   onChange={(value) => setArticleForm((prev) => ({ ...prev, category: value }))}
                 />
                 <MediaAssetPicker
+                  {...mediaPickerStatus}
                   label="Thumbnail"
                   assets={media.filter((item) => item.file_type === "image")}
                   value={String(articleForm.thumbnail || "")}
@@ -3330,7 +3498,16 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     <div data-cms-setting-key={row.key} key={row.id} className="portal-card min-w-0 overflow-hidden">
                       <div className="portal-card-header"><h4 className="font-bold text-slate-900">{friendlySettingNames[row.key] || row.key}</h4><p className="text-xs text-slate-500">{row.description}</p></div>
                       <div className="portal-card-body space-y-3">
-                        <SiteSettingFields row={row} value={settingDrafts[row.id]} onChange={(value) => setSettingValue(row.id, value)} media={[...media, ...archivedMedia]} disabled={!isAdmin} />
+                        <SiteSettingFields
+                          row={row}
+                          value={settingDrafts[row.id]}
+                          onChange={(value) => setSettingValue(row.id, value)}
+                          media={[...media, ...archivedMedia]}
+                          disabled={!isAdmin}
+                          mediaLoading={mediaPickerLoading}
+                          mediaError={mediaPickerError}
+                          onMediaRetry={() => { void loadMediaAssets(true).catch(() => undefined); }}
+                        />
                         {developerMode && isAdmin && (
                           <details className="overflow-hidden rounded-xl border border-amber-200 bg-white">
                             <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-amber-800">Developer: Setting JSON source</summary>
@@ -3447,43 +3624,186 @@ const MediaAssetPicker = ({
   value,
   onChange,
   helper,
+  loading = false,
+  error = "",
+  onRetry,
 }: {
   label: string;
   assets: CMSMediaAsset[];
   value: string;
   onChange: (value: string) => void;
   helper?: string;
+  loading?: boolean;
+  error?: string;
+  onRetry?: () => void;
 }) => {
   const selected = assets.find((asset) => String(asset.id) === value);
+  const libraryAssets = assets.filter((asset) => !asset.is_archived);
+  const [open, setOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [page, setPage] = useState(1);
+  const [pendingValue, setPendingValue] = useState(value);
   const pickerId = React.useId();
-  const visibleAssets = assets.filter((asset) => !pickerSearch.trim() || `${mediaDisplayName(asset)} ${asset.original_filename || ""} ${asset.alt_text || ""}`.toLowerCase().includes(pickerSearch.trim().toLowerCase()) || String(asset.id) === value);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const normalizedSearch = pickerSearch.trim();
+  const availableTypes = [...new Set(libraryAssets.map((asset) => asset.file_type))].sort();
+  const visibleAssets = libraryAssets.filter((asset) =>
+    (!typeFilter || asset.file_type === typeFilter) && mediaMatchesSearch(asset, normalizedSearch),
+  );
+  const pageSize = 12;
+  const totalPages = Math.max(1, Math.ceil(visibleAssets.length / pageSize));
+  const visiblePage = Math.min(page, totalPages);
+  const pagedAssets = visibleAssets.slice((visiblePage - 1) * pageSize, visiblePage * pageSize);
+  const closePicker = useCallback(() => {
+    setOpen(false);
+    window.requestAnimationFrame(() => triggerRef.current?.focus());
+  }, []);
+  const openPicker = () => {
+    setPendingValue(value);
+    setPickerSearch("");
+    setTypeFilter("");
+    setPage(1);
+    setOpen(true);
+  };
+
+  useEffect(() => {
+    if (!open) return undefined;
+    window.requestAnimationFrame(() => searchRef.current?.focus());
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closePicker();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      ));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [closePicker, open]);
+
+  useEffect(() => setPage(1), [normalizedSearch, typeFilter]);
+
   return (
-    <div className="block min-w-0">
-      <label htmlFor={pickerId} className="text-sm font-medium text-slate-700">{label}</label>
-      <input type="search" aria-label={`Search ${label}`} value={pickerSearch} onChange={(event) => setPickerSearch(event.target.value)} placeholder="Search library files" className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
-      <div className="mt-1 overflow-hidden rounded-xl border border-slate-300 bg-white">
+    <div className="block min-w-0 space-y-2">
+      <p className="text-sm font-medium text-slate-700">{label}</p>
+      <div className="overflow-hidden rounded-xl border border-slate-300 bg-white">
         {selected && (
-          <div className="flex items-center gap-3 border-b border-slate-200 bg-slate-50 p-2">
+          <div className="flex items-center gap-3 bg-slate-50 p-2">
             {selected.file_type === "image" ? (
               <img src={selected.url} alt={selected.alt_text || selected.caption || "Selected media"} width={80} height={56} loading="lazy" decoding="async" className="h-14 w-20 rounded-lg object-cover" />
             ) : (
               <div className="flex h-14 w-20 items-center justify-center rounded-lg bg-red-50 text-xs font-bold text-red-700">{mediaFileTypeLabel(selected)}</div>
             )}
             <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Current selection</p>
               <p className="truncate text-sm font-semibold text-slate-800">{mediaDisplayName(selected)}</p>
               <p className="text-xs text-slate-500">{mediaFileTypeLabel(selected)}{formatMediaSize(selected.size) ? ` · ${formatMediaSize(selected.size)}` : ""}</p>
             </div>
           </div>
         )}
-        <select id={pickerId} className="min-w-0 w-full px-3 py-2" value={value} onChange={(event) => onChange(event.target.value)}>
-          <option value="">{assets.length ? "No library file selected" : "No matching media uploaded yet"}</option>
-          {visibleAssets.map((asset) => (
-            <option key={asset.id} value={String(asset.id)}>{mediaDisplayName(asset)}{formatMediaSize(asset.size) ? ` (${formatMediaSize(asset.size)})` : ""}</option>
-          ))}
-        </select>
+        {!selected && <p className="p-3 text-sm text-slate-500">No library file selected.</p>}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button ref={triggerRef} type="button" className="portal-btn portal-btn-ghost" onClick={openPicker}>
+          Choose from Media Library
+        </button>
+        {selected && <button type="button" className="portal-btn portal-btn-ghost" onClick={() => onChange("")}>Remove</button>}
       </div>
       {helper && <span className="mt-1 block text-xs text-slate-500">{helper}</span>}
+      {open && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-3 sm:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closePicker(); }}>
+          <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={`${pickerId}-title`} className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4 sm:p-5">
+              <div>
+                <h2 id={`${pickerId}-title`} className="text-lg font-bold text-slate-900">Choose {label}</h2>
+                <p className="text-sm text-slate-500">Select one compatible file already uploaded to the Media Library.</p>
+              </div>
+              <button type="button" className="portal-btn portal-btn-ghost" onClick={closePicker} aria-label="Close media library">Close</button>
+            </div>
+            <div className="grid gap-3 border-b border-slate-200 p-4 sm:grid-cols-[minmax(0,1fr)_14rem]">
+              <input
+                ref={searchRef}
+                type="search"
+                aria-label={`Search ${label}`}
+                value={pickerSearch}
+                onChange={(event) => setPickerSearch(event.target.value)}
+                placeholder="Search filename, caption, category, tags, or type"
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+              <select aria-label="Filter media type" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                <option value="">All compatible types</option>
+                {availableTypes.map((type) => <option key={type} value={type}>{type.charAt(0).toUpperCase() + type.slice(1)}</option>)}
+              </select>
+            </div>
+            <div className="min-h-52 flex-1 overflow-y-auto p-4 sm:p-5">
+              {!loading && !error && libraryAssets.length > 0 && (
+                <p className="mb-3 text-xs text-slate-500" aria-live="polite">{visibleAssets.length} matching {visibleAssets.length === 1 ? "file" : "files"}</p>
+              )}
+              {loading ? <p role="status" className="text-sm text-slate-600">Loading Media Library...</p> : error ? (
+                <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+                  <p>{error}</p>
+                  {onRetry && <button type="button" className="mt-3 font-semibold text-rose-700" onClick={onRetry}>Retry</button>}
+                </div>
+              ) : libraryAssets.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">No compatible files are available. Upload one from the Media Library tab first.</p>
+              ) : visibleAssets.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">No library files match this search and filter.</p>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {pagedAssets.map((asset) => {
+                      const isSelected = pendingValue === String(asset.id);
+                      return (
+                        <button key={asset.id} type="button" aria-pressed={isSelected} onClick={() => setPendingValue(String(asset.id))} className={`overflow-hidden rounded-xl border text-left transition focus:outline-none focus:ring-2 focus:ring-blue-500 ${isSelected ? "border-blue-500 bg-blue-50 ring-1 ring-blue-500" : "border-slate-200 bg-white hover:border-blue-300"}`}>
+                          {asset.file_type === "image" ? (
+                            <img src={asset.url} alt={asset.alt_text || asset.caption || ""} loading="lazy" decoding="async" className="h-36 w-full bg-slate-100 object-cover" />
+                          ) : (
+                            <div className="flex h-36 items-center justify-center bg-slate-100 text-lg font-bold text-slate-600">{mediaFileTypeLabel(asset)}</div>
+                          )}
+                          <span className="block space-y-1 p-3">
+                            <span className="block truncate text-sm font-semibold text-slate-900">{mediaDisplayName(asset)}</span>
+                            <span className="block text-xs text-slate-500">{mediaFileTypeLabel(asset)}{formatMediaSize(asset.size) ? ` · ${formatMediaSize(asset.size)}` : ""}</span>
+                            {(asset.caption || asset.alt_text) && <span className="block truncate text-xs text-slate-600">{asset.caption || asset.alt_text}</span>}
+                            {(asset.category || asset.tags?.length) && <span className="block truncate text-xs text-slate-500">{[asset.category, ...(asset.tags || [])].filter(Boolean).join(" · ")}</span>}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="flex flex-col gap-3 border-t border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2 text-sm text-slate-600">
+                <button type="button" className="portal-btn portal-btn-ghost" disabled={visiblePage <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>Previous</button>
+                <span>Page {visiblePage} of {totalPages}</span>
+                <button type="button" className="portal-btn portal-btn-ghost" disabled={visiblePage >= totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>Next</button>
+              </div>
+              <div className="flex flex-wrap justify-end gap-2">
+                <button type="button" className="portal-btn portal-btn-ghost" onClick={() => setPendingValue("")}>Clear selection</button>
+                <button type="button" className="portal-btn portal-btn-ghost" onClick={closePicker}>Cancel</button>
+                <button type="button" className="portal-btn portal-btn-primary" onClick={() => { onChange(pendingValue); closePicker(); }}>Confirm Selection</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 };
@@ -3494,12 +3814,18 @@ const SiteSettingFields = ({
   onChange,
   media,
   disabled,
+  mediaLoading,
+  mediaError,
+  onMediaRetry,
 }: {
   row: CMSSiteSetting;
   value: unknown;
   onChange: (value: unknown) => void;
   media: CMSMediaAsset[];
   disabled: boolean;
+  mediaLoading: boolean;
+  mediaError: string;
+  onMediaRetry: () => void;
 }) => {
   const [newCategory, setNewCategory] = useState("");
   const objectValue = parseRecord(value);
@@ -3520,6 +3846,9 @@ const SiteSettingFields = ({
     fields = (
       <div className="space-y-3">
         <MediaAssetPicker
+          loading={mediaLoading}
+          error={mediaError}
+          onRetry={onMediaRetry}
           label="Logo Image"
           assets={imageAssets}
           value={selectedId}

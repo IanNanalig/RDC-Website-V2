@@ -54,7 +54,12 @@ from cms.serializers import (
     CMSResolutionSerializer,
     CMSSiteSettingSerializer,
 )
-from cms.registry import FIXED_CMS_PAGE_REGISTRY, fixed_page_definition, fixed_section_definition
+from cms.registry import (
+    EDITABLE_CMS_PAGE_REGISTRY,
+    FIXED_CMS_PAGE_REGISTRY,
+    editable_page_definition,
+    editable_section_definition,
+)
 from cms.services.locking import (
     acquire_form_lock,
     acquire_section_lock,
@@ -386,7 +391,7 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
             )
             if self.action == "retrieve" and self.request.query_params.get("view") == "editor":
                 queryset = queryset.defer("published_snapshot_json")
-        queryset = queryset.filter(slug__in=FIXED_CMS_PAGE_REGISTRY)
+        queryset = queryset.filter(slug__in=EDITABLE_CMS_PAGE_REGISTRY)
         status_filter = self.request.query_params.get("status")
         if self.action == "list" and not status_filter:
             queryset = queryset.filter(status="archived") if self.request.query_params.get("archived") == "1" else queryset.exclude(status="archived")
@@ -436,7 +441,7 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = CMSPageSection.objects.select_related("page", "lock_owner")
         allowed = Q(pk__in=[])
-        for slug, definition in FIXED_CMS_PAGE_REGISTRY.items():
+        for slug, definition in EDITABLE_CMS_PAGE_REGISTRY.items():
             allowed |= Q(page__slug=slug, section_key__in=[row[0] for row in definition["sections"]])
         queryset = queryset.filter(allowed)
         page_id = self.request.query_params.get("page")
@@ -454,7 +459,7 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
 
     def update(self, request, *args, **kwargs):
         section = self.get_object()
-        definition = fixed_section_definition(section.page.slug, section.section_key)
+        definition = editable_section_definition(section.page.slug, section.section_key)
         if not definition:
             return Response({"detail": "This is not an editable fixed page section."}, status=404)
         for field, current in (
@@ -626,7 +631,13 @@ class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.Mod
         return Response(self._serialize(article))
 
 
-from cms.services.collections import managed_content_snapshot
+from cms.services.collections import (
+    managed_content_snapshot,
+    mark_managed_content_pages_changed,
+    reassign_publication_documents_in_draft,
+    remove_managed_content_from_draft,
+    restore_managed_content_to_draft,
+)
 
 
 class CMSManagedContentViewSet(viewsets.ModelViewSet):
@@ -656,6 +667,7 @@ class CMSManagedContentViewSet(viewsets.ModelViewSet):
             status="draft", created_by=self.request.user, updated_by=self.request.user,
             has_unpublished_changes=True,
         )
+        mark_managed_content_pages_changed(obj, self.request.user)
         _log_cms_activity(self.request, "cms_content_created", {"content_type": self.content_type_key, "id": obj.pk})
 
     def perform_update(self, serializer):
@@ -667,6 +679,7 @@ class CMSManagedContentViewSet(viewsets.ModelViewSet):
         obj = serializer.save(
             status="draft", updated_by=self.request.user, has_unpublished_changes=True,
         )
+        mark_managed_content_pages_changed(obj, self.request.user)
         _log_cms_activity(self.request, "cms_content_updated", {"content_type": self.content_type_key, "id": obj.pk})
 
     def destroy(self, request, *args, **kwargs):
@@ -726,6 +739,7 @@ class CMSManagedContentViewSet(viewsets.ModelViewSet):
         obj.archived_at = timezone.now()
         obj.reviewed_by = request.user
         obj.save(update_fields=["status", "archived_at", "reviewed_by", "updated_at"])
+        remove_managed_content_from_draft(obj, request.user)
         _log_cms_activity(request, "cms_content_archived", {"content_type": self.content_type_key, "id": obj.pk})
         return Response(self.get_serializer(obj).data)
 
@@ -741,6 +755,7 @@ class CMSManagedContentViewSet(viewsets.ModelViewSet):
         obj.has_unpublished_changes = True
         obj.updated_by = request.user
         obj.save(update_fields=["status", "archived_at", "has_unpublished_changes", "updated_by", "updated_at"])
+        restore_managed_content_to_draft(obj, request.user)
         _log_cms_activity(request, "cms_content_restored", {"content_type": self.content_type_key, "id": obj.pk})
         return Response(self.get_serializer(obj).data)
 
@@ -794,6 +809,7 @@ class AdminCMSPublicationCategoryViewSet(CMSManagedContentViewSet):
                 ).exclude(pk=category.pk).exclude(status="archived").first()
                 if not target:
                     return Response({"detail": "Choose an active target category for the documents."}, status=409)
+                reassign_publication_documents_in_draft(category.code, target.code, request.user)
                 active_documents.update(category=target, updated_by=request.user, has_unpublished_changes=True)
             elif resolution == "archive_documents":
                 active_documents.update(status="archived", archived_at=timezone.now(), reviewed_by=request.user)
@@ -841,7 +857,7 @@ class AdminCMSResolutionViewSet(CMSManagedContentViewSet):
 
 
 def _fixed_module_page(slug):
-    definition = fixed_page_definition(slug)
+    definition = editable_page_definition(slug)
     if not definition:
         raise Http404("Content module not found.")
     page = CMSPage.objects.prefetch_related("sections").select_related(
@@ -857,7 +873,7 @@ class AdminCMSModuleListView(APIView):
 
     def get(self, request):
         pages = {
-            page.slug: page for page in CMSPage.objects.filter(slug__in=FIXED_CMS_PAGE_REGISTRY)
+            page.slug: page for page in CMSPage.objects.filter(slug__in=EDITABLE_CMS_PAGE_REGISTRY)
         }
         return Response([
             {
@@ -867,7 +883,7 @@ class AdminCMSModuleListView(APIView):
                 "updated_at": pages[slug].updated_at if slug in pages else None,
                 "section_keys": [item[0] for item in definition["sections"]],
             }
-            for slug, definition in FIXED_CMS_PAGE_REGISTRY.items()
+            for slug, definition in EDITABLE_CMS_PAGE_REGISTRY.items()
         ])
 
 
@@ -885,7 +901,7 @@ class AdminCMSModuleDetailView(APIView):
         sections_payload = request.data.get("sections")
         if not isinstance(sections_payload, dict) or not sections_payload:
             return Response({"sections": "Provide one or more fixed section content objects."}, status=400)
-        definition = fixed_page_definition(slug)
+        definition = editable_page_definition(slug)
         allowed = {item[0]: {"type": item[1], "order": index} for index, item in enumerate(definition["sections"], 1)}
         unknown = sorted(set(sections_payload) - set(allowed))
         if unknown:
@@ -1535,7 +1551,10 @@ class AdminCMSReviewQueueView(APIView):
         section_serializer = CMSPageSectionSummarySerializer if summary else CMSPageSectionSerializer
         article_serializer = CMSArticleSummarySerializer if summary else CMSArticleSerializer
 
-        pages = CMSPage.objects.filter(status="submitted")
+        pages = CMSPage.objects.filter(
+            status="submitted",
+            slug__in=EDITABLE_CMS_PAGE_REGISTRY,
+        )
         articles = CMSArticle.objects.filter(status="submitted").select_related("thumbnail")
         if summary:
             pages = pages.annotate(

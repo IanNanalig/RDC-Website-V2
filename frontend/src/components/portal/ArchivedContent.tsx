@@ -6,14 +6,15 @@ type ArchivedItem = { id: number; title?: string; name?: string; section_key?: s
 type Group = { label: string; endpoint: string; detail: (id: number) => string; restore: (id: number) => string };
 
 const groups: Group[] = [
-  { label: "Pages", endpoint: "admin/cms/pages/?view=summary&archived=1", detail: (id) => `admin/cms/pages/${id}/`, restore: (id) => `admin/cms/pages/${id}/restore/` },
-  { label: "Page Sections", endpoint: "admin/cms/sections/?archived=1", detail: (id) => `admin/cms/sections/${id}/`, restore: (id) => `admin/cms/sections/${id}/restore/` },
+  { label: "Carousel Items", endpoint: "admin/cms/carousel-items/?archived=1", detail: (id) => `admin/cms/carousel-items/${id}/`, restore: (id) => `admin/cms/carousel-items/${id}/restore/` },
+  { label: "Publication Categories", endpoint: "admin/cms/publication-categories/?archived=1", detail: (id) => `admin/cms/publication-categories/${id}/`, restore: (id) => `admin/cms/publication-categories/${id}/restore/` },
+  { label: "Publication Documents", endpoint: "admin/cms/publication-documents/?archived=1", detail: (id) => `admin/cms/publication-documents/${id}/`, restore: (id) => `admin/cms/publication-documents/${id}/restore/` },
+  { label: "Resolutions", endpoint: "admin/cms/resolutions/?archived=1", detail: (id) => `admin/cms/resolutions/${id}/`, restore: (id) => `admin/cms/resolutions/${id}/restore/` },
   { label: "News", endpoint: "admin/cms/articles/?view=summary&archived=1", detail: (id) => `admin/cms/articles/${id}/`, restore: (id) => `admin/cms/articles/${id}/restore/` },
   { label: "Events", endpoint: "admin/cms/events/?archived=1", detail: (id) => `admin/cms/events/${id}/`, restore: (id) => `admin/cms/events/${id}/unarchive/` },
   { label: "Media", endpoint: "admin/cms/media/?view=summary&archived=1", detail: (id) => `admin/cms/media/${id}/`, restore: (id) => `admin/cms/media/${id}/restore/` },
 ];
 
-const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const display = (value: unknown) => typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : "";
 const niceLabel = (value: string) => value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 
@@ -78,8 +79,6 @@ export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
     }
   };
 
-  const pageSections = Array.isArray(selected?.detail.sections) ? selected.detail.sections.map(record) : [];
-
   return <div className="space-y-4">
     <div className="portal-card"><div className="portal-card-header flex items-center justify-between gap-2"><div><h2 className="font-bold">Archived Content</h2><p className="text-sm text-slate-500">Restored items return as drafts and must be published again.</p></div><RefreshButton loading={loading} onClick={refresh} /></div></div>
     {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
@@ -96,8 +95,6 @@ export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
             {Object.entries(selected.detail).filter(([key, value]) => !["sections", "published_snapshot_json", "draft_schema_json", "current_published_schema_json", "url", "file", "id"].includes(key) && value !== null && value !== "").map(([key, value]) => <div key={key} className="grid gap-1 border-b border-slate-100 pb-2 sm:grid-cols-[12rem_minmax(0,1fr)]"><strong className="text-sm text-slate-700">{niceLabel(key)}</strong><span className="break-words text-sm text-slate-600">{display(value) || (typeof value === "object" ? JSON.stringify(value) : "—")}</span></div>)}
             {typeof selected.detail.body === "string" && <section><h3 className="font-semibold">Article content</h3><p className="mt-2 whitespace-pre-wrap rounded-lg border border-slate-200 p-3 text-sm">{selected.detail.body}</p></section>}
             {typeof selected.detail.description === "string" && selected.group.label === "Events" && <section><h3 className="font-semibold">Description</h3><p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{selected.detail.description}</p></section>}
-            {pageSections.length > 0 && <section className="space-y-3"><h3 className="font-semibold">Page sections</h3>{pageSections.map((section, index) => <details key={String(section.id || section.section_key || index)} className="rounded-lg border border-slate-200 p-3"><summary className="cursor-pointer font-semibold">{display(section.section_key) || `Section ${index + 1}`} · {display(section.section_type) || "Content"}</summary><pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded bg-slate-50 p-3 text-xs">{JSON.stringify(section.content_json || {}, null, 2)}</pre></details>)}</section>}
-            {selected.group.label === "Page Sections" && <section><h3 className="font-semibold">Section content</h3><pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 p-3 text-xs">{JSON.stringify(selected.detail.content_json || {}, null, 2)}</pre></section>}
             {selected.detail.draft_schema_json != null && <section><h3 className="font-semibold">Form schema</h3><pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 p-3 text-xs">{JSON.stringify(selected.detail.draft_schema_json, null, 2)}</pre></section>}
             {selected.detail.published_snapshot_json != null && <details className="rounded-lg border border-slate-200 p-3"><summary className="cursor-pointer font-semibold">Last published snapshot</summary><pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 p-3 text-xs">{JSON.stringify(selected.detail.published_snapshot_json, null, 2)}</pre></details>}
           </div>}
