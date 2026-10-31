@@ -148,7 +148,7 @@ const mapCmsDocItems = (
 
 const formatArticleDate = (value: string) => {
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value || "Recently published";
+  if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleDateString("en-US", {
     month: "long",
     day: "numeric",
@@ -159,10 +159,10 @@ const formatArticleDate = (value: string) => {
 const mapHomeArticle = (article: CMSArticleSnapshot): HomeNewsArticle => ({
   id: article.slug,
   title: article.title,
-  excerpt: article.summary || "Read the latest public update from RDC-NCR.",
+  excerpt: article.summary,
   date: formatArticleDate(article.publicationDate || article.publishedAt),
-  image: article.thumbnailUrl || optimizedHero("photo2").src,
-  category: article.category || "Updates",
+  image: article.thumbnailUrl,
+  category: article.category,
   slug: article.slug,
 });
 
@@ -414,18 +414,9 @@ const Home: React.FC = () => {
     dashboardSection?.buttonLink,
     "/Projects",
   );
-  const latestMediaTitle = asString(
-    latestMediaSection?.title,
-    "Latest Media Releases",
-  );
-  const latestMediaViewAllLabel = asString(
-    latestMediaSection?.viewAllLabel,
-    "View all ->",
-  );
-  const latestMediaViewAllLink = asString(
-    latestMediaSection?.viewAllLink,
-    "/news",
-  );
+  const latestMediaTitle = asString(latestMediaSection?.title);
+  const latestMediaViewAllLabel = asString(latestMediaSection?.viewAllLabel);
+  const latestMediaViewAllLink = asString(latestMediaSection?.viewAllLink);
   const upcomingEventsTitle = asString(
     upcomingEventsSection?.title,
     "Upcoming Events",
@@ -1287,12 +1278,14 @@ const Home: React.FC = () => {
               <div className="bg-gray-800 text-white px-5 py-3">
                 <div className="flex justify-between items-center">
                   <h2 className="text-xl font-bold">{latestMediaTitle}</h2>
-                  <Link
-                    to={latestMediaViewAllLink}
-                    className="text-xs text-blue-300 hover:text-white transition-colors"
-                  >
-                    {latestMediaViewAllLabel}
-                  </Link>
+                  {latestMediaViewAllLabel && latestMediaViewAllLink && (
+                    <Link
+                      to={latestMediaViewAllLink}
+                      className="text-xs text-blue-300 hover:text-white transition-colors"
+                    >
+                      {latestMediaViewAllLabel}
+                    </Link>
+                  )}
                 </div>
               </div>
               <div className="p-5">
@@ -1303,35 +1296,48 @@ const Home: React.FC = () => {
                       className="border border-gray-200 rounded-lg overflow-hidden hover:shadow-lg transition-shadow duration-300"
                     >
                       <div className="md:flex">
-                        <div className="md:w-2/5 relative">
-                          <img
-                            src={article.image}
-                            alt={article.title}
-                            onError={(event) => {
-                              event.currentTarget.src = optimizedHero("photo2").src;
-                            }}
-                            className="w-full h-48 md:h-full object-cover"
-                            width={768}
-                            height={512}
-                            loading="lazy"
-                            decoding="async"
-                          />
-                          <div className="absolute top-2 left-2">
-                            <span className="bg-blue-600 text-white text-xs px-2 py-1 rounded">
-                              {article.category}
-                            </span>
+                        {article.image && (
+                          <div className="relative bg-slate-100 md:w-2/5">
+                            <img
+                              src={article.image}
+                              alt={article.title}
+                              onError={(event) => {
+                                event.currentTarget.style.display = "none";
+                              }}
+                              className="h-48 w-full object-cover md:h-full"
+                              width={768}
+                              height={512}
+                              loading="lazy"
+                              decoding="async"
+                            />
+                            {article.category && (
+                              <div className="absolute left-2 top-2">
+                                <span className="rounded bg-blue-600 px-2 py-1 text-xs text-white">
+                                  {article.category}
+                                </span>
+                              </div>
+                            )}
                           </div>
-                        </div>
-                        <div className="md:w-3/5 p-5">
-                          <p className="text-xs text-gray-500 mb-2">
-                            {article.date}
-                          </p>
+                        )}
+                        <div className={article.image ? "p-5 md:w-3/5" : "w-full p-5"}>
+                          {article.category && !article.image && (
+                            <p className="mb-2 text-xs font-semibold text-blue-700">
+                              {article.category}
+                            </p>
+                          )}
+                          {article.date && (
+                            <p className="mb-2 text-xs text-gray-500">
+                              {article.date}
+                            </p>
+                          )}
                           <h3 className="font-bold text-gray-800 text-lg mb-3 line-clamp-2">
                             {article.title}
                           </h3>
-                          <p className="text-sm text-gray-600 mb-4 line-clamp-3">
-                            {article.excerpt}
-                          </p>
+                          {article.excerpt && (
+                            <p className="mb-4 line-clamp-3 text-sm text-gray-600">
+                              {article.excerpt}
+                            </p>
+                          )}
                           <Link
                             to={`/news/${article.slug}`}
                             className="text-green-700 font-semibold text-sm hover:text-green-800 transition-colors inline-flex items-center gap-1"

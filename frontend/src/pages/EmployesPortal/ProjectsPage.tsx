@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../services/api";
 import PortalLayout from "../../components/portal/PortalLayout";
+import ProjectManagementTabs from "../../components/portal/ProjectManagementTabs";
 import RefreshButton from "../../components/portal/RefreshButton";
 import { userDisplayName } from "../../utils/userDisplayName";
 import { useEncodingWindow, useProgressUpdateWindow } from "../../hooks/useEncodingWindow";
@@ -591,6 +592,7 @@ const ProjectsPage: React.FC = () => {
         </>
       }
     >
+      {role === "admin" && !archivedView && <ProjectManagementTabs />}
       {role === "employee" && !canEncode && (
         <div className="portal-card p-3 mb-3 border-amber-200 bg-amber-50 text-amber-800">
           {encodeMessage || "Contributor encoding is currently closed. You may still view projects and post comments."}

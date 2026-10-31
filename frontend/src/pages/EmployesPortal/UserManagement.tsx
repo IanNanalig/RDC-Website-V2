@@ -18,7 +18,47 @@ type UserRow = {
   email: string;
   role: string;
   agency?: string;
+  agency_code?: string;
   is_active: boolean;
+  account_state?: "pending_activation" | "active" | "disabled";
+};
+
+type AgencyCapacityOption = {
+  code: string;
+  name: string;
+  accepting_contributors?: boolean;
+  contributor_capacity?: {
+    limit: number;
+    active: number;
+    reserved: number;
+    used: number;
+    available: number;
+  };
+};
+
+type AccountCapacitySummary = {
+  limit: number;
+  active: number;
+  reserved: number;
+  used: number;
+  available: number;
+};
+
+const userAccountState = (user: UserRow) =>
+  user.account_state || (user.is_active ? "active" : "disabled");
+
+const accountStateLabel = (user: UserRow) => {
+  const state = userAccountState(user);
+  if (state === "pending_activation") return "Pending Activation";
+  if (state === "disabled") return "Disabled";
+  return "Active";
+};
+
+const accountStateClass = (user: UserRow) => {
+  const state = userAccountState(user);
+  if (state === "pending_activation") return "bg-amber-100 text-amber-800";
+  if (state === "disabled") return "bg-slate-100 text-slate-700";
+  return "bg-emerald-100 text-emerald-700";
 };
 
 const displayRole = (role: string) => {
@@ -154,6 +194,19 @@ const UserManagement = () => {
   const activeTab = parseTab(searchParams.get("tab"));
   useEffect(() => { if (searchParams.get("tab") === "system-audit-log") navigate("/admin/audit-log", { replace: true }); }, [navigate, searchParams]);
   const [users, setUsers] = useState<UserRow[]>([]);
+  const [accountAgencies, setAccountAgencies] = useState<AgencyCapacityOption[]>([]);
+  const [administratorCapacity, setAdministratorCapacity] = useState<AccountCapacitySummary | null>(null);
+  const [agencyEditUser, setAgencyEditUser] = useState<UserRow | null>(null);
+  const [agencyEditCode, setAgencyEditCode] = useState("");
+  const [agencyEditBusy, setAgencyEditBusy] = useState(false);
+  useEffect(() => {
+    if (!agencyEditUser) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !agencyEditBusy) setAgencyEditUser(null);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [agencyEditBusy, agencyEditUser]);
   const [usersRefreshing, setUsersRefreshing] = useState(false);
   const [usersError, setUsersError] = useState("");
   const [userFilters, setUserFilters] = useState({
@@ -178,7 +231,7 @@ const UserManagement = () => {
     if (userFilters.agency && userFilters.agency !== "__none__" &&
       user.agency?.trim() !== userFilters.agency) return false;
     if (userFilters.role && userRoleFilterValue(user.role) !== userFilters.role) return false;
-    if (userFilters.status && (user.is_active ? "active" : "inactive") !== userFilters.status) return false;
+    if (userFilters.status && userAccountState(user) !== userFilters.status) return false;
     return true;
   }), [users, userFilters]);
   const userSortOptions = [
@@ -203,7 +256,7 @@ const UserManagement = () => {
       case "email": return user.email || "";
       case "agency": return user.agency || "";
       case "role": return displayRole(user.role);
-      case "status": return user.is_active ? "Active" : "Inactive";
+      case "status": return accountStateLabel(user);
       default: return "";
     }
   }), [filteredUsers, userSortKey, userSortDirection]);
@@ -592,9 +645,10 @@ const UserManagement = () => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [usersResult, winResult] = await Promise.allSettled([
+      const [usersResult, winResult, agencyResult] = await Promise.allSettled([
         api.get("admin/users/"),
         api.get("encoding-window/"),
+        api.get("admin/users/batch-invitations/options/"),
       ]);
       if (usersResult.status === "fulfilled") {
         setUsers(Array.isArray(usersResult.value) ? usersResult.value : []);
@@ -610,6 +664,14 @@ const UserManagement = () => {
           end_at: winRes?.end_at || "",
         });
         setWindowState(winRes || null);
+      }
+      if (agencyResult.status === "fulfilled") {
+        setAccountAgencies(
+          Array.isArray(agencyResult.value?.agencies)
+            ? agencyResult.value.agencies
+            : [],
+        );
+        setAdministratorCapacity(agencyResult.value?.administrator_capacity || null);
       }
     } catch (error) {
       console.error(error);
@@ -797,8 +859,32 @@ const UserManagement = () => {
       await api.post(`admin/users/${id}/set_active/`, { active });
       setNotice(active ? "User activated." : "User deactivated.");
       await load();
-    } catch {
-      setNotice("Failed to update user status.");
+    } catch (error) {
+      setNotice(getErrorDetail(error, "Failed to update user status."));
+    }
+  };
+
+  const openAgencyEditor = (user: UserRow) => {
+    setAgencyEditUser(user);
+    setAgencyEditCode(user.agency_code || user.agency || "");
+    setNotice("");
+  };
+
+  const saveUserAgency = async () => {
+    if (!agencyEditUser || !agencyEditCode || agencyEditBusy) return;
+    setAgencyEditBusy(true);
+    setNotice("");
+    try {
+      await api.patch(`admin/users/${agencyEditUser.id}/`, {
+        agency_code: agencyEditCode,
+      });
+      setNotice("Contributor agency updated. Existing project records were not transferred.");
+      setAgencyEditUser(null);
+      await load();
+    } catch (error) {
+      setNotice(getErrorDetail(error, "Failed to update the contributor agency."));
+    } finally {
+      setAgencyEditBusy(false);
     }
   };
 
@@ -1143,10 +1229,15 @@ const UserManagement = () => {
             <button
               type="submit"
               className="portal-btn portal-btn-primary xl:col-span-2"
-              disabled={invitationSending}
+              disabled={invitationSending || (form.role === "admin" && administratorCapacity?.available === 0)}
             >
               {invitationSending ? "Sending Registration Form..." : "Send Registration Form"}
             </button>
+            {form.role === "admin" && administratorCapacity && (
+              <p className={`text-sm xl:col-span-2 ${administratorCapacity.available > 0 ? "text-slate-600" : "text-rose-700"}`}>
+                Administrator capacity: {administratorCapacity.active} active + {administratorCapacity.reserved} reserved / {administratorCapacity.limit}. {administratorCapacity.available} slot{administratorCapacity.available === 1 ? "" : "s"} available.
+              </p>
+            )}
           </form>
           <BatchRegistrationPanel onComplete={load} />
           </div>
@@ -1300,7 +1391,7 @@ const UserManagement = () => {
             <div>
               <h2 className="text-lg font-semibold">System Users</h2>
               <p className="text-xs text-slate-500">
-                Find accounts, review access, and manage password resets.
+                Find accounts, review lifecycle state, and manage agency access.
               </p>
             </div>
             <RefreshButton
@@ -1361,7 +1452,8 @@ const UserManagement = () => {
                 >
                   <option value="">All statuses</option>
                   <option value="active">Active</option>
-                  <option value="inactive">Inactive</option>
+                  <option value="pending_activation">Pending Activation</option>
+                  <option value="disabled">Disabled</option>
                 </select>
               </label>
               <label className="block min-w-0">
@@ -1422,9 +1514,9 @@ const UserManagement = () => {
                         {userDisplayName(u)}
                       </p>
                       <span
-                        className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${u.is_active ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-700"}`}
+                        className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${accountStateClass(u)}`}
                       >
-                        {u.is_active ? "Active" : "Inactive"}
+                        {accountStateLabel(u)}
                       </span>
                     </div>
                     <dl className="mt-3 grid min-w-0 gap-3 text-sm sm:grid-cols-2">
@@ -1450,6 +1542,15 @@ const UserManagement = () => {
                       >
                         {u.is_active ? "Deactivate" : "Activate"}
                       </button>
+                      {userRoleFilterValue(u.role) === "contributor" && (
+                        <button
+                          type="button"
+                          onClick={() => openAgencyEditor(u)}
+                          className="portal-btn portal-btn-ghost min-h-11 min-w-0 whitespace-normal text-indigo-700"
+                        >
+                          Change Agency
+                        </button>
+                      )}
                     </div>
                   </li>
                 ))}
@@ -1474,9 +1575,9 @@ const UserManagement = () => {
                     <td>{labelRole(u.role)}</td>
                     <td>
                       <span
-                        className={`px-2 py-1 rounded-full text-xs font-semibold ${u.is_active ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-700"}`}
+                        className={`px-2 py-1 rounded-full text-xs font-semibold ${accountStateClass(u)}`}
                       >
-                        {u.is_active ? "Active" : "Inactive"}
+                        {accountStateLabel(u)}
                       </span>
                     </td>
                     <td className="space-x-2">
@@ -1487,6 +1588,15 @@ const UserManagement = () => {
                       >
                         {u.is_active ? "Deactivate" : "Activate"}
                       </button>
+                      {userRoleFilterValue(u.role) === "contributor" && (
+                        <button
+                          type="button"
+                          onClick={() => openAgencyEditor(u)}
+                          className="text-indigo-600 hover:underline"
+                        >
+                          Change Agency
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -1519,6 +1629,70 @@ const UserManagement = () => {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {agencyEditUser && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !agencyEditBusy) setAgencyEditUser(null);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="change-user-agency-title"
+            className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl"
+          >
+            <h2 id="change-user-agency-title" className="text-lg font-semibold text-slate-900">
+              Change Contributor Agency
+            </h2>
+            <p className="mt-1 text-sm text-slate-600">
+              Reassign {userDisplayName(agencyEditUser)}. This changes account authorization only; it does not transfer project ownership.
+            </p>
+            <label className="mt-4 block">
+              <span className="text-sm font-medium text-slate-700">Active agency</span>
+              <select
+                autoFocus
+                value={agencyEditCode}
+                onChange={(event) => setAgencyEditCode(event.target.value)}
+                disabled={agencyEditBusy}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+              >
+                <option value="">Select an agency</option>
+                {accountAgencies.map((agency) => {
+                  const current = agency.code === (agencyEditUser.agency_code || agencyEditUser.agency);
+                  const available = Number(agency.contributor_capacity?.available ?? 0);
+                  const disabled = !current && agency.accepting_contributors === false;
+                  return (
+                    <option key={agency.code} value={agency.code} disabled={disabled}>
+                      {agency.code} - {agency.name} ({available} slot{available === 1 ? "" : "s"} available)
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="portal-btn portal-btn-ghost"
+                disabled={agencyEditBusy}
+                onClick={() => setAgencyEditUser(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="portal-btn portal-btn-primary"
+                disabled={agencyEditBusy || !agencyEditCode}
+                onClick={saveUserAgency}
+              >
+                {agencyEditBusy ? "Saving..." : "Save Agency"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -51,6 +51,7 @@ async function newRegistration(viewport, prefilledAgency = "", agencyLocked = fa
           { code: "DOH", name: "Department of Health", head_name: "Secretary Juan Reyes" },
           { code: "DPWH", name: "Department of Public Works and Highways", head_name: "Secretary Ana Cruz" },
           { code: "RDC-NCR", name: "Regional Development Council National Capital Region", head_name: "Mayor Vico Sotto" },
+          { code: "FULL", name: "Agency With No Contributor Slots", head_name: "", accepting_contributors: false },
         ],
       }),
     });
@@ -192,13 +193,23 @@ try {
   }
   console.log("PASS internal agency lock and legacy reset values");
 
+  const fullAgency = await newRegistration({ width: 390, height: 650 });
+  await fullAgency.agency.fill("FULL");
+  await fullAgency.page.getByText("FULL — No slots available").waitFor();
+  await fullAgency.page.getByText("This agency has reached its Contributor account limit. Select another agency.").waitFor();
+  await fillOtherFields(fullAgency.page);
+  await fullAgency.page.getByRole("button", { name: "Set Password" }).click();
+  assert.equal(fullAgency.posts.length, 0, "A full agency cannot complete registration");
+  await fullAgency.context.close();
+  console.log("PASS full agency is visible but cannot be selected");
+
   const invitation = await newRegistration({ width: 390, height: 650 }, "RDC-NCR", true, "invitation");
   await fillOtherFields(invitation.page);
   const cancelDialogPromise = invitation.page.waitForEvent("dialog");
   const cancelClickPromise = invitation.page.getByRole("button", { name: "Complete Registration" }).click();
   const cancelDialog = await cancelDialogPromise;
   assert.match(cancelDialog.message(), /registration@example\.com/);
-  assert.match(cancelDialog.message(), /inactive until an administrator activates it/i);
+    assert.match(cancelDialog.message(), /pending until an administrator activates it/i);
   await cancelDialog.dismiss();
   await cancelClickPromise;
   assert.equal(invitation.posts.length, 0, "Canceling registration makes no request");
@@ -207,7 +218,7 @@ try {
   const confirmDialog = await confirmDialogPromise;
   await confirmDialog.accept();
   await confirmClickPromise;
-  await invitation.page.getByText("Registration complete. Your account is inactive until an administrator activates it.").waitFor();
+  await invitation.page.getByText("Registration complete. Your account is pending activation by an administrator.").waitFor();
   assert.equal(invitation.posts.length, 1, "The invitation form submits once");
   await invitation.page.waitForURL(/\/login$/);
   await invitation.page.getByText("Registration complete. Your account is awaiting administrator activation before you can log in.").waitFor();

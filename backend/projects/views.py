@@ -107,6 +107,14 @@ from .form_migrations import (
     saved_form_marker,
 )
 from .file_validation import validate_uploaded_document
+from .account_capacity import (
+    AccountCapacityError,
+    agency_capacity,
+    capacity_usage,
+    claim_registration_capacity,
+    reserve_invitation,
+    update_user_account,
+)
 
 
 ENCODING_WINDOW_KEY = "portal_encoding_window"
@@ -142,9 +150,21 @@ def _normalize_account_agency(value):
         return ""
 
 
-def _active_agency_options():
+def _active_agency_options(*, include_capacity=False):
     try:
-        return list(Agency.objects.filter(is_active=True).order_by("code").values("code", "name", "head_name"))
+        rows = []
+        for agency in Agency.objects.filter(is_active=True).order_by("code"):
+            usage = agency_capacity(agency)
+            row = {
+                "code": agency.code,
+                "name": agency.name,
+                "head_name": agency.head_name,
+                "accepting_contributors": usage["available"] > 0,
+            }
+            if include_capacity:
+                row["contributor_capacity"] = usage
+            rows.append(row)
+        return rows
     except Exception:
         return []
 
@@ -1553,7 +1573,7 @@ def _send_registration_invitation(email: str, token: str):
         "An RDC Portal administrator invited you to complete your account registration.\n\n"
         "Complete your profile and set your password using this link (valid for 24 hours):\n"
         f"{link}\n\n"
-        "Your account will remain inactive until an administrator activates it.\n"
+        "Your account will remain pending until an administrator activates it.\n"
         "If you did not expect this invitation, please contact the RDC Portal administrator."
     )
     delivered = send_mail(
@@ -1584,25 +1604,16 @@ def _issue_registration_invitation(request, email: str, role: str, agency: str =
     token = f"{REGISTRATION_INVITE_PREFIX}{signed}"
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
     actor = request.user
-    with transaction.atomic():
-        now = timezone.now()
-        UserInvitation.objects.select_for_update().filter(
-            email__iexact=email,
-            status=UserInvitation.STATUS_SENT,
-            expires_at__gte=now,
-        ).update(status=UserInvitation.STATUS_REVOKED, revoked_at=now)
-        invitation = UserInvitation.objects.create(
-            email=email,
-            role=role,
-            agency=normalized_agency,
-            agency_record=agency_record,
-            agency_locked=agency_locked,
-            token_digest=digest,
-            status=UserInvitation.STATUS_PENDING,
-            invited_by=actor,
-            batch_key=str(batch_key or "")[:64],
-            expires_at=now + timedelta(hours=PASSWORD_SETUP_TTL_HOURS),
-        )
+    invitation = reserve_invitation(
+        email=email,
+        role=role,
+        agency=agency_record,
+        agency_locked=agency_locked,
+        token_digest=digest,
+        invited_by=actor,
+        batch_key=batch_key,
+        expires_at=timezone.now() + timedelta(hours=PASSWORD_SETUP_TTL_HOURS),
+    )
     try:
         _send_registration_invitation(email, token)
     except Exception:
@@ -5674,21 +5685,60 @@ class AdminUserViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, AdminOnlyPermission]
 
     def update(self, request, *args, **kwargs):
-        forbidden = set(request.data) - {"role", "is_active"}
+        forbidden = set(request.data) - {"role", "is_active", "agency", "agency_code"}
         if forbidden:
             return Response({"detail": "Profile fields must be changed by their owner after approval."}, status=403)
-        return super().update(request, *args, **kwargs)
-
-    def perform_update(self, serializer):
-        before = {"role": serializer.instance.role, "is_active": serializer.instance.is_active}
-        password_changed = "password" in serializer.validated_data
-        user = serializer.save()
+        user = self.get_object()
+        role = _normalize_invitation_role(request.data.get("role") or user.role)
+        if role not in {"admin", "validator", "staff", "content_editor"}:
+            return Response({"detail": "Invalid role."}, status=400)
+        agency = user.agency_record
+        if "agency" in request.data or "agency_code" in request.data:
+            raw_agency = request.data.get("agency_code", request.data.get("agency"))
+            if role in INTERNAL_ACCOUNT_ROLES and _normalize_account_agency(raw_agency) != "RDC-NCR":
+                return Response({"detail": "Agency must be RDC-NCR for this user type."}, status=400)
+            agency = _agency_for_value(raw_agency, active_only=True)
+            if agency is None:
+                return Response({"detail": "Select an active agency."}, status=400)
+        account_state = None
+        if "is_active" in request.data:
+            active = request.data.get("is_active") in {True, 1, "1", "true", "True", "yes"}
+            if user.pk == request.user.pk and not active:
+                return Response({"detail": "You cannot deactivate your own account."}, status=400)
+            account_state = User.ACCOUNT_ACTIVE if active else User.ACCOUNT_DISABLED
+        before = {
+            "role": user.role,
+            "is_active": user.is_active,
+            "account_state": user.account_state,
+            "agency": user.agency,
+        }
+        try:
+            user = update_user_account(
+                user_id=user.pk,
+                role=role,
+                agency=agency,
+                account_state=account_state,
+            )
+        except AccountCapacityError as exc:
+            return Response(exc.payload, status=status.HTTP_409_CONFLICT)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
         _log_activity(
-            self.request, "user_update",
-            details={"target_user_id": user.id, "email": user.email, "before": before,
-                     "after": {"role": user.role, "is_active": user.is_active},
-                     "password_changed": password_changed},
+            request, "user_update",
+            details={
+                "target_user_id": user.id,
+                "email": user.email,
+                "before": before,
+                "after": {
+                    "role": user.role,
+                    "is_active": user.is_active,
+                    "account_state": user.account_state,
+                    "agency": user.agency,
+                },
+                "password_changed": False,
+            },
         )
+        return Response(self.get_serializer(user).data)
 
     def destroy(self, request, *args, **kwargs):
         user = self.get_object()
@@ -5701,16 +5751,26 @@ class AdminUserViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def set_active(self, request, pk=None):
         user = self.get_object()
-        active = bool(request.data.get("active", True))
+        active = request.data.get("active", True) in {True, 1, "1", "true", "True", "yes"}
         if user.id == request.user.id and not active:
             return Response({"detail": "You cannot deactivate your own account."}, status=400)
-        user.is_active = active
-        user.save(update_fields=["is_active"])
+        target_state = User.ACCOUNT_ACTIVE if active else User.ACCOUNT_DISABLED
+        try:
+            user = update_user_account(user_id=user.pk, account_state=target_state)
+        except AccountCapacityError as exc:
+            return Response(exc.payload, status=status.HTTP_409_CONFLICT)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
         _log_activity(
             request, "user_status_changed",
-            details={"target_user_id": user.id, "email": user.email, "is_active": active},
+            details={
+                "target_user_id": user.id,
+                "email": user.email,
+                "is_active": active,
+                "account_state": user.account_state,
+            },
         )
-        return Response({"id": user.id, "is_active": user.is_active})
+        return Response({"id": user.id, "is_active": user.is_active, "account_state": user.account_state})
 
     def create(self, request, *args, **kwargs):
         email = (request.data.get("email") or "").strip().lower()
@@ -5738,6 +5798,10 @@ class AdminUserViewSet(viewsets.ModelViewSet):
 
         try:
             _issue_registration_invitation(request, email, role, agency=agency)
+        except AccountCapacityError as exc:
+            return Response(exc.payload, status=status.HTTP_409_CONFLICT)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
         except Exception:
             return Response({"detail": "Failed to send or record the registration invitation."}, status=500)
 
@@ -5819,7 +5883,8 @@ class BatchInvitationOptionsView(APIView):
                 {"value": "content_editor", "label": "Content Editor"},
                 {"value": "admin", "label": "Administrator"},
             ],
-            "agencies": _active_agency_options(),
+            "agencies": _active_agency_options(include_capacity=True),
+            "administrator_capacity": capacity_usage("admin"),
             "max_rows": 100,
             "csv_headers": ["email", "role", "agency"],
         })
@@ -5844,6 +5909,7 @@ class BatchInvitationPreviewView(APIView):
         seen = set()
         results = []
         valid = []
+        planned_capacity = {}
         now = timezone.now()
         for index, raw in enumerate(entries, start=1):
             raw = raw if isinstance(raw, dict) else {"email": str(raw or "")}
@@ -5870,6 +5936,23 @@ class BatchInvitationPreviewView(APIView):
             pending = row_status == "valid" and _has_pending_registration_invitation(email, now)
             if pending and not resend_pending:
                 row_status, reason = "pending_invitation", "A valid invitation is already pending."
+            agency_record = _agency_for_value(agency, active_only=True) if agency else None
+            if row_status == "valid" and (role == "admin" or (role == "staff" and agency_record)):
+                usage = capacity_usage(
+                    role,
+                    agency=agency_record,
+                    exclude_invitation_email=email if resend_pending else "",
+                )
+                key = "admin" if role == "admin" else f"agency:{agency_record.pk}"
+                if usage["used"] + planned_capacity.get(key, 0) >= usage["limit"]:
+                    row_status = "capacity_reached"
+                    reason = (
+                        f"{agency_record.code} has no Contributor slots available."
+                        if role == "staff"
+                        else "The system has no Administrator slots available."
+                    )
+                else:
+                    planned_capacity[key] = planned_capacity.get(key, 0) + 1
             row.update({"status": row_status, "reason": reason})
             results.append(row)
             if row_status == "valid":
@@ -5920,6 +6003,14 @@ class BatchInvitationSendView(APIView):
                 _issue_registration_invitation(request, email, role, agency=agency, batch_key=batch_key)
                 sent += 1
                 results.append({"row": raw.get("row"), "email": email, "status": "sent", "reason": ""})
+            except AccountCapacityError as exc:
+                skipped += 1
+                results.append({
+                    "row": raw.get("row"),
+                    "email": email,
+                    "status": "capacity_reached",
+                    "reason": exc.detail,
+                })
             except Exception:
                 failed += 1
                 results.append({"row": raw.get("row"), "email": email, "status": "failed", "reason": "The email could not be delivered."})
@@ -5956,6 +6047,8 @@ class AccessRequestViewSet(viewsets.ModelViewSet):
         role = "validator" if access_request.requested_role == "validator" else "staff"
         try:
             _issue_registration_invitation(request, email, role)
+        except AccountCapacityError as exc:
+            return Response(exc.payload, status=status.HTTP_409_CONFLICT)
         except Exception:
             return Response({"detail": "Failed to send or record the registration invitation."}, status=500)
 
@@ -6764,6 +6857,11 @@ class SetupPasswordView(APIView):
                 return error
             try:
                 with transaction.atomic():
+                    claim_registration_capacity(
+                        role=role,
+                        agency=profile.get("agency_record"),
+                        invitation=activity if isinstance(activity, UserInvitation) else None,
+                    )
                     if isinstance(activity, UserInvitation):
                         activity = UserInvitation.objects.select_for_update().get(pk=activity.pk)
                     else:
@@ -6780,6 +6878,7 @@ class SetupPasswordView(APIView):
                         created_by=invited_by,
                         is_staff=role == "admin",
                         is_active=False,
+                        account_state=User.ACCOUNT_PENDING_ACTIVATION,
                         must_change_password=False,
                         last_password_change=timezone.now(),
                         **profile,
@@ -6812,9 +6911,17 @@ class SetupPasswordView(APIView):
                         link_path="/admin/users?tab=system-users",
                         dedupe_key=f"account:{user.id}:awaiting-activation",
                     )
+            except AccountCapacityError as exc:
+                return Response(exc.payload, status=status.HTTP_409_CONFLICT)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=400)
             except IntegrityError:
                 return Response({"detail": "Email already exists or this invitation has been used."}, status=400)
-            return Response({"status": "ok", "account_status": "inactive", "requires_admin_activation": True})
+            return Response({
+                "status": "ok",
+                "account_status": User.ACCOUNT_PENDING_ACTIVATION,
+                "requires_admin_activation": True,
+            })
         token = PasswordSetupToken.objects.select_related("user").filter(token=token_value).first()
         if not token or not token.is_valid():
             return Response({"detail": "Token is invalid or expired."}, status=400)

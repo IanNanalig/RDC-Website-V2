@@ -14,7 +14,7 @@ type Props = {
   topActions?: React.ReactNode;
 };
 
-type NavItem = { label: string; to: string };
+type NavItem = { label: string; to: string; activePrefixes?: string[] };
 
 type StoredPortalUser = {
   agency?: string | null;
@@ -58,11 +58,12 @@ const roleAccent: Record<Role, string> = {
 const navByRole: Record<Role, NavItem[]> = {
   admin: [
     { label: "Dashboard", to: "/admin/dashboard" },
-    { label: "Projects", to: "/admin/projects" },
-    { label: "Update Older Forms", to: "/admin/projects/update-forms" },
-    { label: "Project Update Period", to: "/admin/project-update-period" },
+    {
+      label: "Project Management",
+      to: "/admin/projects",
+      activePrefixes: ["/admin/projects", "/admin/project-update-period", "/admin/project-concerns"],
+    },
     { label: "Data Exports", to: "/admin/exports" },
-    { label: "Project Concern Reports", to: "/admin/project-concerns" },
     { label: "Validator Tracker", to: "/admin/validator-diffs" },
     { label: "Content Management", to: "/admin/content" },
     { label: "Contributor Forms", to: "/admin/forms" },
@@ -132,7 +133,9 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
   const navItems = useMemo(() => navByRole[role], [role]);
   const activeNavPath = useMemo(() => (
     navItems
-      .filter((item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`))
+      .filter((item) => (item.activePrefixes || [item.to]).some(
+        (path) => location.pathname === path || location.pathname.startsWith(`${path}/`),
+      ))
       .sort((left, right) => right.to.length - left.to.length)[0]?.to || ""
   ), [location.pathname, navItems]);
   const encodingWindow = useEncodingWindow(role === "employee");

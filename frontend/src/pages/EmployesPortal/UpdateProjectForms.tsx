@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import PortalLayout from "../../components/portal/PortalLayout";
+import ProjectManagementTabs from "../../components/portal/ProjectManagementTabs";
 import RefreshButton from "../../components/portal/RefreshButton";
 import { api } from "../../services/api";
 import { userDisplayName } from "../../utils/userDisplayName";
@@ -118,6 +119,7 @@ export default function UpdateProjectForms() {
 
   return (
     <PortalLayout title="Update Older Project Forms" subtitle="Safely migrate project answers into the latest published contributor form" role="admin" userName={userDisplayName(user, "Administrator")} topActions={<div className="flex gap-2"><Link to="/admin/dashboard" className="portal-btn portal-btn-ghost">Back to Dashboard</Link><RefreshButton loading={loading} onClick={load} /></div>}>
+      <ProjectManagementTabs />
       <div className="mb-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">Validated projects are not changed directly. Migration prepares a non-public progress-update draft; the migrated answers become current only after the normal submission and endorsement workflow.</div>
       {notice && <p className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{notice}</p>}
       {error && <p role="alert" className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</p>}

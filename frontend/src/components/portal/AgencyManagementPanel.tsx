@@ -15,6 +15,13 @@ type AgencyRow = {
     primary_projects: number;
     collaborating_projects: number;
   };
+  contributor_capacity: {
+    limit: number;
+    active: number;
+    reserved: number;
+    used: number;
+    available: number;
+  };
 };
 
 const emptyForm = { code: "", name: "", head_name: "" };
@@ -178,13 +185,19 @@ const AgencyManagementPanel: React.FC = () => {
         )}
         <div className="portal-card-body overflow-x-auto">
           {loading ? <p className="text-sm text-slate-500">Loading agencies…</p> : agencies.length === 0 ? <p className="text-sm text-slate-500">No {archived ? "archived" : "active"} agencies.</p> : (
-            <table className="portal-table min-w-[800px]">
-              <thead><tr><th>Code</th><th>Agency</th><th>Current Head</th><th>Dependencies</th><th>Actions</th></tr></thead>
+            <table className="portal-table min-w-[960px]">
+              <thead><tr><th>Code</th><th>Agency</th><th>Current Head</th><th>Contributor Capacity</th><th>Dependencies</th><th>Actions</th></tr></thead>
               <tbody>{agencies.map((agency) => (
                 <tr key={agency.id}>
                   <td className="font-semibold">{agency.code}</td>
                   <td>{agency.name}{agency.is_legacy && <span className="ml-2 rounded bg-slate-100 px-2 py-1 text-xs">Legacy</span>}</td>
                   <td>{agency.head_name || <span className="text-slate-400">Not configured</span>}</td>
+                  <td className="text-xs text-slate-700">
+                    <span className="font-semibold">{agency.contributor_capacity.available} available</span>
+                    <span className="block text-slate-500">
+                      {agency.contributor_capacity.active} active + {agency.contributor_capacity.reserved} reserved / {agency.contributor_capacity.limit}
+                    </span>
+                  </td>
                   <td className="text-xs text-slate-600">{agency.dependency_counts.users} users · {agency.dependency_counts.primary_projects} primary · {agency.dependency_counts.collaborating_projects} collaborating</td>
                   <td><div className="flex gap-3">
                     {!archived && <button type="button" className="text-sm font-semibold text-blue-600" onClick={() => edit(agency)}>Edit</button>}

@@ -5,6 +5,8 @@ import RefreshButton from "./RefreshButton";
 type ArchivedItem = { id: number; title?: string; name?: string; section_key?: string; key?: string; caption?: string; original_filename?: string; status?: string; [key: string]: unknown };
 type Group = { label: string; endpoint: string; detail: (id: number) => string; restore: (id: number) => string };
 
+const ARCHIVED_PAGE_SIZE = 10;
+
 const groups: Group[] = [
   { label: "Carousel Items", endpoint: "admin/cms/carousel-items/?archived=1", detail: (id) => `admin/cms/carousel-items/${id}/`, restore: (id) => `admin/cms/carousel-items/${id}/restore/` },
   { label: "Publication Categories", endpoint: "admin/cms/publication-categories/?archived=1", detail: (id) => `admin/cms/publication-categories/${id}/`, restore: (id) => `admin/cms/publication-categories/${id}/restore/` },
@@ -33,6 +35,9 @@ async function fetchGroup(endpoint: string): Promise<ArchivedItem[]> {
 
 export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
   const [items, setItems] = useState<Record<string, ArchivedItem[]>>({});
+  const [groupPages, setGroupPages] = useState<Record<string, number>>(
+    () => Object.fromEntries(groups.map((group) => [group.label, 1])),
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState("");
@@ -43,7 +48,12 @@ export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
     setError("");
     try {
       const results = await Promise.all(groups.map(async (group) => [group.label, await fetchGroup(group.endpoint)] as const));
-      setItems(Object.fromEntries(results));
+      const nextItems = Object.fromEntries(results) as Record<string, ArchivedItem[]>;
+      setItems(nextItems);
+      setGroupPages((current) => Object.fromEntries(groups.map((group) => {
+        const totalPages = Math.max(1, Math.ceil((nextItems[group.label]?.length || 0) / ARCHIVED_PAGE_SIZE));
+        return [group.label, Math.min(current[group.label] || 1, totalPages)];
+      })));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Archived items could not be loaded.");
     } finally {
@@ -82,7 +92,27 @@ export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
   return <div className="space-y-4">
     <div className="portal-card"><div className="portal-card-header flex items-center justify-between gap-2"><div><h2 className="font-bold">Archived Content</h2><p className="text-sm text-slate-500">Restored items return as drafts and must be published again.</p></div><RefreshButton loading={loading} onClick={refresh} /></div></div>
     {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
-    {loading ? <p className="text-sm text-slate-500">Loading archived content...</p> : groups.map((group) => <section key={group.label} className="portal-card"><div className="portal-card-header"><h3 className="font-semibold">{group.label} ({items[group.label]?.length || 0})</h3></div><div className="portal-card-body space-y-2">{!items[group.label]?.length ? <p className="text-sm text-slate-500">No archived {group.label.toLowerCase()}.</p> : items[group.label].map((item) => <div key={item.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 p-3"><span className="min-w-0 break-words text-sm">{item.title || item.name || item.caption || item.original_filename || item.section_key || item.key || `#${item.id}`}</span><div className="flex flex-wrap items-center gap-3"><button type="button" onClick={() => void viewDetails(group, item)} className="text-sm font-semibold text-blue-700">View details</button>{isAdmin && <button type="button" disabled={busyId === `${group.label}-${item.id}`} onClick={() => void restore(group, item.id)} className="portal-btn portal-btn-ghost">Restore as Draft</button>}</div></div>)}</div></section>)}
+    {loading ? <p className="text-sm text-slate-500">Loading archived content...</p> : groups.map((group) => {
+      const groupItems = items[group.label] || [];
+      const totalPages = Math.max(1, Math.ceil(groupItems.length / ARCHIVED_PAGE_SIZE));
+      const currentPage = Math.min(groupPages[group.label] || 1, totalPages);
+      const startIndex = (currentPage - 1) * ARCHIVED_PAGE_SIZE;
+      const visibleItems = groupItems.slice(startIndex, startIndex + ARCHIVED_PAGE_SIZE);
+      return <section key={group.label} className="portal-card">
+        <div className="portal-card-header"><h3 className="font-semibold">{group.label} ({groupItems.length})</h3></div>
+        <div className="portal-card-body space-y-2">
+          {!groupItems.length ? <p className="text-sm text-slate-500">No archived {group.label.toLowerCase()}.</p> : visibleItems.map((item) => <div key={item.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 p-3"><span className="min-w-0 break-words text-sm">{item.title || item.name || item.caption || item.original_filename || item.section_key || item.key || `#${item.id}`}</span><div className="flex flex-wrap items-center gap-3"><button type="button" onClick={() => void viewDetails(group, item)} className="text-sm font-semibold text-blue-700">View details</button>{isAdmin && <button type="button" disabled={busyId === `${group.label}-${item.id}`} onClick={() => void restore(group, item.id)} className="portal-btn portal-btn-ghost">Restore as Draft</button>}</div></div>)}
+          {totalPages > 1 && <nav aria-label={`${group.label} pagination`} className="flex flex-col gap-2 border-t border-slate-200 pt-3 text-sm text-slate-600 sm:flex-row sm:items-center sm:justify-between">
+            <span>Showing {startIndex + 1}–{Math.min(startIndex + ARCHIVED_PAGE_SIZE, groupItems.length)} of {groupItems.length}</span>
+            <div className="flex items-center gap-2">
+              <button type="button" className="portal-btn portal-btn-ghost" disabled={currentPage === 1} onClick={() => setGroupPages((current) => ({ ...current, [group.label]: currentPage - 1 }))}>Previous</button>
+              <span aria-live="polite">Page {currentPage} of {totalPages}</span>
+              <button type="button" className="portal-btn portal-btn-ghost" disabled={currentPage === totalPages} onClick={() => setGroupPages((current) => ({ ...current, [group.label]: currentPage + 1 }))}>Next</button>
+            </div>
+          </nav>}
+        </div>
+      </section>;
+    })}
     {selected && <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-3 sm:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelected(null); }}>
       <section role="dialog" aria-modal="true" aria-labelledby="archived-content-title" className="max-h-[92vh] w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-2xl">
         <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4 sm:p-5"><div><h2 id="archived-content-title" className="text-lg font-bold">{selected.item.title || selected.item.name || selected.item.caption || selected.item.original_filename || selected.item.section_key || selected.item.key || "Archived item"}</h2><p className="text-sm text-slate-500">{selected.group.label} · archived content preview</p></div><button type="button" className="portal-btn portal-btn-ghost" onClick={() => setSelected(null)}>Close</button></div>

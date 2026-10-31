@@ -5,7 +5,12 @@ import { passwordRules, validatePassword } from "../utils/passwordPolicy";
 import { contactNumberError, formatContactNumber, sanitizeContactNumber } from "../utils/contactNumbers";
 import { personNameError } from "../utils/personName";
 
-type AgencyOption = { code: string; name: string; head_name?: string };
+type AgencyOption = {
+  code: string;
+  name: string;
+  head_name?: string;
+  accepting_contributors?: boolean;
+};
 
 const normalizeAgency = (value: string, agencies: AgencyOption[]) => {
   const normalized = value.trim().replace(/\s+/g, " ").toLowerCase();
@@ -99,6 +104,7 @@ const SetupPassword: React.FC = () => {
             code: String(agency.code || ""),
             name: String(agency.name || ""),
             head_name: String(agency.head_name || ""),
+            accepting_contributors: agency.accepting_contributors !== false,
           })).filter((agency: AgencyOption) => agency.code && agency.name));
         }
         if (data?.profile) {
@@ -125,9 +131,13 @@ const SetupPassword: React.FC = () => {
     () => searchAgencies(agencySearchDirty ? profile.agency : "", agencies),
     [agencySearchDirty, profile.agency, agencies],
   );
+  const normalizedAgencyCode = normalizeAgency(profile.agency, agencies);
+  const selectedAgency = agencies.find((agency) => agency.code === normalizedAgencyCode);
+  const agencyAtCapacity = selectedAgency?.accepting_contributors === false;
   const agencyUnavailable =
     !hasAgencySearchMatch(profile.agency, agencies) ||
-    (agencyTouched && !normalizeAgency(profile.agency, agencies));
+    (agencyTouched && !normalizedAgencyCode) ||
+    agencyAtCapacity;
 
   React.useEffect(() => {
     if (!agencyOpen) return;
@@ -191,6 +201,10 @@ const SetupPassword: React.FC = () => {
 
   const selectAgency = (code: string) => {
     const selected = agencies.find((agency) => agency.code === code);
+    if (!selected || selected.accepting_contributors === false) {
+      setAgencyTouched(true);
+      return;
+    }
     setProfile((previous) => ({
       ...previous,
       agency: code,
@@ -251,6 +265,11 @@ const SetupPassword: React.FC = () => {
       setError("This is an invalid Agency");
       return;
     }
+    if (!agencyLocked && agencyAtCapacity) {
+      setAgencyTouched(true);
+      setError("This agency has reached its Contributor account limit. Select another agency.");
+      return;
+    }
     if (policyError) {
       setError(policyError);
       return;
@@ -261,7 +280,7 @@ const SetupPassword: React.FC = () => {
     }
     if (setupType === "invitation" && !window.confirm(
       `Complete registration for ${email || "your email address"}?\n\n` +
-      "Your account will remain inactive until an administrator activates it. Continue?",
+      "Your account will remain pending until an administrator activates it. Continue?",
     )) return;
     setLoading(true);
     try {
@@ -286,7 +305,7 @@ const SetupPassword: React.FC = () => {
         throw new Error(data?.detail || "Failed to set password.");
       }
       if (data?.requires_admin_activation || setupType === "invitation") {
-        setSuccess("Registration complete. Your account is inactive until an administrator activates it.");
+        setSuccess("Registration complete. Your account is pending activation by an administrator.");
         setTimeout(() => navigate("/login", { replace: true, state: { registrationPendingActivation: true } }), 1500);
       } else {
         setSuccess("Password set successfully. You can now log in.");
@@ -468,12 +487,13 @@ const SetupPassword: React.FC = () => {
                           key={agency.code}
                           id={`registration-agency-option-${agency.code}`}
                           role="option"
+                          aria-disabled={agency.accepting_contributors === false}
                           aria-selected={index === agencyActiveIndex}
                           onMouseEnter={() => setAgencyActiveIndex(index)}
                           onClick={() => selectAgency(agency.code)}
-                          className={`min-h-11 cursor-pointer px-3 py-2 text-sm ${index === agencyActiveIndex ? "bg-blue-50" : "hover:bg-slate-50"}`}
+                          className={`min-h-11 px-3 py-2 text-sm ${agency.accepting_contributors === false ? "cursor-not-allowed bg-slate-50 text-slate-400" : `cursor-pointer ${index === agencyActiveIndex ? "bg-blue-50" : "hover:bg-slate-50"}`}`}
                         >
-                          <span className="block font-medium text-slate-900">{agency.code}</span>
+                          <span className="block font-medium">{agency.code}{agency.accepting_contributors === false ? " — No slots available" : ""}</span>
                           <span className="block break-words text-slate-600">{agency.name}</span>
                         </div>
                       )) : (
@@ -488,7 +508,9 @@ const SetupPassword: React.FC = () => {
                   role={agencyUnavailable ? "alert" : undefined}
                 >
                   {agencyUnavailable
-                    ? "This is an invalid Agency"
+                    ? agencyAtCapacity
+                      ? "This agency has reached its Contributor account limit. Select another agency."
+                      : "This is an invalid Agency"
                     : "Search using the agency acronym or full name."}
                 </p>
               </div>

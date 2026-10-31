@@ -1,6 +1,6 @@
 import uuid
 
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractUser, UserManager as DjangoUserManager
 from django.db import models
 from django.db.models.functions import Lower
 from django.utils import timezone
@@ -36,7 +36,34 @@ class Agency(models.Model):
         return f"{self.code} - {self.name}"
 
 
+class UserManager(DjangoUserManager):
+    """Keep the explicit account lifecycle aligned for ORM-created users."""
+
+    use_in_migrations = True
+
+    def _create_user(self, username, email, password, **extra_fields):
+        if "account_state" in extra_fields:
+            state = extra_fields["account_state"]
+            expected_active = state == "active"
+            if "is_active" in extra_fields and bool(extra_fields["is_active"]) != expected_active:
+                raise ValueError("account_state and is_active must describe the same lifecycle state.")
+            extra_fields["is_active"] = expected_active
+        else:
+            extra_fields["account_state"] = (
+                "active" if extra_fields.get("is_active", True) else "disabled"
+            )
+        return super()._create_user(username, email, password, **extra_fields)
+
+
 class User(AbstractUser):
+    ACCOUNT_PENDING_ACTIVATION = "pending_activation"
+    ACCOUNT_ACTIVE = "active"
+    ACCOUNT_DISABLED = "disabled"
+    ACCOUNT_STATE_CHOICES = [
+        (ACCOUNT_PENDING_ACTIVATION, "Pending activation"),
+        (ACCOUNT_ACTIVE, "Active"),
+        (ACCOUNT_DISABLED, "Disabled"),
+    ]
     ROLE_CHOICES = [
         ("admin", "Admin"),
         ("validator", "Validator"),
@@ -45,6 +72,12 @@ class User(AbstractUser):
     ]
     email = models.EmailField(unique=True, null=True, blank=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    account_state = models.CharField(
+        max_length=24,
+        choices=ACCOUNT_STATE_CHOICES,
+        default=ACCOUNT_ACTIVE,
+        db_index=True,
+    )
     agency = models.CharField(max_length=200, blank=True, default="")
     agency_record = models.ForeignKey(
         Agency, on_delete=models.PROTECT, null=True, blank=True,
@@ -71,8 +104,20 @@ class User(AbstractUser):
     last_session_ip = models.CharField(max_length=64, blank=True, default="")
     last_session_user_agent = models.TextField(blank=True, default="")
 
+    objects = UserManager()
+
     def __str__(self):
         return f"{self.username} ({self.role})"
+
+
+class AccountCapacityLock(models.Model):
+    """A stable row used to serialize system-wide account-capacity changes."""
+
+    key = models.CharField(max_length=80, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.key
 
 
 class UserInvitation(models.Model):

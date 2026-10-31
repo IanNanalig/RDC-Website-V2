@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import PortalLayout from "../../components/portal/PortalLayout";
+import ProjectManagementTabs from "../../components/portal/ProjectManagementTabs";
 import RefreshButton from "../../components/portal/RefreshButton";
 import { api } from "../../services/api";
 import { userDisplayName } from "../../utils/userDisplayName";
@@ -84,6 +85,7 @@ export default function AdminProjectUpdatePeriod() {
 
   return (
     <PortalLayout title="Project Update Period" subtitle="Control when contributors may update eligible validated projects" role="admin" userName={userDisplayName(user, "Administrator")} topActions={<RefreshButton loading={loading} onClick={load} />}>
+      <ProjectManagementTabs />
       {notice && <p className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{notice}</p>}
       {error && <p role="alert" className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</p>}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">

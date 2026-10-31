@@ -306,6 +306,11 @@ PASSWORD_RESET_TOKEN_TTL_SECONDS = int(os.environ.get("PASSWORD_RESET_TOKEN_TTL_
 PASSWORD_RESET_RESEND_COOLDOWN_SECONDS = int(os.environ.get("PASSWORD_RESET_RESEND_COOLDOWN_SECONDS", "60"))
 PASSWORD_RESET_MAX_ATTEMPTS = int(os.environ.get("PASSWORD_RESET_MAX_ATTEMPTS", "5"))
 
+# Account capacity is an application invariant. These values are intentionally
+# not environment-configurable so deployments cannot silently weaken them.
+MAX_ACTIVE_ADMIN_ACCOUNTS = 2
+MAX_ACTIVE_CONTRIBUTORS_PER_AGENCY = 5
+
 # Cloudflare Turnstile CAPTCHA (optional)
 TURNSTILE_SECRET_KEY = os.environ.get("TURNSTILE_SECRET_KEY", "")
 TURNSTILE_REQUIRED = os.environ.get("TURNSTILE_REQUIRED", "false").lower() in ("1", "true", "yes")

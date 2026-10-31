@@ -1,7 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../services/api";
 
-type Option = { value?: string; code?: string; label?: string; name?: string };
+type Option = {
+  value?: string;
+  code?: string;
+  label?: string;
+  name?: string;
+  accepting_contributors?: boolean;
+  contributor_capacity?: {
+    limit: number;
+    active: number;
+    reserved: number;
+    used: number;
+    available: number;
+  };
+};
 type PreviewRow = {
   row: number;
   email: string;
@@ -17,11 +30,23 @@ const statusStyle: Record<string, string> = {
   duplicate: "bg-amber-100 text-amber-800",
   existing_account: "bg-slate-200 text-slate-800",
   pending_invitation: "bg-blue-100 text-blue-800",
+  capacity_reached: "bg-rose-100 text-rose-800",
+};
+
+const errorDetail = (error: unknown, fallback: string) => {
+  if (!(error instanceof Error) || !error.message) return fallback;
+  try {
+    const payload = JSON.parse(error.message);
+    return String(payload?.detail || fallback);
+  } catch {
+    return error.message;
+  }
 };
 
 export default function BatchRegistrationPanel({ onComplete }: { onComplete?: () => void }) {
   const [roles, setRoles] = useState<Option[]>([]);
   const [agencies, setAgencies] = useState<Option[]>([]);
+  const [administratorCapacity, setAdministratorCapacity] = useState<Option["contributor_capacity"]>(undefined);
   const [defaultRole, setDefaultRole] = useState("contributor");
   const [defaultAgency, setDefaultAgency] = useState("");
   const [manual, setManual] = useState("");
@@ -37,6 +62,7 @@ export default function BatchRegistrationPanel({ onComplete }: { onComplete?: ()
     void api.get("admin/users/batch-invitations/options/").then((data) => {
       setRoles(Array.isArray(data?.roles) ? data.roles : []);
       setAgencies(Array.isArray(data?.agencies) ? data.agencies : []);
+      setAdministratorCapacity(data?.administrator_capacity || undefined);
     }).catch(() => setError("Batch registration options could not be loaded."));
   }, []);
 
@@ -74,7 +100,7 @@ export default function BatchRegistrationPanel({ onComplete }: { onComplete?: ()
     } catch (err) {
       setPreview([]);
       setPreviewToken("");
-      setError(err instanceof Error ? err.message : "The batch could not be previewed.");
+      setError(errorDetail(err, "The batch could not be previewed."));
     } finally {
       setBusy("");
     }
@@ -90,7 +116,7 @@ export default function BatchRegistrationPanel({ onComplete }: { onComplete?: ()
       setPreviewToken("");
       onComplete?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "The invitations could not be sent.");
+      setError(errorDetail(err, "The invitations could not be sent."));
     } finally {
       setBusy("");
     }
@@ -116,12 +142,24 @@ export default function BatchRegistrationPanel({ onComplete }: { onComplete?: ()
           <select value={defaultRole} onChange={(event) => setDefaultRole(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2">
             {roles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
           </select>
+          {defaultRole === "admin" && administratorCapacity && (
+            <span className={`mt-1 block text-xs ${administratorCapacity.available > 0 ? "text-slate-500" : "text-rose-700"}`}>
+              {administratorCapacity.active} active + {administratorCapacity.reserved} reserved / {administratorCapacity.limit}; {administratorCapacity.available} available.
+            </span>
+          )}
         </label>
         <label className="block">
           <span className="text-sm text-slate-700">Default contributor agency (optional)</span>
           <select value={defaultAgency} onChange={(event) => setDefaultAgency(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2">
             <option value="">Contributor selects during registration</option>
-            {agencies.map((agency) => <option key={agency.code} value={agency.code}>{agency.code} — {agency.name}</option>)}
+            {agencies.map((agency) => {
+              const available = Number(agency.contributor_capacity?.available ?? 0);
+              return (
+                <option key={agency.code} value={agency.code} disabled={agency.accepting_contributors === false}>
+                  {agency.code} — {agency.name} ({available} slot{available === 1 ? "" : "s"} available)
+                </option>
+              );
+            })}
           </select>
         </label>
         <label className="flex items-center gap-2 text-sm lg:col-span-2">

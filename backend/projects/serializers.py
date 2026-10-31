@@ -90,6 +90,7 @@ class ContributorFormVersionStatusMixin:
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False)
     agency_head = serializers.SerializerMethodField()
+    agency_code = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -99,10 +100,12 @@ class UserSerializer(serializers.ModelSerializer):
             "email",
             "role",
             "is_active",
+            "account_state",
             "password",
             "first_name",
             "last_name",
             "agency",
+            "agency_code",
             "agency_head",
             "office",
             "division",
@@ -110,6 +113,7 @@ class UserSerializer(serializers.ModelSerializer):
             "contact_number",
             "phone_number",
         ]
+        read_only_fields = ["account_state", "agency_code"]
 
     def create(self, validated_data):
         password = validated_data.pop("password", None) or "ChangeMe123!"
@@ -127,6 +131,10 @@ class UserSerializer(serializers.ModelSerializer):
     def get_agency_head(self, obj):
         agency = getattr(obj, "agency_record", None)
         return agency.head_name if agency else ""
+
+    def get_agency_code(self, obj):
+        agency = getattr(obj, "agency_record", None)
+        return agency.code if agency else str(obj.agency or "")
 
     def validate_first_name(self, value):
         return self._validate_person_name(value)
@@ -163,15 +171,16 @@ class UserSerializer(serializers.ModelSerializer):
 
 class AgencySerializer(serializers.ModelSerializer):
     dependency_counts = serializers.SerializerMethodField()
+    contributor_capacity = serializers.SerializerMethodField()
 
     class Meta:
         model = Agency
         fields = [
             "id", "code", "name", "head_name", "is_active", "is_legacy",
-            "archived_at", "dependency_counts", "created_at", "updated_at",
+            "archived_at", "dependency_counts", "contributor_capacity", "created_at", "updated_at",
         ]
         read_only_fields = [
-            "id", "is_active", "is_legacy", "archived_at", "dependency_counts",
+            "id", "is_active", "is_legacy", "archived_at", "dependency_counts", "contributor_capacity",
             "created_at", "updated_at",
         ]
 
@@ -216,6 +225,11 @@ class AgencySerializer(serializers.ModelSerializer):
             "primary_projects": obj.primary_projects.count(),
             "collaborating_projects": ProjectCollaboratingAgency.objects.filter(agency=obj).count(),
         }
+
+    def get_contributor_capacity(self, obj):
+        from .account_capacity import agency_capacity
+
+        return agency_capacity(obj)
 
 
 class PublicEventSerializer(serializers.ModelSerializer):

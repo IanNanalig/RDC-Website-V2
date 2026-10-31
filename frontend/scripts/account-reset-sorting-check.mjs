@@ -18,9 +18,9 @@ const headers = {
 };
 
 const sampleUsers = [
-  { id: 3, username: "zoe", first_name: "Zoe", last_name: "", email: "a@example.test", agency: "DPWH", role: "validator", is_active: true },
-  { id: 1, username: "amy", first_name: "Amy", last_name: "", email: "z@example.test", agency: "DENR", role: "admin", is_active: false },
-  { id: 2, username: "ben", first_name: "Ben", last_name: "", email: "m@example.test", agency: "RDC-NCR", role: "staff", is_active: true },
+  { id: 3, username: "zoe", first_name: "Zoe", last_name: "", email: "a@example.test", agency: "DPWH", role: "validator", is_active: true, account_state: "active" },
+  { id: 1, username: "amy", first_name: "Amy", last_name: "", email: "z@example.test", agency: "DENR", role: "admin", is_active: false, account_state: "disabled" },
+  { id: 2, username: "ben", first_name: "Ben", last_name: "", email: "m@example.test", agency: "RDC-NCR", agency_code: "RDC-NCR", role: "staff", is_active: true, account_state: "active" },
   ...Array.from({ length: 10 }, (_, index) => ({
     id: index + 10,
     username: `member-${index + 1}`,
@@ -29,7 +29,8 @@ const sampleUsers = [
     email: `member${index + 1}@example.test`,
     agency: index % 2 === 0 ? "DENR" : "DOH",
     role: "staff",
-    is_active: true,
+    is_active: index !== 0,
+    account_state: index === 0 ? "pending_activation" : "active",
   })),
 ];
 
@@ -67,8 +68,32 @@ async function mockApi(page, onReset = () => {}, onRequest = () => {}, options =
     if (activeMatch && request.method() === "POST") {
       const id = Number(activeMatch[1]);
       const active = Boolean(JSON.parse(request.postData() || "{}").active);
-      users = users.map((user) => user.id === id ? { ...user, is_active: active } : user);
-      return route.fulfill({ status: 200, contentType: "application/json", headers, body: JSON.stringify({ id, is_active: active }) });
+      const account_state = active ? "active" : "disabled";
+      users = users.map((user) => user.id === id ? { ...user, is_active: active, account_state } : user);
+      return route.fulfill({ status: 200, contentType: "application/json", headers, body: JSON.stringify({ id, is_active: active, account_state }) });
+    }
+    if (path.endsWith("/admin/users/batch-invitations/options/")) {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        headers,
+        body: JSON.stringify({
+          agencies: [
+            { code: "DENR", name: "Department of Environment and Natural Resources", accepting_contributors: true, contributor_capacity: { limit: 5, active: 2, reserved: 0, used: 2, available: 3 } },
+            { code: "DOH", name: "Department of Health", accepting_contributors: false, contributor_capacity: { limit: 5, active: 4, reserved: 1, used: 5, available: 0 } },
+            { code: "RDC-NCR", name: "Regional Development Council NCR", accepting_contributors: true, contributor_capacity: { limit: 5, active: 1, reserved: 0, used: 1, available: 4 } },
+          ],
+        }),
+      });
+    }
+    const userUpdateMatch = path.match(/\/admin\/users\/(\d+)\/$/);
+    if (userUpdateMatch && request.method() === "PATCH") {
+      const id = Number(userUpdateMatch[1]);
+      const payload = JSON.parse(request.postData() || "{}");
+      users = users.map((user) => user.id === id
+        ? { ...user, agency: payload.agency_code, agency_code: payload.agency_code }
+        : user);
+      return route.fulfill({ status: 200, contentType: "application/json", headers, body: JSON.stringify(users.find((user) => user.id === id)) });
     }
     if (path.endsWith("/admin/users/")) {
       userLoads += 1;
@@ -196,9 +221,12 @@ try {
     await adminPage.getByText("1 of 13 system users match the filters.").waitFor();
     assert.match(await items.first().innerText(), /Zoe/, "Role filter works on its own");
     await adminPage.getByLabel("Role", { exact: true }).selectOption("");
-    await adminPage.getByLabel("Status", { exact: true }).selectOption("inactive");
+    await adminPage.getByLabel("Status", { exact: true }).selectOption("disabled");
     await adminPage.getByText("1 of 13 system users match the filters.").waitFor();
     assert.match(await items.first().innerText(), /Amy/, "Status filter works on its own");
+    await adminPage.getByLabel("Status", { exact: true }).selectOption("pending_activation");
+    await adminPage.getByText("1 of 13 system users match the filters.").waitFor();
+    assert.match(await items.first().innerText(), /Member 01/, "Pending Activation is a distinct lifecycle state");
     await adminPage.getByLabel("Status", { exact: true }).selectOption("");
 
     await adminPage.getByLabel("Search User").fill("ben");
@@ -238,6 +266,15 @@ try {
     assert.equal(await adminPage.getByLabel("Rows Per Page").inputValue(), "10");
     assert.equal(await items.count(), 10);
     assert.match(await items.first().innerText(), /Zoe/, "Clear Filters preserves the selected sort");
+    await adminPage.getByLabel("Search User").fill("ben");
+    await items.first().getByRole("button", { name: "Change Agency" }).click();
+    const agencyDialog = adminPage.getByRole("dialog", { name: "Change Contributor Agency" });
+    await agencyDialog.getByLabel("Active agency").selectOption("DENR");
+    assert.equal(await agencyDialog.getByLabel("Active agency").locator('option[value="DOH"]').evaluate((option) => option.disabled), true,
+      "A full agency is disabled during reassignment");
+    await agencyDialog.getByRole("button", { name: "Save Agency" }).click();
+    await adminPage.getByText("Contributor agency updated. Existing project records were not transferred.").waitFor();
+    assert.match(await items.first().innerText(), /DENR/, "Successful reassignment refreshes the displayed agency");
     await adminPage.getByLabel("Search User").fill("no such user");
     await adminPage.getByText("No users match the selected filters.").waitFor();
     const documentWidth = await adminPage.evaluate(() => document.documentElement.scrollWidth);
