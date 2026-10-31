@@ -421,12 +421,19 @@ export const cmsApi = {
     listFromResponse<CMSPage>(await api.get(`admin/cms/pages/?${summaryQuery({ q: search, page })}`)),
   getPage: (id: number) => api.get(`admin/cms/pages/${id}/?view=editor`) as Promise<CMSPage>,
   getPageReview: (id: number) => api.get(`admin/cms/pages/${id}/`) as Promise<CMSPage>,
+  getModule: (slug: string) => api.get(`admin/cms/modules/${slug}/`) as Promise<CMSPage>,
   createPage: (payload: Pick<CMSPage, "title" | "slug">) => api.post("admin/cms/pages/?view=editor", payload),
   updatePage: (id: number, payload: Pick<CMSPage, "title" | "slug">) =>
     api.put(`admin/cms/pages/${id}/?view=editor`, payload),
   publishPage: (id: number) => api.post(`admin/cms/pages/${id}/publish/?view=editor`),
   submitPage: (id: number) => api.post(`admin/cms/pages/${id}/submit/?view=editor`),
   rejectPage: (id: number, remarks = "") => api.post(`admin/cms/pages/${id}/reject/?view=editor`, { remarks }),
+  publishModule: (slug: string) => api.post(`admin/cms/modules/${slug}/publish/`) as Promise<CMSPage>,
+  submitModule: (slug: string) => api.post(`admin/cms/modules/${slug}/submit/`) as Promise<CMSPage>,
+  rejectModule: (slug: string, reviewNotes = "") => api.post(
+    `admin/cms/modules/${slug}/reject/`,
+    { review_notes: reviewNotes },
+  ) as Promise<CMSPage>,
   archivePage: (id: number) => api.post(`admin/cms/pages/${id}/archive/?view=editor`),
   reorderSections: (pageId: number, sectionIds: number[]) =>
     api.post(`admin/cms/pages/${pageId}/reorder_sections/`, { section_ids: sectionIds }),
@@ -531,7 +538,6 @@ export const cmsApi = {
   ) => api.post(`admin/cms/${kind}/${id}/archive/`, payload),
   getPublicationCategoryDependencies: (id: number) => api.get(`admin/cms/publication-categories/${id}/dependencies/`) as Promise<{
     documents: Array<{ status: CMSStatus; count: number }>;
-    featured_slots: string[];
   }>,
 
   listSettings: async () => listFromResponse<CMSSiteSetting>(await api.get("admin/cms/settings/")),

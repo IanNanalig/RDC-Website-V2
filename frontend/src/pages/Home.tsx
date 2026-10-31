@@ -105,11 +105,7 @@ const mapCmsDocItems = (
   content: Record<string, unknown> | null,
 ) => {
   const result: DocCard[] = [];
-  const featuredCategory = asRecord(content?.featuredCategory);
-  const hasFeaturedCategory = Object.prototype.hasOwnProperty.call(content || {}, "featuredCategory");
-  const sourceItems = hasFeaturedCategory
-    ? asArray(featuredCategory.documents)
-    : asArray(content?.items);
+  const sourceItems = asArray(content?.items);
 
   sourceItems.forEach((item) => {
     const row = asRecord(item);
@@ -137,8 +133,8 @@ const mapCmsDocItems = (
     const nextItem: DocCard = {
       title: asString(row.title),
       link,
-      category: asString(row.category, asString(featuredCategory.title)),
-      icon: iconForCms(row.icon || featuredCategory.icon),
+      category: asString(row.category),
+      icon: iconForCms(row.icon),
       quickLinks: quickLinks.length ? quickLinks : undefined,
     };
 
@@ -395,15 +391,15 @@ const Home: React.FC = () => {
   const upcomingEventsSection = getHomeSection(homeCmsPage, "upcoming-events");
 
   const developmentPlansTitle = asString(
-    asRecord(developmentPlansSection?.featuredCategory).title || developmentPlansSection?.title,
+    developmentPlansSection?.title,
     "Development Plans and Frameworks",
   );
   const investmentProgrammingTitle = asString(
-    asRecord(investmentProgrammingSection?.featuredCategory).title || investmentProgrammingSection?.title,
+    investmentProgrammingSection?.title,
     "Investment Programming",
   );
   const monitoringEvaluationTitle = asString(
-    asRecord(monitoringEvaluationSection?.featuredCategory).title || monitoringEvaluationSection?.title,
+    monitoringEvaluationSection?.title,
     "Monitoring and Evaluation",
   );
   const dashboardTitle = asString(

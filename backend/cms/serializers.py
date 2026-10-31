@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.conf import settings
 from django.utils import timezone
@@ -147,6 +147,94 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     "Committee structure is fixed. Keep executive, sectoral, special, affiliate, and advisory exactly once."
                 )
+
+        if page_slug == "about-rdc" and section_key == "organization-structure":
+            expected = {
+                "chairperson", "vice-chair", "secretariat", "secretary", "executive-committee",
+                "voting-members", "non-voting-members", "special-non-voting", "sectoral-committees",
+                "special-committees", "affiliate-committees", "advisory-committee",
+            }
+            nodes = value.get("nodes")
+            if not isinstance(nodes, list):
+                raise serializers.ValidationError({"nodes": "The fixed organization positions are required."})
+            codes = [str(node.get("id") or "") for node in nodes if isinstance(node, dict)]
+            if len(codes) != len(expected) or set(codes) != expected:
+                raise serializers.ValidationError({
+                    "nodes": "Organization structure is fixed. Keep each approved position exactly once."
+                })
+            for index, node in enumerate(nodes):
+                items = node.get("items") if isinstance(node, dict) else None
+                if items is not None and not isinstance(items, list):
+                    raise serializers.ValidationError({"nodes": {index: {"items": "Child labels must be a list."}}})
+
+        if page_slug == "about-rdc" and section_key == "resolutions-archive":
+            years = value.get("years")
+            if years is not None and not isinstance(years, list):
+                raise serializers.ValidationError({"years": "Resolution years must be a list."})
+            seen_years = set()
+            year_errors = {}
+            current_year = timezone.now().year
+            for year_index, year_row in enumerate(years or []):
+                if not isinstance(year_row, dict):
+                    year_errors[year_index] = "Each resolution year must be an object."
+                    continue
+                raw_year = str(year_row.get("year") or "").strip()
+                if not raw_year.isdigit() or len(raw_year) != 4:
+                    year_errors[year_index] = {"year": "Enter a four-digit resolution year."}
+                    continue
+                year = int(raw_year)
+                if year < 1900 or year > current_year + 5:
+                    year_errors[year_index] = {"year": "Enter a valid resolution year."}
+                    continue
+                if year in seen_years:
+                    year_errors[year_index] = {"year": "Each resolution year may appear only once."}
+                    continue
+                seen_years.add(year)
+                resolutions = year_row.get("resolutions", year_row.get("items", []))
+                if not isinstance(resolutions, list):
+                    year_errors[year_index] = {"resolutions": "Resolutions must be a list."}
+                    continue
+                resolution_errors = {}
+                for resolution_index, resolution in enumerate(resolutions):
+                    if isinstance(resolution, str):
+                        if not resolution.strip():
+                            resolution_errors[resolution_index] = "Resolution title cannot be blank."
+                        continue
+                    if not isinstance(resolution, dict):
+                        resolution_errors[resolution_index] = "Each resolution must be an object."
+                        continue
+                    if not str(resolution.get("title") or resolution.get("number") or "").strip():
+                        resolution_errors[resolution_index] = {"title": "Resolution title is required."}
+                    raw_date = str(resolution.get("date") or "").strip()
+                    if raw_date:
+                        try:
+                            parsed_date = date.fromisoformat(raw_date)
+                            if parsed_date.year != year:
+                                raise ValueError
+                        except ValueError:
+                            resolution_errors[resolution_index] = {
+                                "date": "Use YYYY-MM-DD and match the selected resolution year."
+                            }
+                    media_id = resolution.get("mediaAssetId") or resolution.get("documentAssetId") or resolution.get("attachment")
+                    if media_id:
+                        try:
+                            media = CMSMediaAsset.objects.filter(pk=media_id, is_archived=False).first()
+                        except (TypeError, ValueError):
+                            media = None
+                        if not media or media.file_type != CMSMediaAsset.FILE_TYPE_DOCUMENT:
+                            current = resolution_errors.get(resolution_index, {})
+                            resolution_errors[resolution_index] = {
+                                **(current if isinstance(current, dict) else {}),
+                                "mediaAssetId": "Choose an active document from the Media Library.",
+                            }
+                if resolution_errors:
+                    existing = year_errors.get(year_index, {})
+                    year_errors[year_index] = {**existing, "resolutions": resolution_errors}
+            if year_errors:
+                raise serializers.ValidationError({"years": year_errors})
+            for field in ("legendItems", "categoryItems"):
+                if field in value and not isinstance(value[field], list):
+                    raise serializers.ValidationError({field: "This value must be a list."})
 
         if page_slug == "contact" and section_key == "main-office":
             email = str(value.get("email") or "").strip()
@@ -486,18 +574,17 @@ class CMSCarouselItemSerializer(CMSManagedContentSerializer):
 
 class CMSPublicationCategorySerializer(CMSManagedContentSerializer):
     document_count = serializers.IntegerField(read_only=True, default=0)
-    featured_slots = serializers.SerializerMethodField()
 
     class Meta:
         model = CMSPublicationCategory
         fields = [
             "id", "code", "name", "description", "icon", "color", "sort_order", "document_count",
-            "featured_slots", "status", "published_snapshot_json", "has_unpublished_changes", "review_notes",
+            "status", "published_snapshot_json", "has_unpublished_changes", "review_notes",
             "created_by_name", "updated_by_name", "submitted_by_name", "reviewed_by_name",
             "published_at", "archived_at", "created_at", "updated_at",
         ]
         read_only_fields = [
-            "id", "document_count", "featured_slots", "status", "published_snapshot_json",
+            "id", "document_count", "status", "published_snapshot_json",
             "has_unpublished_changes", "review_notes", "created_by_name", "updated_by_name",
             "submitted_by_name", "reviewed_by_name", "published_at", "archived_at", "created_at", "updated_at",
         ]
@@ -506,17 +593,6 @@ class CMSPublicationCategorySerializer(CMSManagedContentSerializer):
         if self.instance and value != self.instance.code:
             raise serializers.ValidationError("Publication category codes cannot be changed.")
         return value
-
-    def get_featured_slots(self, obj):
-        slots = []
-        page = CMSPage.objects.filter(slug="home").prefetch_related("sections").first()
-        if not page:
-            return slots
-        for section in page.sections.all():
-            if (section.content_json or {}).get("featuredCategoryCode") == obj.code:
-                slots.append(section.section_key)
-        return slots
-
 
 class CMSPublicationDocumentSerializer(CMSManagedContentSerializer):
     attachment_url = serializers.SerializerMethodField()
@@ -611,10 +687,6 @@ class CMSResolutionSerializer(CMSManagedContentSerializer):
         resolution_date = attrs.get("resolution_date", getattr(self.instance, "resolution_date", None))
         if resolution_date and resolution_date.year != year:
             raise serializers.ValidationError({"resolution_date": "Resolution date must match the selected year."})
-        attachment = attrs.get("attachment", getattr(self.instance, "attachment", None))
-        external_url = attrs.get("external_url", getattr(self.instance, "external_url", ""))
-        if not attachment and not external_url:
-            raise serializers.ValidationError("Choose a resolution attachment or provide a document URL.")
         return attrs
 
 

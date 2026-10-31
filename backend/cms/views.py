@@ -637,6 +637,7 @@ from cms.services.collections import (
     reassign_publication_documents_in_draft,
     remove_managed_content_from_draft,
     restore_managed_content_to_draft,
+    sync_resolution_to_draft,
 )
 
 
@@ -776,30 +777,14 @@ class AdminCMSPublicationCategoryViewSet(CMSManagedContentViewSet):
     @action(detail=True, methods=["get"])
     def dependencies(self, request, pk=None):
         category = self.get_object()
-        serializer = self.get_serializer(category)
         return Response({
             "category": {"id": category.pk, "code": category.code, "name": category.name},
             "documents": category.documents.values("status").annotate(count=Count("id")).order_by("status"),
-            "featured_slots": serializer.data["featured_slots"],
         })
 
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
     def archive(self, request, pk=None):
         category = self.get_object()
-        serialized = self.get_serializer(category).data
-        featured_slots = serialized["featured_slots"]
-        replacement_code = str(request.data.get("replacement_category") or "").strip()
-        replacement = None
-        if featured_slots:
-            replacement = CMSPublicationCategory.objects.filter(
-                code__iexact=replacement_code, status="published",
-            ).exclude(pk=category.pk).first()
-            if not replacement:
-                return Response({
-                    "detail": "Choose a different published category to replace this Home page feature.",
-                    "featured_slots": featured_slots,
-                }, status=409)
-
         active_documents = category.documents.exclude(status="archived")
         if active_documents.exists():
             resolution = str(request.data.get("document_resolution") or "").strip()
@@ -819,16 +804,6 @@ class AdminCMSPublicationCategoryViewSet(CMSManagedContentViewSet):
                     "document_count": active_documents.count(),
                 }, status=409)
 
-        if replacement:
-            home = CMSPage.objects.filter(slug="home").first()
-            if home:
-                for section in home.sections.filter(section_key__in=featured_slots):
-                    content = dict(section.content_json or {})
-                    content["featuredCategoryCode"] = replacement.code
-                    section.content_json = content
-                    section.status = "published"
-                    section.save(update_fields=["content_json", "status", "updated_at"])
-                publish_page(home, user=request.user)
         return super().archive(request, pk=pk)
 
 
@@ -849,6 +824,14 @@ class AdminCMSResolutionViewSet(CMSManagedContentViewSet):
     serializer_class = CMSResolutionSerializer
     search_fields = ("stable_key", "resolution_number", "title", "description")
     content_type_key = "resolution"
+
+    def perform_create(self, serializer):
+        super().perform_create(serializer)
+        sync_resolution_to_draft(serializer.instance, self.request.user)
+
+    def perform_update(self, serializer):
+        super().perform_update(serializer)
+        sync_resolution_to_draft(serializer.instance, self.request.user)
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -962,7 +945,21 @@ class AdminCMSModuleActionView(APIView):
         elif operation == "publish":
             if getattr(request.user, "role", "") != "admin":
                 raise PermissionDenied("Only Administrators can publish public content.")
-            page = publish_page(page, user=request.user)
+            try:
+                page = publish_page(page, user=request.user)
+            except serializers.ValidationError as exc:
+                detail = exc.detail if isinstance(exc.detail, dict) else {}
+                _log_cms_activity(request, "api_action_failed", {
+                    "content_type": "module",
+                    "slug": slug,
+                    "operation": "publish",
+                    "code": str(detail.get("code") or "validation_error"),
+                    "affected_content_type": str(detail.get("content_type") or ""),
+                    "item_count": len(detail.get("items") or []) if isinstance(detail.get("items"), list) else 0,
+                })
+                # Return the validation response here so ATOMIC_REQUESTS does
+                # not roll back the failure audit entry with a re-raised error.
+                return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
         elif operation == "reject":
             if getattr(request.user, "role", "") != "admin":
                 raise PermissionDenied("Only Administrators can reject public content.")

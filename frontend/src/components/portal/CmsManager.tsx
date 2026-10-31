@@ -7,7 +7,7 @@ import cmsApi, {
   type CMSSection,
   type CMSSiteSetting,
 } from "../../services/cmsApi";
-import { ORGANIZATION_NODE_DEFAULTS } from "../../pages/About_RDC";
+import { ABOUT_ORGANIZATION_NODE_IDS, aboutNodeEditorLabel } from "../../content/aboutStructure";
 import RefreshButton from "./RefreshButton";
 const RichTextEditor = React.lazy(() => import("./RichTextEditor"));
 
@@ -389,11 +389,102 @@ const mediaTypeClass = (item: CMSMediaAsset) => {
 
 const stringListToText = (value: unknown) =>
   Array.isArray(value)
-    ? value.map((item) => textValue(item)).filter(Boolean).join("\n")
+    ? value.map((item) => typeof item === "string" ? item : textValue(item)).join("\n")
     : "";
 
 const stringListFromText = (value: string) =>
-  value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  value.split(/\r?\n/);
+
+const snapshotHiddenFields = new Set([
+  "id", "key", "code", "stableKey", "stable_key", "sortOrder", "sort_order",
+  "mediaAssetId", "imageAssetId", "documentAssetId", "coverAssetId", "attachment",
+  "imageKey", "icon", "color", "replaceExisting",
+]);
+
+const snapshotFieldLabels: Record<string, string> = {
+  button1: "Primary Button",
+  button2: "Secondary Button",
+  categoryItems: "Category Summary",
+  coverAlt: "Cover Alt Text",
+  coverImage: "Cover Image",
+  externalUrl: "External Link",
+  fileSize: "File Size",
+  fileType: "File Type",
+  imageAlt: "Image Alt Text",
+  imageUrl: "Image",
+  legendItems: "Document Legend",
+  publicationDate: "Publication Date",
+  quickLinks: "Quick Links",
+  resolutionNumber: "Resolution Number",
+};
+
+const snapshotFieldLabel = (key: string) => snapshotFieldLabels[key] || key
+  .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+  .replace(/[-_]+/g, " ")
+  .replace(/\b\w/g, (character) => character.toUpperCase());
+
+const safeSnapshotLink = (value: string) => {
+  const link = value.trim();
+  return /^https?:\/\//i.test(link) || (link.startsWith("/") && !link.startsWith("//")) ? link : "";
+};
+
+const SnapshotValue = ({ value, fieldName = "", depth = 0 }: { value: unknown; fieldName?: string; depth?: number }) => {
+  if (value == null || value === "") return <span className="text-slate-400">Not provided</span>;
+  if (typeof value === "boolean") return <span>{value ? "Yes" : "No"}</span>;
+  if (typeof value === "number") return <span>{value}</span>;
+  if (typeof value === "string") {
+    const link = safeSnapshotLink(value);
+    const imageField = /image|thumbnail|cover/i.test(fieldName);
+    if (imageField && (link || value.startsWith("data:image/"))) {
+      return <img src={link || value} alt="CMS preview" className="max-h-48 w-full rounded-lg bg-slate-100 object-cover" />;
+    }
+    if (link) {
+      return <a href={link} target="_blank" rel="noopener noreferrer" className="break-all text-blue-700 underline">{value}</a>;
+    }
+    return <span className="whitespace-pre-wrap break-words">{value}</span>;
+  }
+  if (Array.isArray(value)) {
+    if (!value.length) return <span className="text-slate-400">No items</span>;
+    return (
+      <div className="grid gap-2 sm:grid-cols-2">
+        {value.map((item, index) => (
+          <div key={index} className="min-w-0 rounded-lg border border-slate-200 bg-white p-3">
+            <SnapshotValue value={item} depth={depth + 1} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  const record = parseRecord(value);
+  const heading = textValue(record.title || record.name || record.number || record.label);
+  const entries = Object.entries(record).filter(([key, entry]) => (
+    !snapshotHiddenFields.has(key)
+    && !(heading && ["title", "name", "number", "label"].includes(key))
+    && entry !== null
+    && entry !== undefined
+    && entry !== ""
+  ));
+  if (!entries.length) return heading ? <strong className="text-slate-800">{heading}</strong> : <span className="text-slate-400">No additional content</span>;
+  return (
+    <div className="min-w-0 space-y-2">
+      {heading && <h5 className="font-semibold text-slate-900">{heading}</h5>}
+      <dl className={`grid min-w-0 gap-2 ${depth < 2 ? "sm:grid-cols-2" : ""}`}>
+        {entries.map(([key, entry]) => (
+          <div key={key} className="min-w-0 rounded-lg bg-slate-50 p-2">
+            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">{snapshotFieldLabel(key)}</dt>
+            <dd className="mt-1 min-w-0 text-sm text-slate-700"><SnapshotValue value={entry} fieldName={key} depth={depth + 1} /></dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+};
+
+const ContentPreviewSnapshot = ({ content }: { content: Record<string, unknown> }) => (
+  <div className="mt-2 max-h-96 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-3">
+    <SnapshotValue value={content} />
+  </div>
+);
 
 const statusClass = (status: string) => {
   if (status === "published") return "bg-emerald-100 text-emerald-700";
@@ -476,6 +567,31 @@ const getErrorDetail = (err: unknown, fallback: string) => {
   return fallback;
 };
 
+type CMSPublishedRemovalError = {
+  code: "published_content_requires_archive";
+  content_type: string;
+  detail?: string;
+  items: Array<{ id: string; label?: string }>;
+};
+
+const getPublishedRemovalError = (err: unknown): CMSPublishedRemovalError | null => {
+  if (!(err instanceof Error) || !err.message) return null;
+  try {
+    const parsed = JSON.parse(err.message) as Partial<CMSPublishedRemovalError>;
+    if (
+      parsed.code !== "published_content_requires_archive"
+      || typeof parsed.content_type !== "string"
+      || !Array.isArray(parsed.items)
+    ) return null;
+    const items = parsed.items
+      .filter((item): item is { id: string; label?: string } => Boolean(item && typeof item.id === "string" && item.id))
+      .map((item) => ({ id: item.id, label: typeof item.label === "string" ? item.label : item.id }));
+    return items.length ? { ...parsed, code: parsed.code, content_type: parsed.content_type, items } : null;
+  } catch {
+    return null;
+  }
+};
+
 const slugify = (value: string) =>
   value
     .toLowerCase()
@@ -537,6 +653,25 @@ const publishedSlug = (item: CMSPage | CMSArticle) => {
   return typeof snapshotSlug === "string" && snapshotSlug.trim()
     ? snapshotSlug.trim()
     : item.slug;
+};
+
+const mergeCmsPageRecord = (existing: CMSPage | undefined, incoming: CMSPage): CMSPage => {
+  if (existing) {
+    const existingUpdated = Date.parse(existing.updated_at || "");
+    const incomingUpdated = Date.parse(incoming.updated_at || "");
+    if (Number.isFinite(existingUpdated) && Number.isFinite(incomingUpdated) && incomingUpdated < existingUpdated) {
+      return existing;
+    }
+  }
+  const sections = Array.isArray(incoming.sections) ? incoming.sections : existing?.sections || [];
+  return {
+    ...existing,
+    ...incoming,
+    sections,
+    section_count: Array.isArray(incoming.sections)
+      ? incoming.sections.length
+      : incoming.section_count ?? existing?.section_count,
+  } as CMSPage;
 };
 
 const absolutePublicUrl = (path: string) => {
@@ -893,21 +1028,16 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
 
   const loadPageDetail = useCallback(async (pageId: number) => {
     const detail = await cmsApi.getPage(pageId);
-    setPages((current) => current.map((page) => (page.id === detail.id ? detail : page)));
+    setPages((current) => current.map((page) => (
+      page.id === detail.id ? mergeCmsPageRecord(page, detail) : page
+    )));
     return detail;
   }, []);
 
   const mergePage = useCallback((nextPage: CMSPage) => {
     setPages((current) => {
       const existing = current.find((page) => page.id === nextPage.id);
-      const merged = {
-        ...existing,
-        ...nextPage,
-        sections: Array.isArray(nextPage.sections) ? nextPage.sections : existing?.sections || [],
-        section_count: Array.isArray(nextPage.sections)
-          ? nextPage.sections.length
-          : nextPage.section_count ?? existing?.section_count,
-      } as CMSPage;
+      const merged = mergeCmsPageRecord(existing, nextPage);
       return existing
         ? current.map((page) => page.id === nextPage.id ? merged : page)
         : [merged, ...current];
@@ -949,7 +1079,9 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     try {
       if (tab === "pages") {
         const pageRows = await cmsApi.listPages(search);
-        setPages(pageRows);
+        setPages((current) => pageRows.map((row) => (
+          mergeCmsPageRecord(current.find((page) => page.id === row.id), row)
+        )));
         setListPages((current) => ({ ...current, pages: 1 }));
         setHasMoreRows((current) => ({ ...current, pages: pageRows.length === CMS_LIST_PAGE_SIZE }));
         const initialPage = pageRows.find((page) => page.slug === "home") || pageRows[0];
@@ -1078,7 +1210,11 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     setNotice("");
     let fullPage = page;
     try {
-      if (!Array.isArray(page.sections)) fullPage = await cmsApi.getPage(page.id);
+      const loadedSectionCount = Array.isArray(page.sections) ? page.sections.length : 0;
+      const expectedSectionCount = Number(page.section_count || 0);
+      if (!Array.isArray(page.sections) || (expectedSectionCount > 0 && loadedSectionCount < expectedSectionCount)) {
+        fullPage = await cmsApi.getPage(page.id);
+      }
       if (pageOpenRequestRef.current !== requestId) return;
     } catch (error) {
       if (pageOpenRequestRef.current !== requestId) return;
@@ -1493,6 +1629,15 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     action: "submit" | "publish" | "reject" | "archive",
     label: string,
   ) => {
+    const workflowPage = kind === "page"
+      ? pages.find((page) => page.id === id)
+        || reviewQueue.pages.find((page) => page.id === id)
+        || (pageReviewPreview?.id === id ? pageReviewPreview : null)
+      : null;
+    if (kind === "page" && !workflowPage?.slug) {
+      setNotice(`Could not identify the fixed module for ${label}. Refresh Content Management and try again.`);
+      return;
+    }
     if (kind === "page" && action === "submit" && (
       (pageForm.id === id && pageFormHasChanges)
       || (Number(sectionForm.page) === id && sectionFormHasChanges)
@@ -1514,12 +1659,23 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     if (action === "reject" && remarks === null) return;
     setLoading(true);
     setNotice("");
+    const publishFixedModule = async () => {
+      const publishedModule = await cmsApi.publishModule(workflowPage!.slug);
+      mergePage(publishedModule);
+      // Read the committed module back before reporting success. This keeps
+      // an older page-detail request from putting the card back into Draft.
+      try {
+        return await cmsApi.getModule(workflowPage!.slug);
+      } catch {
+        return publishedModule;
+      }
+    };
     try {
       let updated: CMSPage | CMSArticle | CMSSection | null = null;
       if (kind === "page") {
-        if (action === "submit") updated = await cmsApi.submitPage(id) as CMSPage;
-        if (action === "publish") updated = await cmsApi.publishPage(id) as CMSPage;
-        if (action === "reject") updated = await cmsApi.rejectPage(id, remarks || "") as CMSPage;
+        if (action === "submit") updated = await cmsApi.submitModule(workflowPage!.slug);
+        if (action === "publish") updated = await publishFixedModule();
+        if (action === "reject") updated = await cmsApi.rejectModule(workflowPage!.slug, remarks || "");
         if (action === "archive") updated = await cmsApi.archivePage(id) as CMSPage;
         if (updated) mergePage(updated as CMSPage);
       } else if (kind === "article") {
@@ -1548,6 +1704,41 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         }));
       }
     } catch (error) {
+      const removal = getPublishedRemovalError(error);
+      if (
+        kind === "page"
+        && action === "publish"
+        && isAdmin
+        && workflowPage?.slug === "home"
+        && removal?.content_type === "carousel items"
+      ) {
+        const itemLabels = removal.items.map((item) => item.label || item.id).join(", ");
+        const confirmed = window.confirm(
+          `These previously published carousel slides were removed from the Home draft:\n\n${itemLabels}\n\nArchive them and continue publishing Home? Archived slides remain recoverable from Archived Content.`,
+        );
+        if (!confirmed) {
+          setNotice(`Publishing paused. Archive the removed carousel slides before publishing: ${itemLabels}.`);
+          return;
+        }
+        try {
+          for (const item of removal.items) {
+            const rows = await cmsApi.listManagedCollection("carousel-items", item.id);
+            const row = rows.find((candidate) => candidate.stable_key === item.id);
+            if (!row) throw new Error(`The removed carousel slide "${item.label || item.id}" could not be found.`);
+            await cmsApi.archiveManagedCollection("carousel-items", row.id);
+          }
+          const publishedModule = await publishFixedModule();
+          mergePage(publishedModule);
+          setReviewQueue((current) => ({
+            ...current,
+            pages: current.pages.filter((item) => item.id !== id),
+          }));
+          setNotice(`${label}: removed carousel slides archived and publish completed.`);
+        } catch (recoveryError) {
+          setNotice(getErrorDetail(recoveryError, `The removed carousel slides could not be archived, so ${label} was not published.`));
+        }
+        return;
+      }
       setNotice(getErrorDetail(error, `Failed to ${action} ${label}.`));
     } finally {
       setLoading(false);
@@ -1622,11 +1813,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           const archiveDocuments = window.confirm(`"${label}" contains ${documentCount} active document${documentCount === 1 ? "" : "s"}. Archive the category and those documents together?`);
           if (!archiveDocuments) return;
           payload.document_resolution = "archive_documents";
-        }
-        if (dependencies.featured_slots.length > 0) {
-          const replacement = window.prompt("This category is featured on Home. Enter the stable code of a different published category to use instead:", "");
-          if (!replacement?.trim()) return;
-          payload.replacement_category = replacement.trim();
         }
       }
       if (!window.confirm(`Archive "${label}"? It remains recoverable from Archived Content.`)) return;
@@ -1738,9 +1924,13 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           return [textValue(row.id), row];
         }),
       );
-      const nodes = ORGANIZATION_NODE_DEFAULTS.map((defaults) => ({
-        ...defaults,
-        ...configuredById.get(defaults.id),
+      const nodes = ABOUT_ORGANIZATION_NODE_IDS.map((id) => ({
+        id,
+        label: "",
+        title: "",
+        subtitle: "",
+        items: [] as string[],
+        ...configuredById.get(id),
       }));
       const updateNode = (index: number, nextNode: Record<string, unknown>) => {
         const next = nodes.map((node) => ({ ...node }));
@@ -1762,15 +1952,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               const row = parseRecord(node);
               return (
                 <div key={textValue(row.id) || index} className="rounded-xl border border-slate-200 bg-white p-3">
-                  <p className="mb-3 text-xs font-bold uppercase tracking-wide text-blue-700">{textValue(row.label) || `Organization Position ${index + 1}`}</p>
+                  <p className="mb-3 text-xs font-bold uppercase tracking-wide text-blue-700">{aboutNodeEditorLabel(textValue(row.id)) || `Organization Position ${index + 1}`}</p>
                   <div className="grid min-w-0 gap-3 md:grid-cols-2">
-                    {developerMode && isAdmin && <Field label="Developer: Position ID" value={textValue(row.id)} onChange={(value) => updateNode(index, { ...row, id: value })} />}
                     <Field label="Group Label" value={textValue(row.label)} onChange={(value) => updateNode(index, { ...row, label: value })} />
                     <Field label="Name / Role" value={textValue(row.title)} onChange={(value) => updateNode(index, { ...row, title: value })} />
                     <Field label="Description / Office" value={textValue(row.subtitle)} onChange={(value) => updateNode(index, { ...row, subtitle: value })} />
-                    {Array.isArray(row.items) && row.items.length > 0 && (
-                      <Area label="Child Labels (one per line)" value={stringListToText(row.items)} onChange={(value) => updateNode(index, { ...row, items: stringListFromText(value) })} rows={4} />
-                    )}
+                    <Area label="Child Labels (one per line)" value={stringListToText(row.items)} onChange={(value) => updateNode(index, { ...row, items: stringListFromText(value) })} rows={4} helper="You may add, edit, or remove child labels. Spaces are preserved while typing." />
                   </div>
                 </div>
               );
@@ -1782,6 +1969,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
 
     if (sectionForm.section_key === "resolutions-archive") {
       const years = Array.isArray(sectionContent.years) ? sectionContent.years : [];
+      const legendItems = Array.isArray(sectionContent.legendItems) ? sectionContent.legendItems : [];
+      const categoryItems = Array.isArray(sectionContent.categoryItems) ? sectionContent.categoryItems : [];
       const updateYear = (yearIndex: number, nextYear: Record<string, unknown>) => {
         const next = [...years];
         next[yearIndex] = nextYear;
@@ -1794,6 +1983,41 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
             <Field label="Section Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
             <Field label="Document Legend Heading" value={textValue(sectionContent.legendTitle)} onChange={(value) => updateSectionContent("legendTitle", value)} />
             <Field label="Category Summary Heading" value={textValue(sectionContent.categoryTitle)} onChange={(value) => updateSectionContent("categoryTitle", value)} />
+          </div>
+          <div className="grid gap-4 xl:grid-cols-2">
+            <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+              <div className="flex items-center justify-between gap-3">
+                <h4 className="font-bold text-slate-900">Document Legend Entries</h4>
+                <button type="button" className="portal-btn portal-btn-ghost" onClick={() => setSectionContent({ ...sectionContent, legendItems: [...legendItems, { label: "New document type", color: "blue" }] })}>Add Legend Entry</button>
+              </div>
+              {legendItems.map((item, index) => {
+                const row = parseRecord(item);
+                return (
+                  <div key={index} className="grid gap-2 rounded-lg border border-slate-200 p-3 md:grid-cols-[minmax(0,1fr)_160px_auto] md:items-end">
+                    <Field label="Label" value={textValue(row.label)} onChange={(value) => setSectionContent({ ...sectionContent, legendItems: legendItems.map((entry, itemIndex) => itemIndex === index ? { ...parseRecord(entry), label: value } : entry) })} />
+                    <Select label="Color" value={textValue(row.color) || "blue"} onChange={(value) => setSectionContent({ ...sectionContent, legendItems: legendItems.map((entry, itemIndex) => itemIndex === index ? { ...parseRecord(entry), color: value } : entry) })} options={["blue", "amber", "purple", "emerald", "slate"].map((color) => ({ label: color, value: color }))} />
+                    <button type="button" className="pb-2 text-sm font-semibold text-red-600" onClick={() => setSectionContent({ ...sectionContent, legendItems: legendItems.filter((_, itemIndex) => itemIndex !== index) })}>Remove</button>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+              <div className="flex items-center justify-between gap-3">
+                <h4 className="font-bold text-slate-900">Category Summary Entries</h4>
+                <button type="button" className="portal-btn portal-btn-ghost" onClick={() => setSectionContent({ ...sectionContent, categoryItems: [...categoryItems, { title: "New category", description: "", color: "blue" }] })}>Add Category Entry</button>
+              </div>
+              {categoryItems.map((item, index) => {
+                const row = parseRecord(item);
+                return (
+                  <div key={index} className="grid gap-2 rounded-lg border border-slate-200 p-3 md:grid-cols-2">
+                    <Field label="Title" value={textValue(row.title)} onChange={(value) => setSectionContent({ ...sectionContent, categoryItems: categoryItems.map((entry, itemIndex) => itemIndex === index ? { ...parseRecord(entry), title: value } : entry) })} />
+                    <Select label="Color" value={textValue(row.color) || "blue"} onChange={(value) => setSectionContent({ ...sectionContent, categoryItems: categoryItems.map((entry, itemIndex) => itemIndex === index ? { ...parseRecord(entry), color: value } : entry) })} options={["blue", "green", "purple", "amber", "slate"].map((color) => ({ label: color, value: color }))} />
+                    <div className="md:col-span-2"><Area label="Description" value={textValue(row.description)} onChange={(value) => setSectionContent({ ...sectionContent, categoryItems: categoryItems.map((entry, itemIndex) => itemIndex === index ? { ...parseRecord(entry), description: value } : entry) })} rows={2} /></div>
+                    <button type="button" className="justify-self-start text-sm font-semibold text-red-600" onClick={() => setSectionContent({ ...sectionContent, categoryItems: categoryItems.filter((_, itemIndex) => itemIndex !== index) })}>Remove</button>
+                  </div>
+                );
+              })}
+            </div>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -1808,7 +2032,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   ...sectionContent,
                   years: [
                     ...years,
-                    { year: `Final Year ${new Date().getFullYear()}`, replaceExisting: false, resolutions: [] },
+                    { year: String(new Date().getFullYear()), replaceExisting: false, resolutions: [] },
                   ],
                 })}
               >
@@ -1832,7 +2056,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               <div key={yearIndex} className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
                 <div className="flex flex-wrap items-end justify-between gap-3">
                   <div className="min-w-[220px] flex-1">
-                    <Field label="Archive Year Label" value={textValue(year.year)} onChange={(value) => updateYear(yearIndex, { ...year, year: value })} />
+                    <Field label="Resolution Year (YYYY)" value={String(year.year ?? "")} onChange={(value) => updateYear(yearIndex, { ...year, year: value })} helper="Use a four-digit year, such as 2026." />
                   </div>
                   <div className="flex gap-3 text-sm">
                     <button
@@ -1840,7 +2064,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                       className="font-semibold text-blue-600"
                       onClick={() => updateYear(yearIndex, {
                         ...year,
-                        resolutions: [...resolutions, { title: "New RDC-NCR Resolution", url: "" }],
+                        resolutions: [...resolutions, { number: "", title: "New RDC-NCR Resolution", description: "", date: "", url: "" }],
                       })}
                     >
                       Add Resolution
@@ -1867,10 +2091,29 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   };
                   return (
                     <div key={resolutionIndex} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                      <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(220px,0.45fr)_auto] md:items-end">
-                        <Area label={`Resolution ${resolutionIndex + 1} Title`} value={textValue(resolution.title)} onChange={(value) => updateResolution({ ...resolution, title: value })} rows={3} />
+                      <div className="grid min-w-0 gap-3 md:grid-cols-2">
+                        <Field label="Resolution Number" value={textValue(resolution.number || resolution.resolutionNumber)} onChange={(value) => updateResolution({ ...resolution, number: value, resolutionNumber: value })} helper="Example: RDC-NCR Resolution No. 01, s. 2026" />
+                        <Field label="Resolution Date (optional)" value={textValue(resolution.date)} onChange={(value) => updateResolution({ ...resolution, date: value })} helper="Use YYYY-MM-DD." />
+                        <div className="md:col-span-2"><Area label={`Resolution ${resolutionIndex + 1} Title`} value={textValue(resolution.title)} onChange={(value) => updateResolution({ ...resolution, title: value })} rows={2} /></div>
+                        <div className="md:col-span-2"><Area label="Description (optional)" value={textValue(resolution.description)} onChange={(value) => updateResolution({ ...resolution, description: value })} rows={3} /></div>
+                        <MediaAssetPicker
+                          {...mediaPickerStatus}
+                          label="CMS Resolution Document"
+                          assets={media.filter((item) => item.file_type === "document" || item.mime_type === "application/pdf")}
+                          value={stringValue(resolution.mediaAssetId || resolution.documentAssetId || resolution.attachment)}
+                          onChange={(value) => {
+                            const selected = mediaById.get(value);
+                            updateResolution({
+                              ...resolution,
+                              mediaAssetId: selected?.id || "",
+                              documentAssetId: selected?.id || "",
+                              url: selected ? portableMediaUrl(selected.url) : textValue(resolution.url),
+                            });
+                          }}
+                          helper="Choose an existing document from the Media Library, or provide a public URL."
+                        />
                         <Field label="Document URL (optional)" value={textValue(resolution.url)} onChange={(value) => updateResolution({ ...resolution, url: value })} />
-                        <button type="button" className="pb-2 text-sm font-semibold text-red-600" onClick={() => void removeManagedCollectionItem(
+                        <button type="button" className="justify-self-start text-sm font-semibold text-red-600 md:col-span-2" onClick={() => void removeManagedCollectionItem(
                           "resolutions",
                           textValue(resolution.id),
                           textValue(resolution.title || resolution.number) || `Resolution ${resolutionIndex + 1}`,
@@ -2309,48 +2552,42 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       }
       return (
         <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          {["development-plans", "investment-programming", "monitoring-evaluation"].includes(sectionForm.section_key) && (
-            <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
-              <Field
-                label="Featured Publication Category Code"
-                value={textValue(sectionContent.featuredCategoryCode)}
-                onChange={(value) => updateSectionContent("featuredCategoryCode", value)}
-                helper="Enter the stable code of a published, active Publications category. The three Home feature slots must use different categories."
-              />
-            </div>
-          )}
           <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
             <div className="grid gap-3">
               <Field label="Group Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
               <Field label="Group Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
             </div>
-            <button type="button" className="portal-btn portal-btn-ghost" onClick={addDocumentItem}>
-              {sectionForm.section_key === "legal-basis"
-                ? "Add Legal Document"
-                : sectionForm.section_key === "committees"
-                  ? "Add Committee"
-                  : "Add Card"}
-            </button>
+            {sectionForm.section_key !== "committees" && (
+              <button type="button" className="portal-btn portal-btn-ghost" onClick={addDocumentItem}>
+                {sectionForm.section_key === "legal-basis" ? "Add Legal Document" : "Add Card"}
+              </button>
+            )}
           </div>
           {items.map((item, index) => {
             const row = parseRecord(item);
             return (
               <div key={index} className="rounded-xl border border-slate-200 bg-white p-3">
                 <div className="mb-3 flex items-center justify-between gap-3">
-                  <strong className="text-sm text-slate-800">Card {index + 1}</strong>
-                  <button
-                    type="button"
-                    className="text-sm text-red-600"
-                    onClick={() => {
-                      const next = items.filter((_, itemIndex) => itemIndex !== index);
-                      setSectionContent({ ...sectionContent, items: next });
-                    }}
-                  >
-                    Remove
-                  </button>
+                  <strong className="text-sm text-slate-800">
+                    {sectionForm.section_key === "committees"
+                      ? `${aboutNodeEditorLabel(textValue(row.id)) || `Committee ${index + 1}`} (fixed committee)`
+                      : `Card ${index + 1}`}
+                  </strong>
+                  {sectionForm.section_key !== "committees" && (
+                    <button
+                      type="button"
+                      className="text-sm text-red-600"
+                      onClick={() => {
+                        const next = items.filter((_, itemIndex) => itemIndex !== index);
+                        setSectionContent({ ...sectionContent, items: next });
+                      }}
+                    >
+                      Remove
+                    </button>
+                  )}
                 </div>
                 <div className="grid min-w-0 gap-3 md:grid-cols-2">
-                  {developerMode && isAdmin && <Field label="Developer: Stable ID" value={textValue(row.id)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, id: value }))} />}
+                  {developerMode && isAdmin && sectionForm.section_key !== "committees" && <Field label="Developer: Stable ID" value={textValue(row.id)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, id: value }))} />}
                   <Field label="Title" value={textValue(row.title)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, title: value }))} />
                   <Field label="Category Label" value={textValue(row.category)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, category: value }))} />
                   <Field label="Description" value={textValue(row.description)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, description: value }))} />
@@ -2696,12 +2933,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         </div>
         {notice && (
           <div
-            role={/failed|error|invalid|cannot|could not/i.test(notice) ? "alert" : "status"}
+            role={/failed|error|invalid|cannot|could not|not published/i.test(notice) ? "alert" : "status"}
             aria-live="polite"
             className={`border-t px-5 py-3 text-sm ${
-              /failed|error|invalid|cannot|could not/i.test(notice)
+              /failed|error|invalid|cannot|could not|not published/i.test(notice)
                 ? "border-rose-200 bg-rose-50 text-rose-800"
-                : /warning|unsaved|review|locked/i.test(notice)
+                : /warning|unsaved|review|locked|publishing paused|archive .*before publishing/i.test(notice)
                   ? "border-amber-200 bg-amber-50 text-amber-800"
                   : "border-emerald-200 bg-emerald-50 text-emerald-800"
             }`}
@@ -3468,7 +3705,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   const content = section.content_json || {};
                   const title = textValue(content.title) || sectionTypeLabels.get(section.section_type) || section.section_key;
                   const summary = textValue(content.subtitle) || textValue(content.description) || textValue(content.body) || textValue(content.text);
-                  return <article key={section.id} className="rounded-xl border border-slate-200 p-4"><div className="flex flex-wrap items-center gap-2"><h4 className="font-semibold">{title}</h4><span className="rounded-full bg-slate-100 px-2 py-1 text-xs">{sectionTypeLabels.get(section.section_type) || section.section_type}</span><span className="text-xs text-slate-500">{section.is_visible ? "Visible" : "Hidden"}</span></div>{summary && <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">{summary}</p>}<details className="mt-3"><summary className="cursor-pointer text-sm text-blue-700">Structured content</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 p-3 text-xs">{JSON.stringify(content, null, 2)}</pre></details></article>;
+                  return <article key={section.id} className="rounded-xl border border-slate-200 p-4"><div className="flex flex-wrap items-center gap-2"><h4 className="font-semibold">{title}</h4><span className="rounded-full bg-slate-100 px-2 py-1 text-xs">{sectionTypeLabels.get(section.section_type) || section.section_type}</span><span className="text-xs text-slate-500">{section.is_visible ? "Visible" : "Hidden"}</span></div>{summary && <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">{summary}</p>}<details className="mt-3"><summary className="cursor-pointer text-sm text-blue-700">Preview Snapshot</summary><ContentPreviewSnapshot content={content} /></details></article>;
                 })}</div>
               </>;
             })()}
@@ -3956,10 +4193,17 @@ const SiteSettingFields = ({
       </div>
     );
   } else if (row.key === "media-categories") {
-    const categories = [...new Set(["General", ...(Array.isArray(objectValue.categories) ? objectValue.categories.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map((item) => item.trim()) : [])])];
+    const configuredCategories = Array.isArray(objectValue.categories)
+      ? objectValue.categories.filter((item): item is string => typeof item === "string" && item !== "General")
+      : [];
+    const categories = ["General", ...configuredCategories];
     const usage = new Map<string, number>();
     media.forEach((asset) => usage.set(asset.category || "General", (usage.get(asset.category || "General") || 0) + 1));
-    const updateCategories = (next: string[]) => onChange({ ...objectValue, categories: [...new Set(["General", ...next.map((item) => item.trim()).filter(Boolean)])] });
+    const updateCategories = (next: string[]) => onChange({ ...objectValue, categories: ["General", ...next.filter((item) => item !== "General")] });
+    const normalizeCategories = (next: string[]) => onChange({
+      ...objectValue,
+      categories: [...new Set(["General", ...next.map((item) => item.trim()).filter(Boolean)])],
+    });
     const addCategory = () => {
       const next = newCategory.trim();
       if (!next || categories.some((category) => category.toLowerCase() === next.toLowerCase())) return;
@@ -3970,17 +4214,17 @@ const SiteSettingFields = ({
       <div className="space-y-3">
         <p className="text-sm text-slate-600">General is always available. Reassign all media from a category before renaming or removing it.</p>
         <div className="space-y-2">
-          {categories.map((category) => {
+          {categories.map((category, categoryIndex) => {
             const assigned = usage.get(category) || 0;
             const isGeneral = category === "General";
-            return <div key={category} className="grid min-w-0 gap-2 rounded-lg border border-slate-200 p-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
+            return <div key={`${categoryIndex}-${category}`} className="grid min-w-0 gap-2 rounded-lg border border-slate-200 p-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
               <input aria-label={`Editorial category ${category}`} className="min-w-0 rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50" value={category} disabled={isGeneral || assigned > 0 || disabled} onChange={(event) => {
-                const next = event.target.value.trim();
-                if (next && categories.some((item) => item !== category && item.toLowerCase() === next.toLowerCase())) return;
-                updateCategories(categories.map((item) => item === category ? next : item));
-              }} />
+                const next = event.target.value;
+                if (next.trim() && categories.some((item, itemIndex) => itemIndex !== categoryIndex && item.trim().toLowerCase() === next.trim().toLowerCase())) return;
+                updateCategories(categories.map((item, itemIndex) => itemIndex === categoryIndex ? next : item));
+              }} onBlur={() => normalizeCategories(categories)} />
               <span className="text-xs text-slate-500">{isGeneral ? "Required" : `${assigned} file${assigned === 1 ? "" : "s"} assigned`}</span>
-              {!isGeneral && <button type="button" className="text-sm font-semibold text-rose-700 disabled:cursor-not-allowed disabled:opacity-50" disabled={disabled || assigned > 0} onClick={() => updateCategories(categories.filter((item) => item !== category))}>Remove</button>}
+              {!isGeneral && <button type="button" className="text-sm font-semibold text-rose-700 disabled:cursor-not-allowed disabled:opacity-50" disabled={disabled || assigned > 0} onClick={() => normalizeCategories(categories.filter((_, itemIndex) => itemIndex !== categoryIndex))}>Remove</button>}
             </div>;
           })}
         </div>

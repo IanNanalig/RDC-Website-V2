@@ -115,6 +115,7 @@ def compose_public_page_snapshot(page):
         CMSPublicationDocument,
         CMSResolution,
     )
+    from cms.services.collections import _referenced_keys
 
     snapshot = deepcopy(page.published_snapshot_json or {})
     sections = snapshot.get("sections")
@@ -131,10 +132,19 @@ def compose_public_page_snapshot(page):
             resolved_at__isnull=True,
         ).values_list("section_key", flat=True)
     )
+    published_references = _referenced_keys(page, published=True)
 
     if page.slug == "home":
+        for section_key in ("development-plans", "investment-programming", "monitoring-evaluation"):
+            section = by_key.get(section_key)
+            if section:
+                section["content"].pop("featuredCategoryCode", None)
+                section["content"].pop("featuredCategory", None)
         carousel = list(
-            CMSCarouselItem.objects.filter(published_at__isnull=False)
+            CMSCarouselItem.objects.filter(
+                published_at__isnull=False,
+                stable_key__in=published_references["carousel"],
+            )
             .exclude(status="archived")
             .order_by("sort_order", "id")
             .values_list("published_snapshot_json", flat=True)
@@ -142,48 +152,23 @@ def compose_public_page_snapshot(page):
         if carousel and "hero-carousel" in by_key and "hero-carousel" not in unresolved_sections:
             by_key["hero-carousel"]["content"]["slides"] = [row for row in carousel if row]
 
-        category_documents = {}
-        for document in (
-            CMSPublicationDocument.objects.filter(published_at__isnull=False)
-            .exclude(status="archived")
-            .select_related("category")
-            .order_by("sort_order", "id")
-        ):
-            if document.published_snapshot_json:
-                category_documents.setdefault(document.category.code, []).append(
-                    document.published_snapshot_json
-                )
-        categories = {}
-        for category in (
-            CMSPublicationCategory.objects.filter(published_at__isnull=False)
-            .exclude(status="archived")
-        ):
-            if not category.published_snapshot_json:
-                continue
-            category_snapshot = deepcopy(category.published_snapshot_json)
-            category_snapshot["documents"] = category_documents.get(category.code, [])
-            categories[category.code] = category_snapshot
-        for section_key in ("development-plans", "investment-programming", "monitoring-evaluation"):
-            section = by_key.get(section_key)
-            if not section:
-                continue
-            code = str(section["content"].get("featuredCategoryCode") or "").strip()
-            category = categories.get(code)
-            if category:
-                section["content"]["featuredCategoryCode"] = code
-                section["content"]["featuredCategory"] = category
-
     if (
         page.slug == "publications"
         and "publication-catalog" in by_key
         and "publication-catalog" not in unresolved_sections
     ):
         documents = {}
-        for row in CMSPublicationDocument.objects.filter(published_at__isnull=False).exclude(status="archived").select_related("category"):
+        for row in CMSPublicationDocument.objects.filter(
+            published_at__isnull=False,
+            stable_key__in=published_references["documents"],
+        ).exclude(status="archived").select_related("category"):
             if row.published_snapshot_json:
                 documents.setdefault(row.category.code, []).append(row.published_snapshot_json)
         categories = []
-        for row in CMSPublicationCategory.objects.filter(published_at__isnull=False).exclude(status="archived").order_by("sort_order", "id"):
+        for row in CMSPublicationCategory.objects.filter(
+            published_at__isnull=False,
+            code__in=published_references["categories"],
+        ).exclude(status="archived").order_by("sort_order", "id"):
             if not row.published_snapshot_json:
                 continue
             category = deepcopy(row.published_snapshot_json)
@@ -200,12 +185,15 @@ def compose_public_page_snapshot(page):
         and "resolutions-archive" not in unresolved_sections
     ):
         years = {}
-        for row in CMSResolution.objects.filter(published_at__isnull=False).exclude(status="archived").order_by("-year", "sort_order", "id"):
+        for row in CMSResolution.objects.filter(
+            published_at__isnull=False,
+            stable_key__in=published_references["resolutions"],
+        ).exclude(status="archived").order_by("-year", "sort_order", "id"):
             if row.published_snapshot_json:
                 years.setdefault(row.year, []).append(row.published_snapshot_json)
         if years:
             by_key["resolutions-archive"]["content"]["years"] = [
-                {"year": year, "resolutions": rows} for year, rows in sorted(years.items(), reverse=True)
+                {"year": str(year), "resolutions": rows} for year, rows in sorted(years.items(), reverse=True)
             ]
 
     return snapshot

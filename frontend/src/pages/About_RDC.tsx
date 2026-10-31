@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { ABOUT_ORGANIZATION_NODE_IDS } from "../content/aboutStructure";
 import cmsApi, { type CMSPageSnapshot } from "../services/cmsApi";
 import { canDownloadDocument, downloadDocument } from "../utils/documentDownload";
 
@@ -33,6 +34,24 @@ const isVisible = (value: unknown) => {
   const row = asRecord(value);
   return row.isVisible !== false && row.visible !== false;
 };
+
+const dotColorClass = (color: string) => ({
+  blue: "bg-blue-600",
+  amber: "bg-amber-600",
+  purple: "bg-purple-600",
+  emerald: "bg-emerald-600",
+  green: "bg-green-600",
+  slate: "bg-slate-600",
+}[color] || "bg-slate-600");
+
+const textColorClass = (color: string) => ({
+  blue: "text-blue-600",
+  amber: "text-amber-600",
+  purple: "text-purple-600",
+  emerald: "text-emerald-600",
+  green: "text-green-600",
+  slate: "text-slate-700",
+}[color] || "text-slate-700");
 
 const getAboutSection = (page: CMSPageSnapshot | null, sectionKey: string) =>
   page?.sections.find((section) => section.sectionKey === sectionKey)?.content ?? null;
@@ -70,23 +89,6 @@ type Committee = {
   };
 };
 
-// Shared with the CMS editor so the fixed chart layout has editable labels.
-// eslint-disable-next-line react-refresh/only-export-components
-export const ORGANIZATION_NODE_DEFAULTS = [
-  { id: "chairperson", label: "Leadership", title: "Chairperson", subtitle: "NEDA Regional Director", items: [] },
-  { id: "vice-chair", label: "Leadership", title: "Vice-Chairperson", subtitle: "Designated Representative", items: [] },
-  { id: "secretariat", label: "Core Office", title: "Secretariat", subtitle: "NCR Regional Office", items: [] },
-  { id: "secretary", label: "Core Office", title: "Secretary", subtitle: "Coordinating Officer", items: [] },
-  { id: "executive-committee", label: "Decision Body", title: "Executive Committee", subtitle: "Core Decision Body", items: [] },
-  { id: "voting-members", label: "Membership", title: "Voting Members", subtitle: "", items: ["17 MM Mayors", "President of MMVML", "President of MMCL"] },
-  { id: "non-voting-members", label: "Membership", title: "Non-Voting Members", subtitle: "", items: ["Secretary/Head of Agency", "Regional Directors (DOF, DOTI, DICT, etc.)", "PSO/NGO Representatives"] },
-  { id: "special-non-voting", label: "Membership", title: "Designation of Special Non-Voting Members (SNVMs)", subtitle: "Members of House of Representatives, NEDA Central Office, Other Agencies", items: [] },
-  { id: "sectoral-committees", label: "Committees", title: "Sectoral Committees", subtitle: "", items: ["Economic & Environment", "Finance & Dev Admin", "Infrastructure", "Social Development"] },
-  { id: "special-committees", label: "Committees", title: "Special Committees", subtitle: "", items: ["Project Monitoring (RPMES)", "Land Use (RLUC)", "Research & Innovation", "Dev Committees"] },
-  { id: "affiliate-committees", label: "Committees", title: "Affiliate Committees", subtitle: "", items: ["Welfare of Children (RCWC)", "SME Development (RSMEDC)", "Statistical Committee (RSC)", "Peace & Order (RPOC)"] },
-  { id: "advisory-committee", label: "Advisory", title: "Advisory Committee", subtitle: "Expert Consultation Body", items: [] },
-] as const;
-
 type DetailedCommittee = {
   id: string;
   title: string;
@@ -104,6 +106,14 @@ const CommitteeModal: React.FC<{
   detailedCommittee: DetailedCommittee | null;
   onClose: () => void;
 }> = ({ committee, detailedCommittee, onClose }) => {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
   if (!committee) return null;
 
   const hasDetailedInfo = detailedCommittee && detailedCommittee.subSections;
@@ -116,6 +126,9 @@ const CommitteeModal: React.FC<{
       {/* Modal Container */}
       <div className="flex min-h-full items-center justify-center p-4">
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="committee-dialog-title"
           className={`relative w-full ${
             hasDetailedInfo ? "max-w-6xl" : "max-w-4xl"
           } bg-white rounded-2xl shadow-2xl overflow-hidden`}
@@ -128,11 +141,13 @@ const CommitteeModal: React.FC<{
                   {committee.icon}
                 </div>
                 <div>
-                  <h2 className="text-3xl font-bold">{committee.title}</h2>
+                  <h2 id="committee-dialog-title" className="text-3xl font-bold">{committee.title}</h2>
                   <p className="text-white/90 mt-2">{committee.description}</p>
                 </div>
               </div>
               <button
+                type="button"
+                aria-label="Close committee details"
                 onClick={onClose}
                 className="w-10 h-10 rounded-full bg-white/20 hover:bg-white/30 flex items-center justify-center transition"
               >
@@ -164,6 +179,20 @@ const CommitteeModal: React.FC<{
                 {committee.content.overview}
               </p>
             </div>
+
+            {committee.content.functions.length > 0 && (
+              <div className="mb-8">
+                <h3 className="text-xl font-bold text-slate-900 mb-4">Functions</h3>
+                <ul className="space-y-3">
+                  {committee.content.functions.map((item, index) => (
+                    <li key={index} className="flex items-start gap-3">
+                      <span className="mt-2 h-2 w-2 flex-shrink-0 rounded-full bg-blue-600" />
+                      <span className="text-slate-700">{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             {/* For committees with detailed info (Sectoral, Special, Affiliate) */}
             {hasDetailedInfo && detailedCommittee?.subSections ? (
@@ -238,8 +267,19 @@ const CommitteeModal: React.FC<{
             )}
 
             {/* Action Buttons */}
-            <div className="mt-8 pt-6 border-t border-slate-200 flex justify-end">
+            <div className="mt-8 pt-6 border-t border-slate-200 flex flex-wrap justify-end gap-3">
+              {committee.url && (
+                <a
+                  href={committee.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-6 py-3 bg-slate-100 text-slate-800 rounded-lg font-medium hover:bg-slate-200 transition"
+                >
+                  Open Committee Document
+                </a>
+              )}
               <button
+                type="button"
                 onClick={onClose}
                 className="px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-lg font-medium hover:opacity-90 transition"
               >
@@ -255,6 +295,7 @@ const CommitteeModal: React.FC<{
 
 export default function AboutRDC() {
   const [aboutCmsPage, setAboutCmsPage] = useState<CMSPageSnapshot | null>(null);
+  const [aboutLoadState, setAboutLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [selectedNode, setSelectedNode] = useState<string | null>(
     "chairperson",
   );
@@ -264,10 +305,7 @@ export default function AboutRDC() {
   const [selectedDetailedCommittee, setSelectedDetailedCommittee] =
     useState<DetailedCommittee | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [expandedYears, setExpandedYears] = useState<string[]>([
-    "Final Year 2025",
-    "Final Year 2024",
-  ]);
+  const [expandedYears, setExpandedYears] = useState<string[]>([]);
   const [downloadingDocumentId, setDownloadingDocumentId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -275,10 +313,16 @@ export default function AboutRDC() {
     cmsApi
       .getPublicPage("about-rdc")
       .then((page) => {
-        if (active) setAboutCmsPage(page);
+        if (active) {
+          setAboutCmsPage(page);
+          setAboutLoadState("ready");
+        }
       })
       .catch(() => {
-        if (active) setAboutCmsPage(null);
+        if (active) {
+          setAboutCmsPage(null);
+          setAboutLoadState("error");
+        }
       });
     return () => {
       active = false;
@@ -369,38 +413,53 @@ export default function AboutRDC() {
 
   const organizationNodes = useMemo(() => {
     const cmsNodes = asArray(asRecord(organizationContent).nodes).map(asRecord);
-    return ORGANIZATION_NODE_DEFAULTS.map((fallback) => {
-      const row = cmsNodes.find((node) => asString(node.id) === fallback.id) || {};
+    return ABOUT_ORGANIZATION_NODE_IDS.map((id) => {
+      const row = cmsNodes.find((node) => asString(node.id) === id) || {};
       const items = asArray(row.items).map((item) => asString(item)).filter(Boolean);
       return {
-        ...fallback,
+        id,
         label: asString(row.label),
         title: asString(row.title),
         subtitle: asString(row.subtitle),
-        items: Array.isArray(row.items) ? items : [],
+        items,
       };
     });
   }, [organizationContent]);
 
   const organizationNode = (id: string) =>
-    organizationNodes.find((node) => node.id === id) || ORGANIZATION_NODE_DEFAULTS[0];
+    organizationNodes.find((node) => node.id === id) || {
+      id,
+      label: "",
+      title: "",
+      subtitle: "",
+      items: [] as string[],
+    };
 
   const resolutionYears = useMemo(() => {
-    const years: Array<{ year: string; content: Array<{ title: string; url: string }> }> = [];
+    const years: Array<{
+      year: string;
+      content: Array<{ title: string; number: string; description: string; date: string; url: string }>;
+    }> = [];
 
-    asArray(asRecord(resolutionsContent).years).map(asRecord).forEach((row, index) => {
-      const year = asString(row.year, `Archive ${index + 1}`);
+    asArray(asRecord(resolutionsContent).years).map(asRecord).forEach((row) => {
+      const year = typeof row.year === "number" || typeof row.year === "string"
+        ? String(row.year).trim()
+        : "";
+      if (!/^\d{4}$/.test(year)) return;
       const content = asArray(row.resolutions || row.items || row.content)
         .map((item) => {
-          if (typeof item === "string") return { title: asString(item), url: "" };
+          if (typeof item === "string") return { title: asString(item), number: "", description: "", date: "", url: "" };
           const record = asRecord(item);
           if (!isVisible(record)) return null;
           return {
             title: asString(record.title || record.name),
+            number: asString(record.number || record.resolutionNumber),
+            description: asString(record.description),
+            date: asString(record.date),
             url: asString(record.url || record.link),
           };
         })
-        .filter((item): item is { title: string; url: string } => Boolean(item?.title));
+        .filter((item): item is { title: string; number: string; description: string; date: string; url: string } => Boolean(item?.title));
       const matchedIndex = years.findIndex((entry) => entry.year === year);
       if (matchedIndex >= 0 && row.replaceExisting !== true) {
         const mergedContent = [...years[matchedIndex].content];
@@ -413,7 +472,7 @@ export default function AboutRDC() {
       } else if (matchedIndex >= 0) {
         years[matchedIndex] = { year, content };
       } else {
-        years.unshift({ year, content });
+        years.push({ year, content });
       }
     });
 
@@ -431,11 +490,35 @@ export default function AboutRDC() {
       : `${values[0]}-${values[values.length - 1]}`;
   }, [resolutionYears]);
 
+  const resolutionLegendItems = useMemo(() =>
+    asArray(asRecord(resolutionsContent).legendItems)
+      .map(asRecord)
+      .map((row) => ({ label: asString(row.label), color: asString(row.color, "slate") }))
+      .filter((row) => row.label),
+  [resolutionsContent]);
+
+  const resolutionCategoryItems = useMemo(() =>
+    asArray(asRecord(resolutionsContent).categoryItems)
+      .map(asRecord)
+      .map((row) => ({
+        title: asString(row.title),
+        description: asString(row.description),
+        color: asString(row.color, "slate"),
+      }))
+      .filter((row) => row.title || row.description),
+  [resolutionsContent]);
+
+  useEffect(() => {
+    setExpandedYears((current) => current.length || !resolutionYears.length
+      ? current
+      : [resolutionYears[0].year]);
+  }, [resolutionYears]);
+
   const handleView = (doc: LegalDocument, event: React.MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
 
-    if (doc.url === "#") {
+    if (!doc.url || doc.url === "#") {
       alert(
         `View link for "${doc.title}" is not yet available. Please check back later.`,
       );
@@ -462,10 +545,6 @@ export default function AboutRDC() {
   };
 
   const handleCommitteeClick = (committee: Committee) => {
-    if (committee.url) {
-      window.open(committee.url, "_blank", "noopener,noreferrer");
-      return;
-    }
     setSelectedCommittee(committee);
 
     setSelectedDetailedCommittee(null);
@@ -502,6 +581,19 @@ export default function AboutRDC() {
     return "from-slate-500 to-gray-600";
   };
 
+  if (aboutLoadState === "loading") {
+    return <div className="min-h-[50vh] bg-slate-50 px-4 py-20 text-center text-slate-600">Loading About RDC content...</div>;
+  }
+
+  if (aboutLoadState === "error" || !aboutCmsPage) {
+    return (
+      <div className="min-h-[50vh] bg-slate-50 px-4 py-20 text-center">
+        <h1 className="text-2xl font-bold text-slate-900">About RDC content is temporarily unavailable</h1>
+        <p className="mt-3 text-slate-600">Please refresh the page or try again later.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
       {/* Hero/Header */}
@@ -520,16 +612,10 @@ export default function AboutRDC() {
               </div>
             </div>
             <h1 className="text-4xl md:text-5xl font-extrabold mb-4">
-              {asString(
-                asRecord(heroContent).title,
-                "About Regional Development Council - NCR",
-              )}
+              {asString(asRecord(heroContent).title) || "Content not configured"}
             </h1>
             <p className="text-lg text-white/90 max-w-2xl mx-auto">
-              {asString(
-                asRecord(heroContent).subtitle,
-                "Mandates, functions, and organizational structure guiding sustainable development in Metro Manila",
-              )}
+              {asString(asRecord(heroContent).subtitle)}
             </p>
           </div>
         </div>
@@ -540,18 +626,17 @@ export default function AboutRDC() {
         <section>
           <div className="text-center mb-12">
             <h2 className="text-3xl font-bold text-slate-900 mb-4">
-              {asString(asRecord(legalContent).title, "Legal Basis & Framework")}
+              {asString(asRecord(legalContent).title) || "Content not configured"}
             </h2>
             <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-              {asString(
-                asRecord(legalContent).subtitle,
-                "The foundation documents that define our mandate, structure, and operational guidelines",
-              )}
+              {asString(asRecord(legalContent).subtitle)}
             </p>
           </div>
 
           {/* Changed grid to 3 columns and centered */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 max-w-5xl mx-auto">
+          {legalDocuments.length === 0 ? (
+            <p className="rounded-xl border border-slate-200 bg-white p-6 text-center text-slate-600">No legal documents are currently published.</p>
+          ) : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 max-w-5xl mx-auto">
             {legalDocuments.map((doc) => (
               <div
                 key={doc.id}
@@ -599,9 +684,11 @@ export default function AboutRDC() {
                   {/* Actions */}
                   <div className="mt-auto flex gap-2">
                     <button
+                      type="button"
                       onClick={(e) => handleView(doc, e)}
+                      disabled={!doc.url || doc.url === "#"}
                       className={`flex-1 px-4 py-3 text-center font-medium rounded-lg transition flex items-center justify-center gap-2 ${
-                        doc.url === "#"
+                        !doc.url || doc.url === "#"
                           ? "bg-slate-300 text-slate-500 cursor-not-allowed"
                           : "bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white hover:shadow-md"
                       }`}
@@ -655,24 +742,23 @@ export default function AboutRDC() {
                 </div>
               </div>
             ))}
-          </div>
+          </div>}
         </section>
 
         {/* Committees Section */}
         <section>
           <div className="text-center mb-12">
             <h2 className="text-3xl font-bold text-slate-900 mb-4">
-              {asString(asRecord(committeesContent).title, "Committees")}
+              {asString(asRecord(committeesContent).title) || "Content not configured"}
             </h2>
             <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-              {asString(
-                asRecord(committeesContent).subtitle,
-                "Click on any committee to view detailed information, functions, and members",
-              )}
+              {asString(asRecord(committeesContent).subtitle)}
             </p>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
+          {committees.length === 0 ? (
+            <p className="rounded-xl border border-slate-200 bg-white p-6 text-center text-slate-600">No committee details are currently published.</p>
+          ) : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
             {committees.map((committee) => (
               <button
                 key={committee.id}
@@ -722,10 +808,10 @@ export default function AboutRDC() {
                 ></div>
               </button>
             ))}
-          </div>
+          </div>}
 
           {/* Info Note */}
-          <div className="mt-10 text-center">
+          {committees.length > 0 && <div className="mt-10 text-center">
             <div className="inline-flex items-center gap-2 bg-blue-50 text-blue-700 px-4 py-2 rounded-lg text-sm">
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                 <path
@@ -737,23 +823,17 @@ export default function AboutRDC() {
               Click any committee icon to view comprehensive details in a popup
               window
             </div>
-          </div>
+          </div>}
         </section>
 
         {/* Organizational Structure */}
         <section>
           <div className="text-center mb-12">
             <h2 className="text-3xl font-bold text-slate-900 mb-4">
-              {asString(
-                asRecord(organizationContent).title,
-                "RDC-NCR Organizational Structure",
-              )}
+              {asString(asRecord(organizationContent).title) || "Content not configured"}
             </h2>
             <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-              {asString(
-                asRecord(organizationContent).subtitle,
-                "Clear governance framework showing decision-making flow and reporting lines",
-              )}
+              {asString(asRecord(organizationContent).subtitle)}
             </p>
           </div>
 
@@ -943,16 +1023,10 @@ export default function AboutRDC() {
         <section className="mt-16 pt-8 border-t-2 border-slate-200">
           <div className="text-center mb-12">
             <h2 className="text-3xl font-bold text-slate-900 mb-4">
-              {asString(
-                asRecord(resolutionsContent).title,
-                "RDC-NCR Resolutions Archive",
-              )}
+              {asString(asRecord(resolutionsContent).title) || "Content not configured"}
             </h2>
             <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-              {asString(
-                asRecord(resolutionsContent).subtitle,
-                "Complete historical record of all RDC-NCR resolutions from 2010 to present",
-              )}
+              {asString(asRecord(resolutionsContent).subtitle)}
             </p>
           </div>
 
@@ -960,36 +1034,25 @@ export default function AboutRDC() {
             {/* Legend/Explanation */}
             <div className="mt-8 pt-6 border-t border-slate-200">
               <h4 className="font-semibold text-slate-900 mb-4">
-                {asString(asRecord(resolutionsContent).legendTitle, "Document Type Legend")}
+                {asString(asRecord(resolutionsContent).legendTitle) || "Content not configured"}
               </h4>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-blue-600 rounded-full"></div>
-                  <span className="text-sm text-slate-600">RDC Resolution</span>
+              {resolutionLegendItems.length ? (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {resolutionLegendItems.map((item, index) => (
+                    <div key={`${item.label}-${index}`} className="flex items-center gap-2">
+                      <div className={`h-3 w-3 rounded-full ${dotColorClass(item.color)}`} />
+                      <span className="text-sm text-slate-600">{item.label}</span>
+                    </div>
+                  ))}
                 </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-amber-600 rounded-full"></div>
-                  <span className="text-sm text-slate-600">
-                    Advisory/Referendum
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-purple-600 rounded-full"></div>
-                  <span className="text-sm text-slate-600">
-                    MMDA Resolution
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-emerald-600 rounded-full"></div>
-                  <span className="text-sm text-slate-600">
-                    Sectoral Committee
-                  </span>
-                </div>
-              </div>
+              ) : <p className="text-sm text-slate-500">No document legend entries are published.</p>}
             </div>
 
             {/* Yearly Resolution Accordion */}
             <div className="space-y-4">
+              {resolutionYears.length === 0 && (
+                <p className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-center text-slate-600">No resolution years are currently published.</p>
+              )}
               {resolutionYears.map((yearData, index) => (
                 <div
                   key={index}
@@ -1111,6 +1174,9 @@ export default function AboutRDC() {
                                     ></div>
                                   </div>
                                   <div className="flex-1">
+                                    {resolution.number && resolution.number !== resolutionTitle && (
+                                      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">{resolution.number}</p>
+                                    )}
                                     {resolution.url ? (
                                       <a
                                         href={resolution.url}
@@ -1122,6 +1188,9 @@ export default function AboutRDC() {
                                       </a>
                                     ) : (
                                       <p className="text-slate-800 leading-relaxed">{resolutionTitle}</p>
+                                    )}
+                                    {resolution.description && (
+                                      <p className="mt-2 text-sm leading-relaxed text-slate-600">{resolution.description}</p>
                                     )}
                                     <div className="mt-3 flex flex-wrap items-center gap-2">
                                       <span
@@ -1146,6 +1215,7 @@ export default function AboutRDC() {
                                       <span className="text-xs text-slate-500">
                                         Year: {extractYear(yearData.year)}
                                       </span>
+                                      {resolution.date && <span className="text-xs text-slate-500">Date: {resolution.date}</span>}
                                       {resolutionTitle.includes("Endorsing") && (
                                         <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded">
                                           Endorsement
@@ -1222,9 +1292,9 @@ export default function AboutRDC() {
                 </div>
                 <div className="text-center">
                   <div className="text-3xl font-bold text-blue-700">
-                    {Math.max(
-                      ...resolutionYears.map((y) => y.content.length),
-                    )}
+                    {resolutionYears.length
+                      ? Math.max(...resolutionYears.map((y) => y.content.length))
+                      : 0}
                   </div>
                   <div className="text-sm text-slate-600">Most in a Year</div>
                 </div>
@@ -1240,41 +1310,18 @@ export default function AboutRDC() {
             {/* Summary Stats */}
             <div className="mt-8 p-6 bg-slate-50 rounded-2xl">
               <h4 className="font-semibold text-slate-900 mb-3">
-                {asString(
-                  asRecord(resolutionsContent).categoryTitle,
-                  "Resolution Categories Summary",
-                )}
+                {asString(asRecord(resolutionsContent).categoryTitle) || "Content not configured"}
               </h4>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="text-center p-3 bg-white rounded-lg">
-                  <div className="text-lg font-bold text-blue-600">Budget</div>
-                  <div className="text-sm text-slate-600">
-                    Budget Endorsements
-                  </div>
+              {resolutionCategoryItems.length ? (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {resolutionCategoryItems.map((item, index) => (
+                    <div key={`${item.title}-${index}`} className="text-center p-3 bg-white rounded-lg">
+                      <div className={`text-lg font-bold ${textColorClass(item.color)}`}>{item.title}</div>
+                      <div className="text-sm text-slate-600">{item.description}</div>
+                    </div>
+                  ))}
                 </div>
-                <div className="text-center p-3 bg-white rounded-lg">
-                  <div className="text-lg font-bold text-green-600">
-                    Infrastructure
-                  </div>
-                  <div className="text-sm text-slate-600">
-                    Project Endorsements
-                  </div>
-                </div>
-                <div className="text-center p-3 bg-white rounded-lg">
-                  <div className="text-lg font-bold text-purple-600">
-                    Policy
-                  </div>
-                  <div className="text-sm text-slate-600">Policy Approvals</div>
-                </div>
-                <div className="text-center p-3 bg-white rounded-lg">
-                  <div className="text-lg font-bold text-amber-600">
-                    Administrative
-                  </div>
-                  <div className="text-sm text-slate-600">
-                    Committee Creations
-                  </div>
-                </div>
-              </div>
+              ) : <p className="text-sm text-slate-500">No resolution category summaries are published.</p>}
             </div>
           </div>
         </section>

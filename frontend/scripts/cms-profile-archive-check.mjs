@@ -15,6 +15,9 @@ try {
     const page = await context.newPage();
     let profileSaved = 0;
     let sectionLocks = 0;
+    let homePublishAttempts = 0;
+    const modulePublishes = [];
+    const archivedCarouselItems = [];
     const mediaAssets = [
       {
         id: 1, file: "cms/manila.png", url: "data:image/png;base64,iVBORw0KGgo=", file_type: "image",
@@ -51,6 +54,17 @@ try {
       has_unpublished_changes: false, published_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z", sections: [profileSection],
     };
+    const publicationSection = {
+      id: 33, page: 3, section_key: "publication-catalog", section_type: "publication_catalog",
+      order: 1, content_json: { title: "Publications", categories: [] }, schema_version: 1, is_visible: true,
+      status: "draft", is_locked: false, locked_by_me: false,
+      created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-02T00:00:00Z",
+    };
+    const publicationPage = {
+      id: 3, title: "Publications", slug: "publications", status: "draft",
+      has_unpublished_changes: true, published_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-02T00:00:00Z", sections: [publicationSection],
+    };
     const profile = { id: 1, username: "admin", first_name: "Admin", last_name: "User", email: "admin@example.com", role: "admin", agency: "RDC-NCR", agency_head: "Configured Council Head", office: "Office", division: "Planning", position: "Administrator", contact_number: "0212345678", phone_number: "09171234567", date_joined: "2026-01-01T00:00:00Z", recent_activity: [] };
     await page.addInitScript(() => { localStorage.setItem("user", JSON.stringify({ id: 1, username: "admin", role: "admin" })); localStorage.setItem("isLoggedIn", "true"); localStorage.setItem("accessToken", "cms-test-token"); });
     await page.route("**/api/**", async (route) => {
@@ -58,7 +72,36 @@ try {
       const path = url.pathname;
       if (path === "/api/admin/cms/pages/1/") return respond(route, cmsPage);
       if (path === "/api/admin/cms/pages/2/") return respond(route, profilePage);
-      if (path === "/api/admin/cms/pages/") return respond(route, { results: [{ ...cmsPage, sections: undefined, section_count: 1 }, { ...profilePage, sections: undefined, section_count: 1 }], count: 2, next: null, total_pages: 1 });
+      if (path === "/api/admin/cms/pages/3/") return respond(route, publicationPage);
+      if (path === "/api/admin/cms/modules/home/") return respond(route, cmsPage);
+      if (path === "/api/admin/cms/modules/publications/") return respond(route, publicationPage);
+      if (path === "/api/admin/cms/pages/") return respond(route, { results: [{ ...cmsPage, sections: undefined, section_count: 1 }, { ...profilePage, sections: undefined, section_count: 1 }, { ...publicationPage, sections: undefined, section_count: 1 }], count: 3, next: null, total_pages: 1 });
+      if (path === "/api/admin/cms/modules/home/publish/" && route.request().method() === "POST") {
+        homePublishAttempts += 1;
+        if (homePublishAttempts === 1) {
+          return route.fulfill({
+            status: 400,
+            contentType: "application/json",
+            body: JSON.stringify({
+              detail: "Archive removed carousel items through its archive action before publishing: Strategic Development, NEW.",
+              code: "published_content_requires_archive",
+              content_type: "carousel items",
+              items: [
+                { id: "strategic-development", label: "Strategic Development" },
+                { id: "new", label: "NEW" },
+              ],
+            }),
+          });
+        }
+        modulePublishes.push("home");
+        Object.assign(cmsPage, { status: "published", has_unpublished_changes: false, published_at: "2026-01-03T00:00:00Z" });
+        return respond(route, cmsPage);
+      }
+      if (path === "/api/admin/cms/modules/publications/publish/" && route.request().method() === "POST") {
+        modulePublishes.push("publications");
+        Object.assign(publicationPage, { status: "published", has_unpublished_changes: false, published_at: "2026-01-03T00:00:00Z" });
+        return respond(route, publicationPage);
+      }
       if (path === "/api/admin/cms/sections/11/lock/" && route.request().method() === "POST") {
         sectionLocks += 1;
         return respond(route, { ...section, is_locked: true, locked_by_me: true, lock_owner: 1, lock_owner_name: "Admin User" });
@@ -72,6 +115,18 @@ try {
       if (path === "/api/admin/cms/sections/11/unlock/" && route.request().method() === "POST") return respond(route, section);
       if (path === "/api/admin/cms/sections/22/lock/" && route.request().method() === "POST") return respond(route, { ...profileSection, is_locked: true, locked_by_me: true, lock_owner: 1, lock_owner_name: "Admin User" });
       if (path === "/api/admin/cms/sections/22/unlock/" && route.request().method() === "POST") return respond(route, profileSection);
+      if (path === "/api/admin/cms/carousel-items/" && route.request().method() === "GET") {
+        const key = url.searchParams.get("q") || "";
+        const rows = [
+          { id: 91, stable_key: "strategic-development", title: "Strategic Development", status: "published", published_at: "2026-01-01T00:00:00Z" },
+          { id: 92, stable_key: "new", title: "NEW", status: "published", published_at: "2026-01-01T00:00:00Z" },
+        ].filter((item) => !key || item.stable_key.includes(key));
+        return respond(route, { results: rows, count: rows.length, next: null, total_pages: 1 });
+      }
+      if (/^\/api\/admin\/cms\/carousel-items\/(91|92)\/archive\/$/.test(path) && route.request().method() === "POST") {
+        archivedCarouselItems.push(Number(path.match(/\/(91|92)\//)?.[1]));
+        return respond(route, { status: "archived" });
+      }
       if (path === "/api/admin/cms/media/") return respond(route, { results: mediaAssets, count: mediaAssets.length, next: null, total_pages: 1 });
       if (path === "/api/profile/" && route.request().method() === "PATCH") { profileSaved += 1; Object.assign(profile, route.request().postDataJSON()); return respond(route, profile); }
       if (path === "/api/profile/") return respond(route, profile);
@@ -122,6 +177,36 @@ try {
     await page.getByRole("button", { name: "Save Content Draft" }).click();
     await page.getByText("Section updated. Publish the page when ready.", { exact: true }).waitFor();
     await page.locator('[data-cms-page-id="1"]').getByText("unpublished changes", { exact: true }).waitFor();
+    await page.locator('[data-cms-page-id="1"]').getByRole("button", { name: "Publish", exact: true }).click();
+    await page.getByRole("heading", { name: "Review page draft: Home" }).waitFor();
+    const homeReviewDialog = page.getByRole("dialog", { name: /Review page draft: Home/ });
+    await homeReviewDialog.getByText("Preview Snapshot", { exact: true }).click();
+    await homeReviewDialog.getByText("Slides", { exact: true }).waitFor();
+    assert.equal(await homeReviewDialog.locator("pre").count(), 0, "Preview Snapshot renders readable content instead of raw JSON");
+    const homePublishDialogs = [];
+    const acceptHomePublishDialog = async (dialog) => {
+      homePublishDialogs.push(dialog.message());
+      await dialog.accept();
+    };
+    page.on("dialog", acceptHomePublishDialog);
+    await page.getByRole("button", { name: "Publish Page and Sections" }).click();
+    await page.getByText("Home: removed carousel slides archived and publish completed.", { exact: true }).waitFor();
+    page.off("dialog", acceptHomePublishDialog);
+    assert.equal(homePublishAttempts, 2, "Home publish retries after explicit removed-slide archival confirmation");
+    assert.deepEqual(archivedCarouselItems, [91, 92], "Every removed published slide is archived before retrying Home publish");
+    assert.ok(homePublishDialogs.some((message) => message.includes("Strategic Development") && message.includes("NEW")), "The archive confirmation names every removed slide");
+    assert.equal(await page.locator('[data-cms-page-id="1"]').getByText("unpublished changes", { exact: true }).count(), 0, "Publishing Home clears its unpublished indicator");
+    await page.locator('[data-cms-page-id="1"]').getByText("Published", { exact: true }).waitFor();
+    await page.locator('[data-cms-page-id="3"]').getByRole("button", { name: "Publish", exact: true }).click();
+    await page.getByRole("heading", { name: "Review page draft: Publications" }).waitFor();
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "Publish Page and Sections" }).click();
+    await page.getByText("Publications: publish completed.", { exact: true }).waitFor();
+    assert.deepEqual(modulePublishes, ["home", "publications"], "Fixed pages publish through the module workflow endpoint");
+    await page.locator('[data-cms-page-id="3"]').getByText("Published", { exact: true }).waitFor();
+    assert.equal(await page.locator('[data-cms-page-id="3"]').getByText("unpublished changes", { exact: true }).count(), 0, "Publishing Publications clears its unpublished indicator");
+    await page.locator('[data-cms-page-id="1"]').getByRole("button", { name: "Manage Content" }).click();
+    await page.getByRole("heading", { name: /Sections for Page.*Home/ }).waitFor();
     await page.getByRole("button", { name: "Edit Content" }).click();
     await page.locator("[data-section-editor]").getByLabel("Title", { exact: true }).fill("Dirty page-switch check");
     page.once("dialog", (dialog) => dialog.accept());

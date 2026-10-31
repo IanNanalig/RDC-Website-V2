@@ -128,6 +128,18 @@ ABOUT_SECTIONS = [
             "subtitle": "Complete historical record of all RDC-NCR resolutions from 2010 to present",
             "legendTitle": "Document Type Legend",
             "categoryTitle": "Resolution Categories Summary",
+            "legendItems": [
+                {"label": "RDC Resolution", "color": "blue"},
+                {"label": "Advisory/Referendum", "color": "amber"},
+                {"label": "MMDA Resolution", "color": "purple"},
+                {"label": "Sectoral Committee", "color": "emerald"},
+            ],
+            "categoryItems": [
+                {"title": "Budget", "description": "Budget Endorsements", "color": "blue"},
+                {"title": "Infrastructure", "description": "Project Endorsements", "color": "green"},
+                {"title": "Policy", "description": "Policy Approvals", "color": "purple"},
+                {"title": "Administrative", "description": "Committee Creations", "color": "amber"},
+            ],
             "years": [],
         },
     },

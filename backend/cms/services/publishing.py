@@ -10,7 +10,6 @@ from cms.models import (
     CMSContributorFormVersion,
     CMSPage,
     CMSPageSection,
-    CMSPublicationCategory,
 )
 from cms.form_schema import (
     FormSchemaError,
@@ -28,32 +27,25 @@ def publish_page(page, user=None):
     page_id = page.pk if isinstance(page, CMSPage) else page
     with transaction.atomic():
         locked_page = CMSPage.objects.select_for_update().get(pk=page_id)
+        from cms.services.collections import reconcile_normalized_page_content
+        reconcile_normalized_page_content(locked_page, user)
         if locked_page.slug == "home":
-            slots = ("development-plans", "investment-programming", "monitoring-evaluation")
-            codes = []
-            for section_key in slots:
-                section = locked_page.sections.filter(section_key=section_key).first()
-                if section is None:
-                    raise serializers.ValidationError({"featured_categories": f"Missing fixed Home section: {section_key}."})
+            # These fields were introduced by the legacy Home-to-Publications
+            # coupling. Home document cards are now authored directly in their
+            # fixed CMS sections, so a Home publish must neither depend on nor
+            # re-inject the old publication catalog.
+            for section in locked_page.sections.filter(section_key__in=(
+                "development-plans", "investment-programming", "monitoring-evaluation",
+            )):
                 content = dict(section.content_json or {})
-                code = str(content.get("featuredCategoryCode") or "").strip()
-                if not code:
-                    raise serializers.ValidationError({
-                        "featured_categories": f"Choose a published publication category for {section_key}."
-                    })
-                codes.append(code)
-            if len(set(codes)) != 3:
-                raise serializers.ValidationError({"featured_categories": "Choose exactly three different publication categories."})
-            active_codes = set(
-                CMSPublicationCategory.objects.filter(
-                    code__in=codes, status="published", published_at__isnull=False,
-                ).values_list("code", flat=True)
-            )
-            if active_codes != set(codes):
-                missing = ", ".join(sorted(set(codes) - active_codes))
-                raise serializers.ValidationError({
-                    "featured_categories": f"Publish the selected active publication categories first: {missing}."
-                })
+                changed = False
+                for key in ("featuredCategoryCode", "featuredCategory"):
+                    if key in content:
+                        content.pop(key, None)
+                        changed = True
+                if changed:
+                    section.content_json = content
+                    section.save(update_fields=["content_json", "updated_at"])
         # Publishing a whole page remains a useful V1-compatible admin shortcut:
         # every non-archived section is approved in the same atomic operation.
         locked_page.sections.exclude(status="archived").update(

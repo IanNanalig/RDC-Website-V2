@@ -160,6 +160,12 @@ async function requestErrorMessageFromResponse(res: Response) {
       if (typeof data?.reason === "string") {
         return JSON.stringify(data);
       }
+      // CMS workflow errors can include stable item identifiers that the UI
+      // needs in order to offer the matching recovery action. Keep that
+      // structured payload instead of reducing it to the human-readable detail.
+      if (typeof data?.code === "string" && Array.isArray(data?.items)) {
+        return JSON.stringify(data);
+      }
       if (typeof data?.detail === "string" && data.detail.trim()) {
         return data.detail.trim();
       }
