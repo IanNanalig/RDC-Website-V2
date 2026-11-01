@@ -2,6 +2,7 @@ from rest_framework import serializers
 from datetime import datetime
 from copy import deepcopy
 from cms.form_schema import CURRENT_PROJECT_STATUS_VALUES, FormSchemaError, validate_simplified_answers
+from .audit_presentation import actor_label, presentation_for, sanitize_audit_details
 from .project_status import canonical_implementation_status
 from .models import (
     AccessRequest,
@@ -1566,6 +1567,13 @@ class UserActivitySerializer(serializers.ModelSerializer):
     display_name = serializers.SerializerMethodField()
     project_title = serializers.SerializerMethodField()
     target_label = serializers.SerializerMethodField()
+    category = serializers.SerializerMethodField()
+    category_label = serializers.SerializerMethodField()
+    action_label = serializers.SerializerMethodField()
+    description = serializers.SerializerMethodField()
+    result = serializers.SerializerMethodField()
+    result_label = serializers.SerializerMethodField()
+    details = serializers.SerializerMethodField()
 
     class Meta:
         model = UserActivity
@@ -1579,6 +1587,12 @@ class UserActivitySerializer(serializers.ModelSerializer):
             "project_title",
             "project_id_snapshot",
             "target_label",
+            "category",
+            "category_label",
+            "action_label",
+            "description",
+            "result",
+            "result_label",
             "ip_address",
             "location_hint",
             "details",
@@ -1588,29 +1602,74 @@ class UserActivitySerializer(serializers.ModelSerializer):
     def get_project_title(self, obj):
         return obj.project_title_snapshot or (obj.project.title if obj.project else "")
 
+    def _presentation(self, obj):
+        cached = getattr(obj, "_audit_presentation", None)
+        if cached is None:
+            cached = presentation_for(obj)
+            obj._audit_presentation = cached
+        return cached
+
     def get_target_label(self, obj):
-        if obj.project_title_snapshot or obj.project:
-            return self.get_project_title(obj)
+        return self._presentation(obj)["target_label"]
+
+    def get_category(self, obj):
+        return self._presentation(obj)["category"]
+
+    def get_category_label(self, obj):
+        return self._presentation(obj)["category_label"]
+
+    def get_action_label(self, obj):
+        return self._presentation(obj)["action_label"]
+
+    def get_description(self, obj):
+        return self._presentation(obj)["description"]
+
+    def get_result(self, obj):
+        return self._presentation(obj)["result"]
+
+    def get_result_label(self, obj):
+        return self._presentation(obj)["result_label"]
+
+    def get_details(self, obj):
         details = obj.details if isinstance(obj.details, dict) else {}
-        for key in ("title", "email", "attempted_email", "name", "slug", "key"):
-            value = details.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()[:160]
-        for key, prefix in (("target_user_id", "User"), ("form_id", "Form"), ("event_id", "Event"), ("id", "Content")):
-            if details.get(key) is not None:
-                return f"{prefix} #{details[key]}"
-        return "—"
+        return sanitize_audit_details(details)
 
     def get_username(self, obj):
-        return obj.actor_username or (obj.user.username if obj.user else "Deleted user")
+        return obj.actor_username or (obj.user.username if obj.user else actor_label(obj))
 
     def get_display_name(self, obj):
         user = getattr(obj, "user", None)
         if not user:
-            return obj.actor_full_name or obj.actor_username or "Deleted user"
+            return actor_label(obj)
         if obj.actor_full_name:
             return obj.actor_full_name
         return _user_display_name(user) or user.username
+
+
+class AdminActivityListSerializer(UserActivitySerializer):
+    """Compact audit list projection; technical metadata is loaded on demand."""
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data.pop("details", None)
+        data.pop("ip_address", None)
+        data.pop("location_hint", None)
+        return data
+
+
+class AdminActivityDetailSerializer(UserActivitySerializer):
+    technical_details = serializers.SerializerMethodField()
+
+    class Meta(UserActivitySerializer.Meta):
+        fields = [*UserActivitySerializer.Meta.fields, "technical_details"]
+
+    def get_technical_details(self, obj):
+        return sanitize_audit_details(obj.details if isinstance(obj.details, dict) else {})
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data.pop("details", None)
+        return data
 
 
 class ProjectCommentSerializer(serializers.ModelSerializer):

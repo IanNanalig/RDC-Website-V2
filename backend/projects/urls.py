@@ -41,6 +41,7 @@ urlpatterns = [
     path("public/events/<int:pk>/", public_events_detail, name="public-event-detail"),
     path("dashboard/", views.DashboardView.as_view(), name="dashboard"),
     path("admin/activity/", views.AdminActivityView.as_view(), name="admin-activity"),
+    path("admin/activity/<int:activity_id>/", views.AdminActivityDetailView.as_view(), name="admin-activity-detail"),
     path("admin/users/batch-invitations/options/", views.BatchInvitationOptionsView.as_view(), name="batch-invitation-options"),
     path("admin/users/batch-invitations/preview/", views.BatchInvitationPreviewView.as_view(), name="batch-invitation-preview"),
     path("admin/users/batch-invitations/send/", views.BatchInvitationSendView.as_view(), name="batch-invitation-send"),

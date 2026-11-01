@@ -1139,7 +1139,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     }
     setPageForm(emptyPageForm);
     setPageFormBaseline(JSON.stringify(emptyPageForm));
-    const nextSectionForm = { ...emptySectionForm, page: selectedPageId || "" };
+    const nextSectionForm: SectionForm = { ...emptySectionForm, page: selectedPageId || "" };
     setSectionForm(nextSectionForm);
     setSectionFormBaseline(JSON.stringify(nextSectionForm));
     setSectionReadOnly(false);
@@ -3121,7 +3121,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               <div className="flex flex-wrap gap-2 border-b border-slate-200 px-5 py-3" role="tablist" aria-label="Section editor">
                 {(["content"] as const).map((tab) => (
                   <button key={tab} type="button" role="tab" aria-selected={sectionEditorTab === tab} onClick={() => setSectionEditorTab(tab)} className={`rounded-lg px-3 py-2 text-sm ${sectionEditorTab === tab ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}>
-                    {tab === "basics" ? "Basics" : tab === "content" ? "Content" : "Visibility / Advanced"}{sectionErrors[tab] ? " •" : ""}
+                    Content{sectionErrors[tab] ? " •" : ""}
                   </button>
                 ))}
               </div>

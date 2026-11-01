@@ -75,19 +75,6 @@ const userRoleFilterValue = (role: string) =>
     ? "contributor"
     : role;
 
-type ActivityItem = {
-  id: number;
-  username: string;
-  display_name?: string;
-  role: string;
-  event: string;
-  project_title?: string;
-  ip_address?: string;
-  location_hint?: string;
-  created_at: string;
-  details?: Record<string, unknown>;
-};
-
 type ChatKnowledgeGap = {
   id: number;
   question_sample: string;
@@ -277,12 +264,6 @@ const UserManagement = () => {
   useEffect(() => {
     setUserPage((page) => Math.min(page, userPageCount));
   }, [userPageCount]);
-  const [activity, setActivity] = useState<ActivityItem[]>([]);
-  const [activityLoading, setActivityLoading] = useState(true);
-  const [activityTotal, setActivityTotal] = useState(0);
-  const [activityOffset, setActivityOffset] = useState(0);
-  const [activitySortKey, setActivitySortKey] = useState<string | null>(null);
-  const [activitySortDirection, setActivitySortDirection] = useState<SortDirection>("asc");
   const [chatGaps, setChatGaps] = useState<ChatKnowledgeGap[]>([]);
   const [chatGapsLoading, setChatGapsLoading] = useState(false);
   const [chatGapDrafts, setChatGapDrafts] = useState<
@@ -311,318 +292,11 @@ const UserManagement = () => {
   const [windowState, setWindowState] = useState<EncodingWindowState | null>(
     null,
   );
-  const [activityFilters, setActivityFilters] = useState({
-    role: "",
-    event: "",
-    user: "",
-    limit: "10",
-    dateFrom: "",
-    dateTo: "",
-  });
-
   const userRaw = localStorage.getItem("user");
   const user = userRaw ? JSON.parse(userRaw) : { username: "admin" };
   const displayName = userDisplayName(user, "Admin");
 
   const labelRole = displayRole;
-
-  const eventLabels: Record<string, string> = {
-    login: "Auth Login",
-    login_failed: "Failed Login Attempt",
-    logout: "Auth Logout",
-    auth_password_setup: "Password Setup Completed",
-    registration_invitation_sent: "Registration Invitation Sent",
-    registration_completed: "Registration Completed",
-    auth_reset_request: "Auth Reset Request",
-    auth_reset_approve: "Auth Reset Approved",
-    auth_reset_reject: "Auth Reset Rejected",
-    user_create: "User Created",
-    user_update: "User Updated",
-    user_status_changed: "User Activated / Deactivated",
-    user_delete: "User Deleted",
-    project_create: "Project Created",
-    project_update: "Project Updated",
-    project_delete: "Project Deleted",
-    project_submit: "Project Submitted",
-    project_approve: "Project Approved",
-    project_reject: "Project Rejected",
-    project_archive: "Project Archived",
-    project_comment: "Project Comment",
-    validator_draft: "Validator Draft Saved",
-    validator_reviewed: "Validator Reviewed",
-    validator_endorsed: "Validator Endorsed",
-    public_summary_overridden: "Public Summary Updated",
-    priority_analysis_run: "Priority Analysis Run",
-    priority_analysis_reused: "Priority Analysis Reused",
-    priority_analysis_confirmed: "Priority Analysis Confirmed",
-    priority_analysis_overridden: "Priority Analysis Overridden",
-    encoding_window_updated: "Encoding Window Updated",
-    progress_window_updated: "Progress Update Window Updated",
-    cms_event_created: "CMS Event Created",
-    cms_event_updated: "CMS Event Updated",
-    cms_event_submitted: "CMS Event Submitted",
-    cms_event_published: "CMS Event Published",
-    cms_event_rejected: "CMS Event Rejected",
-    cms_event_archived: "CMS Event Archived",
-    cms_event_unarchived: "CMS Event Unarchived",
-    cms_event_deleted: "CMS Event Deleted",
-    cms_content_created: "CMS Content Created",
-    cms_content_updated: "CMS Content Updated",
-    cms_content_submitted: "CMS Content Submitted",
-    cms_content_published: "CMS Content Published",
-    cms_content_rejected: "CMS Content Rejected",
-    cms_content_archived: "CMS Content Archived",
-    cms_content_restored: "CMS Content Restored",
-    cms_section_lock_acquired: "CMS Section Lock Acquired",
-    cms_section_lock_blocked: "CMS Section Lock Blocked",
-    cms_section_lock_released: "CMS Section Lock Released",
-    cms_section_lock_overridden: "CMS Section Lock Overridden",
-    cms_section_access_requested: "CMS Section Access Requested",
-    cms_form_lock_acquired: "CMS Form Lock Acquired",
-    cms_form_lock_blocked: "CMS Form Lock Blocked",
-    cms_form_lock_released: "CMS Form Lock Released",
-    cms_form_access_requested: "CMS Form Access Requested",
-    notification_read: "Notification Read",
-    notification_read_all: "All Notifications Read",
-    access_request_approved: "Access Request Approved",
-    access_request_rejected: "Access Request Rejected",
-    api_action: "Other API Action",
-    api_action_failed: "Failed API Action",
-    project_revision_created: "Project Revision Created",
-    project_revision_updated: "Project Revision Updated",
-    project_revision_submitted: "Project Revision Submitted",
-    project_revision_reviewed: "Project Revision Reviewed",
-    project_revision_endorsed: "Project Revision Endorsed",
-    project_revision_rejected: "Project Revision Rejected",
-  };
-
-  const activityEventLabel = (item: ActivityItem) => {
-    if (item.event === "registration_invitation_sent") {
-      const email = String(item.details?.email || "");
-      const role = labelRole(String(item.details?.role || ""));
-      return `Admin sent a registration form for ${role} to ${email}`;
-    }
-    const label = eventLabels[item.event] || item.event.replaceAll("_", " ");
-    if (item.event !== "api_action" && item.event !== "api_action_failed") return label;
-    const route = String(item.details?.route || "").replace(/[-_]/g, " ").trim();
-    return route ? `${label}: ${route}` : label;
-  };
-
-  const eventSeverity: Record<string, "info" | "warn" | "error"> = {
-    login: "info",
-    login_failed: "warn",
-    api_action_failed: "warn",
-    user_delete: "warn",
-    project_delete: "warn",
-    auth_reset_request: "warn",
-    auth_reset_approve: "info",
-    auth_reset_reject: "warn",
-    user_create: "info",
-    registration_invitation_sent: "info",
-    registration_completed: "info",
-    project_create: "info",
-    project_update: "info",
-    project_submit: "info",
-    project_approve: "info",
-    project_reject: "warn",
-    project_archive: "warn",
-    project_comment: "info",
-    validator_draft: "info",
-    validator_reviewed: "info",
-    validator_endorsed: "info",
-    public_summary_overridden: "info",
-    priority_analysis_run: "info",
-    priority_analysis_reused: "info",
-    priority_analysis_confirmed: "info",
-    priority_analysis_overridden: "warn",
-    encoding_window_updated: "info",
-    progress_window_updated: "info",
-    cms_event_created: "info",
-    cms_event_updated: "info",
-    cms_event_submitted: "info",
-    cms_event_published: "info",
-    cms_event_rejected: "warn",
-    cms_event_archived: "warn",
-    project_revision_created: "info",
-    project_revision_updated: "info",
-    project_revision_submitted: "info",
-    project_revision_reviewed: "info",
-    project_revision_endorsed: "info",
-    project_revision_rejected: "warn",
-    cms_section_lock_overridden: "warn",
-  };
-
-  const severityClass = (event: string) => {
-    const level = eventSeverity[event] || "info";
-    if (level === "error") return "bg-rose-100 text-rose-700";
-    if (level === "warn") return "bg-amber-100 text-amber-700";
-    return "bg-emerald-100 text-emerald-700";
-  };
-
-  const detailLabelOverrides: Record<string, string> = {
-    email: "Email",
-    role: "Role",
-    status: "Status",
-    review_status: "Review Status",
-    edited_fields_count: "Edited Fields",
-    warning: "Warning",
-    action: "Action",
-    project_id: "Project ID",
-    project_title: "Project",
-    reviewed_by: "Reviewed By",
-    reviewed_at: "Reviewed At",
-    requested_ip: "Requested IP",
-    ip: "IP",
-    user_agent: "User Agent",
-    method: "Method",
-    previous_mode: "Previous Mode",
-    previous_start_at: "Previous Start",
-    previous_end_at: "Previous End",
-    previous_status: "Previous State",
-    new_mode: "New Mode",
-    new_start_at: "New Start",
-    new_end_at: "New End",
-    new_status: "New State",
-    revision_number: "Revision",
-    revision_state: "Revision State",
-    revision_type: "Revision Type",
-  };
-
-  const formatDetailLabel = (key: string) => {
-    const override = detailLabelOverrides[key];
-    if (override) return override;
-    return key.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
-  };
-
-  const formatDetailValue = (value: unknown): string => {
-    if (value === null || value === undefined || value === "") return "-";
-    if (Array.isArray(value)) return value.map(formatDetailValue).join(", ");
-    if (typeof value === "object") return JSON.stringify(value);
-    return String(value);
-  };
-
-  const formatChangedField = (value: unknown) => {
-    const field = String(value || "").replace(/^simplified_form\./, "");
-    const [root, ...rest] = field.split(".");
-    const known: Record<string, string> = {
-      actualFundingByYear: "Actual/Approved Funding (PHP)",
-      fundingRequirementByYear: "Funding Requirement (PHP)",
-      sdgSelections: "Sustainable Development Goals",
-      custom_fields: "Custom Field",
-      uacsCode: "UACS Code",
-      rdpMainChapter: "RDP-NCR Main Chapter",
-      rdcEndorsed: "RDC-NCR Endorsed",
-    };
-    const humanize = (part: string) => part
-      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-      .replace(/_/g, " ")
-      .replace(/\b\w/g, (letter) => letter.toUpperCase());
-    return [known[root] || humanize(root), ...rest.map((part) =>
-      part === "2022_prior" ? "2022 & Prior" : humanize(part),
-    )].join(" · ");
-  };
-
-  const auditChanges = (details?: Record<string, unknown>) =>
-    (Array.isArray(details?.changes) ? details.changes : [])
-      .filter((change): change is Record<string, unknown> =>
-        change !== null && typeof change === "object" && !Array.isArray(change) && Boolean(change.field),
-      );
-
-  const auditChangedFields = (details?: Record<string, unknown>) =>
-    (Array.isArray(details?.changed_fields) ? details.changed_fields : [])
-      .filter((field): field is string => typeof field === "string" && Boolean(field.trim()));
-
-  const formatReviewStatus = (value: unknown) => {
-    const status = String(value || "").toLowerCase();
-    if (status === "draft") return "Draft";
-    if (status === "reviewed") return "Reviewed";
-    if (status === "endorsed" || status === "validated") return "Endorsed";
-    if (status === "rejected") return "Rejected";
-    return status ? status : "-";
-  };
-
-  const formatProjectStatus = (value: unknown) => {
-    const status = String(value || "").toLowerCase();
-    if (status === "planning") return "Draft";
-    if (status === "proposed") return "Submitted";
-    if (status === "completed") return "Endorsed";
-    if (status === "ongoing") return "Ongoing";
-    if (status === "rejected") return "Rejected";
-    return status ? status : "-";
-  };
-
-  const buildDetailEntries = (item: ActivityItem): Array<[string, string]> => {
-    const details = item.details || {};
-    const entries: Array<[string, string]> = [];
-    const used = new Set<string>();
-
-    const push = (key: string, label: string, value: string) => {
-      if (!value || value === "-") return;
-      entries.push([label, value]);
-      used.add(key);
-    };
-
-    if (item.event.startsWith("validator_")) {
-      if ("review_status" in details) {
-        push(
-          "review_status",
-          "Review Status",
-          formatReviewStatus(details.review_status),
-        );
-      }
-      if ("edited_fields_count" in details) {
-        push(
-          "edited_fields_count",
-          "Edited Fields",
-          String(details.edited_fields_count ?? 0),
-        );
-      } else if ("edited" in details) {
-        push("edited", "Edited", String(details.edited ? "Yes" : "No"));
-      }
-      if ("warning" in details) {
-        push("warning", "Warning", String(details.warning));
-      }
-    } else {
-      if ("status" in details) {
-        push("status", "Status", formatProjectStatus(details.status));
-      }
-      if ("review_status" in details) {
-        push(
-          "review_status",
-          "Review Status",
-          formatReviewStatus(details.review_status),
-        );
-      }
-      if ("role" in details) {
-        push("role", "Role", labelRole(String(details.role)));
-      }
-    }
-
-    Object.entries(details)
-      .filter(
-        ([key, value]) =>
-          !used.has(key) &&
-          key !== "token_digest" &&
-          key !== "changed_fields" &&
-          key !== "changes" &&
-          value !== undefined &&
-          value !== null &&
-          value !== "",
-      )
-      .forEach(([key, value]) => {
-        if (entries.length >= 3) return;
-        const label = formatDetailLabel(key);
-        const formatted =
-          key === "status"
-            ? formatProjectStatus(value)
-            : key === "review_status"
-              ? formatReviewStatus(value)
-              : formatDetailValue(value);
-        push(key, label, formatted);
-      });
-
-    return entries.slice(0, 3);
-  };
 
   const getErrorDetail = (err: unknown, fallback: string) => {
     if (err instanceof Error && err.message) {
@@ -695,51 +369,6 @@ const UserManagement = () => {
     }
   };
 
-  const loadActivity = useCallback(async () => {
-    setActivityLoading(true);
-    try {
-      const params = new URLSearchParams();
-      if (activityFilters.role) params.set("role", activityFilters.role);
-      if (activityFilters.event) params.set("event", activityFilters.event);
-      if (activityFilters.user) params.set("user", activityFilters.user);
-      if (activityFilters.limit) params.set("limit", activityFilters.limit);
-      if (activityFilters.dateFrom)
-        params.set("date_from", activityFilters.dateFrom);
-      if (activityFilters.dateTo) params.set("date_to", activityFilters.dateTo);
-      if (activitySortKey) {
-        params.set("sort_by", activitySortKey);
-        params.set("sort_direction", activitySortDirection);
-      }
-      params.set("offset", String(activityOffset));
-      params.set("include_meta", "1");
-      const qs = params.toString();
-      const data = await api.get(`admin/activity/${qs ? `?${qs}` : ""}`);
-      if (Array.isArray(data)) {
-        setActivity(data);
-        setActivityTotal(data.length);
-      } else {
-        setActivity(Array.isArray(data?.results) ? data.results : []);
-        setActivityTotal(Number(data?.count || 0));
-      }
-    } catch (error) {
-      console.error(error);
-      setActivity([]);
-      setActivityTotal(0);
-    } finally {
-      setActivityLoading(false);
-    }
-  }, [
-    activityFilters.role,
-    activityFilters.event,
-    activityFilters.user,
-    activityFilters.limit,
-    activityFilters.dateFrom,
-    activityFilters.dateTo,
-    activityOffset,
-    activitySortKey,
-    activitySortDirection,
-  ]);
-
   const loadChatGaps = useCallback(async () => {
     setChatGapsLoading(true);
     try {
@@ -800,10 +429,6 @@ const UserManagement = () => {
   useEffect(() => {
     load();
   }, [load]);
-
-  useEffect(() => {
-    loadActivity();
-  }, [loadActivity]);
 
   useEffect(() => {
     if (activeTab === "chatbot-learning") {
@@ -931,7 +556,6 @@ const UserManagement = () => {
       });
       setNotice("Chatbot knowledge approved and added to public content.");
       await loadChatGaps();
-      await loadActivity();
     } catch (error) {
       setNotice(
         getErrorDetail(error, "Failed to approve chatbot knowledge gap."),
@@ -946,7 +570,6 @@ const UserManagement = () => {
       });
       setNotice("Chatbot knowledge gap rejected.");
       await loadChatGaps();
-      await loadActivity();
     } catch (error) {
       setNotice(
         getErrorDetail(error, "Failed to reject chatbot knowledge gap."),
@@ -1003,7 +626,6 @@ const UserManagement = () => {
       }
       setEventForm(emptyEventForm);
       await loadEvents();
-      await loadActivity();
     } catch (error) {
       setNotice(getErrorDetail(error, "Failed to save event."));
     }
@@ -1024,7 +646,6 @@ const UserManagement = () => {
       };
       setNotice(labels[action]);
       await loadEvents();
-      await loadActivity();
     } catch (error) {
       setNotice(getErrorDetail(error, `Failed to ${action} event.`));
     }
@@ -1056,7 +677,6 @@ const UserManagement = () => {
         end_at: state?.end_at || "",
       });
       setNotice("Encoding schedule updated.");
-      await loadActivity();
     } catch (error) {
       setNotice(getErrorDetail(error, "Failed to update encoding schedule."));
     }
@@ -1090,50 +710,6 @@ const UserManagement = () => {
     schedule_invalid: "Invalid schedule",
   };
 
-  const updateActivityFilter = (
-    key: keyof typeof activityFilters,
-    value: string,
-  ) => {
-    setActivityOffset(0);
-    setActivityFilters((prev) => ({ ...prev, [key]: value }));
-  };
-
-  const clearActivityFilters = () => {
-    setActivityOffset(0);
-    setActivityFilters({
-      role: "",
-      event: "",
-      user: "",
-      limit: "10",
-      dateFrom: "",
-      dateTo: "",
-    });
-  };
-  const activitySortOptions = [
-    { key: "user", label: "User" },
-    { key: "role", label: "Role" },
-    { key: "event", label: "Event" },
-    { key: "project", label: "Project" },
-    { key: "location", label: "IP / Location" },
-    { key: "details", label: "Details" },
-    { key: "timestamp", label: "Time" },
-  ];
-  const changeActivitySort = (key: string) => {
-    setActivityOffset(0);
-    if (activitySortKey === key) setActivitySortDirection((direction) => direction === "asc" ? "desc" : "asc");
-    else { setActivitySortKey(key); setActivitySortDirection("asc"); }
-  };
-  const toggleActivitySortDirection = () => {
-    setActivityOffset(0);
-    setActivitySortDirection((direction) => direction === "asc" ? "desc" : "asc");
-  };
-
-  const activityLimit = Math.max(1, Number(activityFilters.limit) || 10);
-  const activityStart = activityTotal > 0 ? activityOffset + 1 : 0;
-  const activityEnd = Math.min(activityOffset + activity.length, activityTotal);
-  const hasPreviousActivity = activityOffset > 0;
-  const hasNextActivity = activityOffset + activity.length < activityTotal;
-
   return (
     <PortalLayout
       title="Users & Access Control"
@@ -1142,8 +718,8 @@ const UserManagement = () => {
       userName={displayName}
       topActions={
         <RefreshButton
-          loading={loading || activityLoading}
-          onClick={() => { void load(); void loadActivity(); }}
+          loading={loading}
+          onClick={() => void load()}
         />
       }
     >
@@ -2169,261 +1745,6 @@ const UserManagement = () => {
         </div>
       )}
 
-      {activeTab === "system-audit-log" && (
-        <div className="portal-card portal-table-wrap">
-          <div className="portal-card-header flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">System Audit Log</h2>
-              <p className="text-xs text-slate-500">
-                Review historical portal activity, security actions, and project
-                workflow events.
-              </p>
-            </div>
-            <RefreshButton loading={activityLoading} onClick={loadActivity} label="Refresh Log" />
-          </div>
-          <div className="portal-card-body border-b border-slate-200 bg-slate-50/60">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
-              <label className="block">
-                <span className="text-xs font-semibold text-slate-600">
-                  Role
-                </span>
-                <select
-                  className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm bg-white"
-                  value={activityFilters.role}
-                  onChange={(e) => updateActivityFilter("role", e.target.value)}
-                >
-                  <option value="">All roles</option>
-                  <option value="admin">Admin</option>
-                  <option value="validator">Validator</option>
-                  <option value="staff">Contributor</option>
-                  <option value="content_editor">Content Editor</option>
-                  <option value="unauthenticated">Unauthenticated</option>
-                </select>
-              </label>
-              <label className="block">
-                <span className="text-xs font-semibold text-slate-600">
-                  Event
-                </span>
-                <select
-                  className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm bg-white"
-                  value={activityFilters.event}
-                  onChange={(e) =>
-                    updateActivityFilter("event", e.target.value)
-                  }
-                >
-                  <option value="">All events</option>
-                  {Object.keys(eventLabels).map((event) => (
-                    <option key={event} value={event}>
-                      {eventLabels[event]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block">
-                <span className="text-xs font-semibold text-slate-600">
-                  Search User
-                </span>
-                <input
-                  className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm bg-white"
-                  placeholder="Name, username, or email"
-                  value={activityFilters.user}
-                  onChange={(e) => updateActivityFilter("user", e.target.value)}
-                />
-              </label>
-              <label className="block">
-                <span className="text-xs font-semibold text-slate-600">
-                  From Date
-                </span>
-                <input
-                  type="date"
-                  className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm bg-white"
-                  value={activityFilters.dateFrom}
-                  onChange={(e) =>
-                    updateActivityFilter("dateFrom", e.target.value)
-                  }
-                />
-              </label>
-              <label className="block">
-                <span className="text-xs font-semibold text-slate-600">
-                  To Date
-                </span>
-                <input
-                  type="date"
-                  className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm bg-white"
-                  value={activityFilters.dateTo}
-                  onChange={(e) =>
-                    updateActivityFilter("dateTo", e.target.value)
-                  }
-                />
-              </label>
-              <label className="block">
-                <span className="text-xs font-semibold text-slate-600">
-                  Rows Per Page
-                </span>
-                <select
-                  className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm bg-white"
-                  value={activityFilters.limit}
-                  onChange={(e) =>
-                    updateActivityFilter("limit", e.target.value)
-                  }
-                >
-                  <option value="10">10</option>
-                  <option value="20">20</option>
-                  <option value="50">50</option>
-                  <option value="100">100</option>
-                </select>
-              </label>
-            </div>
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-slate-500">
-                All matching audit records remain stored in the database.
-              </p>
-              <button
-                type="button"
-                onClick={clearActivityFilters}
-                className="portal-btn portal-btn-ghost"
-              >
-                Clear Filters
-              </button>
-            </div>
-            <MobileSortControls
-              className="mt-3 xl:hidden"
-              options={activitySortOptions}
-              sortKey={activitySortKey}
-              direction={activitySortDirection}
-              onSortKeyChange={changeActivitySort}
-              onToggleDirection={toggleActivitySortDirection}
-            />
-          </div>
-          {activityLoading ? (
-            <div className="portal-card-body text-slate-500">
-              Loading audit records...
-            </div>
-          ) : activity.length === 0 ? (
-            <div className="portal-card-body text-slate-500">
-              No audit records match the selected filters.
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="portal-table portal-table-activity min-w-[940px]">
-                <thead>
-                  <tr>
-                    <SortableTableHeader label="User" sortKey="user" activeKey={activitySortKey} direction={activitySortDirection} onSort={changeActivitySort} className="whitespace-nowrap" />
-                    <SortableTableHeader label="Role" sortKey="role" activeKey={activitySortKey} direction={activitySortDirection} onSort={changeActivitySort} className="whitespace-nowrap" />
-                    <SortableTableHeader label="Event" sortKey="event" activeKey={activitySortKey} direction={activitySortDirection} onSort={changeActivitySort} className="whitespace-nowrap" />
-                    <SortableTableHeader label="Project" sortKey="project" activeKey={activitySortKey} direction={activitySortDirection} onSort={changeActivitySort} className="hidden lg:table-cell" />
-                    <SortableTableHeader label="IP / Location" sortKey="location" activeKey={activitySortKey} direction={activitySortDirection} onSort={changeActivitySort} className="hidden xl:table-cell" />
-                    <SortableTableHeader label="Details" sortKey="details" activeKey={activitySortKey} direction={activitySortDirection} onSort={changeActivitySort} />
-                    <SortableTableHeader label="Time" sortKey="timestamp" activeKey={activitySortKey} direction={activitySortDirection} onSort={changeActivitySort} className="whitespace-nowrap" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {activity.map((item) => (
-                    <tr key={item.id}>
-                      <td className="whitespace-nowrap font-medium text-slate-800">
-                        {item.display_name || item.username}
-                      </td>
-                      <td className="whitespace-nowrap">
-                        {labelRole(item.role)}
-                      </td>
-                      <td>
-                        <span
-                          className={`inline-flex whitespace-nowrap px-2 py-1 rounded-full text-xs font-semibold ${severityClass(item.event)}`}
-                        >
-                          {activityEventLabel(item)}
-                        </span>
-                      </td>
-                      <td
-                        className="hidden lg:table-cell max-w-[220px] truncate"
-                        title={item.project_title || "-"}
-                      >
-                        {item.project_title || "-"}
-                      </td>
-                      <td className="hidden xl:table-cell whitespace-nowrap">
-                        {[item.ip_address, item.location_hint]
-                          .filter(Boolean)
-                          .join(" | ") || "-"}
-                      </td>
-                      <td className="max-w-[400px] min-w-[240px] text-xs text-slate-500">
-                        {item.details &&
-                        Object.keys(item.details).length > 0 ? (
-                          <div className="space-y-1">
-                            {buildDetailEntries(item).map(([label, value]) => (
-                              <div key={`${item.id}-${label}`}>
-                                <span className="text-slate-500">{label}:</span>{" "}
-                                <span className="text-slate-700">{value}</span>
-                              </div>
-                            ))}
-                            {auditChangedFields(item.details).length > 0 && (
-                              <div className="break-words">
-                                <span className="text-slate-500">Changed Fields:</span>{" "}
-                                <span className="text-slate-700">
-                                  {auditChangedFields(item.details).map(formatChangedField).join(", ")}
-                                </span>
-                              </div>
-                            )}
-                            {auditChanges(item.details).length > 0 && (
-                              <details className="rounded border border-slate-200 bg-slate-50 px-2 py-1">
-                                <summary className="cursor-pointer font-medium text-slate-700">
-                                  Changes ({auditChanges(item.details).length})
-                                </summary>
-                                <ul className="mt-2 space-y-2">
-                                  {auditChanges(item.details).map((change, index) => (
-                                    <li key={`${item.id}-change-${index}`} className="break-words border-t border-slate-200 pt-2">
-                                      <span className="font-medium text-slate-700">{formatChangedField(change.field)}</span>
-                                      <div className="whitespace-pre-wrap text-slate-600">Before: {formatDetailValue(change.before)}</div>
-                                      <div className="whitespace-pre-wrap text-slate-700">After: {formatDetailValue(change.after)}</div>
-                                    </li>
-                                  ))}
-                                </ul>
-                              </details>
-                            )}
-                          </div>
-                        ) : (
-                          "-"
-                        )}
-                      </td>
-                      <td className="whitespace-nowrap">
-                        {new Date(item.created_at).toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <div className="portal-card-body flex flex-col gap-3 border-t border-slate-200 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-sm text-slate-600">
-              Showing <span className="font-semibold">{activityStart}</span>–
-              <span className="font-semibold">{activityEnd}</span> of{" "}
-              <span className="font-semibold">{activityTotal}</span> audit
-              records
-            </p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                className="portal-btn portal-btn-ghost"
-                disabled={!hasPreviousActivity || activityLoading}
-                onClick={() =>
-                  setActivityOffset((prev) => Math.max(0, prev - activityLimit))
-                }
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                className="portal-btn portal-btn-ghost"
-                disabled={!hasNextActivity || activityLoading}
-                onClick={() =>
-                  setActivityOffset((prev) => prev + activityLimit)
-                }
-              >
-                Next
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </PortalLayout>
   );
 };

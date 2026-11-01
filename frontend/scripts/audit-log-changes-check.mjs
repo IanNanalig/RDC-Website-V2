@@ -30,45 +30,61 @@ try {
     if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
     const auditRows = [{
         id: 1, username: "contributor", display_name: "Contributor", role: "staff",
-        event: "password_reset_request", target_label: "zulu@example.test", ip_address: "", location_hint: "",
+        event: "project_update", category: "projects", category_label: "Projects",
+        action_label: "Updated a project", description: "Contributor updated a project — zulu@example.test.",
+        result: "completed", result_label: "Completed", target_label: "zulu@example.test",
         created_at: "2026-10-10T10:00:00Z",
-        details: {
-          email: "contributor@example.com", session_version: 7, replaced_previous_session: true,
-          status: "planning", edited_fields_count: 3,
-          changed_fields: ["projectActivity", "actualFundingByYear.2022_prior", "sdgSelections"],
-          changes: [
-            { field: "projectActivity", before: "Old title", after: "New title" },
-            { field: "actualFundingByYear.2022_prior", before: "100", after: "200" },
-            { field: "sdgSelections", before: "No poverty", after: "Climate action" },
-          ],
-        },
       },
-      { id: 2, username: "second", display_name: "Second", role: "staff", event: "login", target_label: "alpha@example.test", created_at: "2026-10-09T10:00:00Z", details: {} },
+      {
+        id: 2, username: "second", display_name: "Second", role: "staff", event: "login",
+        category: "accounts_access", category_label: "Accounts & Access", action_label: "Signed in",
+        description: "Second signed in — alpha@example.test.", result: "completed", result_label: "Completed",
+        target_label: "alpha@example.test", created_at: "2026-10-09T10:00:00Z",
+      },
     ];
     const sortedAuditRows = [...auditRows];
     if (url.searchParams.get("sort_by") === "target" && url.searchParams.get("sort_direction") === "asc") {
       sortedAuditRows.reverse();
     }
+    const detail = {
+      ...auditRows[0], ip_address: "127.0.0.1", location_hint: "Manila",
+      technical_details: { method: "PATCH", route: "admin-projects-detail", status_code: 200,
+        changes: [{ field: "projectActivity", before: "Old title", after: "New title" }] },
+    };
     const body = path === "/api/admin/activity/" ? {
       results: sortedAuditRows,
       count: sortedAuditRows.length,
-    } : path === "/api/admin/users/" ? [] : {};
+      category_options: [
+        { value: "accounts_access", label: "Accounts & Access" },
+        { value: "projects", label: "Projects" },
+      ],
+      result_options: [{ value: "completed", label: "Completed" }],
+    } : path === "/api/admin/activity/1/" ? detail : path === "/api/admin/users/" ? [] : {};
     await route.fulfill({ status: 200, contentType: "application/json", headers, body: JSON.stringify(body) });
   });
 
   await page.goto(origin + "/admin/users?tab=system-audit-log", { waitUntil: "networkidle" });
   await page.waitForURL("**/admin/audit-log");
   const row = page.getByRole("row").filter({ hasText: "Contributor" });
-  const target = row.locator("td").nth(2);
+  const target = row.locator("td").nth(4);
   assert.equal((await target.innerText()).trim(), "zulu@example.test", "Target shows only the human-readable label");
-  assert.equal(await row.getByText("Changes and details").count(), 0);
-  assert.doesNotMatch(await row.innerText(), /session_version|replaced_previous_session|Before:|After:/);
+  assert.match(await row.innerText(), /Updated a project/);
+  assert.doesNotMatch(await row.innerText(), /project_update|api_action|Before:|After:/);
   assert.equal(await target.isVisible(), true, "Audit target is accessible in the mobile table");
   await page.getByLabel("Sort by field").selectOption("target");
   await page.getByText("alpha@example.test").waitFor();
-  assert.equal((await page.getByRole("row").nth(1).locator("td").nth(2).innerText()).trim(), "alpha@example.test",
+  assert.equal((await page.getByRole("row").nth(1).locator("td").nth(4).innerText()).trim(), "alpha@example.test",
     "Mobile audit sorting requests and displays the full filtered dataset in ascending target order");
-  console.log("PASS audit target hides raw details on mobile");
+  const detailButton = page.getByRole("row").filter({ hasText: "Contributor" }).getByRole("button", { name: "View details for Updated a project" });
+  await detailButton.click();
+  const dialog = page.getByRole("dialog", { name: "Audit record details" });
+  await dialog.getByText("Contributor updated a project — zulu@example.test.").waitFor();
+  assert.match(await dialog.innerText(), /admin-projects-detail/);
+  assert.match(await dialog.innerText(), /Old title/);
+  await page.keyboard.press("Escape");
+  assert.equal(await dialog.count(), 0, "Escape closes the audit detail dialog");
+  assert.equal(await detailButton.evaluate((element) => element === document.activeElement), true, "Focus returns to the details button");
+  console.log("PASS audit log uses readable rows and protected technical details");
   await context.close();
 } finally {
   await browser.close();

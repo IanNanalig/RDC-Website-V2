@@ -41,6 +41,13 @@ from rest_framework.views import APIView
 from cms.form_schema import FormSchemaError, validate_simplified_answers
 from rest_framework_simplejwt.tokens import AccessToken
 from .authentication import SESSION_IDLE_TIMEOUT
+from .audit_presentation import (
+    CATEGORY_LABELS,
+    RESULT_LABELS,
+    category_query,
+    matching_event_terms,
+    result_query,
+)
 from .models import (
     AccessRequest,
     Agency,
@@ -76,6 +83,8 @@ from .serializers import (
     ProjectRevisionSerializer,
     ProjectRevisionSummarySerializer,
     UserActivitySerializer,
+    AdminActivityListSerializer,
+    AdminActivityDetailSerializer,
     UserSerializer,
     ProjectPriorityAnalysisSerializer,
     ProjectSupportingDocumentSerializer,
@@ -7126,6 +7135,9 @@ class AdminActivityView(APIView):
         role_filter = (request.query_params.get("role") or "").strip()
         event_filter = (request.query_params.get("event") or "").strip()
         user_filter = (request.query_params.get("user") or "").strip()
+        category_filter = (request.query_params.get("category") or "").strip()
+        result_filter = (request.query_params.get("result") or "").strip()
+        search_filter = (request.query_params.get("search") or "").strip()
         date_from_raw = (request.query_params.get("date_from") or "").strip()
         date_to_raw = (request.query_params.get("date_to") or "").strip()
         limit_raw = request.query_params.get("limit")
@@ -7137,6 +7149,14 @@ class AdminActivityView(APIView):
             qs = qs.filter(role=role_filter)
         if event_filter:
             qs = qs.filter(event=event_filter)
+        if category_filter:
+            if category_filter not in CATEGORY_LABELS:
+                return Response({"detail": "Unknown audit category."}, status=400)
+            qs = qs.filter(category_query(category_filter))
+        if result_filter:
+            if result_filter not in RESULT_LABELS:
+                return Response({"detail": "Unknown audit result."}, status=400)
+            qs = qs.filter(result_query(result_filter))
         if user_filter:
             qs = qs.annotate(
                 _joined_user_name=Concat("user__first_name", Value(" "), "user__last_name")
@@ -7152,6 +7172,35 @@ class AdminActivityView(APIView):
                 | Q(details__attempted_email__icontains=user_filter)
                 | Q(details__email__icontains=user_filter)
             )
+        if search_filter:
+            for term in search_filter.split()[:8]:
+                matching_events, matching_actions, matching_routes = matching_event_terms(term)
+                search_query = (
+                    Q(actor_username__icontains=term)
+                    | Q(actor_full_name__icontains=term)
+                    | Q(user__username__icontains=term)
+                    | Q(user__first_name__icontains=term)
+                    | Q(user__last_name__icontains=term)
+                    | Q(project_title_snapshot__icontains=term)
+                    | Q(project__name__icontains=term)
+                    | Q(details__title__icontains=term)
+                    | Q(details__name__icontains=term)
+                    | Q(details__email__icontains=term)
+                    | Q(details__attempted_email__icontains=term)
+                    | Q(details__agency_name__icontains=term)
+                    | Q(details__agency_code__icontains=term)
+                    | Q(details__slug__icontains=term)
+                    | Q(details__key__icontains=term)
+                    | Q(details__filename__icontains=term)
+                    | Q(details__reference__icontains=term)
+                )
+                if matching_events:
+                    search_query |= Q(event__in=matching_events)
+                if matching_actions:
+                    search_query |= Q(details__action__in=matching_actions) | Q(details__operation__in=matching_actions)
+                if matching_routes:
+                    search_query |= Q(details__route__in=matching_routes)
+                qs = qs.filter(search_query)
         if date_from_raw:
             try:
                 date_from = datetime.strptime(date_from_raw, "%Y-%m-%d").date()
@@ -7224,7 +7273,7 @@ class AdminActivityView(APIView):
                 offset = 0
 
         total = qs.count()
-        serializer = UserActivitySerializer(qs[offset : offset + limit], many=True)
+        serializer = AdminActivityListSerializer(qs[offset : offset + limit], many=True)
         if (request.query_params.get("include_meta") or "").lower() in {"1", "true", "yes"}:
             return Response(
                 {
@@ -7235,9 +7284,25 @@ class AdminActivityView(APIView):
                     "has_previous": offset > 0,
                     "has_next": offset + limit < total,
                     "event_options": sorted(UserActivity.objects.order_by().values_list("event", flat=True).distinct()),
+                    "category_options": [
+                        {"value": value, "label": label} for value, label in CATEGORY_LABELS.items()
+                    ],
+                    "result_options": [
+                        {"value": value, "label": label} for value, label in RESULT_LABELS.items()
+                    ],
                 }
             )
         return Response(serializer.data)
+
+
+class AdminActivityDetailView(APIView):
+    permission_classes = [IsAuthenticated, AdminOnlyPermission]
+
+    def get(self, request, activity_id):
+        activity = UserActivity.objects.select_related("user", "project").filter(pk=activity_id).first()
+        if activity is None:
+            raise Http404("Audit record not found.")
+        return Response(AdminActivityDetailSerializer(activity).data)
 
 
 class AgencyActivityView(APIView):

@@ -355,6 +355,9 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
                 </div>
                 <div className="portal-account-actions">
                   <Link to="/profile" onClick={() => setMobileOpen(false)} className="portal-profile-btn">View Profile</Link>
+                  <Link to="/" onClick={() => setMobileOpen(false)} className="portal-profile-btn">
+                    Back to Website
+                  </Link>
                   <button type="button" onClick={logout} className="portal-logout-btn">
                     Logout
                   </button>

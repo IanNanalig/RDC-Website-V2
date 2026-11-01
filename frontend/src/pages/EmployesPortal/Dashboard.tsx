@@ -377,7 +377,7 @@ const Dashboard: React.FC = () => {
                   <div>
                     <p className="text-sm font-semibold text-slate-800">
                       {item.display_name || item.username || "User"}{" "}
-                      <span className="text-slate-500 font-normal">- {item.event?.replaceAll("_", " ")}</span>
+                      <span className="text-slate-500 font-normal">- {item.action_label || "Recorded project activity"}</span>
                     </p>
                     <p className="text-xs text-slate-500">
                       {item.project_title ? `Project: ${item.project_title}` : "Project: -"}

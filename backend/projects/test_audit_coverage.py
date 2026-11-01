@@ -6,6 +6,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from cms.models import CMSContributorForm
+from .audit_presentation import EVENT_SPECS
 from .models import AuditTrail, PasswordSetupToken, Project, User, UserActivity
 
 
@@ -33,6 +34,114 @@ class AuditCoverageTests(APITestCase):
     def as_user(self, user):
         self.client.force_authenticate(user=user)
 
+    def test_declared_events_have_central_human_readable_mappings(self):
+        declared = {value for value, _label in UserActivity.EVENT_CHOICES}
+        self.assertEqual(declared - {"api_action", "api_action_failed"} - set(EVENT_SPECS), set())
+        emitted_outside_choices = {
+            "project_unarchive", "profile_updated", "profile_edit_requested",
+            "profile_edit_approved", "profile_edit_rejected", "chat_knowledge_approved",
+            "chat_knowledge_rejected", "chat_content_updated",
+        }
+        self.assertEqual(emitted_outside_choices - set(EVENT_SPECS), set())
+
+    def test_activity_list_uses_readable_projection_without_technical_details(self):
+        original_details = {
+            "action": "agency_created", "agency_code": "TEST-AGENCY",
+            "password": "do-not-return", "nested": {"token_digest": "do-not-return"},
+        }
+        activity = UserActivity.objects.create(
+            user=self.admin, role="admin", event="api_action", ip_address="127.0.0.1",
+            details=original_details,
+        )
+        self.as_user(self.admin)
+        response = self.client.get("/api/admin/activity/?include_meta=1")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        row = next(item for item in response.data["results"] if item["id"] == activity.id)
+        self.assertEqual(row["category"], "agencies")
+        self.assertEqual(row["category_label"], "Agencies")
+        self.assertEqual(row["action_label"], "Created an agency")
+        self.assertEqual(row["result"], "completed")
+        self.assertEqual(row["target_label"], "TEST-AGENCY")
+        self.assertIn("audit-admin", row["description"])
+        self.assertNotIn("details", row)
+        self.assertNotIn("ip_address", row)
+        activity.refresh_from_db()
+        self.assertEqual(activity.details, original_details)
+
+    def test_readable_category_result_and_activity_search_filters(self):
+        agency = UserActivity.objects.create(
+            user=self.admin, role="admin", event="api_action",
+            details={"action": "agency_created", "agency_code": "SEARCH-AGENCY"},
+        )
+        failed = UserActivity.objects.create(
+            actor_username="Unauthenticated", actor_full_name="Unauthenticated", role="unauthenticated",
+            event="login_failed", details={"attempted_email": "failed@example.test"},
+        )
+        blocked = UserActivity.objects.create(
+            user=self.admin, role="admin", event="api_action_failed",
+            details={"route": "admin-users-set-active", "status_code": 403},
+        )
+        unknown_generic = UserActivity.objects.create(
+            user=self.admin, role="admin", event="api_action",
+            details={"route": "future-admin-route", "status_code": 200},
+        )
+        project = UserActivity.objects.create(
+            user=self.admin, role="admin", event="project_update",
+            project_title_snapshot="Readable Search Project",
+        )
+        self.as_user(self.admin)
+
+        by_category = self.client.get("/api/admin/activity/?category=agencies&include_meta=1")
+        self.assertEqual([item["id"] for item in by_category.data["results"]], [agency.id])
+        by_result = self.client.get("/api/admin/activity/?result=failed&include_meta=1")
+        failed_row = next(item for item in by_result.data["results"] if item["id"] == failed.id)
+        self.assertEqual(failed_row["display_name"], "Unauthenticated user")
+        self.assertIn(failed.id, [item["id"] for item in by_result.data["results"]])
+        self.assertNotIn(blocked.id, [item["id"] for item in by_result.data["results"]])
+        blocked_result = self.client.get("/api/admin/activity/?result=blocked&include_meta=1")
+        self.assertIn(blocked.id, [item["id"] for item in blocked_result.data["results"]])
+        self.assertEqual(
+            next(item for item in blocked_result.data["results"] if item["id"] == blocked.id)["result"],
+            "blocked",
+        )
+        administration = self.client.get(
+            "/api/admin/activity/?category=administration_security&result=completed&include_meta=1"
+        )
+        self.assertIn(unknown_generic.id, [item["id"] for item in administration.data["results"]])
+        by_action = self.client.get("/api/admin/activity/?search=created%20an%20agency&include_meta=1")
+        self.assertEqual([item["id"] for item in by_action.data["results"]], [agency.id])
+        by_target = self.client.get("/api/admin/activity/?search=Readable%20Search%20Project&include_meta=1")
+        self.assertEqual([item["id"] for item in by_target.data["results"]], [project.id])
+
+    def test_activity_detail_is_admin_only_and_recursively_sanitized(self):
+        activity = UserActivity.objects.create(
+            user=self.admin, role="admin", event="project_update", project_title_snapshot="Safe Project",
+            ip_address="127.0.0.1", location_hint="Test location",
+            details={
+                "method": "PATCH", "route": "admin-projects-detail", "status_code": 200,
+                "password": "do-not-return", "nested": {"access_token": "do-not-return"},
+                "changes": [
+                    {"field": "title", "before": "Old", "after": "New"},
+                    {"field": "password", "before": "old-secret", "after": "new-secret"},
+                ],
+            },
+        )
+        self.as_user(self.contributor)
+        self.assertEqual(self.client.get(f"/api/admin/activity/{activity.id}/").status_code, 403)
+
+        self.as_user(self.admin)
+        response = self.client.get(f"/api/admin/activity/{activity.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertNotIn("details", response.data)
+        self.assertEqual(response.data["ip_address"], "127.0.0.1")
+        technical = response.data["technical_details"]
+        self.assertEqual(technical["password"], "[redacted]")
+        self.assertEqual(technical["nested"]["access_token"], "[redacted]")
+        self.assertEqual(technical["changes"][0]["after"], "New")
+        self.assertEqual(technical["changes"][1]["before"], "[redacted]")
+        self.assertNotIn("old-secret", str(response.data))
+        self.assertNotIn("new-secret", str(response.data))
+
     def test_fallback_covers_all_four_roles_without_body_or_passive_gets(self):
         for user in (self.admin, self.validator, self.editor, self.contributor):
             self.as_user(user)
@@ -56,6 +165,7 @@ class AuditCoverageTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         activity = UserActivity.objects.get(user=self.admin, event="api_action_failed")
         self.assertEqual(activity.details["status_code"], 400)
+        self.assertEqual(activity.details["route_parameters"].get("pk"), str(self.admin.id))
         self.assertNotIn("password", str(activity.details))
         self.assertNotIn("token", str(activity.details))
 

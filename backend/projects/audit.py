@@ -61,6 +61,13 @@ class AuditActionMiddleware:
 
         activity_ids = (_recorded_users.get() or {}).get(user.pk, set())
         route = getattr(request, "resolver_match", None)
+        route_parameters = {}
+        for key, value in (getattr(route, "kwargs", None) or {}).items():
+            normalized_key = str(key).lower()
+            if any(part in normalized_key for part in ("password", "token", "secret", "otp", "key")):
+                continue
+            if isinstance(value, (str, int)):
+                route_parameters[str(key)[:80]] = str(value)[:160]
         forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
         ip_address = forwarded.split(",")[0].strip() if forwarded else request.META.get("REMOTE_ADDR", "")
         try:
@@ -77,6 +84,7 @@ class AuditActionMiddleware:
                     "method": request.method,
                     "path": request.path[:512],
                     "route": (getattr(route, "url_name", "") or "")[:120],
+                    "route_parameters": route_parameters,
                     "status_code": response.status_code,
                 },
             )
