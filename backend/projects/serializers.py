@@ -3,6 +3,7 @@ from datetime import datetime
 from copy import deepcopy
 from cms.form_schema import CURRENT_PROJECT_STATUS_VALUES, FormSchemaError, validate_simplified_answers
 from .audit_presentation import actor_label, presentation_for, sanitize_audit_details
+from .agency_catalog import is_protected_agency, update_agency_metadata
 from .project_status import canonical_implementation_status
 from .models import (
     AccessRequest,
@@ -173,16 +174,19 @@ class UserSerializer(serializers.ModelSerializer):
 class AgencySerializer(serializers.ModelSerializer):
     dependency_counts = serializers.SerializerMethodField()
     contributor_capacity = serializers.SerializerMethodField()
+    is_protected = serializers.SerializerMethodField()
+    can_archive = serializers.SerializerMethodField()
 
     class Meta:
         model = Agency
         fields = [
             "id", "code", "name", "head_name", "is_active", "is_legacy",
-            "archived_at", "dependency_counts", "contributor_capacity", "created_at", "updated_at",
+            "is_protected", "can_archive", "archived_at", "dependency_counts",
+            "contributor_capacity", "created_at", "updated_at",
         ]
         read_only_fields = [
-            "id", "is_active", "is_legacy", "archived_at", "dependency_counts", "contributor_capacity",
-            "created_at", "updated_at",
+            "id", "is_active", "is_legacy", "is_protected", "can_archive", "archived_at",
+            "dependency_counts", "contributor_capacity", "created_at", "updated_at",
         ]
 
     def validate_code(self, value):
@@ -191,8 +195,6 @@ class AgencySerializer(serializers.ModelSerializer):
             character.isalnum() or character in "-_" for character in normalized
         ):
             raise serializers.ValidationError("Use up to 50 letters, numbers, hyphens, or underscores.")
-        if self.instance and normalized.casefold() != self.instance.code.casefold():
-            raise serializers.ValidationError("Agency codes are permanent and cannot be changed.")
         duplicate = Agency.objects.filter(code__iexact=normalized)
         if self.instance:
             duplicate = duplicate.exclude(pk=self.instance.pk)
@@ -213,6 +215,15 @@ class AgencySerializer(serializers.ModelSerializer):
 
     def validate_head_name(self, value):
         return " ".join(str(value or "").strip().split())
+
+    def update(self, instance, validated_data):
+        return update_agency_metadata(instance, validated_data)
+
+    def get_is_protected(self, obj):
+        return is_protected_agency(obj)
+
+    def get_can_archive(self, obj):
+        return bool(obj.is_active and not is_protected_agency(obj))
 
     def get_dependency_counts(self, obj):
         from .models import ProjectCollaboratingAgency, UserInvitation

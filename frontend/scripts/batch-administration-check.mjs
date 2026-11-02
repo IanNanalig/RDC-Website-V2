@@ -13,6 +13,19 @@ const browser = await chromium.launch({
 const headers = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization,content-type,x-portal-user-activity" };
 
 async function configure(page) {
+  const agencyUpdates = [];
+  let protectedAgency = {
+    id: 4,
+    code: "RDC-NCR",
+    name: "Regional Development Council National Capital Region",
+    head_name: "",
+    is_active: true,
+    is_legacy: false,
+    is_protected: true,
+    can_archive: false,
+    dependency_counts: { users: 2, pending_invitations: 0, primary_projects: 0, collaborating_projects: 1 },
+    contributor_capacity: { limit: 5, active: 0, reserved: 0, used: 0, available: 5 },
+  };
   await page.addInitScript(() => {
     localStorage.setItem("user", JSON.stringify({ id: 1, role: "admin", username: "Administrator", agency: "RDC-NCR" }));
     localStorage.setItem("isLoggedIn", "true");
@@ -55,22 +68,33 @@ async function configure(page) {
     if (path.endsWith("/admin/users/batch-invitations/options/")) return json({ roles: [{ value: "contributor", label: "Contributor" }, { value: "validator", label: "Validator" }], agencies: [{ code: "DENR", name: "Department of Environment and Natural Resources" }] });
     if (path.endsWith("/admin/users/batch-invitations/preview/")) return json({ preview_token: "invite-token", rows: [{ row: 1, email: "new@example.com", role: "contributor", agency: "DENR", status: "valid", reason: "" }] });
     if (path.endsWith("/admin/users/batch-invitations/send/")) return json({ sent: 1, skipped: 0, failed: 0 });
+    if (path.endsWith("/admin/agencies/suggest-code/")) {
+      return json({ suggested_code: "RDCMM", source: "generated" });
+    }
+    if (path.includes("/admin/agencies/") && request.method() === "PATCH") {
+      const payload = JSON.parse(request.postData() || "{}");
+      agencyUpdates.push(payload);
+      protectedAgency = { ...protectedAgency, ...payload };
+      return json(protectedAgency);
+    }
+    if (path.endsWith("/admin/agencies/")) return json([protectedAgency]);
     if (path.endsWith("/admin/users/")) return json([]);
     if (path.endsWith("/encoding-window/")) return json({ enabled: false, is_open: false, status_code: "closed_by_admin", message: "Closed", start_at: "", end_at: "" });
     if (path.endsWith("/admin/activity/")) return json({ results: [], count: 0 });
     return json({});
   });
+  return { agencyUpdates };
 }
 
 try {
   const context = await browser.newContext({ viewport: { width: 1366, height: 850 } });
   const page = await context.newPage();
-  await configure(page);
+  const { agencyUpdates } = await configure(page);
 
   await page.goto(`${origin}/admin/projects/update-forms`);
   await page.getByRole("heading", { name: "Update Older Project Forms" }).waitFor();
   assert.equal(await page.locator("#portal-navigation .portal-nav-item-active").count(), 1, "Only one navigation item is active");
-  await page.locator("#portal-navigation .portal-nav-item-active").getByText("Update Older Forms", { exact: true }).waitFor();
+  await page.locator("#portal-navigation .portal-nav-item-active").getByText("Project Management", { exact: true }).waitFor();
   assert.equal(await page.locator("table.portal-table tbody tr").count(), 10, "Migration list shows ten projects per page");
   await page.getByText(/Showing 1.*10 of 12 matching projects/).waitFor();
   await page.getByRole("button", { name: "Next" }).click();
@@ -109,8 +133,26 @@ try {
   await page.getByRole("button", { name: "Send 1 Valid Invitation" }).click();
   await page.getByText(/1 invitation\(s\) sent/).waitFor();
 
-  assert.ok(await page.getByRole("link", { name: "Project Update Period" }).isVisible());
-  assert.ok(await page.getByRole("link", { name: "Update Older Forms" }).isVisible());
+  await page.goto(`${origin}/admin/users?tab=agencies`);
+  await page.getByRole("heading", { name: "Agency Catalog" }).waitFor();
+  const protectedRow = page.getByRole("row").filter({ hasText: "RDC-NCR" });
+  await protectedRow.getByText("Protected", { exact: true }).waitFor();
+  assert.equal(await protectedRow.getByRole("button", { name: "Archive" }).count(), 0, "Protected agency has no Archive action");
+  await protectedRow.getByRole("button", { name: "Edit" }).click();
+  await page.getByLabel("Agency Name *").fill("Regional Development Council Metro Manila");
+  await page.getByText(/Suggested \(generated\):/).waitFor();
+  await page.getByText("Review the code for the updated agency name.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Save Agency" }).isDisabled(), true, "Rename waits for code review");
+  await page.getByRole("button", { name: "Use Suggestion" }).click();
+  await page.getByRole("button", { name: "Save Agency" }).click();
+  await page.getByText("Agency details updated. Existing relationships were preserved.").waitFor();
+  assert.deepEqual(agencyUpdates[0], {
+    code: "RDCMM",
+    name: "Regional Development Council Metro Manila",
+    head_name: "",
+  });
+
+  assert.ok(await page.getByRole("link", { name: "Project Management" }).isVisible());
   await context.close();
   console.log("PASS batch administration browser checks");
 } finally {

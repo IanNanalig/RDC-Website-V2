@@ -1,14 +1,16 @@
 from datetime import timedelta
+import hashlib
 import string
 import re
 from urllib.parse import unquote
 from unittest.mock import patch
 
+from django.core import signing
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .models import AccessRequest, Agency, PasswordSetupToken, User, UserActivity
+from .models import AccessRequest, Agency, PasswordSetupToken, User, UserActivity, UserInvitation
 
 
 class AccountSetupAgencyTests(APITestCase):
@@ -120,6 +122,32 @@ class AccountSetupAgencyTests(APITestCase):
         self.assertEqual(send_mail.call_count, 2)
 
     @patch("projects.views.send_mail")
+    def test_internal_account_uses_protected_identity_after_code_change(self, send_mail):
+        rdc = Agency.objects.get(system_key="rdc-ncr-primary")
+        changed = self.client.patch(
+            f"/api/admin/agencies/{rdc.code}/",
+            {"code": "RDC-Metro"},
+            format="json",
+        )
+        self.assertEqual(changed.status_code, 200, changed.data)
+        invited = self.client.post(
+            "/api/admin/users/",
+            {"email": "renamed-rdc-validator@example.com", "role": "validator"},
+            format="json",
+        )
+        self.assertEqual(invited.status_code, status.HTTP_202_ACCEPTED, invited.data)
+        token = self.invited_token(send_mail)
+        completed = self.client.post(
+            "/api/auth/setup-password/",
+            self.setup_payload(token, "RDC-Metro"),
+            format="json",
+        )
+        self.assertEqual(completed.status_code, 200, completed.data)
+        user = User.objects.get(email="renamed-rdc-validator@example.com")
+        self.assertEqual(user.agency_record_id, rdc.pk)
+        self.assertEqual(user.agency, "RDC-Metro")
+
+    @patch("projects.views.send_mail")
     def test_access_request_approval_assigns_rdc_to_validator(self, send_mail):
         access_request = AccessRequest.objects.create(
             full_name="New Validator",
@@ -211,7 +239,6 @@ class AccountSetupAgencyTests(APITestCase):
         agencies = (
             ("DPWH", "Department of Public Works and Highways"),
             ("DENR", "Department of Environment and Natural Resources"),
-            ("RDC-NCR", "Regional Development Council National Capital Region"),
             ("DILG", "Department of the Interior and Local Government"),
             ("DEPDev", "Department of Economy, Planning, and Development"),
             ("DBM", "Department of Budget and Management"),
@@ -250,6 +277,59 @@ class AccountSetupAgencyTests(APITestCase):
             self.assertFalse(user.must_change_password)
             activity = UserActivity.objects.get(user=user, event="auth_password_setup")
             self.assertEqual(activity.details["agency"], expected)
+
+    def test_contributor_setup_rejects_protected_rdc_agency(self):
+        self.client.force_authenticate(user=None)
+        rdc = Agency.objects.get(system_key="rdc-ncr-primary")
+        user, token = self.make_pending_user("protected-rdc")
+        response = self.client.post(
+            "/api/auth/setup-password/",
+            self.setup_payload(token, rdc.code),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["code"], "agency_not_eligible_for_contributor")
+        self.assertFalse(User.objects.filter(email=user.email, must_change_password=False).exists())
+
+    def test_legacy_rdc_contributor_invitation_must_choose_an_eligible_agency(self):
+        self.client.force_authenticate(user=None)
+        rdc = Agency.objects.get(system_key="rdc-ncr-primary")
+        payload = {
+            "email": "legacy-rdc-invite@example.com",
+            "role": "staff",
+            "agency": rdc.code,
+            "agency_locked": True,
+            "nonce": "legacy-protected-invitation",
+        }
+        token = "invite:" + signing.dumps(payload, salt="rdc-registration-invite-v1")
+        invitation = UserInvitation.objects.create(
+            email=payload["email"],
+            role="staff",
+            agency=rdc.code,
+            agency_record=rdc,
+            agency_locked=True,
+            token_digest=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            status=UserInvitation.STATUS_SENT,
+            expires_at=timezone.now() + timedelta(hours=1),
+        )
+
+        prefill = self.client.get(f"/api/auth/setup-password/?token={token}")
+        self.assertEqual(prefill.status_code, 200, prefill.data)
+        self.assertFalse(prefill.data["agency_locked"])
+        self.assertEqual(prefill.data["profile"]["agency"], "")
+        self.assertNotIn(rdc.code, [row["code"] for row in prefill.data["agencies"]])
+
+        completed = self.client.post(
+            "/api/auth/setup-password/",
+            self.setup_payload(token, "DENR"),
+            format="json",
+        )
+        self.assertEqual(completed.status_code, 200, completed.data)
+        user = User.objects.get(email=payload["email"])
+        invitation.refresh_from_db()
+        self.assertEqual(user.agency_record.code, "DENR")
+        self.assertEqual(invitation.agency_record.code, "DENR")
+        self.assertEqual(invitation.status, UserInvitation.STATUS_COMPLETED)
 
     def test_setup_accepts_keyboard_symbols_and_rejects_non_symbols(self):
         self.client.force_authenticate(user=None)

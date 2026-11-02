@@ -124,6 +124,13 @@ from .account_capacity import (
     reserve_invitation,
     update_user_account,
 )
+from .agency_catalog import (
+    ContributorAgencyError,
+    is_protected_agency,
+    primary_system_agency,
+    suggest_agency_code,
+    validate_contributor_agency,
+)
 
 
 ENCODING_WINDOW_KEY = "portal_encoding_window"
@@ -162,7 +169,10 @@ def _normalize_account_agency(value):
 def _active_agency_options(*, include_capacity=False):
     try:
         rows = []
-        for agency in Agency.objects.filter(is_active=True).order_by("code"):
+        for agency in Agency.objects.filter(
+            is_active=True,
+            system_key__isnull=True,
+        ).order_by("code"):
             usage = agency_capacity(agency)
             row = {
                 "code": agency.code,
@@ -186,6 +196,27 @@ def _agency_for_value(value, *, active_only=False):
     if active_only:
         queryset = queryset.filter(is_active=True)
     return queryset.filter(Q(code__iexact=normalized) | Q(name__iexact=normalized)).first()
+
+
+def _primary_system_agency_or_error():
+    agency = primary_system_agency()
+    if agency is None:
+        raise ValueError("The protected RDC-NCR agency is not configured.")
+    return agency
+
+
+def _contributor_agency_for_value(value, *, existing_agency_id=None):
+    agency = _agency_for_value(value, active_only=True)
+    return validate_contributor_agency(
+        agency,
+        existing_agency_id=existing_agency_id,
+    )
+
+
+def _agency_error_response(exc):
+    if isinstance(exc, ContributorAgencyError):
+        return Response(exc.payload, status=status.HTTP_400_BAD_REQUEST)
+    return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 def _project_primary_agency_code(project):
@@ -1064,6 +1095,12 @@ def _active_validators():
 def _project_employee_recipients(project):
     if project.created_by_id:
         return User.objects.filter(id=project.created_by_id, is_active=True)
+    if project.primary_agency_id:
+        return User.objects.filter(
+            role="staff",
+            is_active=True,
+            agency_record_id=project.primary_agency_id,
+        )
     agency = (project.agency or "").strip()
     if not agency:
         return User.objects.none()
@@ -1593,13 +1630,26 @@ def _send_registration_invitation(email: str, token: str):
         raise RuntimeError("The registration invitation email was not delivered.")
 
 
-def _issue_registration_invitation(request, email: str, role: str, agency: str = "", batch_key: str = ""):
+def _issue_registration_invitation(
+    request,
+    email: str,
+    role: str,
+    agency: str = "",
+    batch_key: str = "",
+    agency_id=None,
+):
     email = str(email or "").strip().lower()
-    normalized_agency = _normalize_account_agency(agency)
-    agency_locked = role in INTERNAL_ACCOUNT_ROLES or bool(normalized_agency)
     if role in INTERNAL_ACCOUNT_ROLES:
-        normalized_agency = "RDC-NCR"
-    agency_record = _agency_for_value(normalized_agency, active_only=True) if normalized_agency else None
+        agency_record = _primary_system_agency_or_error()
+    elif agency_id:
+        agency_record = Agency.objects.filter(pk=agency_id, is_active=True).first()
+        validate_contributor_agency(agency_record)
+    elif agency:
+        agency_record = _contributor_agency_for_value(agency)
+    else:
+        agency_record = None
+    normalized_agency = agency_record.code if agency_record else ""
+    agency_locked = role in INTERNAL_ACCOUNT_ROLES or bool(agency_record)
     signed = signing.dumps(
         {
             "email": email,
@@ -1670,7 +1720,7 @@ def _registration_invitation(token: str):
     if not email or role not in ("admin", "validator", "staff", "content_editor") or not payload.get("nonce"):
         return None
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    invitation = UserInvitation.objects.filter(
+    invitation = UserInvitation.objects.select_related("agency_record").filter(
         token_digest=digest,
         email__iexact=email,
         role=role,
@@ -1678,8 +1728,20 @@ def _registration_invitation(token: str):
         expires_at__gte=timezone.now(),
     ).first()
     if invitation:
-        payload["agency"] = invitation.agency
-        payload["agency_locked"] = invitation.agency_locked
+        legacy_protected_contributor = (
+            role == "staff"
+            and invitation.agency_record_id
+            and is_protected_agency(invitation.agency_record)
+        )
+        payload["agency"] = (
+            ""
+            if legacy_protected_contributor
+            else invitation.agency_record.code
+            if invitation.agency_record_id
+            else invitation.agency
+        )
+        payload["agency_id"] = None if legacy_protected_contributor else invitation.agency_record_id
+        payload["agency_locked"] = False if legacy_protected_contributor else invitation.agency_locked
         if User.objects.filter(email__iexact=email).exists():
             return None
         return payload, invitation
@@ -5621,6 +5683,7 @@ class AdminAgencyViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         before = {
+            "code": serializer.instance.code,
             "name": serializer.instance.name,
             "head_name": serializer.instance.head_name,
         }
@@ -5629,12 +5692,24 @@ class AdminAgencyViewSet(viewsets.ModelViewSet):
             self.request, "api_action",
             details={
                 "action": "agency_updated", "agency_id": agency.pk, "agency_code": agency.code,
-                "before": before, "after": {"name": agency.name, "head_name": agency.head_name},
+                "before": before,
+                "after": {"code": agency.code, "name": agency.name, "head_name": agency.head_name},
             },
         )
 
     def destroy(self, request, *args, **kwargs):
+        agency = self.get_object()
+        if is_protected_agency(agency):
+            return Response(
+                {"code": "protected_agency", "detail": "The protected RDC-NCR agency cannot be deleted."},
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response({"detail": "Agencies are archived instead of deleted."}, status=405)
+
+    @action(detail=False, methods=["get"], url_path="suggest-code")
+    def suggest_code(self, request):
+        suggested_code, source = suggest_agency_code(request.query_params.get("name"))
+        return Response({"suggested_code": suggested_code, "source": source})
 
     def _dependency_counts(self, agency):
         return AgencySerializer(agency, context={"request": self.request}).data["dependency_counts"]
@@ -5643,13 +5718,24 @@ class AdminAgencyViewSet(viewsets.ModelViewSet):
     def dependencies(self, request, code=None):
         agency = self.get_object()
         return Response({
-            "agency": {"code": agency.code, "name": agency.name, "is_active": agency.is_active},
+            "agency": {
+                "id": agency.pk,
+                "code": agency.code,
+                "name": agency.name,
+                "is_active": agency.is_active,
+                "is_protected": is_protected_agency(agency),
+            },
             "counts": self._dependency_counts(agency),
         })
 
     @action(detail=True, methods=["post"])
     def archive(self, request, code=None):
         agency = self.get_object()
+        if is_protected_agency(agency):
+            return Response(
+                {"code": "protected_agency", "detail": "The protected RDC-NCR agency cannot be archived."},
+                status=status.HTTP_409_CONFLICT,
+            )
         if not agency.is_active:
             return Response({"detail": "Agency is already archived."}, status=409)
         counts = self._dependency_counts(agency)
@@ -5704,11 +5790,22 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         agency = user.agency_record
         if "agency" in request.data or "agency_code" in request.data:
             raw_agency = request.data.get("agency_code", request.data.get("agency"))
-            if role in INTERNAL_ACCOUNT_ROLES and _normalize_account_agency(raw_agency) != "RDC-NCR":
-                return Response({"detail": "Agency must be RDC-NCR for this user type."}, status=400)
-            agency = _agency_for_value(raw_agency, active_only=True)
-            if agency is None:
-                return Response({"detail": "Select an active agency."}, status=400)
+            try:
+                if role in INTERNAL_ACCOUNT_ROLES:
+                    selected = _agency_for_value(raw_agency, active_only=True)
+                    agency = _primary_system_agency_or_error()
+                    if selected is None or selected.pk != agency.pk:
+                        return Response(
+                            {"detail": "Agency must be the protected RDC-NCR agency for this user type."},
+                            status=400,
+                        )
+                else:
+                    agency = _contributor_agency_for_value(
+                        raw_agency,
+                        existing_agency_id=(user.agency_record_id if user.role == "staff" else None),
+                    )
+            except (ContributorAgencyError, ValueError) as exc:
+                return _agency_error_response(exc)
         account_state = None
         if "is_active" in request.data:
             active = request.data.get("is_active") in {True, 1, "1", "true", "True", "yes"}
@@ -5730,6 +5827,8 @@ class AdminUserViewSet(viewsets.ModelViewSet):
             )
         except AccountCapacityError as exc:
             return Response(exc.payload, status=status.HTTP_409_CONFLICT)
+        except ContributorAgencyError as exc:
+            return _agency_error_response(exc)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
         _log_activity(
@@ -5798,17 +5897,30 @@ class AdminUserViewSet(viewsets.ModelViewSet):
             role = "content_editor"
         if role not in ("admin", "validator", "staff", "content_editor"):
             return Response({"detail": "Invalid role."}, status=400)
-        agency = "RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else _normalize_account_agency(request.data.get("agency"))
-        if role in INTERNAL_ACCOUNT_ROLES and "agency" in request.data:
-            if _normalize_account_agency(request.data.get("agency")) != "RDC-NCR":
-                return Response({"detail": "Agency must be RDC-NCR for this user type."}, status=400)
-        elif request.data.get("agency") and not agency:
-            return Response({"detail": "Invalid agency."}, status=400)
+        try:
+            if role in INTERNAL_ACCOUNT_ROLES:
+                internal_agency = _primary_system_agency_or_error()
+                agency = internal_agency.code
+                if "agency" in request.data:
+                    selected = _agency_for_value(request.data.get("agency"), active_only=True)
+                    if selected is None or selected.pk != internal_agency.pk:
+                        return Response(
+                            {"detail": "Agency must be the protected RDC-NCR agency for this user type."},
+                            status=400,
+                        )
+            elif request.data.get("agency"):
+                agency = _contributor_agency_for_value(request.data.get("agency")).code
+            else:
+                agency = ""
+        except (ContributorAgencyError, ValueError) as exc:
+            return _agency_error_response(exc)
 
         try:
             _issue_registration_invitation(request, email, role, agency=agency)
         except AccountCapacityError as exc:
             return Response(exc.payload, status=status.HTTP_409_CONFLICT)
+        except ContributorAgencyError as exc:
+            return _agency_error_response(exc)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
         except Exception:
@@ -5925,7 +6037,17 @@ class BatchInvitationPreviewView(APIView):
             email = str(raw.get("email") or "").strip().lower()
             role = _normalize_invitation_role(raw.get("role") or default_role)
             agency_raw = str(raw.get("agency") or default_agency_raw).strip()
-            agency = "RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else _normalize_account_agency(agency_raw)
+            agency_record = None
+            agency = ""
+            agency_resolution_error = ""
+            try:
+                if role in INTERNAL_ACCOUNT_ROLES:
+                    agency_record = _primary_system_agency_or_error()
+                elif role == "staff" and agency_raw:
+                    agency_record = _contributor_agency_for_value(agency_raw)
+                agency = agency_record.code if agency_record else ""
+            except (ContributorAgencyError, ValueError) as exc:
+                agency_resolution_error = str(exc)
             row = {"row": index, "email": email, "role": "contributor" if role == "staff" else role, "agency": agency}
             reason = ""
             row_status = "valid"
@@ -5938,14 +6060,13 @@ class BatchInvitationPreviewView(APIView):
             seen.add(email)
             if row_status == "valid" and role not in {"admin", "validator", "staff", "content_editor"}:
                 row_status, reason = "invalid", "Select a valid user role."
-            if row_status == "valid" and role == "staff" and agency_raw and not agency:
-                row_status, reason = "invalid", "Select an approved agency."
+            if row_status == "valid" and agency_resolution_error:
+                row_status, reason = "invalid", agency_resolution_error
             if row_status == "valid" and User.objects.filter(email__iexact=email).exists():
                 row_status, reason = "existing_account", "An account already uses this email."
             pending = row_status == "valid" and _has_pending_registration_invitation(email, now)
             if pending and not resend_pending:
                 row_status, reason = "pending_invitation", "A valid invitation is already pending."
-            agency_record = _agency_for_value(agency, active_only=True) if agency else None
             if row_status == "valid" and (role == "admin" or (role == "staff" and agency_record)):
                 usage = capacity_usage(
                     role,
@@ -5965,7 +6086,13 @@ class BatchInvitationPreviewView(APIView):
             row.update({"status": row_status, "reason": reason})
             results.append(row)
             if row_status == "valid":
-                valid.append({"row": index, "email": email, "role": role, "agency": agency})
+                valid.append({
+                    "row": index,
+                    "email": email,
+                    "role": role,
+                    "agency": agency,
+                    "agency_id": agency_record.pk if agency_record else None,
+                })
         batch_key = get_random_string(32)
         preview_token = signing.dumps(
             {"batch_key": batch_key, "entries": valid}, salt=BATCH_INVITE_PREVIEW_SALT,
@@ -6000,6 +6127,7 @@ class BatchInvitationSendView(APIView):
             email = str(raw.get("email") or "").strip().lower()
             role = _normalize_invitation_role(raw.get("role"))
             agency = str(raw.get("agency") or "")
+            agency_id = raw.get("agency_id")
             if User.objects.filter(email__iexact=email).exists():
                 skipped += 1
                 results.append({"row": raw.get("row"), "email": email, "status": "skipped", "reason": "Account already exists."})
@@ -6009,7 +6137,14 @@ class BatchInvitationSendView(APIView):
                 results.append({"row": raw.get("row"), "email": email, "status": "skipped", "reason": "This batch already sent the invitation."})
                 continue
             try:
-                _issue_registration_invitation(request, email, role, agency=agency, batch_key=batch_key)
+                _issue_registration_invitation(
+                    request,
+                    email,
+                    role,
+                    agency=agency,
+                    agency_id=agency_id,
+                    batch_key=batch_key,
+                )
                 sent += 1
                 results.append({"row": raw.get("row"), "email": email, "status": "sent", "reason": ""})
             except AccountCapacityError as exc:
@@ -6018,6 +6153,14 @@ class BatchInvitationSendView(APIView):
                     "row": raw.get("row"),
                     "email": email,
                     "status": "capacity_reached",
+                    "reason": exc.detail,
+                })
+            except ContributorAgencyError as exc:
+                skipped += 1
+                results.append({
+                    "row": raw.get("row"),
+                    "email": email,
+                    "status": "invalid",
                     "reason": exc.detail,
                 })
             except Exception:
@@ -6745,7 +6888,14 @@ class LogoutView(APIView):
         return Response({"status": "ok"})
 
 
-def _validate_setup_profile(request, role, saved_agency, new_password, agency_locked=None):
+def _validate_setup_profile(
+    request,
+    role,
+    saved_agency,
+    new_password,
+    agency_locked=None,
+    existing_agency_id=None,
+):
     required_fields = [
         "first_name", "last_name", "division", "position",
         "contact_number", "phone_number",
@@ -6772,12 +6922,21 @@ def _validate_setup_profile(request, role, saved_agency, new_password, agency_lo
             return None, Response({"detail": "Agency is locked to the account's saved agency."}, status=400)
         agency = saved_agency
     else:
-        agency = _normalize_account_agency(request.data.get("agency"))
-        if not agency:
-            return None, Response({"detail": "This is an invalid Agency"}, status=400)
+        agency = request.data.get("agency")
     agency_record = _agency_for_value(agency, active_only=True)
     if not agency_record:
+        if _agency_for_value(agency) is None:
+            return None, Response({"detail": "This is an invalid Agency"}, status=400)
         return None, Response({"detail": "This agency is archived or unavailable for registration."}, status=400)
+    if role == "staff":
+        try:
+            validate_contributor_agency(
+                agency_record,
+                existing_agency_id=existing_agency_id,
+            )
+        except ContributorAgencyError as exc:
+            return None, _agency_error_response(exc)
+    agency = agency_record.code
     if "agency_head" in request.data:
         return None, Response({"agency_head": "Head of Agency is managed by the Administrator and cannot be changed."}, status=400)
     policy_error = _validate_password_policy(new_password)
@@ -6807,7 +6966,8 @@ class SetupPasswordView(APIView):
                 return Response({"detail": "Invitation is invalid, expired, or replaced. Ask an administrator to resend it."}, status=400)
             payload, _ = invitation
             role = payload["role"]
-            assigned_agency = str(payload.get("agency") or ("RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else ""))
+            system_agency = primary_system_agency() if role in INTERNAL_ACCOUNT_ROLES else None
+            assigned_agency = str(payload.get("agency") or (system_agency.code if system_agency else ""))
             agency_locked = bool(payload.get("agency_locked", role in INTERNAL_ACCOUNT_ROLES))
             assigned_record = _agency_for_value(assigned_agency, active_only=True)
             return Response({
@@ -6835,7 +6995,7 @@ class SetupPasswordView(APIView):
                 "profile": {
                     "first_name": user.first_name,
                     "last_name": user.last_name,
-                    "agency": user.agency,
+                    "agency": user.agency_record.code if user.agency_record_id else user.agency,
                     "agency_head": user.agency_record.head_name if user.agency_record_id else "",
                     "office": user.office,
                     "division": user.division,
@@ -6857,7 +7017,8 @@ class SetupPasswordView(APIView):
                 return Response({"detail": "Invitation is invalid, expired, or replaced. Ask an administrator to resend it."}, status=400)
             payload, activity = invitation
             role = payload["role"]
-            assigned_agency = str(payload.get("agency") or ("RDC-NCR" if role in INTERNAL_ACCOUNT_ROLES else ""))
+            system_agency = primary_system_agency() if role in INTERNAL_ACCOUNT_ROLES else None
+            assigned_agency = str(payload.get("agency") or (system_agency.code if system_agency else ""))
             agency_locked = bool(payload.get("agency_locked", role in INTERNAL_ACCOUNT_ROLES))
             profile, error = _validate_setup_profile(
                 request, role, assigned_agency, new_password, agency_locked=agency_locked,
@@ -6866,13 +7027,20 @@ class SetupPasswordView(APIView):
                 return error
             try:
                 with transaction.atomic():
+                    if isinstance(activity, UserInvitation):
+                        activity = UserInvitation.objects.select_for_update().get(pk=activity.pk)
                     claim_registration_capacity(
                         role=role,
                         agency=profile.get("agency_record"),
                         invitation=activity if isinstance(activity, UserInvitation) else None,
                     )
                     if isinstance(activity, UserInvitation):
-                        activity = UserInvitation.objects.select_for_update().get(pk=activity.pk)
+                        selected_agency = profile.get("agency_record")
+                        if role == "staff" and activity.agency_record_id != selected_agency.pk:
+                            activity.agency_record = selected_agency
+                            activity.agency = selected_agency.code
+                            activity.agency_locked = True
+                            activity.save(update_fields=["agency_record", "agency", "agency_locked"])
                     else:
                         activity = UserActivity.objects.select_for_update().get(pk=activity.pk)
                     if not _registration_invitation(token_value):
@@ -6922,6 +7090,8 @@ class SetupPasswordView(APIView):
                     )
             except AccountCapacityError as exc:
                 return Response(exc.payload, status=status.HTTP_409_CONFLICT)
+            except ContributorAgencyError as exc:
+                return _agency_error_response(exc)
             except ValueError as exc:
                 return Response({"detail": str(exc)}, status=400)
             except IntegrityError:
@@ -6931,7 +7101,7 @@ class SetupPasswordView(APIView):
                 "account_status": User.ACCOUNT_PENDING_ACTIVATION,
                 "requires_admin_activation": True,
             })
-        token = PasswordSetupToken.objects.select_related("user").filter(token=token_value).first()
+        token = PasswordSetupToken.objects.select_related("user", "user__agency_record").filter(token=token_value).first()
         if not token or not token.is_valid():
             return Response({"detail": "Token is invalid or expired."}, status=400)
         if token.token.startswith(RESET_PASSWORD_TOKEN_PREFIX):
@@ -6961,7 +7131,13 @@ class SetupPasswordView(APIView):
                 )
             return Response({"status": "ok"})
         user = token.user
-        profile, error = _validate_setup_profile(request, user.role, user.agency, new_password)
+        profile, error = _validate_setup_profile(
+            request,
+            user.role,
+            user.agency_record.code if user.agency_record_id else user.agency,
+            new_password,
+            existing_agency_id=user.agency_record_id,
+        )
         if error:
             return error
         for field, value in profile.items():

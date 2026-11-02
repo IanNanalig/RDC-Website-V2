@@ -50,7 +50,6 @@ async function newRegistration(viewport, prefilledAgency = "", agencyLocked = fa
           { code: "DENR", name: "Department of Environment and Natural Resources", head_name: "Secretary Maria Santos" },
           { code: "DOH", name: "Department of Health", head_name: "Secretary Juan Reyes" },
           { code: "DPWH", name: "Department of Public Works and Highways", head_name: "Secretary Ana Cruz" },
-          { code: "RDC-NCR", name: "Regional Development Council National Capital Region", head_name: "Mayor Vico Sotto" },
           { code: "FULL", name: "Agency With No Contributor Slots", head_name: "", accepting_contributors: false },
         ],
       }),
@@ -155,9 +154,8 @@ try {
 
   const { context, page, posts, agency } = await newRegistration({ width: 1100, height: 750 });
   await agency.fill("regional development");
-  await agency.press("ArrowDown");
-  await agency.press("Enter");
-  assert.equal(await agency.inputValue(), "RDC-NCR", "Keyboard selection uses canonical acronym");
+  await page.getByText("No approved agencies found.").waitFor();
+  assert.equal(await page.getByRole("option").count(), 0, "RDC-NCR is excluded from Contributor choices");
   await agency.click();
   await agency.press("Escape");
   assert.equal(await agency.getAttribute("aria-expanded"), "false", "Escape closes the menu");

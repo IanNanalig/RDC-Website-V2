@@ -190,7 +190,8 @@ def _project_queryset(filters):
         ).distinct()
     if filters.get("agency"):
         qs = qs.filter(
-            Q(profile_data__simplified_form__agencyName__iexact=filters["agency"])
+            Q(primary_agency__code__iexact=filters["agency"])
+            | Q(profile_data__simplified_form__agencyName__iexact=filters["agency"])
             | Q(agency__iexact=filters["agency"])
         )
     json_filters = {
@@ -217,11 +218,15 @@ def _project_queryset(filters):
     ) if filters.get(key) is not None and filters.get(key) != ""}
     if canonical_filters:
         ids = []
-        for project in qs.select_related(None).only(
-            "id", "agency", "budget", "year", "profile_data"
+        for project in qs.select_related(None).select_related("primary_agency").only(
+            "id", "agency", "primary_agency__code", "budget", "year", "profile_data"
         ).iterator(chunk_size=500):
             sf = _simplified(project)
-            agency = str(sf.get("agencyName") or project.agency or "").strip()
+            agency = str(
+                project.primary_agency.code
+                if project.primary_agency_id
+                else sf.get("agencyName") or project.agency or ""
+            ).strip()
             budget = _project_budget(project, sf)
             start_year = str(sf.get("startYear") or project.year or "").strip()
             end_year = str(sf.get("endYear") or "").strip()
@@ -268,9 +273,12 @@ def _user_queryset(filters):
     if filters.get("role"):
         qs = qs.filter(role=filters["role"])
     if filters.get("agency") == "__none__":
-        qs = qs.filter(Q(agency="") | Q(agency__isnull=True))
+        qs = qs.filter(agency_record__isnull=True).filter(Q(agency="") | Q(agency__isnull=True))
     elif filters.get("agency"):
-        qs = qs.filter(agency__iexact=filters["agency"])
+        qs = qs.filter(
+            Q(agency_record__code__iexact=filters["agency"])
+            | Q(agency_record__isnull=True, agency__iexact=filters["agency"])
+        )
     if filters.get("account_status"):
         qs = qs.filter(is_active=filters["account_status"] == "active")
     return qs

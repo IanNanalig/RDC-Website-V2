@@ -9,6 +9,13 @@ from django.utils import timezone
 class Agency(models.Model):
     code = models.CharField(max_length=50, unique=True)
     name = models.CharField(max_length=255)
+    system_key = models.CharField(
+        max_length=64,
+        null=True,
+        blank=True,
+        unique=True,
+        editable=False,
+    )
     head_name = models.CharField(max_length=255, blank=True, default="")
     is_active = models.BooleanField(default=True, db_index=True)
     is_legacy = models.BooleanField(default=False)
@@ -30,6 +37,10 @@ class Agency(models.Model):
         constraints = [
             models.UniqueConstraint(Lower("code"), name="unique_agency_code_ci"),
             models.UniqueConstraint(Lower("name"), name="unique_agency_name_ci"),
+            models.CheckConstraint(
+                condition=models.Q(system_key__isnull=True) | models.Q(is_active=True),
+                name="system_agency_must_be_active",
+            ),
         ]
 
     def __str__(self):

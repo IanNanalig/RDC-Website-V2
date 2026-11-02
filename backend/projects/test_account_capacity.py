@@ -160,6 +160,51 @@ class AccountCapacityApiTests(APITestCase):
         user.refresh_from_db()
         self.assertEqual(user.agency_record_id, self.denr.pk)
 
+    def test_protected_rdc_rejects_new_contributor_assignment_in_every_admin_flow(self):
+        invited, token = self.invite_with_token(
+            "protected-invite@example.test",
+            agency=self.rdc.code,
+        )
+        self.assertEqual(invited.status_code, 400, invited.data)
+        self.assertEqual(invited.data["code"], "agency_not_eligible_for_contributor")
+        self.assertIsNone(token)
+
+        contributor = self.create_staff(self.denr, 44)
+        reassigned = self.client.patch(
+            f"/api/admin/users/{contributor.pk}/",
+            {"agency_code": self.rdc.code},
+            format="json",
+        )
+        self.assertEqual(reassigned.status_code, 400, reassigned.data)
+        self.assertEqual(reassigned.data["code"], "agency_not_eligible_for_contributor")
+        contributor.refresh_from_db()
+        self.assertEqual(contributor.agency_record_id, self.denr.pk)
+
+        preview = self.client.post(
+            "/api/admin/users/batch-invitations/preview/",
+            {"entries": [{
+                "email": "protected-batch@example.test",
+                "role": "contributor",
+                "agency": self.rdc.code,
+            }]},
+            format="json",
+        )
+        self.assertEqual(preview.status_code, 200, preview.data)
+        self.assertEqual(preview.data["rows"][0]["status"], "invalid")
+        self.assertIn("cannot be selected", preview.data["rows"][0]["reason"])
+
+    def test_existing_rdc_contributor_can_be_reactivated_without_reassignment(self):
+        existing = self.create_staff(self.rdc, 55, active=False)
+        response = self.client.post(
+            f"/api/admin/users/{existing.pk}/set_active/",
+            {"active": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        existing.refresh_from_db()
+        self.assertTrue(existing.is_active)
+        self.assertEqual(existing.agency_record_id, self.rdc.pk)
+
     def test_batch_preview_marks_rows_that_exceed_remaining_capacity(self):
         response = self.client.post(
             "/api/admin/users/batch-invitations/preview/",

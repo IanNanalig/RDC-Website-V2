@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../services/api";
 import RefreshButton from "./RefreshButton";
 
@@ -9,6 +9,8 @@ type AgencyRow = {
   head_name: string;
   is_active: boolean;
   is_legacy: boolean;
+  is_protected: boolean;
+  can_archive: boolean;
   dependency_counts: {
     users: number;
     pending_invitations: number;
@@ -25,6 +27,11 @@ type AgencyRow = {
 };
 
 const emptyForm = { code: "", name: "", head_name: "" };
+
+type CodeSuggestion = {
+  suggested_code: string;
+  source: "official" | "generated";
+};
 
 const errorDetail = (error: unknown, fallback: string) => {
   if (!(error instanceof Error) || !error.message) return fallback;
@@ -44,7 +51,13 @@ const AgencyManagementPanel: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [busyCode, setBusyCode] = useState("");
   const [editingCode, setEditingCode] = useState("");
+  const [originalName, setOriginalName] = useState("");
   const [form, setForm] = useState(emptyForm);
+  const [suggestion, setSuggestion] = useState<CodeSuggestion | null>(null);
+  const [codeManuallyEdited, setCodeManuallyEdited] = useState(false);
+  const [codeReviewed, setCodeReviewed] = useState(false);
+  const [codeError, setCodeError] = useState("");
+  const lastAutomaticCode = useRef("");
   const [notice, setNotice] = useState<{ tone: "success" | "error" | "warning"; text: string } | null>(null);
 
   const load = useCallback(async () => {
@@ -61,24 +74,87 @@ const AgencyManagementPanel: React.FC = () => {
 
   useEffect(() => { void load(); }, [load]);
 
+  useEffect(() => {
+    const name = form.name.trim();
+    if (!name || archived) {
+      setSuggestion(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void api.get(`admin/agencies/suggest-code/?name=${encodeURIComponent(name)}`)
+        .then((data) => {
+          if (cancelled) return;
+          const next: CodeSuggestion = {
+            suggested_code: String(data?.suggested_code || ""),
+            source: data?.source === "official" ? "official" : "generated",
+          };
+          setSuggestion(next);
+          if (!editingCode && !codeManuallyEdited && next.suggested_code) {
+            setForm((current) => {
+              const currentCode = current.code.trim();
+              if (currentCode && currentCode !== lastAutomaticCode.current) return current;
+              lastAutomaticCode.current = next.suggested_code;
+              return { ...current, code: next.suggested_code };
+            });
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setSuggestion(null);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [archived, codeManuallyEdited, editingCode, form.name]);
+
   const edit = (agency: AgencyRow) => {
     setEditingCode(agency.code);
+    setOriginalName(agency.name);
     setForm({ code: agency.code, name: agency.name, head_name: agency.head_name || "" });
+    setSuggestion(null);
+    setCodeManuallyEdited(false);
+    setCodeReviewed(false);
+    setCodeError("");
+    lastAutomaticCode.current = "";
     setNotice(null);
   };
 
   const cancel = () => {
     setEditingCode("");
+    setOriginalName("");
     setForm(emptyForm);
+    setSuggestion(null);
+    setCodeManuallyEdited(false);
+    setCodeReviewed(false);
+    setCodeError("");
+    lastAutomaticCode.current = "";
   };
+
+  const normalizedNameChanged = Boolean(
+    editingCode && form.name.trim().toLocaleLowerCase() !== originalName.trim().toLocaleLowerCase(),
+  );
+  const suggestionDiffers = Boolean(
+    suggestion?.suggested_code
+      && suggestion.suggested_code.toLocaleLowerCase() !== form.code.trim().toLocaleLowerCase(),
+  );
+  const codeReviewRequired = normalizedNameChanged && suggestionDiffers && !codeReviewed;
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault();
     setBusyCode(editingCode || "new");
     setNotice(null);
+    setCodeError("");
+    if (codeReviewRequired) {
+      setNotice({ tone: "warning", text: "Review the suggested agency code before saving the renamed agency." });
+      setBusyCode("");
+      return;
+    }
     try {
       if (editingCode) {
         await api.patch(`admin/agencies/${encodeURIComponent(editingCode)}/`, {
+          code: form.code.trim(),
           name: form.name.trim(),
           head_name: form.head_name.trim(),
         });
@@ -94,6 +170,14 @@ const AgencyManagementPanel: React.FC = () => {
       cancel();
       await load();
     } catch (error) {
+      if (error instanceof Error && error.message) {
+        try {
+          const payload = JSON.parse(error.message);
+          if (Array.isArray(payload?.code)) setCodeError(String(payload.code[0] || ""));
+        } catch {
+          // The general error notice below handles non-JSON failures.
+        }
+      }
       setNotice({ tone: "error", text: errorDetail(error, "Failed to save the agency.") });
     } finally {
       setBusyCode("");
@@ -154,7 +238,7 @@ const AgencyManagementPanel: React.FC = () => {
         <div className="portal-card-header flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold">Agency Catalog</h2>
-            <p className="text-xs text-slate-500">Codes are permanent. Names and the current Head of Agency may be updated safely.</p>
+            <p className="text-xs text-slate-500">Names, agency codes, and the current Head of Agency may be updated without changing agency identity.</p>
           </div>
           <div className="flex gap-2">
             <button type="button" className="portal-btn portal-btn-ghost" onClick={() => { setArchived((value) => !value); cancel(); }}>
@@ -167,18 +251,56 @@ const AgencyManagementPanel: React.FC = () => {
           <form onSubmit={save} className="portal-card-body grid grid-cols-1 gap-3 border-b border-slate-200 lg:grid-cols-3">
             <label className="block">
               <span className="text-sm text-slate-700">Agency Code *</span>
-              <input className="mt-1 w-full rounded-lg border px-3 py-2" value={form.code} disabled={Boolean(editingCode)} onChange={(event) => setForm((row) => ({ ...row, code: event.target.value }))} required />
+              <input
+                className={`mt-1 w-full rounded-lg border px-3 py-2 ${codeError ? "border-rose-500" : ""}`}
+                value={form.code}
+                onChange={(event) => {
+                  setForm((row) => ({ ...row, code: event.target.value }));
+                  setCodeManuallyEdited(true);
+                  setCodeReviewed(true);
+                  setCodeError("");
+                }}
+                required
+              />
+              {codeError && <span role="alert" className="mt-1 block text-xs text-rose-700">{codeError}</span>}
+              {suggestion?.suggested_code && (
+                <span className="mt-1 block text-xs text-slate-500">
+                  Suggested ({suggestion.source}): <strong>{suggestion.suggested_code}</strong>
+                </span>
+              )}
             </label>
             <label className="block">
               <span className="text-sm text-slate-700">Agency Name *</span>
-              <input className="mt-1 w-full rounded-lg border px-3 py-2" value={form.name} onChange={(event) => setForm((row) => ({ ...row, name: event.target.value }))} required />
+              <input
+                className="mt-1 w-full rounded-lg border px-3 py-2"
+                value={form.name}
+                onChange={(event) => {
+                  setForm((row) => ({ ...row, name: event.target.value }));
+                  if (editingCode) setCodeReviewed(false);
+                }}
+                required
+              />
             </label>
             <label className="block">
               <span className="text-sm text-slate-700">Head of Agency <span className="text-slate-400">(optional)</span></span>
               <input className="mt-1 w-full rounded-lg border px-3 py-2" value={form.head_name} onChange={(event) => setForm((row) => ({ ...row, head_name: event.target.value }))} placeholder="Leave blank if not designated" />
             </label>
+            {codeReviewRequired && suggestion && (
+              <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 lg:col-span-3">
+                <p className="font-semibold">Review the code for the updated agency name.</p>
+                <p className="mt-1">Keep <strong>{form.code}</strong> or apply the suggested code <strong>{suggestion.suggested_code}</strong>.</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" className="portal-btn portal-btn-primary" onClick={() => {
+                    setForm((row) => ({ ...row, code: suggestion.suggested_code }));
+                    setCodeReviewed(true);
+                    setCodeError("");
+                  }}>Use Suggestion</button>
+                  <button type="button" className="portal-btn portal-btn-ghost" onClick={() => setCodeReviewed(true)}>Keep Current Code</button>
+                </div>
+              </div>
+            )}
             <div className="flex flex-wrap gap-2 lg:col-span-3">
-              <button type="submit" disabled={Boolean(busyCode)} className="portal-btn portal-btn-primary">{editingCode ? "Save Agency" : "Create Agency"}</button>
+              <button type="submit" disabled={Boolean(busyCode) || codeReviewRequired} className="portal-btn portal-btn-primary">{editingCode ? "Save Agency" : "Create Agency"}</button>
               {editingCode && <button type="button" className="portal-btn portal-btn-ghost" onClick={cancel}>Cancel</button>}
             </div>
           </form>
@@ -190,18 +312,28 @@ const AgencyManagementPanel: React.FC = () => {
               <tbody>{agencies.map((agency) => (
                 <tr key={agency.id}>
                   <td className="font-semibold">{agency.code}</td>
-                  <td>{agency.name}{agency.is_legacy && <span className="ml-2 rounded bg-slate-100 px-2 py-1 text-xs">Legacy</span>}</td>
+                  <td>{agency.name}{agency.is_legacy && <span className="ml-2 rounded bg-slate-100 px-2 py-1 text-xs">Legacy</span>}{agency.is_protected && <span className="ml-2 rounded bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-800">Protected</span>}</td>
                   <td>{agency.head_name || <span className="text-slate-400">Not configured</span>}</td>
                   <td className="text-xs text-slate-700">
-                    <span className="font-semibold">{agency.contributor_capacity.available} available</span>
-                    <span className="block text-slate-500">
-                      {agency.contributor_capacity.active} active + {agency.contributor_capacity.reserved} reserved / {agency.contributor_capacity.limit}
-                    </span>
+                    {agency.is_protected ? (
+                      <>
+                        <span className="font-semibold text-blue-800">Internal agency</span>
+                        <span className="block text-slate-500">Not eligible for Contributor assignments</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="font-semibold">{agency.contributor_capacity.available} available</span>
+                        <span className="block text-slate-500">
+                          {agency.contributor_capacity.active} active + {agency.contributor_capacity.reserved} reserved / {agency.contributor_capacity.limit}
+                        </span>
+                      </>
+                    )}
                   </td>
                   <td className="text-xs text-slate-600">{agency.dependency_counts.users} users · {agency.dependency_counts.primary_projects} primary · {agency.dependency_counts.collaborating_projects} collaborating</td>
                   <td><div className="flex gap-3">
                     {!archived && <button type="button" className="text-sm font-semibold text-blue-600" onClick={() => edit(agency)}>Edit</button>}
-                    {!archived ? <button type="button" disabled={busyCode === agency.code} className="text-sm font-semibold text-amber-700" onClick={() => archiveAgency(agency)}>Archive</button> : <button type="button" disabled={busyCode === agency.code} className="text-sm font-semibold text-emerald-700" onClick={() => restoreAgency(agency)}>Restore</button>}
+                    {!archived && agency.can_archive && <button type="button" disabled={busyCode === agency.code} className="text-sm font-semibold text-amber-700" onClick={() => archiveAgency(agency)}>Archive</button>}
+                    {archived && <button type="button" disabled={busyCode === agency.code} className="text-sm font-semibold text-emerald-700" onClick={() => restoreAgency(agency)}>Restore</button>}
                   </div></td>
                 </tr>
               ))}</tbody>

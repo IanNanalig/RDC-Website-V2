@@ -8,6 +8,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from .agency_catalog import primary_system_agency, validate_contributor_agency
 from .models import AccountCapacityLock, Agency, User, UserInvitation
 
 
@@ -160,8 +161,7 @@ def reserve_invitation(
         locked_agencies = lock_capacity_rows(pairs)
         if role == "staff" and agency is not None:
             agency = locked_agencies.get(agency.pk)
-            if agency is None or not agency.is_active:
-                raise ValueError("The selected agency is archived and cannot accept new registrations.")
+            validate_contributor_agency(agency)
         previous_ids = [item.pk for item in previous]
         if previous_ids:
             UserInvitation.objects.filter(pk__in=previous_ids).update(
@@ -188,8 +188,7 @@ def claim_registration_capacity(*, role, agency, invitation=None):
     locked_agencies = lock_capacity_rows([(role, agency)])
     if role == "staff" and agency is not None:
         agency = locked_agencies.get(agency.pk)
-        if agency is None or not agency.is_active:
-            raise ValueError("The selected agency is archived and cannot accept new registrations.")
+        validate_contributor_agency(agency)
     excluded = (invitation.pk,) if invitation is not None else ()
     assert_capacity(role, agency=agency, exclude_invitation_ids=excluded)
 
@@ -203,10 +202,17 @@ def update_user_account(*, user_id, role=None, agency=None, account_state=None):
         target_agency = agency if agency is not None else user.agency_record
 
         if target_role in {"admin", "validator", "content_editor"}:
-            target_agency = Agency.objects.filter(code__iexact="RDC-NCR").first()
+            target_agency = primary_system_agency()
+            if target_agency is None:
+                raise ValueError("The protected RDC-NCR agency is not configured.")
         if target_role == "staff":
             if target_agency is None:
                 raise ValueError("A Contributor must have a primary agency.")
+            existing_agency_id = user.agency_record_id if user.role == "staff" else None
+            validate_contributor_agency(
+                target_agency,
+                existing_agency_id=existing_agency_id,
+            )
             if not target_agency.is_active and target_agency.pk != user.agency_record_id:
                 raise ValueError("The selected agency is archived and cannot accept new assignments.")
             if target_state in RESERVING_ACCOUNT_STATES and not target_agency.is_active:
@@ -228,8 +234,11 @@ def update_user_account(*, user_id, role=None, agency=None, account_state=None):
         )
         if target_agency is not None:
             target_agency = locked_agencies.get(target_agency.pk, target_agency)
-        if target_role == "staff" and target_agency is not None and not target_agency.is_active:
-            raise ValueError("The selected agency is archived and cannot accept new assignments.")
+        if target_role == "staff" and target_agency is not None:
+            validate_contributor_agency(
+                target_agency,
+                existing_agency_id=(user.agency_record_id if user.role == "staff" else None),
+            )
         if target_state in RESERVING_ACCOUNT_STATES:
             assert_capacity(
                 target_role,
