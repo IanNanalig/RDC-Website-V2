@@ -176,6 +176,42 @@ class AIPriorityCMSTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_draft_preview_is_non_destructive_and_activation_versions_the_rules(self):
+        self.client.force_authenticate(self.admin)
+        before_analysis_count = ProjectPriorityAnalysis.objects.count()
+        self.project.profile_data = self.snapshot
+        self.project.save(update_fields=["profile_data"])
+
+        created = self.client.post(
+            "/api/admin/cms/ai-scoring/drafts/",
+            {"config": default_priority_rule_config(), "change_note": "Review the current scorecard before activation."},
+            format="json",
+        )
+
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED, created.data)
+        draft_id = created.data["draft_rule_set"]["id"]
+        self.assertEqual(created.data["draft_rule_set"]["status"], "draft")
+
+        preview = self.client.post(
+            f"/api/admin/cms/ai-scoring/drafts/{draft_id}/preview/",
+            {"project_id": self.project.pk},
+            format="json",
+        )
+        self.assertEqual(preview.status_code, status.HTTP_409_CONFLICT, preview.data)
+        self.assertEqual(preview.data["status"], "incomplete")
+        self.assertFalse(preview.data["input_preflight"]["can_evaluate"])
+        self.assertEqual(ProjectPriorityAnalysis.objects.count(), before_analysis_count)
+
+        published = self.client.post(
+            f"/api/admin/cms/ai-scoring/drafts/{draft_id}/publish/", {}, format="json",
+        )
+        self.assertEqual(published.status_code, status.HTTP_200_OK, published.data)
+        draft = PriorityRuleSet.objects.get(pk=draft_id)
+        self.assertTrue(draft.is_active)
+        self.assertEqual(draft.status, PriorityRuleSet.STATUS_ACTIVE)
+        self.rule_set.refresh_from_db()
+        self.assertEqual(self.rule_set.status, PriorityRuleSet.STATUS_SUPERSEDED)
+
     @override_settings(
         GROQ_ENABLED=True,
         GROQ_API_KEY="test-key",

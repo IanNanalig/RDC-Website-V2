@@ -140,6 +140,40 @@ export type CMSContributorForm = {
   updated_at: string;
 };
 
+export type CMSScoringDependency = {
+  key: string;
+  label: string;
+  source: "contributor" | "validator" | "validator_supplement" | string;
+  expected_types: string[];
+  required_for_input: boolean;
+  criterion_categories?: string[];
+  criteria: Array<{ key: string; label: string }>;
+  description?: string;
+};
+
+export type CMSScoringContractDependency = Omit<CMSScoringDependency, "criteria"> & {
+  // The persisted contract keeps stable criterion keys. The API expands them
+  // into labelled objects only in the compatibility/dependency response.
+  criteria: string[];
+};
+
+export type CMSCompatibilityIssue = {
+  status: "potential_issue" | "incompatible";
+  field_key: string;
+  field_label: string;
+  source: string;
+  criteria: Array<{ key: string; label: string }>;
+  message: string;
+  recommendation: string;
+};
+
+export type CMSCompatibilityReport = {
+  status: "compatible" | "potential_issue" | "incompatible";
+  status_label: string;
+  issues: CMSCompatibilityIssue[];
+  dependencies: CMSScoringDependency[];
+};
+
 export type CMSContributorFormVersion = {
   id: number;
   form: number;
@@ -315,7 +349,13 @@ export type CMSAIScoringWorkspace = {
     created_at: string;
     config: CMSAIRuleConfig;
     draft_config?: CMSAIRuleConfig;
+    status?: "draft" | "active" | "superseded";
+    activated_at?: string | null;
+    input_contract?: { format: number; dependencies: CMSScoringContractDependency[] };
+    dependencies?: CMSScoringDependency[];
+    compatibility?: CMSCompatibilityReport;
   };
+  draft_rule_set?: CMSAIRuleSet | null;
   rule_versions: Array<{
     id: number;
     version: string;
@@ -323,6 +363,9 @@ export type CMSAIScoringWorkspace = {
     is_active: boolean;
     analysis_count: number;
     created_at: string;
+    status?: "draft" | "active" | "superseded";
+    based_on?: number | null;
+    change_note?: string;
   }>;
   historical_projects: CMSAIHistoricalProject[];
   historical_count: number;
@@ -330,6 +373,39 @@ export type CMSAIScoringWorkspace = {
   active_model?: CMSAIModelVersion | null;
   model_versions?: CMSAIModelVersion[];
   detail?: string;
+};
+
+export type CMSAIRuleSet = {
+  id: number;
+  version: string;
+  algorithm_version: string;
+  status: "draft" | "active" | "superseded";
+  is_active: boolean;
+  based_on?: number | null;
+  change_note?: string;
+  created_at: string;
+  updated_at: string;
+  activated_at?: string | null;
+  config: CMSAIRuleConfig;
+  dependencies: CMSScoringDependency[];
+  compatibility: CMSCompatibilityReport;
+};
+
+export type CMSAIPreview = {
+  preview: true;
+  status: "complete" | "incomplete";
+  input_preflight?: {
+    status: "incomplete";
+    missing: Array<{ field_key: string; field_label: string; source: string; message: string }>;
+  };
+  result?: {
+    rule_version: string;
+    suggested_priority: string;
+    base_score: number;
+    summary: string;
+    suggested_scores: Record<string, unknown>;
+    flags: Record<string, unknown>;
+  };
 };
 
 export type CMSArticleSnapshot = {
@@ -483,6 +559,8 @@ export const cmsApi = {
   requestContributorFormAccess: (id: number) => api.post(`admin/cms/forms/${id}/request-access/`),
   submitContributorForm: (id: number) => api.post(`admin/cms/forms/${id}/submit/`),
   publishContributorForm: (id: number) => api.post(`admin/cms/forms/${id}/publish/`),
+  getContributorFormCompatibility: (id: number, draftSchema: ContributorFormSchema) =>
+    api.post(`admin/cms/forms/${id}/compatibility/`, { draft_schema_json: draftSchema }) as Promise<CMSCompatibilityReport>,
   rejectContributorForm: (id: number, remarks = "") =>
     api.post(`admin/cms/forms/${id}/reject/`, { remarks }),
   listContributorFormVersions: async (id: number) =>
@@ -547,6 +625,14 @@ export const cmsApi = {
   getAIScoringWorkspace: (limit = 50) => api.get(`admin/cms/ai-scoring/?limit=${limit}`) as Promise<CMSAIScoringWorkspace>,
   activateAIScoringRules: (config: CMSAIRuleConfig, changeNote: string) =>
     api.post("admin/cms/ai-scoring/", { config, change_note: changeNote }) as Promise<CMSAIScoringWorkspace>,
+  createAIScoringDraft: (config: CMSAIRuleConfig, changeNote: string) =>
+    api.post("admin/cms/ai-scoring/drafts/", { config, change_note: changeNote }) as Promise<{ detail: string; draft_rule_set: CMSAIRuleSet; compatibility: CMSCompatibilityReport }>,
+  updateAIScoringDraft: (id: number, config: CMSAIRuleConfig, changeNote: string) =>
+    api.patch(`admin/cms/ai-scoring/drafts/${id}/`, { config, change_note: changeNote }) as Promise<{ detail: string; draft_rule_set: CMSAIRuleSet; compatibility: CMSCompatibilityReport }>,
+  publishAIScoringDraft: (id: number) =>
+    api.post(`admin/cms/ai-scoring/drafts/${id}/publish/`, {}) as Promise<CMSAIScoringWorkspace>,
+  previewAIScoringDraft: (id: number, projectId: number, supplements: Record<string, unknown> = {}) =>
+    api.post(`admin/cms/ai-scoring/drafts/${id}/preview/`, { project_id: projectId, supplements }) as Promise<CMSAIPreview>,
   trainAIModel: () => api.post("admin/ai/models/train/", {}),
   updateAITrainingRecord: (id: number, isEligible: boolean, exclusionReason = "") =>
     api.patch(`admin/ai/training-data/${id}/`, {

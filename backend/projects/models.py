@@ -553,13 +553,36 @@ class Notification(models.Model):
 
 
 class PriorityRuleSet(models.Model):
+    STATUS_DRAFT = "draft"
+    STATUS_ACTIVE = "active"
+    STATUS_SUPERSEDED = "superseded"
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, "Draft"),
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_SUPERSEDED, "Superseded"),
+    ]
+
     version = models.CharField(max_length=40, unique=True)
     algorithm_version = models.CharField(max_length=40, default="expert-v1")
     is_active = models.BooleanField(default=False)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_ACTIVE, db_index=True)
     thresholds = models.JSONField(default=dict, blank=True)
     sector_criteria = models.JSONField(default=dict, blank=True)
     keyword_dictionaries = models.JSONField(default=dict, blank=True)
+    input_contract = models.JSONField(default=dict, blank=True)
+    based_on = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="derived_rule_sets"
+    )
+    change_note = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(
+        "User", null=True, blank=True, on_delete=models.SET_NULL, related_name="created_priority_rule_sets"
+    )
+    activated_by = models.ForeignKey(
+        "User", null=True, blank=True, on_delete=models.SET_NULL, related_name="activated_priority_rule_sets"
+    )
+    activated_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-created_at"]
@@ -932,6 +955,52 @@ class ProjectConcernEvidence(models.Model):
 
     def __str__(self):
         return f"{self.report.reference_code}: {self.original_filename}"
+
+
+class PublicContactMessage(models.Model):
+    """Durable public Contact Us submission and acknowledgement state."""
+
+    DELIVERY_PENDING = "pending"
+    DELIVERY_SENDING = "sending"
+    DELIVERY_SENT = "sent"
+    DELIVERY_FAILED = "failed"
+    DELIVERY_CHOICES = [
+        (DELIVERY_PENDING, "Pending"),
+        (DELIVERY_SENDING, "Sending"),
+        (DELIVERY_SENT, "Sent"),
+        (DELIVERY_FAILED, "Failed"),
+    ]
+
+    client_submission_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    name = models.CharField(max_length=200)
+    email = models.EmailField()
+    subject = models.CharField(max_length=300, blank=True, default="")
+    message = models.TextField()
+    request_fingerprint = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    receiver_delivery_status = models.CharField(
+        max_length=20, choices=DELIVERY_CHOICES, default=DELIVERY_PENDING, db_index=True
+    )
+    acknowledgement_delivery_status = models.CharField(
+        max_length=20, choices=DELIVERY_CHOICES, default=DELIVERY_PENDING, db_index=True
+    )
+    receiver_delivery_attempts = models.PositiveSmallIntegerField(default=0)
+    acknowledgement_delivery_attempts = models.PositiveSmallIntegerField(default=0)
+    receiver_sent_at = models.DateTimeField(null=True, blank=True)
+    acknowledgement_sent_at = models.DateTimeField(null=True, blank=True)
+    receiver_last_error = models.CharField(max_length=300, blank=True, default="")
+    acknowledgement_last_error = models.CharField(max_length=300, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["receiver_delivery_status", "-created_at"], name="contact_receiver_created_idx"),
+            models.Index(fields=["acknowledgement_delivery_status", "-created_at"], name="contact_ack_created_idx"),
+        ]
+
+    def __str__(self):
+        return f"Contact message {self.pk}: {self.subject or 'General inquiry'}"
 
 
 class PublicEvent(models.Model):

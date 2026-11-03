@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import cmsApi, { type CMSPageSnapshot } from "../services/cmsApi";
 import { api } from "../services/api";
 
@@ -28,6 +28,16 @@ const splitLines = (value: string) =>
     .map((line) => line.trim())
     .filter(Boolean);
 
+const newSubmissionId = () => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (character) => {
+    const value = Math.floor(Math.random() * 16);
+    return (character === "x" ? value : (value & 0x3) | 0x8).toString(16);
+  });
+};
+
 const Contact: React.FC = () => {
   const [contactCmsPage, setContactCmsPage] = useState<CMSPageSnapshot | null>(
     null,
@@ -41,6 +51,8 @@ const Contact: React.FC = () => {
 
   const [inquirySubmitted, setInquirySubmitted] = useState(false);
   const [inquiryLoading, setInquiryLoading] = useState(false);
+  const [inquirySuccessMessage, setInquirySuccessMessage] = useState("");
+  const submissionIdRef = useRef<string | null>(null);
 
   // feedback UI/logic was moved to `frontend/src/components/Feedback.tsx`
 
@@ -83,13 +95,23 @@ const Contact: React.FC = () => {
 
     setInquiryLoading(true);
     try {
-      await api.post("contact/", {
+      const submissionId = submissionIdRef.current || newSubmissionId();
+      submissionIdRef.current = submissionId;
+      const response = await api.post("contact/", {
+        submission_id: submissionId,
         name: inquiryForm.name.trim(),
         email: inquiryForm.email.trim(),
         subject: inquiryForm.subject.trim(),
         message: inquiryForm.message.trim(),
-      });
+      }) as { message?: unknown };
+      setInquirySuccessMessage(
+        asString(
+          response?.message,
+          "Your message has been successfully submitted. Thank you for contacting RDC-NCR. An acknowledgement will be sent to your email address.",
+        ),
+      );
       setInquirySubmitted(true);
+      submissionIdRef.current = null;
       setTimeout(() => {
         setInquirySubmitted(false);
         setInquiryForm({
@@ -355,9 +377,9 @@ const Contact: React.FC = () => {
                     {asString(formContent.successTitle, "Thank You!")}
                   </h3>
                   <p className="text-slate-600 mt-2">
-                    {asString(
+                    {inquirySuccessMessage || asString(
                       formContent.successMessage,
-                      "Your inquiry has been received. We'll respond within 24-48 business hours.",
+                      "Your message has been successfully submitted. Thank you for contacting RDC-NCR. An acknowledgement will be sent to your email address.",
                     )}
                   </p>
                 </div>

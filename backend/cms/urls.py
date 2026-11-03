@@ -16,6 +16,9 @@ from cms.views import (
     AdminCMSModuleActionView,
     AdminCMSReviewQueueView,
     AdminAIPriorityCMSView,
+    AdminAIPriorityDraftView,
+    AdminAIPriorityDraftPublishView,
+    AdminAIPriorityDraftPreviewView,
     AdminCMSSiteSettingViewSet,
     PublicCMSArticleDetailView,
     PublicCMSArticleListView,
@@ -53,6 +56,10 @@ urlpatterns = [
     path("public/cms/site-settings/", PublicCMSSiteSettingsView.as_view(), name="public-cms-site-settings"),
     path("admin/cms/review-queue/", AdminCMSReviewQueueView.as_view(), name="admin-cms-review-queue"),
     path("admin/cms/ai-scoring/", AdminAIPriorityCMSView.as_view(), name="admin-cms-ai-scoring"),
+    path("admin/cms/ai-scoring/drafts/", AdminAIPriorityDraftView.as_view(), name="admin-cms-ai-scoring-drafts"),
+    path("admin/cms/ai-scoring/drafts/<int:pk>/", AdminAIPriorityDraftView.as_view(), name="admin-cms-ai-scoring-draft-detail"),
+    path("admin/cms/ai-scoring/drafts/<int:pk>/publish/", AdminAIPriorityDraftPublishView.as_view(), name="admin-cms-ai-scoring-draft-publish"),
+    path("admin/cms/ai-scoring/drafts/<int:pk>/preview/", AdminAIPriorityDraftPreviewView.as_view(), name="admin-cms-ai-scoring-draft-preview"),
 ]
 
 urlpatterns += router.urls

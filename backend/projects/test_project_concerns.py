@@ -174,6 +174,22 @@ class ProjectConcernAPITests(APITestCase):
         self.assertNotIn("smtp secret detail", str(response.data))
         dispatch.assert_called_once_with(report.id)
 
+    @patch("projects.project_concerns.dispatch_project_concern_delivery", return_value=True)
+    @patch("projects.concern_delivery.EmailMessage.send", side_effect=[1, RuntimeError("ack secret detail")])
+    def test_acknowledgement_failure_remains_queued_after_staff_delivery(self, _send, dispatch):
+        response = self.client.post(
+            "/api/public/project-concerns/",
+            self.payload(reporting_mode="email", email="reporter@example.test"),
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        report = ProjectConcernReport.objects.get()
+        self.assertEqual(report.receiver_delivery_status, "sent")
+        self.assertEqual(report.acknowledgement_delivery_status, "failed")
+        self.assertNotIn("ack secret detail", report.acknowledgement_last_error)
+        dispatch.assert_called_once_with(report.id)
+
     def test_admin_only_list_detail_retry_and_download(self):
         upload = SimpleUploadedFile("proof.csv", b"item,value\nstatus,delayed\n", content_type="text/csv")
         created = self.client.post(

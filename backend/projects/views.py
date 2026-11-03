@@ -12,6 +12,7 @@ import urllib.request
 import hashlib
 import hmac
 import secrets
+import uuid
 from pathlib import Path
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -63,12 +64,14 @@ from .models import (
     ProjectCollaboratingAgency,
     ProjectComment,
     ProjectRevision,
+    PublicContactMessage,
     PublicEvent,
     SystemSetting,
     User,
     UserInvitation,
     UserActivity,
 )
+from .contact_delivery import deliver_public_contact_message, dispatch_public_contact_delivery
 from .serializers import (
     AccessRequestSerializer,
     AgencySerializer,
@@ -95,7 +98,7 @@ from .project_status import (
     ONGOING_LEGACY_VALUES,
     canonical_implementation_status,
 )
-from .priority_scoring import analyze_project, confirm_analysis, ensure_analysis_guidance, has_matching_confirmation
+from .priority_scoring import PriorityInputError, analyze_project, confirm_analysis, ensure_analysis_guidance, has_matching_confirmation
 from .document_policy import (
     PROJECT_DOCUMENT_MAX_TOTAL_BYTES,
     active_project_documents,
@@ -4284,7 +4287,19 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 "summary": document_assessment.get("summary"),
                 "files": document_assessment.get("document_results") or [],
             }
-        analysis, reused = analyze_project(project, request.user, snapshot, supplements)
+        try:
+            analysis, reused = analyze_project(
+                project, request.user, snapshot, supplements, enforce_input_contract=True,
+            )
+        except PriorityInputError as exc:
+            return Response(
+                {
+                    "detail": "Required project or validator input is missing for a reliable priority analysis.",
+                    "code": "ai_input_incomplete",
+                    "input_preflight": exc.report,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         ai_provider = (
             analysis.suggested_scores.get("ai_provider")
             if isinstance(analysis.suggested_scores, dict)
@@ -6678,40 +6693,63 @@ class PublicContactView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        receiver = getattr(settings, "CONTACT_RECEIVER_EMAIL", "")
-        if not receiver:
-            return Response(
-                {"detail": "Contact receiver is not configured."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-        safe_subject = subject or "Contact Form Inquiry"
-        full_subject = f"[RDC Portal] {safe_subject}"
-        body = (
-            "New contact message received via RDC-NCR website.\n\n"
-            f"Name: {name}\n"
-            f"Email: {email}\n"
-            f"Subject: {subject or '-'}\n\n"
-            "Message:\n"
-            f"{message}\n"
-        )
-
         try:
-            email_msg = EmailMessage(
-                full_subject,
-                body,
-                settings.DEFAULT_FROM_EMAIL,
-                [receiver],
-                reply_to=[email],
-            )
-            email_msg.send(fail_silently=False)
-        except Exception:
+            submission_id = uuid.UUID(str(request.data.get("submission_id") or "").strip())
+        except (TypeError, ValueError, AttributeError):
+            # Preserve the legacy route for direct integrations while the
+            # public website always supplies a stable retry token.
+            submission_id = uuid.uuid4()
+
+        existing = PublicContactMessage.objects.filter(client_submission_id=submission_id).first()
+        if existing:
+            delivery = deliver_public_contact_message(existing.pk)
+            if delivery["status"] == "pending_retry":
+                dispatch_public_contact_delivery(existing.pk)
+                existing.refresh_from_db()
             return Response(
-                {"detail": "Failed to send message. Please try again later."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                {
+                    "status": "accepted",
+                    "acknowledgement_status": existing.acknowledgement_delivery_status,
+                    "message": "Your message has already been received. If an email address was provided, an acknowledgement will be sent when delivery is available.",
+                },
+                status=status.HTTP_200_OK,
             )
 
-        return Response({"status": "sent"})
+        request_ip = _client_ip(request).strip()
+        fingerprint = hmac.new(
+            str(settings.SECRET_KEY).encode("utf-8"),
+            f"public-contact:{request_ip or 'unknown'}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        try:
+            with transaction.atomic():
+                contact_message = PublicContactMessage.objects.create(
+                    client_submission_id=submission_id,
+                    name=name[:200],
+                    email=email,
+                    subject=subject[:300],
+                    message=message,
+                    request_fingerprint=fingerprint,
+                )
+        except IntegrityError:
+            contact_message = PublicContactMessage.objects.filter(client_submission_id=submission_id).first()
+            if not contact_message:
+                return Response({"detail": "Your message could not be accepted. Please try again."}, status=500)
+
+        # Delivery starts only after the database transaction succeeds. A
+        # failure leaves the durable record available to the retry task.
+        delivery = deliver_public_contact_message(contact_message.pk)
+        if delivery["status"] == "pending_retry":
+            dispatch_public_contact_delivery(contact_message.pk)
+        contact_message.refresh_from_db()
+        return Response(
+            {
+                "status": "accepted",
+                "acknowledgement_status": contact_message.acknowledgement_delivery_status,
+                "message": "Your message has been successfully submitted. Thank you for contacting RDC-NCR. If an email address was provided, an acknowledgement will be sent to that address.",
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class MeView(APIView):

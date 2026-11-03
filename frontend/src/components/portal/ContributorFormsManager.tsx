@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import cmsApi, {
   type CMSContributorForm,
   type CMSContributorFormVersion,
+  type CMSCompatibilityReport,
 } from "../../services/cmsApi";
 import {
   cloneContributorFormSchema,
@@ -275,6 +276,8 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState("");
   const [notice, setNotice] = useState("");
+  const [compatibility, setCompatibility] = useState<CMSCompatibilityReport | null>(null);
+  const [compatibilityLoading, setCompatibilityLoading] = useState(false);
   const [validationTarget, setValidationTarget] = useState("");
   const [readOnly, setReadOnly] = useState(false);
   const selectedKeyRef = useRef("");
@@ -344,6 +347,25 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  const selectedFormId = selected?.id;
+
+  useEffect(() => {
+    if (!selectedFormId || !schema) return undefined;
+    let current = true;
+    const timer = window.setTimeout(() => {
+      setCompatibilityLoading(true);
+      cmsApi.getContributorFormCompatibility(selectedFormId, schema)
+        .then((report) => { if (current) setCompatibility(report); })
+        .catch(() => { if (current) setCompatibility(null); })
+        .finally(() => { if (current) setCompatibilityLoading(false); });
+    }, 350);
+    return () => { current = false; window.clearTimeout(timer); };
+  }, [schema, selectedFormId]);
+
+  const dependenciesByField = useMemo(() => new Map(
+    (compatibility?.dependencies || []).map((dependency) => [dependency.key, dependency]),
+  ), [compatibility]);
 
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
@@ -751,6 +773,16 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
         </div>
       </div>
 
+      <section className={`portal-card overflow-hidden ${compatibility?.status === "incompatible" ? "border-rose-300" : compatibility?.status === "potential_issue" ? "border-amber-300" : "border-emerald-200"}`}>
+        <div className="portal-card-header flex flex-wrap items-center justify-between gap-2">
+          <div><h3 className="font-bold text-slate-900">AI Scoring Compatibility</h3><p className="text-xs text-slate-500">Field keys, types, and visibility are checked against the active scoring inputs before publication.</p></div>
+          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${compatibility?.status === "incompatible" ? "bg-rose-100 text-rose-800" : compatibility?.status === "potential_issue" ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>{compatibilityLoading ? "Checking…" : compatibility?.status_label || "Checking"}</span>
+        </div>
+        {compatibility && <div className="portal-card-body space-y-2">
+          {compatibility.issues.length === 0 ? <p className="text-sm text-emerald-800">Compatible. Editing labels or order will not change AI input because scoring uses stable field keys.</p> : compatibility.issues.map((issue) => <div key={`${issue.status}-${issue.field_key}`} className={`rounded-lg border p-3 text-sm ${issue.status === "incompatible" ? "border-rose-200 bg-rose-50 text-rose-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}><p className="font-semibold">{issue.field_label}</p><p className="mt-1">{issue.message}</p><p className="mt-1 text-xs">Next step: {issue.recommendation}</p></div>)}
+        </div>}
+      </section>
+
       {(selected.has_unpublished_changes || dirty) && (
         <div className="portal-card overflow-hidden">
           <div className="portal-card-header"><h3 className="font-bold text-slate-900">Draft Changes from Live Form</h3><p className="text-xs text-slate-500">Review every contributor-facing change before publishing.</p></div>
@@ -812,6 +844,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                             <span className={`rounded-full px-2 py-0.5 font-semibold ${isPublished ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}`}>{isPublished ? "Published field" : "New field"}</span>
                             <span className="rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-600">Order {fieldIndex + 1}</span>
                             <span className="font-mono">{item.key}</span>
+                            {dependenciesByField.get(item.key) && <span className="rounded-full bg-violet-100 px-2 py-0.5 font-semibold text-violet-800" title={(dependenciesByField.get(item.key)?.criteria || []).map((criterion) => criterion.label).join(", ")}>Used by AI scoring</span>}
                             {canReorder && <><button type="button" disabled={fieldIndex === 0} className="font-semibold text-blue-700 disabled:cursor-not-allowed disabled:text-slate-300" aria-label={`Move ${item.label} up`} onClick={() => updateSection(sectionIndex, (current) => ({ ...current, fields: move(current.fields, fieldIndex, -1) }))}>Move up</button><button type="button" disabled={fieldIndex === section.fields.length - 1} className="font-semibold text-blue-700 disabled:cursor-not-allowed disabled:text-slate-300" aria-label={`Move ${item.label} down`} onClick={() => updateSection(sectionIndex, (current) => ({ ...current, fields: move(current.fields, fieldIndex, 1) }))}>Move down</button></>}
                             {editMode === "change" && (isRetired ? (
                               <button

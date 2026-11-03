@@ -28,7 +28,11 @@ def _header_text(value: str) -> str:
 
 
 def _receiver_message(report: ProjectConcernReport) -> EmailMessage:
-    receiver = str(getattr(settings, "PROJECT_CONCERN_RECEIVER_EMAIL", "") or "").strip()
+    receiver = str(
+        getattr(settings, "PROJECT_CONCERN_RECEIVER_EMAIL", "")
+        or getattr(settings, "CONTACT_RECEIVER_EMAIL", "")
+        or ""
+    ).strip()
     if not receiver:
         raise RuntimeError("Project concern receiver is not configured")
 
@@ -83,14 +87,12 @@ def _acknowledgement_message(report: ProjectConcernReport) -> EmailMessage:
     if report.reporting_mode != report.MODE_EMAIL or not report.reporter_email:
         raise RuntimeError("Acknowledgment is not applicable")
     body = (
-        "Your project concern has been accepted by the RDC-NCR website.\n\n"
-        f"Report reference: {report.reference_code}\n"
-        f"Project ID: {report.project_id_snapshot}\n"
-        f"Project: {report.project_title_snapshot}\n"
-        f"Concern category: {report.category_label_snapshot}\n\n"
-        "Keep this reference for any email correspondence. Providing an email enables follow-up, "
+        "Thank you for contacting the Regional Development Council – National Capital Region (RDC-NCR).\n\n"
+        "This is to confirm that we have successfully received your project concern.\n\n"
+        f"Report reference: {report.reference_code}\n\n"
+        "Keep this reference for any future correspondence. Providing an email enables follow-up, "
         "but does not guarantee a particular response time or outcome.\n\n"
-        "This acknowledgment does not confirm that the reported concern is true or that wrongdoing occurred."
+        "This automated acknowledgement does not confirm that the reported concern is true or that wrongdoing occurred."
     )
     return EmailMessage(
         subject=f"RDC-NCR project concern received - {report.reference_code}",
@@ -167,8 +169,16 @@ def deliver_project_concern(report_id: int) -> dict:
                 )
 
     report.refresh_from_db()
+    acknowledgement_complete = (
+        report.reporting_mode != report.MODE_EMAIL
+        or report.acknowledgement_delivery_status == report.DELIVERY_SENT
+    )
     return {
-        "status": "complete" if report.receiver_delivery_status == report.DELIVERY_SENT else "pending_retry",
+        "status": (
+            "complete"
+            if report.receiver_delivery_status == report.DELIVERY_SENT and acknowledgement_complete
+            else "pending_retry"
+        ),
         "receiver": report.receiver_delivery_status,
         "acknowledgement": report.acknowledgement_delivery_status,
     }

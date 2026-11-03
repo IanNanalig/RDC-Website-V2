@@ -7,6 +7,12 @@ from decimal import Decimal, ROUND_HALF_UP
 from django.conf import settings
 
 from .models import PriorityRuleSet, Project, ProjectPriorityAnalysis, ProjectPriorityConfirmation
+from .scoring_contract import (
+    contract_for_rule_set,
+    default_scoring_input_contract,
+    runtime_input_report,
+    scoring_text_field_keys,
+)
 from .utils import derive_ncr_lgus
 
 
@@ -169,20 +175,7 @@ DEFAULT_GUIDELINES = [
     "A validator must explain any final-priority override.",
 ]
 
-SCORING_TEXT_FIELDS = [
-    "program",
-    "projectActivity",
-    "location",
-    "description",
-    "objective",
-    "remarks",
-    "rdpMainChapter",
-    "mainInfrastructureSector",
-    "mainInfrastructureSubsector",
-    "spatialCoverageByCost",
-    "spatialCoverageByImpact",
-    "status",
-]
+SCORING_TEXT_FIELDS = list(scoring_text_field_keys())
 
 SCORING_FIELD_LABELS = {
     "program": "Program",
@@ -1337,12 +1330,15 @@ def _active_ruleset():
         defaults={
             "algorithm_version": ALGORITHM_VERSION,
             "is_active": True,
+            "status": PriorityRuleSet.STATUS_ACTIVE,
+            "input_contract": default_scoring_input_contract(),
             **config,
         },
     )
     if not rule_set.is_active:
         rule_set.is_active = True
-        rule_set.save(update_fields=["is_active"])
+        rule_set.status = PriorityRuleSet.STATUS_ACTIVE
+        rule_set.save(update_fields=["is_active", "status", "updated_at"])
     return rule_set
 
 
@@ -1382,6 +1378,7 @@ def source_hash(
         "supplements": supplements if isinstance(supplements, dict) else {},
         "rules": rules.version,
         "algorithm": rules.algorithm_version,
+        "input_contract": contract_for_rule_set(rules),
         "ai_provider": "groq" if getattr(settings, "GROQ_ENABLED", False) else "local-fallback",
         "ai_primary_model": getattr(settings, "GROQ_PRIMARY_MODEL", "") if getattr(settings, "GROQ_ENABLED", False) else "",
         "ai_backup_model": getattr(settings, "GROQ_BACKUP_MODEL", "") if getattr(settings, "GROQ_ENABLED", False) else "",
@@ -1421,14 +1418,20 @@ def _confirmation_snapshot_hash(snapshot):
     return hashlib.sha256(encoded).hexdigest()
 
 
-def analyze_project(project, validator, snapshot, supplements=None):
+class PriorityInputError(ValueError):
+    def __init__(self, report):
+        super().__init__("Required scoring input is missing or incompatible.")
+        self.report = report
+
+
+def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=None, persist=True, enforce_input_contract=False):
     supplements = supplements if isinstance(supplements, dict) else {}
-    rules = _active_ruleset()
+    rules = rule_set or _active_ruleset()
     rule_config = priority_rule_config(rules)
     thresholds = rule_config["thresholds"]
     dictionaries = rule_config["keyword_dictionaries"]
     digest = source_hash(snapshot, supplements, rules, project=project)
-    existing = ProjectPriorityAnalysis.objects.filter(project=project, rule_set=rules, source_hash=digest).first()
+    existing = ProjectPriorityAnalysis.objects.filter(project=project, rule_set=rules, source_hash=digest).first() if persist else None
     if existing:
         existing = ensure_analysis_guidance(existing)
         from ai_engine.services import ensure_learning_assessment
@@ -1437,6 +1440,24 @@ def analyze_project(project, validator, snapshot, supplements=None):
 
     form = _scoring_form(snapshot)
     facts = _merge_facts(form, supplements)
+    # The form answer intentionally contains no document binary or metadata.
+    # Resolve this gate from the authoritative active-document relation so a
+    # preview cannot treat an absent upload as a scored zero or a valid input.
+    facts["_supporting_documents_ready"] = bool(
+        project.supporting_documents.filter(removed_at__isnull=True).exists()
+    )
+    funding_total = _money_total(form.get("fundingRequirementByYear"))
+    input_report = runtime_input_report(
+        form,
+        facts,
+        regional_project=funding_total >= thresholds["regional_project_cost"],
+        economic_environment_sector=(
+            "Economic and Environment" in str(form.get("developmentSector") or "")
+        ),
+        contract=contract_for_rule_set(rules),
+    )
+    if enforce_input_contract and not input_report["can_evaluate"]:
+        raise PriorityInputError(input_report)
     text = _normalized_text(form)
     lgu_count = len(derive_ncr_lgus(form.get("location")))
     missing = []
@@ -1548,7 +1569,6 @@ def analyze_project(project, validator, snapshot, supplements=None):
     outcome_total = sum(item["score"] for item in outcomes)
     base_score = round(pap_total + outcome_total, 2)
 
-    funding_total = _money_total(form.get("fundingRequirementByYear"))
     regional_rules = thresholds["regional_criteria"]
     regional = {
         "applicable": funding_total >= thresholds["regional_project_cost"],
@@ -1748,6 +1768,21 @@ def analyze_project(project, validator, snapshot, supplements=None):
                 )
         suggested_scores["recommendations"] = recommendations
         suggested_scores["revision_fields"] = list(revisions.values())
+    if not persist:
+        return {
+            "preview": True,
+            "rule_set_id": rules.pk,
+            "rule_version": rules.version,
+            "input_snapshot": snapshot if isinstance(snapshot, dict) else {},
+            "supplements": supplements,
+            "suggested_scores": suggested_scores,
+            "regional_scorecard": regional,
+            "flags": {"negative_matches": negative, "risks": risks},
+            "summary": summary,
+            "suggested_priority": suggested_priority,
+            "base_score": base_score,
+        }, False
+
     analysis = ProjectPriorityAnalysis.objects.create(
         project=project,
         validator=validator,

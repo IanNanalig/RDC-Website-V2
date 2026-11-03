@@ -83,16 +83,26 @@ from cms.services.publishing import (
 from projects.models import (
     Notification,
     PriorityRuleSet,
+    Project,
     ProjectPriorityConfirmation,
     PublicEvent,
     User,
     UserActivity,
 )
 from projects.priority_scoring import (
+    PriorityInputError,
+    analyze_project,
     contextual_priority_rule_draft,
     get_active_priority_rule_set,
     priority_rule_config,
     validate_priority_rule_config,
+)
+from projects.scoring_contract import (
+    ScoringCompatibilityError,
+    contract_for_rule_set,
+    criterion_dependencies,
+    default_scoring_input_contract,
+    form_compatibility_report,
 )
 from projects.serializers import PublicEventSerializer
 
@@ -1110,6 +1120,15 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
         editor_recipients = list(_form_editor_recipients(target))
         try:
             form = publish_contributor_form(target, user=request.user)
+        except ScoringCompatibilityError as exc:
+            return Response(
+                {
+                    "detail": str(exc),
+                    "code": "form_ai_incompatible",
+                    "compatibility": exc.report,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         except FormSchemaError as exc:
             return Response({"detail": str(exc)}, status=400)
         _notify_form_users(
@@ -1125,6 +1144,21 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
         )
         _log_cms_activity(request, "cms_content_published", {"content_type": "form", "id": form.pk, "key": form.key})
         return Response(self._serialize(form))
+
+    @action(detail=True, methods=["post"], url_path="compatibility")
+    def compatibility(self, request, pk=None):
+        """Preview form-to-AI compatibility without saving the candidate draft."""
+        form = self.get_object()
+        schema = request.data.get("draft_schema_json", form.draft_schema_json)
+        if not isinstance(schema, dict):
+            return Response({"detail": "draft_schema_json must be an object."}, status=400)
+        active_rules = get_active_priority_rule_set()
+        report = form_compatibility_report(
+            schema,
+            priority_rule_config(active_rules),
+            contract_for_rule_set(active_rules),
+        )
+        return Response(report)
 
     @action(detail=True, methods=["get"])
     def versions(self, request, pk=None):
@@ -1214,8 +1248,41 @@ class ContributorFormVersionView(APIView):
         return _with_private_cache(request, payload)
 
 
+def _current_priority_form_schema():
+    form = CMSContributorForm.objects.select_related("current_published_version").filter(
+        key=SIMPLIFIED_FORM_KEY,
+    ).first()
+    if form and form.current_published_version_id:
+        return form.current_published_version.schema_json
+    return default_simplified_form_schema()
+
+
+def _priority_rule_payload(rule_set):
+    if not rule_set:
+        return None
+    config = priority_rule_config(rule_set)
+    contract = contract_for_rule_set(rule_set)
+    return {
+        "id": rule_set.pk,
+        "version": rule_set.version,
+        "algorithm_version": rule_set.algorithm_version,
+        "status": getattr(rule_set, "status", PriorityRuleSet.STATUS_ACTIVE),
+        "is_active": rule_set.is_active,
+        "based_on": rule_set.based_on_id,
+        "change_note": rule_set.change_note,
+        "created_at": rule_set.created_at,
+        "updated_at": rule_set.updated_at,
+        "activated_at": rule_set.activated_at,
+        "config": config,
+        "input_contract": contract,
+        "dependencies": criterion_dependencies(config, contract),
+        "compatibility": form_compatibility_report(_current_priority_form_schema(), config, contract),
+    }
+
+
 def _priority_reference_payload(limit=200):
     active = get_active_priority_rule_set()
+    draft = PriorityRuleSet.objects.filter(status=PriorityRuleSet.STATUS_DRAFT).order_by("-updated_at", "-pk").first()
     active_model = get_active_model()
     groq_enabled = bool(getattr(settings, "GROQ_ENABLED", False))
     history = PriorityRuleSet.objects.annotate(analysis_count=Count("analyses")).order_by("-created_at")[:20]
@@ -1336,16 +1403,27 @@ def _priority_reference_payload(limit=200):
             "id": active.pk,
             "version": active.version,
             "algorithm_version": active.algorithm_version,
+            "status": active.status,
             "created_at": active.created_at,
+            "activated_at": active.activated_at,
             "config": priority_rule_config(active),
             "draft_config": contextual_priority_rule_draft(active),
+            "input_contract": contract_for_rule_set(active),
+            "dependencies": criterion_dependencies(priority_rule_config(active), contract_for_rule_set(active)),
+            "compatibility": form_compatibility_report(
+                _current_priority_form_schema(), priority_rule_config(active), contract_for_rule_set(active),
+            ),
         },
+        "draft_rule_set": _priority_rule_payload(draft),
         "rule_versions": [
             {
                 "id": rule.pk,
                 "version": rule.version,
                 "algorithm_version": rule.algorithm_version,
                 "is_active": rule.is_active,
+                "status": rule.status,
+                "based_on": rule.based_on_id,
+                "change_note": rule.change_note,
                 "analysis_count": rule.analysis_count,
                 "created_at": rule.created_at,
             }
@@ -1359,6 +1437,150 @@ def _priority_reference_payload(limit=200):
             AIModelVersion.objects.select_related("trained_by").all()[:20], many=True
         ).data,
     }
+
+
+class AdminAIPriorityDraftView(APIView):
+    """Persist and safely test a scoring configuration before activation."""
+
+    permission_classes = [permissions.IsAuthenticated, IsCMSAdmin]
+
+    def _config_and_report(self, request):
+        try:
+            config = validate_priority_rule_config(request.data.get("config"), enforce_current_high=True)
+        except ValueError as exc:
+            return None, None, Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        contract = default_scoring_input_contract()
+        report = form_compatibility_report(_current_priority_form_schema(), config, contract)
+        return config, report, None
+
+    @staticmethod
+    def _new_version():
+        timestamp = timezone.now().strftime("%Y%m%d-%H%M%S")
+        version_base = f"rdc-priority-{timestamp}"
+        version = version_base
+        suffix = 2
+        while PriorityRuleSet.objects.filter(version=version).exists():
+            version = f"{version_base}-{suffix}"
+            suffix += 1
+        return version
+
+    def get(self, request, pk=None):
+        if pk is None:
+            return Response(_priority_reference_payload())
+        draft = PriorityRuleSet.objects.filter(pk=pk, status=PriorityRuleSet.STATUS_DRAFT).first()
+        if not draft:
+            raise Http404("AI scoring draft not found.")
+        return Response(_priority_rule_payload(draft))
+
+    def post(self, request):
+        config, report, failure = self._config_and_report(request)
+        if failure:
+            return failure
+        active = get_active_priority_rule_set()
+        draft = PriorityRuleSet.objects.create(
+            version=self._new_version(),
+            algorithm_version=active.algorithm_version,
+            status=PriorityRuleSet.STATUS_DRAFT,
+            is_active=False,
+            thresholds=config["thresholds"],
+            sector_criteria=config["sector_criteria"],
+            keyword_dictionaries=config["keyword_dictionaries"],
+            input_contract=default_scoring_input_contract(),
+            based_on=active,
+            change_note=str(request.data.get("change_note") or "").strip()[:500],
+            created_by=request.user,
+        )
+        _log_cms_activity(
+            request, "cms_content_updated",
+            {"content_type": "ai_priority_rules", "rule_set_id": draft.pk, "version": draft.version, "state": "draft"},
+        )
+        return Response({"detail": "AI scoring draft saved.", "draft_rule_set": _priority_rule_payload(draft), "compatibility": report}, status=status.HTTP_201_CREATED)
+
+    def patch(self, request, pk):
+        draft = PriorityRuleSet.objects.filter(pk=pk, status=PriorityRuleSet.STATUS_DRAFT).first()
+        if not draft:
+            raise Http404("AI scoring draft not found.")
+        config, report, failure = self._config_and_report(request)
+        if failure:
+            return failure
+        draft.thresholds = config["thresholds"]
+        draft.sector_criteria = config["sector_criteria"]
+        draft.keyword_dictionaries = config["keyword_dictionaries"]
+        draft.change_note = str(request.data.get("change_note") or "").strip()[:500]
+        draft.input_contract = default_scoring_input_contract()
+        draft.save(update_fields=["thresholds", "sector_criteria", "keyword_dictionaries", "change_note", "input_contract", "updated_at"])
+        _log_cms_activity(
+            request, "cms_content_updated",
+            {"content_type": "ai_priority_rules", "rule_set_id": draft.pk, "version": draft.version, "state": "draft"},
+        )
+        return Response({"detail": "AI scoring draft updated.", "draft_rule_set": _priority_rule_payload(draft), "compatibility": report})
+
+
+class AdminAIPriorityDraftPublishView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsCMSAdmin]
+
+    def post(self, request, pk):
+        draft = PriorityRuleSet.objects.filter(pk=pk, status=PriorityRuleSet.STATUS_DRAFT).first()
+        if not draft:
+            raise Http404("AI scoring draft not found.")
+        try:
+            config = validate_priority_rule_config(priority_rule_config(draft), enforce_current_high=True)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        compatibility = form_compatibility_report(
+            _current_priority_form_schema(), config, contract_for_rule_set(draft),
+        )
+        if compatibility["status"] == "incompatible":
+            return Response(
+                {"detail": "Resolve form compatibility errors before activating this draft.", "code": "ai_form_incompatible", "compatibility": compatibility},
+                status=status.HTTP_409_CONFLICT,
+            )
+        with transaction.atomic():
+            PriorityRuleSet.objects.select_for_update().filter(is_active=True).update(
+                is_active=False, status=PriorityRuleSet.STATUS_SUPERSEDED,
+            )
+            draft = PriorityRuleSet.objects.select_for_update().get(pk=draft.pk)
+            draft.is_active = True
+            draft.status = PriorityRuleSet.STATUS_ACTIVE
+            draft.activated_by = request.user
+            draft.activated_at = timezone.now()
+            draft.save(update_fields=["is_active", "status", "activated_by", "activated_at", "updated_at"])
+        _log_cms_activity(
+            request, "cms_content_updated",
+            {"content_type": "ai_priority_rules", "rule_set_id": draft.pk, "version": draft.version, "state": "activated"},
+        )
+        return Response({"detail": "AI scoring draft activated as a new rule version.", **_priority_reference_payload()})
+
+
+class AdminAIPriorityDraftPreviewView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsCMSAdmin]
+
+    def post(self, request, pk):
+        draft = PriorityRuleSet.objects.filter(pk=pk, status=PriorityRuleSet.STATUS_DRAFT).first()
+        if not draft:
+            raise Http404("AI scoring draft not found.")
+        try:
+            project_id = int(request.data.get("project_id"))
+        except (TypeError, ValueError):
+            return Response({"detail": "Choose an eligible existing project for the preview."}, status=400)
+        project = Project.objects.filter(pk=project_id, priority_analysis_eligible=True).first()
+        if not project:
+            return Response({"detail": "Choose a project that is eligible for priority analysis."}, status=400)
+        profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+        if not isinstance(profile.get("simplified_form"), dict):
+            return Response({"detail": "AI scoring previews are available only for simplified-form projects."}, status=400)
+        supplements = request.data.get("supplements") if isinstance(request.data.get("supplements"), dict) else {}
+        try:
+            preview, _unused = analyze_project(
+                project, request.user, profile, supplements, rule_set=draft, persist=False,
+                enforce_input_contract=True,
+            )
+        except PriorityInputError as exc:
+            return Response(
+                {"preview": True, "status": "incomplete", "input_preflight": exc.report},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response({"preview": True, "status": "complete", "result": preview})
 
 
 class AdminAIPriorityCMSView(APIView):
@@ -1378,6 +1600,18 @@ class AdminAIPriorityCMSView(APIView):
             config = validate_priority_rule_config(request.data.get("config"), enforce_current_high=True)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        compatibility = form_compatibility_report(
+            _current_priority_form_schema(), config, default_scoring_input_contract(),
+        )
+        if compatibility["status"] == "incompatible":
+            return Response(
+                {
+                    "detail": "Resolve form compatibility errors before activating new AI scoring rules.",
+                    "code": "ai_form_incompatible",
+                    "compatibility": compatibility,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
         outcome_rules = [*config["keyword_dictionaries"]["common_outcomes"]]
         for sector_rules in config["sector_criteria"].values():
@@ -1394,6 +1628,7 @@ class AdminAIPriorityCMSView(APIView):
             )
 
         change_note = str(request.data.get("change_note") or "").strip()[:500]
+        previous_active = get_active_priority_rule_set()
         timestamp = timezone.now().strftime("%Y%m%d-%H%M%S")
         version_base = f"rdc-priority-{timestamp}"
         version = version_base
@@ -1403,14 +1638,23 @@ class AdminAIPriorityCMSView(APIView):
             suffix += 1
 
         with transaction.atomic():
-            PriorityRuleSet.objects.select_for_update().filter(is_active=True).update(is_active=False)
+            PriorityRuleSet.objects.select_for_update().filter(is_active=True).update(
+                is_active=False, status=PriorityRuleSet.STATUS_SUPERSEDED,
+            )
             active = PriorityRuleSet.objects.create(
                 version=version,
                 algorithm_version="expert-v4-regional-eligibility",
                 is_active=True,
+                status=PriorityRuleSet.STATUS_ACTIVE,
                 thresholds=config["thresholds"],
                 sector_criteria=config["sector_criteria"],
                 keyword_dictionaries=config["keyword_dictionaries"],
+                input_contract=default_scoring_input_contract(),
+                based_on=previous_active,
+                change_note=change_note,
+                created_by=request.user,
+                activated_by=request.user,
+                activated_at=timezone.now(),
             )
         _log_cms_activity(
             request,

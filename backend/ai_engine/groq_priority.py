@@ -6,20 +6,14 @@ from .features import FEATURE_SCHEMA_VERSION, normalized_project_text
 from .groq_client import GroqUnavailable, complete_json, is_groq_enabled
 from .models import AIModelVersion, AITrainingRecord
 from .similarity import find_similar_projects
+from projects.scoring_contract import scoring_text_field_keys
 
 
-PROJECT_CONTEXT_FIELDS = (
+PROJECT_CONTEXT_FIELDS = tuple(dict.fromkeys((
     "agencyName",
-    "program",
+    *scoring_text_field_keys(),
     "programOrProject",
-    "projectActivity",
     "projectTitle",
-    "location",
-    "description",
-    "objective",
-    "remarks",
-    "status",
-    "rdpMainChapter",
     "mainPdpChapter",
     "mainPdpOutcome",
     "mainPdpSubOutcome",
@@ -39,7 +33,7 @@ PROJECT_CONTEXT_FIELDS = (
     "sdgSelections",
     "basisSelections",
     "projectReadinessItems",
-)
+)))
 
 
 def _form(snapshot):
@@ -359,6 +353,45 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
         "validator_confirmed_historical_examples": historical,
         "allowed_revision_fields": sorted(field_keys),
     }
+
+    expected_criteria = {str(item.get("key") or "") for item in criteria_payload}
+
+    def valid_provider_output(data):
+        """Reject incomplete provider JSON instead of silently displaying it."""
+        if not isinstance(data, dict) or not isinstance(data.get("historical_prediction"), dict):
+            return False
+        historical_prediction = data["historical_prediction"]
+        if str(historical_prediction.get("priority") or "").lower() not in {"low", "high"}:
+            return False
+        try:
+            confidence = float(historical_prediction.get("confidence"))
+        except (TypeError, ValueError):
+            return False
+        if not 0 <= confidence <= 1 or not str(historical_prediction.get("explanation") or "").strip():
+            return False
+        rows = data.get("outcome_assessments")
+        if not isinstance(rows, list) or len(rows) != len(expected_criteria):
+            return False
+        seen = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                return False
+            key = str(row.get("key") or "")
+            if key not in expected_criteria or key in seen:
+                return False
+            seen.add(key)
+            try:
+                score = float(row.get("raw_score"))
+            except (TypeError, ValueError):
+                return False
+            if not 0 <= score <= 10 or not str(row.get("explanation") or "").strip():
+                return False
+            if not isinstance(row.get("evidence"), list):
+                return False
+            if not isinstance(row.get("revision_fields", []), list):
+                return False
+        return seen == expected_criteria
+
     try:
         completion = complete_json(
             [
@@ -366,10 +399,7 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
                 {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False, default=str)},
             ],
             temperature=0.1,
-            validate=lambda data: (
-                isinstance(data.get("outcome_assessments"), list)
-                and isinstance(data.get("historical_prediction"), dict)
-            ),
+            validate=valid_provider_output,
         )
     except GroqUnavailable:
         return None

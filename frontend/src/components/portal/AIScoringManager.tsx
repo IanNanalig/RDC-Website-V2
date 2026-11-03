@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import cmsApi, {
   type CMSAIOutcomeRule,
+  type CMSAIPreview,
   type CMSAIRuleConfig,
+  type CMSAIRuleSet,
   type CMSAIScoringWorkspace,
 } from "../../services/cmsApi";
 
@@ -56,6 +58,19 @@ const priorityLabel = (value: string) => {
   if (value === "medium" || value === "low") return "Low";
   return value || "Unknown";
 };
+
+const criterionCategoryLabel = (value: string) => ({
+  outcome_rules: "RDP outcome criteria and matching words",
+  readiness: "Readiness",
+  gad_responsiveness: "GAD responsiveness",
+  spatial_coverage: "Spatial coverage",
+  regional_eligibility: "Regional eligibility",
+  regional_spatial: "Regional spatial coverage",
+  regional_outcomes: "Regional outcome contribution",
+  regional_beneficiaries: "Regional beneficiaries",
+  supporting_documents: "Supporting documents",
+  risk_checks: "Risk checks",
+}[value] || value.replaceAll("_", " "));
 
 const NumberInput = ({
   label,
@@ -178,11 +193,15 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
   const canEdit = mode === "admin";
   const [workspace, setWorkspace] = useState<CMSAIScoringWorkspace | null>(null);
   const [config, setConfig] = useState<CMSAIRuleConfig | null>(null);
+  const [draft, setDraft] = useState<CMSAIRuleSet | null>(null);
   const [changeNote, setChangeNote] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [historyLimit, setHistoryLimit] = useState(50);
   const [saving, setSaving] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewProjectId, setPreviewProjectId] = useState("");
+  const [previewResult, setPreviewResult] = useState<CMSAIPreview | null>(null);
   const [training, setTraining] = useState(false);
   const [updatingRecordId, setUpdatingRecordId] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
@@ -192,9 +211,12 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
     try {
       const next = await cmsApi.getAIScoringWorkspace(historyLimit);
       setWorkspace(next);
+      const nextDraft = next.draft_rule_set || null;
+      setDraft(nextDraft);
       setConfig(canEdit
-        ? prepareContextualConfig(next.active_rule_set.draft_config || next.active_rule_set.config)
+        ? prepareContextualConfig(nextDraft?.config || next.active_rule_set.draft_config || next.active_rule_set.config)
         : cloneConfig(next.active_rule_set.config));
+      setChangeNote(nextDraft?.change_note || "");
     } catch (error) {
       setNotice(errorDetail(error, "Failed to load AI scoring rules and reference projects."));
     } finally {
@@ -232,19 +254,67 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
       setNotice("Add a short change note explaining why the scoring rules are being updated.");
       return;
     }
-    if (!window.confirm("Activate these rules as a new version? Existing analyses will remain unchanged, but pending projects must be analyzed again under the new version.")) return;
     setSaving(true);
     setNotice("");
     try {
-      const next = await cmsApi.activateAIScoringRules(config, changeNote.trim());
-      setWorkspace(next);
-      setConfig(prepareContextualConfig(next.active_rule_set.draft_config || next.active_rule_set.config));
-      setChangeNote("");
-      setNotice(next.detail || "New AI scoring rules activated.");
+      const response = draft
+        ? await cmsApi.updateAIScoringDraft(draft.id, config, changeNote.trim())
+        : await cmsApi.createAIScoringDraft(config, changeNote.trim());
+      setDraft(response.draft_rule_set);
+      setConfig(prepareContextualConfig(response.draft_rule_set.config));
+      setNotice(response.compatibility.status === "incompatible"
+        ? "Draft saved, but it has blocking form compatibility errors."
+        : "AI scoring draft saved. Preview and activate it when ready.");
     } catch (error) {
       setNotice(errorDetail(error, "The AI scoring rules could not be activated."));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const activateDraft = async () => {
+    if (!draft || !canEdit) return;
+    if (!window.confirm("Activate this saved AI scoring draft? Existing analyses will remain unchanged.")) return;
+    setSaving(true);
+    setNotice("");
+    try {
+      const next = await cmsApi.publishAIScoringDraft(draft.id);
+      setWorkspace(next);
+      setDraft(null);
+      setConfig(prepareContextualConfig(next.active_rule_set.draft_config || next.active_rule_set.config));
+      setChangeNote("");
+      setPreviewResult(null);
+      setNotice(next.detail || "AI scoring draft activated as a new rule version.");
+    } catch (error) {
+      setNotice(errorDetail(error, "The AI scoring draft could not be activated."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const previewDraft = async () => {
+    if (!draft || !canEdit || !/^\d+$/.test(previewProjectId.trim())) {
+      setNotice("Enter an eligible existing project ID after saving the draft to run a preview.");
+      return;
+    }
+    setPreviewing(true);
+    setNotice("");
+    try {
+      const result = await cmsApi.previewAIScoringDraft(draft.id, Number(previewProjectId));
+      setPreviewResult(result);
+      setNotice(result.status === "complete" ? "Preview completed. No official analysis was saved." : "Preview found missing required input. No AI request or official analysis was created.");
+    } catch (error) {
+      try {
+        const parsed = JSON.parse(error instanceof Error ? error.message : "{}") as CMSAIPreview;
+        if (parsed.preview) {
+          setPreviewResult(parsed);
+          setNotice("Preview found missing required input. No official analysis was created.");
+          return;
+        }
+      } catch { /* Use standard API error below. */ }
+      setNotice(errorDetail(error, "The AI scoring preview could not be completed."));
+    } finally {
+      setPreviewing(false);
     }
   };
 
@@ -360,6 +430,16 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
           {!canEdit && <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">Read only</span>}
         </div>
         <div className="portal-card-body space-y-5">
+          <div className={`rounded-xl border p-4 ${draft?.compatibility.status === "incompatible" ? "border-rose-200 bg-rose-50" : draft?.compatibility.status === "potential_issue" ? "border-amber-200 bg-amber-50" : "border-emerald-200 bg-emerald-50/40"}`}>
+            <div className="flex flex-wrap items-start justify-between gap-3"><div><h4 className="font-semibold text-slate-900">Form Input Compatibility</h4><p className="mt-1 text-xs text-slate-600">Scoring resolves stable contributor field keys, not field labels or screen order.</p></div><span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">{draft ? `${draft.status} draft` : "No saved draft"}</span></div>
+            {(draft?.compatibility.issues || workspace.active_rule_set.compatibility?.issues || []).length === 0 ? <p className="mt-3 text-sm text-emerald-800">All required active scoring inputs are compatible with the contributor form.</p> : <div className="mt-3 space-y-2">{(draft?.compatibility.issues || workspace.active_rule_set.compatibility?.issues || []).map((issue) => <div key={`${issue.status}-${issue.field_key}`} className="rounded-lg border border-current/10 bg-white/70 p-2 text-sm"><strong>{issue.field_label}</strong><p>{issue.message}</p><p className="mt-1 text-xs">{issue.recommendation}</p></div>)}</div>}
+          </div>
+
+          <details className="rounded-xl border border-slate-200 bg-slate-50" open>
+            <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-800">Criterion-to-field dependencies</summary>
+            <div className="grid gap-2 border-t border-slate-200 p-3 md:grid-cols-2">{(draft?.dependencies || workspace.active_rule_set.dependencies || []).map((dependency) => <div key={dependency.key} className="rounded-lg border border-slate-200 bg-white p-3"><p className="font-semibold text-slate-800">{dependency.label}</p><p className="font-mono text-xs text-slate-500">{dependency.key}</p><p className="mt-1 text-xs text-slate-600">{dependency.source} · {dependency.required_for_input ? "Required before evaluation" : "Optional context"}</p><p className="mt-1 text-xs text-slate-500">Used by: {(dependency.criterion_categories || []).map(criterionCategoryLabel).join(", ") || "System validation"}</p></div>)}</div>
+          </details>
+
           <div>
             <h4 className="font-semibold text-slate-800">Priority thresholds and PAP weights</h4>
             <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -497,7 +577,8 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
           {canEdit && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
               <label className="block"><span className="text-sm font-semibold text-amber-950">Required change note</span><textarea rows={2} value={changeNote} onChange={(event) => setChangeNote(event.target.value)} className="mt-2 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" placeholder="Example: Updated thresholds based on the approved RDC scoring memorandum." /></label>
-              <div className="mt-3 flex justify-end"><button type="button" disabled={saving} onClick={() => void save()} className="portal-btn portal-btn-primary">{saving ? "Activating..." : "Activate as New Rule Version"}</button></div>
+              <div className="mt-3 flex flex-wrap items-end justify-between gap-3"><div className="min-w-[220px] flex-1"><label className="block"><span className="text-xs font-semibold text-amber-950">Preview project ID</span><input value={previewProjectId} onChange={(event) => setPreviewProjectId(event.target.value)} inputMode="numeric" className="mt-1 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" placeholder="Eligible project ID" /></label><p className="mt-1 text-xs text-amber-900">Preview is read-only and never saves an official analysis.</p></div><div className="flex flex-wrap gap-2"><button type="button" disabled={saving} onClick={() => void save()} className="portal-btn portal-btn-primary">{saving ? "Saving..." : draft ? "Save Draft" : "Create Draft"}</button>{draft && <button type="button" disabled={saving || previewing} onClick={() => void previewDraft()} className="portal-btn portal-btn-ghost">{previewing ? "Previewing..." : "Run Preview"}</button>}{draft && <button type="button" disabled={saving || draft.compatibility.status === "incompatible"} onClick={() => void activateDraft()} className="portal-btn portal-btn-primary">Activate Draft</button>}</div></div>
+              {previewResult && <div className={`mt-3 rounded-lg border p-3 text-sm ${previewResult.status === "complete" ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>{previewResult.status === "complete" && previewResult.result ? <><p className="font-semibold">Preview: {priorityLabel(previewResult.result.suggested_priority)} · {Number(previewResult.result.base_score).toFixed(2)}/100</p><p className="mt-1">{previewResult.result.summary}</p></> : <><p className="font-semibold">Preview incomplete</p><ul className="mt-1 list-disc pl-5">{previewResult.input_preflight?.missing.map((item) => <li key={item.field_key}>{item.field_label}: {item.message}</li>)}</ul></>}</div>}
             </div>
           )}
         </div>
