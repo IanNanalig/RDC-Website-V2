@@ -1447,6 +1447,8 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         project.supporting_documents.filter(removed_at__isnull=True).exists()
     )
     funding_total = _money_total(form.get("fundingRequirementByYear"))
+    form_marker = snapshot.get("form_schema") if isinstance(snapshot, dict) else {}
+    is_legacy_form = isinstance(form_marker, dict) and form_marker.get("legacy") is True
     input_report = runtime_input_report(
         form,
         facts,
@@ -1454,6 +1456,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         economic_environment_sector=(
             "Economic and Environment" in str(form.get("developmentSector") or "")
         ),
+        legacy_form=is_legacy_form,
         contract=contract_for_rule_set(rules),
     )
     if enforce_input_contract and not input_report["can_evaluate"]:

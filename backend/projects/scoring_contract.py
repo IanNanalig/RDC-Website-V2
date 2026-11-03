@@ -297,6 +297,7 @@ def runtime_input_report(
     *,
     regional_project: bool,
     economic_environment_sector: bool,
+    legacy_form: bool = False,
     contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate actual values before an AI request is made.
@@ -315,6 +316,13 @@ def runtime_input_report(
         if condition == "economic_environment_sector" and not economic_environment_sector:
             continue
         source = dependency.get("source")
+        # Historical submissions were created under older form versions. They
+        # must remain analyzable with their original input shape; current-form
+        # contributor requirements are enforced only for new/current forms.
+        # Validator facts remain required because the scorer cannot infer them
+        # safely from historical narrative text.
+        if legacy_form and source == "contributor":
+            continue
         key = dependency["key"]
         if source == "contributor":
             # File metadata is not stored in profile_data.  The scorer adds a

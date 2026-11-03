@@ -4,7 +4,11 @@ from django.test import TestCase
 
 from cms.form_schema import default_simplified_form_schema
 from projects.priority_scoring import default_priority_rule_config
-from projects.scoring_contract import default_scoring_input_contract, form_compatibility_report
+from projects.scoring_contract import (
+    default_scoring_input_contract,
+    form_compatibility_report,
+    runtime_input_report,
+)
 
 
 class FormAIScoringCompatibilityTests(TestCase):
@@ -66,3 +70,23 @@ class FormAIScoringCompatibilityTests(TestCase):
 
         self.assertEqual(report["status"], "incompatible")
         self.assertTrue(any(issue["field_key"] == "developmentSector" for issue in report["issues"]))
+
+    def test_legacy_submission_keeps_current_contributor_requirements_compatible(self):
+        report = runtime_input_report(
+            {
+                "projectActivity": "Legacy drainage project",
+                "description": "Existing historic project description.",
+                "fundingRequirementByYear": {"2026": 100},
+            },
+            {
+                "_supporting_documents_ready": True,
+                "readinessLevel": "completed_documents",
+                "gadResponsiveness": "gender_responsive",
+                "spatialCoverageScope": "region_wide",
+            },
+            regional_project=False,
+            economic_environment_sector=False,
+            legacy_form=True,
+        )
+
+        self.assertTrue(report["can_evaluate"])
