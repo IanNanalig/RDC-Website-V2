@@ -121,6 +121,22 @@ class AccountCapacityApiTests(APITestCase):
         self.assertEqual(pending.account_state, User.ACCOUNT_ACTIVE)
         self.assertTrue(pending.is_active)
 
+    @skipUnless(connection.vendor == "postgresql", "requires PostgreSQL row locking")
+    def test_activation_locks_only_user_when_agency_relation_is_nullable(self):
+        """PostgreSQL must not attempt FOR UPDATE on the nullable agency join."""
+        pending = self.create_staff(
+            self.denr,
+            6,
+            active=False,
+            state=User.ACCOUNT_PENDING_ACTIVATION,
+        )
+        response = self.client.post(
+            f"/api/admin/users/{pending.pk}/set_active/", {"active": True}, format="json"
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        pending.refresh_from_db()
+        self.assertTrue(pending.is_active)
+
     def test_disabled_reactivation_and_full_agency_reassignment_are_rejected_atomically(self):
         disabled = self.create_staff(self.denr, 99, active=False)
         moving = self.create_staff(self.denr, 100)

@@ -196,7 +196,14 @@ def claim_registration_capacity(*, role, agency, invitation=None):
 def update_user_account(*, user_id, role=None, agency=None, account_state=None):
     """Atomically change role, primary agency, or lifecycle state."""
     with transaction.atomic():
-        user = User.objects.select_for_update().select_related("agency_record").get(pk=user_id)
+        # ``agency_record`` is nullable, so ``select_related`` produces a LEFT OUTER
+        # JOIN. PostgreSQL rejects a plain ``FOR UPDATE`` over the nullable side of
+        # that join, which made account activation fail with a 500 response. Lock
+        # only the User row; the relevant agency rows are locked separately below
+        # before capacity is checked or the account is saved.
+        user = User.objects.select_for_update(of=("self",)).select_related(
+            "agency_record"
+        ).get(pk=user_id)
         target_role = role or user.role
         target_state = account_state or user.account_state
         target_agency = agency if agency is not None else user.agency_record
