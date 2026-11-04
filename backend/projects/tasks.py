@@ -211,7 +211,15 @@ def assess_supporting_documents(self, assessment_id, job_id=None):
     try:
         result = assess_project_documents(assessment.project, documents, assessment.policy_snapshot)
     except GroqUnavailable as exc:
-        if not settings.CELERY_TASK_ALWAYS_EAGER and self.request.retries < self.max_retries:
+        # ``Task.run`` is used by focused tests and local diagnostic commands.
+        # It has no broker to receive a retry, so it must persist the terminal
+        # unavailable state instead of raising Celery's Retry exception.
+        direct_or_eager = bool(
+            settings.CELERY_TASK_ALWAYS_EAGER
+            or getattr(self.request, "is_eager", False)
+            or getattr(self.request, "called_directly", False)
+        )
+        if not direct_or_eager and self.request.retries < self.max_retries:
             delay = [30, 120, 300][min(self.request.retries, 2)]
             record_processing_event(job, "provider_retry_scheduled", stage=ProjectAIProcessingJob.STAGE_SCORING, assessment=assessment, task_id=task_id, details={"retry": self.request.retries + 1})
             update_processing_job(job, status=ProjectAIProcessingJob.STATUS_QUEUED, stage=ProjectAIProcessingJob.STAGE_ASSESSMENT)
