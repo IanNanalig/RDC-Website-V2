@@ -324,9 +324,16 @@ GROQ_TIMEOUT_SECONDS = max(5, env_int("GROQ_TIMEOUT_SECONDS", 30))
 GROQ_MAX_COMPLETION_TOKENS = max(256, env_int("GROQ_MAX_COMPLETION_TOKENS", 4096))
 GROQ_ENABLED = bool(GROQ_API_KEY and GROQ_PRIMARY_MODEL)
 
-# Supporting-document processing runs outside web requests in production.
-# Local DEBUG environments fall back to eager execution so contributors can
-# exercise the upload workflow without installing Redis and a worker.
+# Supporting-document AI work can run directly inside the Validator's request
+# for the small, text-based beta-test files used by this portal. This avoids
+# coupling the Validator workflow to a separately hosted Celery worker.  Set
+# this to ``worker`` only on an installation with a healthy persistent worker.
+DOCUMENT_AI_PROCESSING_MODE = os.environ.get("DOCUMENT_AI_PROCESSING_MODE", "inline").strip().lower()
+if DOCUMENT_AI_PROCESSING_MODE not in {"inline", "worker"}:
+    DOCUMENT_AI_PROCESSING_MODE = "inline"
+
+# Celery is still used for retryable public-message delivery. Document AI only
+# uses it when DOCUMENT_AI_PROCESSING_MODE=worker.
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
 CELERY_TASK_SERIALIZER = "json"

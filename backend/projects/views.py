@@ -107,6 +107,7 @@ from .document_policy import (
     validate_project_documents_for_submit,
 )
 from .document_assessments import (
+    document_processing_runs_inline,
     dispatch_document_assessment,
     dispatch_document_processing,
     dispatch_project_document_processing,
@@ -3761,7 +3762,7 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("Only an assigned validator or administrator can retry AI document processing.")
         if document.upload_status != ProjectSupportingDocument.UPLOAD_UPLOADED or not document.content:
             return Response({"detail": "The uploaded file is unavailable and cannot be processed."}, status=400)
-        if document.extraction_status in {
+        if not document_processing_runs_inline() and document.extraction_status in {
             ProjectSupportingDocument.EXTRACTION_QUEUED,
             ProjectSupportingDocument.EXTRACTION_PROCESSING,
         }:
@@ -3795,6 +3796,72 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Project not found."}, status=404)
         if not _can_access_project_documents(request.user, project):
             raise PermissionDenied("You cannot access this project's supporting documents.")
+        return Response(serialize_document_assessment(project))
+
+    def _inline_processing_project(self, request):
+        try:
+            project = Project.objects.get(pk=int(request.data.get("project") or 0))
+        except (Project.DoesNotExist, TypeError, ValueError):
+            return None, Response({"detail": "Project not found."}, status=404)
+        if getattr(request.user, "role", "") not in {"validator", "admin"} or not _can_access_project_documents(request.user, project):
+            raise PermissionDenied("Only an assigned validator or administrator can run AI document processing.")
+        if not document_processing_runs_inline():
+            return None, Response(
+                {"detail": "This installation is configured to process documents through its worker service."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return project, None
+
+    @action(detail=False, methods=["post"], url_path="process-inline")
+    def process_inline(self, request):
+        """Extract document text during an authorised Validator request.
+
+        This is intentionally separate from assessment so the portal can show
+        truthful progress after the extraction stage completes.
+        """
+        project, error = self._inline_processing_project(request)
+        if error:
+            return error
+        documents = list(active_project_documents(project))
+        if not documents:
+            return Response({"detail": "Upload supporting documents before running AI analysis."}, status=400)
+        result = dispatch_project_document_processing(
+            project,
+            retry_failed=True,
+            requested_by=request.user,
+        )
+        if result["queued_ids"]:
+            _log_activity(
+                request,
+                "supporting_document_processing_started",
+                project,
+                {"document_ids": result["queued_ids"], "mode": "inline"},
+            )
+        return Response(serialize_document_assessment(project))
+
+    @action(detail=False, methods=["post"], url_path="assess-inline")
+    def assess_inline(self, request):
+        """Run the Groq document assessment after all active files are ready."""
+        project, error = self._inline_processing_project(request)
+        if error:
+            return error
+        documents = list(active_project_documents(project))
+        if not documents:
+            return Response({"detail": "Upload supporting documents before running AI analysis."}, status=400)
+        if any(item.extraction_status != ProjectSupportingDocument.EXTRACTION_READY for item in documents):
+            return Response(serialize_document_assessment(project), status=status.HTTP_409_CONFLICT)
+        assessment, _created = ensure_queued_assessment(project, requested_by=request.user)
+        if assessment is None:
+            return Response({"detail": "This project has no supporting-document policy."}, status=400)
+        if not _created:
+            assessment.status = "queued"
+            assessment.error_message = ""
+            assessment.save(update_fields=["status", "error_message", "updated_at"])
+        dispatch_result = dispatch_document_assessment(assessment.id, processing_job=assessment.processing_job)
+        if not (dispatch_result.get("ok", False) if isinstance(dispatch_result, dict) else bool(dispatch_result)):
+            assessment.status = "unavailable"
+            assessment.error_message = "The document assessment could not start. Retry AI processing."
+            assessment.save(update_fields=["status", "error_message", "updated_at"])
         return Response(serialize_document_assessment(project))
 
     @action(detail=False, methods=["get"], url_path=r"processing-jobs/(?P<job_id>[^/.]+)")
@@ -3846,7 +3913,7 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
                 {"document_ids": dispatch_result["queued_ids"]},
             )
         document_assessment = serialize_document_assessment(project)
-        if document_assessment.get("status") in {"queued", "processing"}:
+        if not document_processing_runs_inline() and document_assessment.get("status") in {"queued", "processing"}:
             return Response(document_assessment, status=status.HTTP_202_ACCEPTED)
         if document_assessment.get("status") in {"unavailable", "failed", "stalled"}:
             return Response(document_assessment, status=503)
@@ -3867,7 +3934,7 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
         dispatch_assessment = dispatch_document_assessment(assessment.id)
         if not (dispatch_assessment.get("ok", False) if isinstance(dispatch_assessment, dict) else bool(dispatch_assessment)):
             assessment.status = "unavailable"
-            assessment.error_message = "The document assessment worker is unavailable."
+            assessment.error_message = "The document assessment could not start. Retry AI processing."
             assessment.save(update_fields=["status", "error_message", "updated_at"])
             return Response(serialize_document_assessment(project), status=503)
         return Response(serialize_document_assessment(project))
@@ -4303,8 +4370,14 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 {"detail": "Upload the required supporting documents before running AI Assistant analysis.", "document_assessment": document_assessment},
                 status=409,
             )
-        if document_assessment.get("status") == "not_processed":
-            dispatch_result = dispatch_project_document_processing(project, requested_by=request.user)
+        if document_assessment.get("status") in {"not_processed", "queued", "processing"}:
+            # Inline mode can also reclaim a legacy queued row left by a
+            # former worker deployment. In worker mode, preserve the existing
+            # asynchronous response so an active task is never duplicated.
+            if document_assessment.get("status") == "not_processed" or document_processing_runs_inline():
+                dispatch_result = dispatch_project_document_processing(project, requested_by=request.user)
+            else:
+                dispatch_result = {"queued_ids": [], "job": None}
             if dispatch_result["queued_ids"]:
                 _log_activity(
                     request,
@@ -4315,17 +4388,25 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             document_assessment = serialize_document_assessment(project)
         if document_assessment.get("status") == "pending":
             job = dispatch_result.get("job") if "dispatch_result" in locals() else None
-            assessment, _created = ensure_queued_assessment(
-                project,
-                processing_job=job,
-                requested_by=request.user,
-            )
-            dispatch_assessment = dispatch_document_assessment(assessment.id) if assessment else {"ok": False}
-            if assessment and not (dispatch_assessment.get("ok", False) if isinstance(dispatch_assessment, dict) else bool(dispatch_assessment)):
-                assessment.status = "unavailable"
-                assessment.error_message = "The document assessment worker is unavailable. Retry when it is online."
-                assessment.save(update_fields=["status", "error_message", "updated_at"])
-            document_assessment = serialize_document_assessment(project)
+            documents = list(active_project_documents(project))
+            if any(item.extraction_status != ProjectSupportingDocument.EXTRACTION_READY for item in documents):
+                document_assessment = serialize_document_assessment(project)
+            else:
+                assessment, _created = ensure_queued_assessment(
+                    project,
+                    processing_job=job,
+                    requested_by=request.user,
+                )
+                if assessment and document_processing_runs_inline() and not _created:
+                    assessment.status = "queued"
+                    assessment.error_message = ""
+                    assessment.save(update_fields=["status", "error_message", "updated_at"])
+                dispatch_assessment = dispatch_document_assessment(assessment.id) if assessment else {"ok": False}
+                if assessment and not (dispatch_assessment.get("ok", False) if isinstance(dispatch_assessment, dict) else bool(dispatch_assessment)):
+                    assessment.status = "unavailable"
+                    assessment.error_message = "The document assessment could not start. Retry AI processing."
+                    assessment.save(update_fields=["status", "error_message", "updated_at"])
+                document_assessment = serialize_document_assessment(project)
         if document_assessment.get("status") in {"queued", "processing"}:
             return Response(
                 {
@@ -4338,7 +4419,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if document_assessment.get("status") in {"unavailable", "failed", "stalled"}:
             return Response(
                 {
-                    "detail": "AI processing could not prepare the supporting documents. The uploaded files remain available; retry AI processing when the worker or provider is online.",
+                    "detail": "AI processing could not prepare the supporting documents. The uploaded files remain available; retry AI processing after correcting the reported problem.",
                     "code": "document_processing_failed",
                     "retry_available": True,
                     "document_assessment": document_assessment,
@@ -4374,9 +4455,18 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 project, request.user, snapshot, supplements, enforce_input_contract=True,
             )
         except PriorityInputError as exc:
+            missing_labels = [
+                str(item.get("field_label") or item.get("field_key") or "Required input")
+                for item in (exc.report.get("missing") or [])
+                if isinstance(item, dict)
+            ]
+            missing_summary = ", ".join(dict.fromkeys(missing_labels))
+            detail = "Required project or validator input is missing for a reliable priority analysis."
+            if missing_summary:
+                detail = f"{detail} Missing: {missing_summary}."
             return Response(
                 {
-                    "detail": "Required project or validator input is missing for a reliable priority analysis.",
+                    "detail": detail,
                     "code": "ai_input_incomplete",
                     "input_preflight": exc.report,
                 },

@@ -29,6 +29,7 @@ type DocumentAssessment = {
   retry_available?: boolean;
   job?: {
     status: "queued" | "processing" | "completed" | "failed" | "stalled";
+    stage: string;
     stage_label: string;
     elapsed_seconds: number;
     error_message?: string;
@@ -156,6 +157,15 @@ type Props = {
   role: "validator" | "admin";
 };
 
+type ProcessingProgress = {
+  completedSteps: number;
+  label: string;
+  detail: string;
+  failed?: boolean;
+};
+
+const processingPercent = (progress: ProcessingProgress) => Math.max(0, Math.min(100, Math.round((progress.completedSteps / 3) * 100)));
+
 const priorityLabel = (value?: string) => {
   if (value === "high") return "High Priority";
   if (value === "medium" || value === "low") return "Low Priority";
@@ -270,6 +280,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [retryAvailable, setRetryAvailable] = useState(false);
+  const [processingProgress, setProcessingProgress] = useState<ProcessingProgress | null>(null);
   const [supplements, setSupplements] = useState<Record<string, string>>({});
   const [adjustedScores, setAdjustedScores] = useState<Record<string, number>>({});
   const [finalPriority, setFinalPriority] = useState("");
@@ -311,46 +322,77 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
     setBusy(true);
     setNotice("");
     setRetryAvailable(false);
+    setProcessingProgress(null);
     try {
-      let response = await api.post(`validator/projects/${projectId}/priority-analysis/run/`, {
+      let documentAssessment = await api.get(
+        `project-supporting-documents/assessment-status/?project=${projectId}`,
+        true,
+      ) as DocumentAssessment;
+
+      if (documentAssessment.status === "missing") {
+        throw new Error("Upload the required supporting documents before running AI Assistant analysis.");
+      }
+
+      if (documentAssessment.status !== "not_required" && !["pass", "fail"].includes(documentAssessment.status)) {
+        setProcessingProgress({
+          completedSteps: 0,
+          label: "Step 1 of 3 — Reading supporting documents",
+          detail: "The server is extracting text from the uploaded files.",
+        });
+        documentAssessment = await api.post("project-supporting-documents/process-inline/", {
+          project: projectId,
+        }) as DocumentAssessment;
+        if (["failed", "stalled"].includes(documentAssessment.status)) {
+          throw new Error(documentAssessment.job?.error_message || documentAssessment.error_message || documentAssessment.summary || "The uploaded document could not be read for AI analysis.");
+        }
+
+        setProcessingProgress({
+          completedSteps: 1,
+          label: "Step 2 of 3 — Assessing document evidence",
+          detail: "The server is checking the extracted evidence with the AI service.",
+        });
+        documentAssessment = await api.post("project-supporting-documents/assess-inline/", {
+          project: projectId,
+        }) as DocumentAssessment;
+        if (!["pass", "fail"].includes(documentAssessment.status)) {
+          throw new Error(documentAssessment.job?.error_message || documentAssessment.error_message || documentAssessment.summary || "The document assessment did not complete. You can retry it.");
+        }
+      }
+
+      setProcessingProgress({
+        completedSteps: 2,
+        label: "Step 3 of 3 — Creating priority recommendation",
+        detail: "The server is applying the approved scoring rules to this project.",
+      });
+      const response = await api.post(`validator/projects/${projectId}/priority-analysis/run/`, {
         supplements,
       });
       if (response?.processing) {
-        let documentStatus = response?.document_assessment as DocumentAssessment | undefined;
-        for (let attempt = 0; attempt < 120; attempt += 1) {
-          const isQueued = documentStatus?.status === "queued" || documentStatus?.job?.status === "queued";
-          const stage = documentStatus?.job?.stage_label || (isQueued ? "Waiting for the document worker" : "Processing documents");
-          const elapsed = documentStatus?.job?.elapsed_seconds;
-          setNotice(`${stage}${typeof elapsed === "number" ? ` (${elapsed}s)` : ""}.`);
-          await new Promise((resolve) => window.setTimeout(resolve, 2500));
-          documentStatus = await api.get(
-            `project-supporting-documents/assessment-status/?project=${projectId}`,
-            true,
-          ) as DocumentAssessment;
-          if (["unavailable", "failed", "stalled"].includes(documentStatus.status) || ["failed", "stalled"].includes(documentStatus.job?.status || "")) {
-            throw new Error(documentStatus.job?.error_message || documentStatus.error_message || documentStatus.summary || "AI document processing failed. You can retry it.");
-          }
-          if (!["queued", "processing"].includes(documentStatus.status)) {
-            response = await api.post(`validator/projects/${projectId}/priority-analysis/run/`, {
-              supplements,
-            });
-            if (!response?.processing) break;
-            documentStatus = response?.document_assessment as DocumentAssessment | undefined;
-          }
-        }
-      }
-      if (response?.processing) {
-        setNotice("AI processing is taking longer than five minutes. Check the processing status and retry if it is marked failed or stalled.");
-        return;
+        throw new Error("The server is still configured for background document processing. Set DOCUMENT_AI_PROCESSING_MODE=inline and redeploy the API.");
       }
       const next = response?.analysis as Analysis;
       if (!next?.id) throw new Error("The AI Assistant did not return a completed analysis.");
       setAnalysis(next);
       setAnalyses((prev) => [next, ...prev.filter((item) => item.id !== next.id)]);
+      setProcessingProgress({
+        completedSteps: 3,
+        label: "Analysis complete",
+        detail: "The document assessment and priority recommendation have been saved.",
+      });
       setNotice(response?.reused ? "Identical inputs detected. Reused the existing deterministic scorecard." : "Priority analysis completed.");
     } catch (error) {
       setRetryAvailable(true);
-      setNotice(error instanceof Error ? error.message : "Failed to run priority analysis.");
+      const message = error instanceof Error ? error.message : "Failed to run priority analysis.";
+      const needsProjectInformation = message.startsWith("Required project or validator input is missing");
+      setProcessingProgress((current) => current ? {
+        ...current,
+        failed: true,
+        label: needsProjectInformation ? "Analysis needs required project information" : "AI analysis could not finish",
+        detail: needsProjectInformation
+          ? `${message} Ask the Contributor to update the listed fields, then run the scorer again.`
+          : message,
+      } : null);
+      setNotice(message);
     } finally {
       setBusy(false);
     }
@@ -455,6 +497,19 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
             <div className="mt-3 flex justify-end">
               <button type="button" onClick={run} disabled={busy} className="portal-btn portal-btn-primary">{busy ? "Analyzing..." : retryAvailable ? "Retry AI Scorer" : "Run AI Scorer"}</button>
             </div>
+            {processingProgress && (
+              <section className={`mt-3 rounded-xl border p-3 ${processingProgress.failed ? "border-rose-200 bg-rose-50" : "border-blue-200 bg-blue-50"}`} aria-live="polite">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <p className={`font-semibold ${processingProgress.failed ? "text-rose-900" : "text-blue-950"}`}>{processingProgress.label}</p>
+                  <span className={`text-xs font-medium ${processingProgress.failed ? "text-rose-800" : "text-blue-800"}`}>{processingPercent(processingProgress)}% of stages complete</span>
+                </div>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/80" role="progressbar" aria-label="AI document processing progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={processingPercent(processingProgress)}>
+                  <div className={`h-full rounded-full transition-all duration-500 ${processingProgress.failed ? "bg-rose-500" : "bg-blue-600"}`} style={{ width: `${processingPercent(processingProgress)}%` }} />
+                </div>
+                <p className={`mt-2 text-xs ${processingProgress.failed ? "text-rose-800" : "text-blue-800"}`}>{processingProgress.detail}</p>
+                <p className={`mt-1 text-xs ${processingProgress.failed ? "text-rose-700" : "text-blue-700"}`}>This shows completed processing stages, not an estimated time or file-byte percentage.</p>
+              </section>
+            )}
           </div>
         )}
 

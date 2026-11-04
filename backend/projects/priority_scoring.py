@@ -20,6 +20,10 @@ RULE_VERSION = "rdc-priority-v1"
 ALGORITHM_VERSION = "expert-v4-regional-eligibility"
 REGIONAL_THRESHOLD = 200_000_000
 ANALYSIS_GUIDANCE_VERSION = "contextual-explanations-v3"
+# Changing how safe Groq JSON responses are normalized must result in a fresh
+# analysis, rather than reusing an older deterministic fallback for the same
+# project snapshot.
+GROQ_RESPONSE_CONTRACT_VERSION = "groq-json-v2-text-evidence"
 
 DEFAULT_OUTCOME_CONTEXT_PHRASES = [
     "improve", "increase", "expand", "provide", "strengthen", "reduce", "protect",
@@ -1382,6 +1386,7 @@ def source_hash(
         "ai_provider": "groq" if getattr(settings, "GROQ_ENABLED", False) else "local-fallback",
         "ai_primary_model": getattr(settings, "GROQ_PRIMARY_MODEL", "") if getattr(settings, "GROQ_ENABLED", False) else "",
         "ai_backup_model": getattr(settings, "GROQ_BACKUP_MODEL", "") if getattr(settings, "GROQ_ENABLED", False) else "",
+        "groq_response_contract": GROQ_RESPONSE_CONTRACT_VERSION,
         "historical_dataset_version": historical_dataset_version,
         "document_source_hash": document_source_hash,
     }

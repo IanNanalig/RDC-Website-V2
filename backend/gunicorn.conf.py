@@ -4,6 +4,14 @@ import os
 import time
 
 
+# Inline Validator document analysis performs bounded extraction and a Groq
+# request inside an authenticated API request. Keep the web worker alive long
+# enough for the configured 30-second provider timeout plus normal database
+# work. Render/Vercel proxy limits still apply independently.
+timeout = max(30, int(os.environ.get("GUNICORN_TIMEOUT", "120")))
+graceful_timeout = max(timeout + 15, int(os.environ.get("GUNICORN_GRACEFUL_TIMEOUT", str(timeout + 15))))
+
+
 def _enabled(name, default="true"):
     return str(os.environ.get(name, default)).strip().lower() in {"1", "true", "yes", "on"}
 

@@ -62,6 +62,69 @@ class GroqFeatureTests(SimpleTestCase):
     @patch("ai_engine.groq_priority._historical_context")
     @patch("ai_engine.groq_priority.complete_json")
     @patch("ai_engine.groq_priority.is_groq_enabled", return_value=True)
+    def test_priority_accepts_single_string_evidence_from_provider(
+        self,
+        _enabled,
+        completion,
+        historical,
+    ):
+        historical.return_value = ([], [], "dataset-1", {})
+        response_data = {
+            "outcome_assessments": [
+                {
+                    "key": "connectivity",
+                    "raw_score": 8,
+                    "explanation": "The project reduces travel time.",
+                    "evidence": "reduce travel time",
+                    "recommendation": "Add a travel-time baseline.",
+                    "revision_fields": ["objective"],
+                }
+            ],
+            "overall_reasoning": "The project supports safer movement.",
+            "risks": "A baseline is not specified.",
+            "historical_prediction": {
+                "priority": "high",
+                "confidence": 0.8,
+                "explanation": "The expected mobility outcome is substantial.",
+            },
+        }
+
+        def provider_response(_messages, **kwargs):
+            self.assertTrue(kwargs["validate"](response_data))
+            return GroqCompletion(
+                data=response_data,
+                model="primary-model",
+                used_backup=False,
+                attempted_models=("primary-model",),
+            )
+
+        completion.side_effect = provider_response
+        criteria = [{
+            "key": "connectivity",
+            "label": "Inclusive connectivity",
+            "weight": 20,
+            "description": "Improve transport connectivity.",
+            "matching_guidance": "Require a transport outcome.",
+            "keywords": ["road"],
+            "context_phrases": ["reduce travel time"],
+        }]
+
+        result = analyze_priority_with_groq(
+            SimpleNamespace(pk=1),
+            {"objective": "The road project will reduce travel time."},
+            {},
+            criteria,
+            "infrastructure",
+            [],
+        )
+
+        self.assertEqual(result["outcomes"][0]["evidence"], ["reduce travel time"])
+        self.assertEqual(result["risks"], ["A baseline is not specified."])
+        self.assertEqual(result["provider"]["model"], "primary-model")
+
+    @patch("ai_engine.groq_priority._historical_context")
+    @patch("ai_engine.groq_priority.complete_json")
+    @patch("ai_engine.groq_priority.is_groq_enabled", return_value=True)
     def test_priority_response_is_bounded_and_unknown_fields_are_rejected(
         self,
         _enabled,

@@ -30,6 +30,7 @@ from .models import (
     User,
 )
 from .priority_scoring import confirm_analysis, has_matching_confirmation
+from .scoring_contract import runtime_input_report
 
 
 def policy(required=True):
@@ -115,19 +116,190 @@ class SupportingDocumentApiTests(TestCase):
         self.assertEqual(document.extracted_text, "")
         dispatch.assert_not_called()
 
-    @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
+    @override_settings(DOCUMENT_AI_PROCESSING_MODE="inline", CELERY_TASK_ALWAYS_EAGER=False)
     @patch("projects.tasks.process_supporting_document.run", return_value={"status": "ready"})
     @patch("projects.tasks.process_supporting_document.delay", side_effect=AssertionError("Broker must not be used"))
-    def test_eager_document_dispatch_bypasses_broker(self, _delay, run):
+    def test_inline_document_dispatch_bypasses_broker(self, _delay, run):
         self.assertTrue(dispatch_document_processing(321))
         run.assert_called_once_with(321)
 
-    @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
+    @override_settings(DOCUMENT_AI_PROCESSING_MODE="inline", CELERY_TASK_ALWAYS_EAGER=False)
     @patch("projects.tasks.assess_supporting_documents.run", return_value={"status": "pass"})
     @patch("projects.tasks.assess_supporting_documents.delay", side_effect=AssertionError("Broker must not be used"))
-    def test_eager_assessment_dispatch_bypasses_broker(self, _delay, run):
+    def test_inline_assessment_dispatch_bypasses_broker(self, _delay, run):
         self.assertTrue(dispatch_document_assessment(654))
         run.assert_called_once_with(654)
+
+    @override_settings(DOCUMENT_AI_PROCESSING_MODE="inline", CELERY_TASK_ALWAYS_EAGER=False)
+    @patch("projects.tasks.process_supporting_document.delay", side_effect=AssertionError("Broker must not be used"))
+    def test_validator_inline_extraction_endpoint_processes_uploaded_document(self, delay):
+        self.project.status = "proposed"
+        self.project.save(update_fields=["status"])
+        document = ProjectSupportingDocument.objects.create(
+            project=self.project,
+            original_filename="evidence.csv",
+            content_type="text/csv",
+            extension="csv",
+            size_bytes=42,
+            checksum_sha256="e" * 64,
+            content=b"project,budget\nRiver rehabilitation,300000000\n",
+            extraction_status="not_processed",
+            uploaded_by=self.contributor,
+        )
+        self.client.force_authenticate(self.validator)
+
+        response = self.client.post(
+            "/api/project-supporting-documents/process-inline/",
+            {"project": self.project.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        document.refresh_from_db()
+        self.assertEqual(document.upload_status, "uploaded")
+        self.assertEqual(document.extraction_status, "ready")
+        self.assertIn("River rehabilitation", document.extracted_text)
+        delay.assert_not_called()
+
+    def test_priority_preflight_names_the_missing_contributor_fields(self):
+        self.project.status = "proposed"
+        self.project.save(update_fields=["status"])
+        ProjectSupportingDocument.objects.create(
+            project=self.project,
+            original_filename="evidence.csv",
+            content_type="text/csv",
+            extension="csv",
+            size_bytes=42,
+            checksum_sha256="c" * 64,
+            content=b"project,budget\nRiver rehabilitation,300000000\n",
+            extraction_status="ready",
+            extracted_text="River rehabilitation budget evidence.",
+            uploaded_by=self.contributor,
+        )
+        ProjectDocumentAssessment.objects.create(
+            project=self.project,
+            source_hash=current_document_source_hash(self.project),
+            status="pass",
+            policy_snapshot=policy(),
+            document_results=[],
+            collective_sufficient=True,
+            summary="Evidence is available.",
+        )
+        self.client.force_authenticate(self.validator)
+
+        response = self.client.post(
+            f"/api/validator/projects/{self.project.id}/priority-analysis/run/",
+            {
+                "supplements": {
+                    "readinessLevel": "completed_documents",
+                    "gadResponsiveness": "gender_responsive",
+                    "spatialCoverageScope": "region_wide",
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data["code"], "ai_input_incomplete")
+        self.assertIn("Missing: Program", response.data["detail"])
+        self.assertIn("Location", response.data["detail"])
+        self.assertEqual(response.data["input_preflight"]["status"], "incomplete")
+
+    def test_priority_preflight_accepts_comma_formatted_funding(self):
+        report = runtime_input_report(
+            {
+                "program": "Metro Manila Climate-Resilient Infrastructure Program",
+                "projectActivity": "Quezon City Drainage and Flood Control Rehabilitation Program",
+                "location": ["Marikina", "Quezon City"],
+                "description": "Rehabilitate priority drainage lines and outfalls.",
+                "objective": "Reduce recurring urban flooding.",
+                "developmentSector": "Sectoral Committee on Infrastructure Development (SCID)",
+                "rdpMainChapter": "16 Accelerate Climate Action and Strengthen Disaster Resilience Climate",
+                "status": "New",
+                "fundingRequirementByYear": {
+                    "2027": "240,000,000",
+                    "2028": "340,000,000.00",
+                    "2029": "270,000,000",
+                },
+            },
+            {
+                "_supporting_documents_ready": True,
+                "readinessLevel": "completed_documents",
+                "gadResponsiveness": "gender_responsive",
+                "spatialCoverageScope": "specific_lgus",
+                "beneficiaryCount": "2",
+                "regionalSpatialCategory": "region_wide",
+                "contributedOutcomeCount": "10",
+            },
+            regional_project=True,
+            economic_environment_sector=False,
+        )
+
+        self.assertTrue(report["can_evaluate"], report)
+        self.assertEqual(report["missing"], [])
+
+    @override_settings(GROQ_ENABLED=False)
+    def test_priority_endpoint_runs_with_comma_formatted_funding(self):
+        complete_profile = profile()
+        complete_profile["simplified_form"].update({
+            "program": "Metro Manila Climate-Resilient Infrastructure Program",
+            "projectActivity": "Quezon City Drainage and Flood Control Rehabilitation Program",
+            "location": ["Marikina", "Quezon City"],
+            "description": "Rehabilitate priority drainage lines, replace damaged inlets, and improve outfalls.",
+            "objective": "Reduce recurring urban flooding and protect road access to essential services.",
+            "developmentSector": "Sectoral Committee on Infrastructure Development (SCID)",
+            "rdpMainChapter": "16 Accelerate Climate Action and Strengthen Disaster Resilience Climate",
+            "status": "New",
+            "fundingRequirementByYear": {
+                "2027": "240,000,000",
+                "2028": "340,000,000.00",
+                "2029": "270,000,000",
+            },
+        })
+        self.project.profile_data = complete_profile
+        self.project.status = "proposed"
+        self.project.budget = 850_000_000
+        self.project.save(update_fields=["profile_data", "status", "budget", "updated_at"])
+        ProjectSupportingDocument.objects.create(
+            project=self.project,
+            original_filename="evidence.csv",
+            content_type="text/csv",
+            extension="csv",
+            size_bytes=42,
+            checksum_sha256="d" * 64,
+            content=b"project,budget\nDrainage rehabilitation,850000000\n",
+            extraction_status="ready",
+            extracted_text="Drainage rehabilitation project evidence.",
+            uploaded_by=self.contributor,
+        )
+        ProjectDocumentAssessment.objects.create(
+            project=self.project,
+            source_hash=current_document_source_hash(self.project),
+            status="pass",
+            policy_snapshot=policy(),
+            document_results=[],
+            collective_sufficient=True,
+            summary="Evidence is available.",
+        )
+        self.client.force_authenticate(self.validator)
+
+        response = self.client.post(
+            f"/api/validator/projects/{self.project.id}/priority-analysis/run/",
+            {
+                "supplements": {
+                    "readinessLevel": "completed_documents",
+                    "gadResponsiveness": "gender_responsive",
+                    "spatialCoverageScope": "specific_lgus",
+                    "beneficiaryCount": "2",
+                    "regionalSpatialCategory": "region_wide",
+                    "contributedOutcomeCount": "10",
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(response.data["analysis"]["id"])
 
     @patch("projects.views.dispatch_document_processing", side_effect=AssertionError("Upload must not dispatch AI processing"))
     def test_contributor_uploads_valid_csv_and_duplicate_is_rejected(self, dispatch):

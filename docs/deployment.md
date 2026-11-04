@@ -370,28 +370,27 @@ SERVE_MEDIA_FILES=false
 
 The R2 token should be limited to the selected media bucket. `R2_PUBLIC_BASE_URL` must point to a public bucket domain or custom domain. Existing local media is not copied automatically when the switch is enabled.
 
-# Supporting-document worker
+# Supporting-document AI processing
 
-Contributor supporting documents are stored in PostgreSQL. Uploading a file only validates and stores it; it does not contact Groq or enqueue a background task. A Validator starts extraction and AI document assessment explicitly from the AI-Assisted Priority Scorer.
+Contributor supporting documents are stored in PostgreSQL. Uploading a file only validates and stores it; it does not contact Groq or start document analysis.
 
-Production requires:
+The default setting is:
 
-- a Redis instance configured through `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`;
-- a worker using the same image and environment as the web service, started with `celery -A rdc_site worker --loglevel=INFO --concurrency=2`;
-- Tesseract and Poppler in the runtime image (the repository Dockerfile installs both);
-- the same `DATABASE_URL` and Groq variables on the web and worker services.
+```env
+DOCUMENT_AI_PROCESSING_MODE=inline
+```
 
-Create the worker as a separate Render Background Worker using the repository-root Docker image. The included `render.yaml` creates only this worker and deliberately leaves the existing Web Service and Key Value resource unmanaged by the Blueprint. Its start command is:
+With this setting, the authorized Validator's **Run AI Scorer** action runs extraction, the Groq document assessment, and priority scoring directly in the Django API request. The portal shows a three-stage progress bar after each completed server stage. This mode needs no Celery document worker or Redis broker, and uploaded files remain downloadable if extraction or Groq fails.
+
+Keep the API request open until all three stages finish. Set `GUNICORN_TIMEOUT=120` on the Render Web Service (the repository config uses this default) and keep `GROQ_TIMEOUT_SECONDS` at or below 30 seconds. Small text-based beta-test documents are appropriate for inline processing; large or scanned documents can exceed a web-request/proxy timeout and should use the worker mode below instead.
+
+Set `DOCUMENT_AI_PROCESSING_MODE=worker` only when the deployment has a healthy persistent worker. In that optional mode, configure Redis through `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`, and run a worker using the same environment as the web service:
 
 ```text
 celery -A rdc_site worker --loglevel=INFO --concurrency=1
 ```
 
-Set `DATABASE_URL`, `SECRET_KEY`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, and all Groq settings on both Render services. Use the private Redis/Render Key Value connection string for the Celery variables; do not expose it to Vercel. Keep the Key Value inbound-IP rule private: Render services in the same region can still reach it through that internal URL.
-
-The Docker entrypoint runs database migrations/static collection only when `RUN_DJANGO_STARTUP_TASKS=true`. Set that flag on the Web Service only; the worker must use `false` so it never races schema changes or waits for a nonexistent local `db` host.
-
-If the worker or Groq is unavailable, the uploaded file remains downloadable and the Contributor submission remains valid. The Validator sees an AI-processing failure and can retry after the worker/service is restored. Celery and Redis must remain configured because Contact Us and project-concern delivery retries also use them.
+Celery and Redis may still be used for Contact Us and project-concern delivery retries. They are no longer a requirement for Validator document analysis in inline mode. Do not expose a private Render Key Value URL to Vercel.
 
 For records left in a queued or processing AI state by an earlier unavailable worker, inspect them first:
 

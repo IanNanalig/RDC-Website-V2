@@ -26,6 +26,17 @@ ACTIVE_JOB_STATUSES = {
 }
 
 
+def document_processing_runs_inline():
+    """Whether Validator-initiated document AI is executed by this API request.
+
+    The default is intentionally inline: a deployment without a permanent
+    Celery worker must never leave a Validator waiting on a queue that nobody
+    consumes.  Celery remains available for installations which explicitly
+    choose the worker mode and for non-document delivery retries.
+    """
+    return getattr(settings, "DOCUMENT_AI_PROCESSING_MODE", "inline") != "worker"
+
+
 def record_processing_event(job, event, *, stage="", document=None, assessment=None, task_id="", duration_ms=None, details=None):
     """Persist safe operational facts only; never store extracted content or credentials."""
     if not job:
@@ -328,9 +339,13 @@ def serialize_document_assessment(project):
         elif not_processed:
             summary = "Supporting documents are uploaded."
         elif queued:
-            summary = "AI processing is queued and waiting for the document worker."
+            summary = (
+                "AI processing is awaiting an authorized Validator request."
+                if document_processing_runs_inline()
+                else "AI processing is queued and waiting for the document worker."
+            )
         elif processing:
-            summary = "The document worker is processing the supporting documents."
+            summary = "AI processing is reading the supporting documents."
         elif failed:
             summary = "AI processing could not read one or more supporting documents. The uploaded files remain available; a Validator can retry processing."
         else:
@@ -373,10 +388,14 @@ def serialize_document_assessment(project):
     }
     if job and job.status == ProjectAIProcessingJob.STATUS_QUEUED:
         payload["status"] = "queued"
-        payload["summary"] = "AI processing is queued and waiting for the document worker."
+        payload["summary"] = (
+            "AI processing is awaiting an authorized Validator request."
+            if document_processing_runs_inline()
+            else "AI processing is queued and waiting for the document worker."
+        )
     elif job and job.status == ProjectAIProcessingJob.STATUS_PROCESSING and assessment.status == ProjectDocumentAssessment.STATUS_QUEUED:
         payload["status"] = "processing"
-        payload["summary"] = "The document worker is processing the supporting documents."
+        payload["summary"] = "AI processing is reading the supporting documents."
     elif job and job.status == ProjectAIProcessingJob.STATUS_STALLED:
         payload["status"] = "stalled"
         payload["summary"] = job.safe_error_message or "AI processing appears stalled. A Validator can retry it."
@@ -394,9 +413,11 @@ def dispatch_document_processing(document_id, *, processing_job=None):
             processing_job = ProjectSupportingDocument.objects.select_related("processing_job").filter(pk=document_id).first()
             processing_job = getattr(processing_job, "processing_job", None)
 
-        if settings.CELERY_TASK_ALWAYS_EAGER:
-            # Local/eager environments do not need Redis. Calling the task
-            # directly also avoids a queue connection delaying the upload.
+        if document_processing_runs_inline() or settings.CELERY_TASK_ALWAYS_EAGER:
+            # Inline mode is deliberately invoked only after a Validator starts
+            # the scorer. It has no broker/worker dependency and never runs on
+            # contributor upload. Eager mode remains useful for worker-mode
+            # local tests.
             process_supporting_document.run(document_id)
             return {"ok": True, "task_id": ""}
         # The task resolves the job through the locked document row. Keeping
@@ -423,11 +444,11 @@ def dispatch_document_processing(document_id, *, processing_job=None):
 
 
 def dispatch_project_document_processing(project, *, retry_failed=False, requested_by=None):
-    """Claim eligible documents and enqueue extraction after Validator action.
+    """Claim eligible documents and start extraction after Validator action.
 
     Contributors never call this helper. The project and document locks make
-    repeated Validator clicks idempotent: only ``not_processed`` documents,
-    or explicitly retried failed documents, are queued once.
+    repeated Validator clicks idempotent. Inline mode also reclaims a legacy
+    queued/processing row because there is no worker executing it in that mode.
     """
     with transaction.atomic():
         locked_project = Project.objects.select_for_update().get(pk=project.pk)
@@ -459,6 +480,13 @@ def dispatch_project_document_processing(project, *, retry_failed=False, request
                     retry_failed
                     and document.extraction_status == ProjectSupportingDocument.EXTRACTION_FAILED
                 )
+                or (
+                    document_processing_runs_inline()
+                    and document.extraction_status in {
+                        ProjectSupportingDocument.EXTRACTION_QUEUED,
+                        ProjectSupportingDocument.EXTRACTION_PROCESSING,
+                    }
+                )
             )
         ]
         for document in candidates:
@@ -477,17 +505,20 @@ def dispatch_project_document_processing(project, *, retry_failed=False, request
             continue
         ProjectSupportingDocument.objects.filter(pk=document.id).update(
             extraction_status=ProjectSupportingDocument.EXTRACTION_FAILED,
-            processing_error="The document processing worker is unavailable. A Validator can retry AI processing when it is online.",
+            processing_error="The document could not be prepared for AI analysis. A Validator can retry AI processing.",
         )
         fail_processing_job(
             processing_job,
             error_code="broker_publish_failed",
-            error_message="The AI processing task could not be sent to the document worker. Retry when the worker is online.",
+            error_message="The document could not be prepared for AI analysis. Retry AI processing.",
             document=document,
         )
         unavailable_ids.append(document.id)
     if queued_ids:
-        update_processing_job(processing_job, status=ProjectAIProcessingJob.STATUS_QUEUED, stage=ProjectAIProcessingJob.STAGE_QUEUED)
+        # A direct task sets this to processing/completed itself. Preserve that
+        # truthful terminal state instead of re-labelling it as queued.
+        if not document_processing_runs_inline():
+            update_processing_job(processing_job, status=ProjectAIProcessingJob.STATUS_QUEUED, stage=ProjectAIProcessingJob.STAGE_QUEUED)
     return {"queued_ids": queued_ids, "unavailable_ids": unavailable_ids, "job": processing_job}
 
 
@@ -499,9 +530,10 @@ def dispatch_document_assessment(assessment_id, *, processing_job=None):
             assessment = ProjectDocumentAssessment.objects.select_related("processing_job").filter(pk=assessment_id).first()
             processing_job = getattr(assessment, "processing_job", None)
 
-        if settings.CELERY_TASK_ALWAYS_EAGER:
-            # Match document extraction: complete the assessment immediately
-            # when this installation explicitly opts into eager execution.
+        if document_processing_runs_inline() or settings.CELERY_TASK_ALWAYS_EAGER:
+            # Match document extraction: Validator action stays in the current
+            # request when inline mode is selected, so no document worker or
+            # Redis broker is required to reach a terminal result.
             assess_supporting_documents.run(assessment_id)
             return {"ok": True, "task_id": ""}
         result = assess_supporting_documents.delay(assessment_id)

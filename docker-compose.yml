@@ -31,6 +31,10 @@ services:
   web:
     build: .
     command: gunicorn rdc_site.wsgi:application --bind 0.0.0.0:8000 --workers 3
+    # Django loads this file for runserver; Compose must pass it explicitly
+    # because the Docker image intentionally excludes local secret files.
+    env_file:
+      - ./backend/.env
     ports:
       - "8000:8000"
     environment:
@@ -43,6 +47,12 @@ services:
       POSTGRES_PASSWORD: rdc
       POSTGRES_HOST: db
       DJANGO_SETTINGS_MODULE: rdc_site.settings
+      # Validator document AI runs in this web request by default. Set this to
+      # worker only when the local worker service is intentionally enabled.
+      DOCUMENT_AI_PROCESSING_MODE: "${DOCUMENT_AI_PROCESSING_MODE:-inline}"
+      # Local Compose remains usable when only the web service is started.
+      # Set this false only when exercising the local redis/worker path.
+      CELERY_TASK_ALWAYS_EAGER: "${CELERY_TASK_ALWAYS_EAGER:-true}"
       FRONTEND_BASE_URL: "${FRONTEND_BASE_URL:-http://localhost:5173}"
       CELERY_BROKER_URL: "redis://redis:6379/0"
       CELERY_RESULT_BACKEND: "redis://redis:6379/0"

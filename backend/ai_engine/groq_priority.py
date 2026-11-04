@@ -218,6 +218,26 @@ def _number(value, default=0.0):
         return float(default)
 
 
+def _text_list(value, *, limit=5, item_limit=300):
+    """Normalize a provider's single text value or JSON array to safe text rows.
+
+    Groq models occasionally return a single evidence phrase instead of a
+    one-item array.  That is still usable, attributable evidence and should
+    not discard an otherwise valid structured assessment.
+    """
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        values = []
+    return [
+        _clean_text(item, item_limit)
+        for item in values
+        if _clean_text(item, item_limit)
+    ][:limit]
+
+
 def _normalize_result(
     raw,
     criteria,
@@ -239,11 +259,7 @@ def _normalize_result(
             continue
         seen.add(key)
         score = max(0.0, min(10.0, _number(item.get("raw_score"))))
-        evidence = [
-            _clean_text(value, 300)
-            for value in (item.get("evidence") if isinstance(item.get("evidence"), list) else [])
-            if _clean_text(value, 300)
-        ][:5]
+        evidence = _text_list(item.get("evidence"))
         revision_fields = [
             str(value).strip()
             for value in (item.get("revision_fields") if isinstance(item.get("revision_fields"), list) else [])
@@ -268,11 +284,7 @@ def _normalize_result(
     return {
         "outcomes": outcomes,
         "overall_reasoning": _clean_text(raw.get("overall_reasoning"), 4000),
-        "risks": [
-            _clean_text(value, 500)
-            for value in (raw.get("risks") if isinstance(raw.get("risks"), list) else [])
-            if _clean_text(value, 500)
-        ][:8],
+        "risks": _text_list(raw.get("risks"), limit=8, item_limit=500),
         "historical_prediction": {
             "priority": predicted_priority,
             "confidence": round(confidence, 4),
@@ -386,7 +398,9 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
                 return False
             if not 0 <= score <= 10 or not str(row.get("explanation") or "").strip():
                 return False
-            if not isinstance(row.get("evidence"), list):
+            # Groq can legitimately encode one exact evidence phrase as a
+            # string instead of a one-item JSON array. Normalize it below.
+            if not isinstance(row.get("evidence"), (list, str)):
                 return False
             if not isinstance(row.get("revision_fields", []), list):
                 return False

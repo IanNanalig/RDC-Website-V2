@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from decimal import Decimal, InvalidOperation
+import re
 from typing import Any
 
 
@@ -275,7 +276,15 @@ def _value_present(value: Any, expected_types: list[str]) -> bool:
             return False
         for amount in value.values():
             try:
-                Decimal(str(amount))
+                # The contributor form formats entered PHP amounts for display
+                # (for example, ``240,000,000.00``). Treat that valid stored
+                # representation exactly as the priority scorer's total does,
+                # instead of rejecting a completed funding requirement during
+                # the input preflight.
+                normalized = re.sub(r"[^0-9.-]", "", str(amount or ""))
+                if not normalized:
+                    continue
+                Decimal(normalized)
                 return True
             except (InvalidOperation, TypeError, ValueError):
                 continue

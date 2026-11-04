@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from ai_engine.document_assessment import GroqUnavailable, assess_project_documents
 from .document_assessments import (
+    document_processing_runs_inline,
     fail_processing_job,
     record_processing_event,
     update_processing_job,
@@ -45,10 +46,14 @@ def _task_started(job, *, task_id, stage, document=None, assessment=None):
         task_id=task_id,
         started=True,
     )
-    record_processing_event(job, "worker_received", stage=stage, document=document, assessment=assessment, task_id=task_id)
+    execution_event = "inline_request_started" if document_processing_runs_inline() else "worker_received"
+    record_processing_event(job, execution_event, stage=stage, document=document, assessment=assessment, task_id=task_id)
     logger.info(
-        "AI processing worker received correlation_id=%s task_id=%s stage=%s",
-        job.correlation_id, task_id, stage,
+        "AI processing %s correlation_id=%s task_id=%s stage=%s",
+        "inline request started" if document_processing_runs_inline() else "worker received",
+        job.correlation_id,
+        task_id,
+        stage,
     )
 
 
