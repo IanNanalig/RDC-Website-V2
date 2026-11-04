@@ -1063,12 +1063,14 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
 class ProjectSupportingDocumentSerializer(serializers.ModelSerializer):
     uploaded_by_name = serializers.SerializerMethodField()
     download_url = serializers.SerializerMethodField()
+    ai_processing_status = serializers.CharField(source="extraction_status", read_only=True)
 
     class Meta:
         model = ProjectSupportingDocument
         fields = [
             "id", "project", "field_key", "form_key", "form_version", "original_filename",
-            "content_type", "extension", "size_bytes", "checksum_sha256", "extraction_status",
+            "content_type", "extension", "size_bytes", "checksum_sha256", "upload_status",
+            "ai_processing_status", "extraction_status",
             "extraction_metadata", "processing_error", "uploaded_by_name", "created_at", "updated_at",
             "download_url",
         ]

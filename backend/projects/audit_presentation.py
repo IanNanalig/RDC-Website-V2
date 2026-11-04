@@ -75,6 +75,8 @@ EVENT_SPECS: dict[str, AuditEventSpec] = {
         "project_revision_updated": "Updated a project revision",
         "supporting_document_uploaded": "Uploaded a supporting document",
         "supporting_document_removed": "Removed a supporting document",
+        "supporting_document_processing_started": "Started AI document processing",
+        "supporting_document_processing_retried": "Retried AI document processing",
         "public_summary_overridden": "Updated a project's public summary",
     }),
     **_specs("projects", {

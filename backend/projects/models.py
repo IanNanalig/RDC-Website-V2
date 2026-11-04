@@ -476,6 +476,8 @@ class UserActivity(models.Model):
         ("cms_form_access_requested", "CMS Form Access Requested"),
         ("supporting_document_uploaded", "Supporting Document Uploaded"),
         ("supporting_document_removed", "Supporting Document Removed"),
+        ("supporting_document_processing_started", "Supporting Document Processing Started"),
+        ("supporting_document_processing_retried", "Supporting Document Processing Retried"),
         ("supporting_document_extraction_failed", "Supporting Document Extraction Failed"),
         ("document_assessment_completed", "Document Assessment Completed"),
         ("document_assessment_overridden", "Document Assessment Overridden"),
@@ -656,11 +658,20 @@ class ProjectPriorityConfirmation(models.Model):
 
 
 class ProjectSupportingDocument(models.Model):
+    UPLOAD_UPLOADED = "uploaded"
+    UPLOAD_FAILED = "upload_failed"
+    UPLOAD_STATUS_CHOICES = [
+        (UPLOAD_UPLOADED, "Uploaded"),
+        (UPLOAD_FAILED, "Upload Failed"),
+    ]
+
+    EXTRACTION_NOT_PROCESSED = "not_processed"
     EXTRACTION_QUEUED = "queued"
     EXTRACTION_PROCESSING = "processing"
     EXTRACTION_READY = "ready"
     EXTRACTION_FAILED = "failed"
     EXTRACTION_STATUS_CHOICES = [
+        (EXTRACTION_NOT_PROCESSED, "Not Processed"),
         (EXTRACTION_QUEUED, "Queued"),
         (EXTRACTION_PROCESSING, "Processing"),
         (EXTRACTION_READY, "Ready"),
@@ -677,10 +688,16 @@ class ProjectSupportingDocument(models.Model):
     size_bytes = models.PositiveBigIntegerField()
     checksum_sha256 = models.CharField(max_length=64, db_index=True)
     content = models.BinaryField()
+    upload_status = models.CharField(
+        max_length=20,
+        choices=UPLOAD_STATUS_CHOICES,
+        default=UPLOAD_UPLOADED,
+        db_index=True,
+    )
     extraction_status = models.CharField(
         max_length=20,
         choices=EXTRACTION_STATUS_CHOICES,
-        default=EXTRACTION_QUEUED,
+        default=EXTRACTION_NOT_PROCESSED,
         db_index=True,
     )
     extracted_text = models.TextField(blank=True)
@@ -710,6 +727,11 @@ class ProjectSupportingDocument(models.Model):
 
     def __str__(self):
         return f"{self.project_id}: {self.original_filename}"
+
+    @property
+    def ai_processing_status(self):
+        """Explicit semantic name for the legacy extraction-status field."""
+        return self.extraction_status
 
 
 class ProjectDocumentAssessment(models.Model):

@@ -23,7 +23,7 @@ type Confirmation = {
 };
 
 type DocumentAssessment = {
-  status: "not_required" | "missing" | "pending" | "queued" | "processing" | "pass" | "fail" | "unavailable";
+  status: "not_required" | "missing" | "not_processed" | "pending" | "queued" | "processing" | "pass" | "fail" | "unavailable";
   summary?: string;
   error_message?: string;
   collective_sufficient?: boolean;

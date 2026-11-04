@@ -3,10 +3,10 @@ import json
 import logging
 
 from django.conf import settings
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 
 from .document_policy import active_project_documents, resolve_project_document_policy
-from .models import ProjectDocumentAssessment
+from .models import Project, ProjectDocumentAssessment, ProjectSupportingDocument
 
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ def current_document_source_hash(project, policy=None, documents=None):
         "project": project_context,
         "policy": policy or {},
         "documents": [
-            [item.id, item.checksum_sha256, item.extraction_status]
+            [item.id, item.checksum_sha256, item.upload_status, item.extraction_status]
             for item in sorted(documents, key=lambda value: value.id)
         ],
     }
@@ -87,24 +87,43 @@ def serialize_document_assessment(project):
     assessment = current_document_assessment(project)
     if not assessment:
         upload_failed = any(
-            item.extraction_status == "queued" and bool(str(item.processing_error or "").strip())
+            item.upload_status != ProjectSupportingDocument.UPLOAD_UPLOADED or not item.content
+            for item in documents
+        )
+        not_processed = any(
+            item.extraction_status == ProjectSupportingDocument.EXTRACTION_NOT_PROCESSED
             for item in documents
         )
         processing = any(
-            item.extraction_status in {"queued", "processing"} and not item.processing_error
+            item.extraction_status in {
+                ProjectSupportingDocument.EXTRACTION_QUEUED,
+                ProjectSupportingDocument.EXTRACTION_PROCESSING,
+            }
+            and not str(item.processing_error or "").strip()
             for item in documents
         )
-        failed = any(item.extraction_status == "failed" for item in documents)
+        failed = any(
+            item.extraction_status == ProjectSupportingDocument.EXTRACTION_FAILED
+            or bool(str(item.processing_error or "").strip())
+            for item in documents
+        )
         if upload_failed:
-            summary = "Failed to upload. Retry or remove the affected file."
+            summary = "One or more supporting files are unavailable. Upload a replacement before submitting or running analysis."
+        elif not_processed:
+            summary = "Supporting documents are uploaded."
         elif processing:
-            summary = "Supporting documents are being prepared. AI assessment starts after the project is submitted."
+            summary = "The AI Assistant is preparing the supporting documents."
         elif failed:
-            summary = "One or more supporting documents could not be prepared. Retry or replace them before submitting."
+            summary = "AI processing could not read one or more supporting documents. The uploaded files remain available; a Validator can retry processing."
         else:
             summary = "Supporting documents are ready. The files will be read when the Validator runs the AI Assistant analysis."
         return {
-            "status": "unavailable" if upload_failed or failed else "processing" if processing else "pending",
+            "status": (
+                "unavailable" if upload_failed or failed
+                else "processing" if processing
+                else "not_processed" if not_processed
+                else "pending"
+            ),
             "required": bool(policy.get("required")),
             "document_results": [],
             "summary": summary,
@@ -140,6 +159,52 @@ def dispatch_document_processing(document_id):
     except Exception:
         logger.exception("Could not dispatch supporting document %s for processing", document_id)
         return False
+
+
+def dispatch_project_document_processing(project, *, retry_failed=False):
+    """Claim eligible documents and enqueue extraction after Validator action.
+
+    Contributors never call this helper. The project and document locks make
+    repeated Validator clicks idempotent: only ``not_processed`` documents,
+    or explicitly retried failed documents, are queued once.
+    """
+    with transaction.atomic():
+        locked_project = Project.objects.select_for_update().get(pk=project.pk)
+        documents = list(
+            active_project_documents(locked_project)
+            .select_for_update()
+            .order_by("id")
+        )
+        candidates = [
+            document
+            for document in documents
+            if document.upload_status == ProjectSupportingDocument.UPLOAD_UPLOADED
+            and bool(document.content)
+            and (
+                document.extraction_status == ProjectSupportingDocument.EXTRACTION_NOT_PROCESSED
+                or (
+                    retry_failed
+                    and document.extraction_status == ProjectSupportingDocument.EXTRACTION_FAILED
+                )
+            )
+        ]
+        for document in candidates:
+            document.extraction_status = ProjectSupportingDocument.EXTRACTION_QUEUED
+            document.processing_error = ""
+            document.save(update_fields=["extraction_status", "processing_error", "updated_at"])
+
+    queued_ids = []
+    unavailable_ids = []
+    for document in candidates:
+        if dispatch_document_processing(document.id):
+            queued_ids.append(document.id)
+            continue
+        ProjectSupportingDocument.objects.filter(pk=document.id).update(
+            extraction_status=ProjectSupportingDocument.EXTRACTION_FAILED,
+            processing_error="The document processing worker is unavailable. A Validator can retry AI processing when it is online.",
+        )
+        unavailable_ids.append(document.id)
+    return {"queued_ids": queued_ids, "unavailable_ids": unavailable_ids}
 
 
 def dispatch_document_assessment(assessment_id):

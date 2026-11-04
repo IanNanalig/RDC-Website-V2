@@ -32,6 +32,11 @@ def process_supporting_document(self, document_id):
     document = ProjectSupportingDocument.objects.filter(pk=document_id, removed_at__isnull=True).first()
     if not document:
         return {"status": "missing"}
+    if document.upload_status != ProjectSupportingDocument.UPLOAD_UPLOADED or not document.content:
+        document.extraction_status = ProjectSupportingDocument.EXTRACTION_FAILED
+        document.processing_error = "The uploaded file is unavailable for AI processing."
+        document.save(update_fields=["extraction_status", "processing_error", "updated_at"])
+        return {"status": "unavailable"}
     document.extraction_status = ProjectSupportingDocument.EXTRACTION_PROCESSING
     document.processing_error = ""
     document.save(update_fields=["extraction_status", "processing_error", "updated_at"])

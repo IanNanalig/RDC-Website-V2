@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -91,8 +92,8 @@ class SupportingDocumentApiTests(TestCase):
         self.client.force_authenticate(self.contributor)
 
     @override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True)
-    @patch("projects.tasks.process_supporting_document.delay", side_effect=AssertionError("Broker must not be used"))
-    def test_local_eager_upload_finishes_processing_before_response(self, _delay):
+    @patch("projects.views.dispatch_document_processing", side_effect=AssertionError("Upload must not dispatch AI processing"))
+    def test_contributor_upload_is_stored_without_ai_processing(self, dispatch):
         upload = SimpleUploadedFile(
             "project-evidence.csv",
             b"project,budget\nRiver rehabilitation,300000000\n",
@@ -105,10 +106,13 @@ class SupportingDocumentApiTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.data["extraction_status"], "ready")
+        self.assertEqual(response.data["upload_status"], "uploaded")
+        self.assertEqual(response.data["ai_processing_status"], "not_processed")
+        self.assertEqual(response.data["extraction_status"], "not_processed")
         self.assertEqual(response.data["processing_error"], "")
         document = ProjectSupportingDocument.objects.get(pk=response.data["id"])
-        self.assertIn("River rehabilitation", document.extracted_text)
+        self.assertEqual(document.extracted_text, "")
+        dispatch.assert_not_called()
 
     @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
     @patch("projects.tasks.process_supporting_document.run", return_value={"status": "ready"})
@@ -124,8 +128,8 @@ class SupportingDocumentApiTests(TestCase):
         self.assertTrue(dispatch_document_assessment(654))
         run.assert_called_once_with(654)
 
-    @patch("projects.views.dispatch_document_processing", return_value=True)
-    def test_contributor_uploads_valid_csv_and_duplicate_is_rejected(self, _dispatch):
+    @patch("projects.views.dispatch_document_processing", side_effect=AssertionError("Upload must not dispatch AI processing"))
+    def test_contributor_uploads_valid_csv_and_duplicate_is_rejected(self, dispatch):
         upload = SimpleUploadedFile("budget.csv", b"year,budget\n2026,200000000\n", content_type="text/csv")
         response = self.client.post(
             "/api/project-supporting-documents/",
@@ -133,6 +137,8 @@ class SupportingDocumentApiTests(TestCase):
             format="multipart",
         )
         self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["upload_status"], "uploaded")
+        self.assertEqual(response.data["ai_processing_status"], "not_processed")
         document = ProjectSupportingDocument.objects.get(pk=response.data["id"])
         self.assertEqual(bytes(document.content), b"year,budget\n2026,200000000\n")
         self.assertNotIn("content", response.data)
@@ -164,9 +170,43 @@ class SupportingDocumentApiTests(TestCase):
             format="multipart",
         )
         self.assertEqual(response.status_code, 201)
+        dispatch.assert_not_called()
+
+    @patch("projects.views.dispatch_document_processing", side_effect=AssertionError("Upload must not dispatch AI processing"))
+    def test_pdf_and_docx_uploads_remain_unprocessed_until_validator_analysis(self, dispatch):
+        from docx import Document
+        from pypdf import PdfWriter
+
+        pdf_buffer = io.BytesIO()
+        pdf_writer = PdfWriter()
+        pdf_writer.add_blank_page(width=100, height=100)
+        pdf_writer.write(pdf_buffer)
+
+        docx_buffer = io.BytesIO()
+        docx = Document()
+        docx.add_paragraph("River rehabilitation concept note")
+        docx.save(docx_buffer)
+
+        for filename, content, content_type in (
+            ("evidence.pdf", pdf_buffer.getvalue(), "application/pdf"),
+            ("evidence.docx", docx_buffer.getvalue(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        ):
+            response = self.client.post(
+                "/api/project-supporting-documents/",
+                {
+                    "project": self.project.id,
+                    "field_key": "custom_supporting_documents",
+                    "file": SimpleUploadedFile(filename, content, content_type=content_type),
+                },
+                format="multipart",
+            )
+            self.assertEqual(response.status_code, 201, response.data)
+            self.assertEqual(response.data["upload_status"], "uploaded")
+            self.assertEqual(response.data["ai_processing_status"], "not_processed")
+        dispatch.assert_not_called()
 
     @override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True)
-    def test_retry_processes_failed_document_and_returns_ready_status(self):
+    def test_validator_can_retry_failed_ai_processing_without_changing_upload_status(self):
         document = ProjectSupportingDocument.objects.create(
             project=self.project,
             field_key="custom_supporting_documents",
@@ -183,16 +223,19 @@ class SupportingDocumentApiTests(TestCase):
             uploaded_by=self.contributor,
         )
 
+        self.project.status = "proposed"
+        self.project.save(update_fields=["status"])
+        self.client.force_authenticate(self.validator)
         response = self.client.post(f"/api/project-supporting-documents/{document.id}/retry/", {})
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["upload_status"], "uploaded")
         self.assertEqual(response.data["extraction_status"], "ready")
         self.assertEqual(response.data["processing_error"], "")
         document.refresh_from_db()
         self.assertIn("River rehabilitation", document.extracted_text)
 
-    @patch("projects.views.dispatch_document_processing", return_value=True)
-    def test_spoofed_pdf_and_content_editor_are_rejected(self, _dispatch):
+    def test_spoofed_pdf_and_content_editor_are_rejected(self):
         fake_pdf = SimpleUploadedFile("evidence.pdf", b"not a pdf", content_type="application/pdf")
         response = self.client.post(
             "/api/project-supporting-documents/",
@@ -210,7 +253,7 @@ class SupportingDocumentApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
-    def test_required_missing_processing_and_failed_documents_block_submit(self):
+    def test_required_uploaded_documents_allow_submit_regardless_of_ai_state(self):
         self.assertIn("Upload at least", validate_project_documents_for_submit(self.project))
         document = ProjectSupportingDocument.objects.create(
             project=self.project,
@@ -222,10 +265,10 @@ class SupportingDocumentApiTests(TestCase):
             content=b"a,b\n",
             uploaded_by=self.contributor,
         )
-        self.assertIn("still being processed", validate_project_documents_for_submit(self.project))
+        self.assertIsNone(validate_project_documents_for_submit(self.project))
         document.extraction_status = "failed"
         document.save(update_fields=["extraction_status"])
-        self.assertIn("Retry or replace", validate_project_documents_for_submit(self.project))
+        self.assertIsNone(validate_project_documents_for_submit(self.project))
         document.extraction_status = "ready"
         document.extracted_text = "Budget evidence"
         document.save(update_fields=["extraction_status", "extracted_text"])
@@ -250,8 +293,8 @@ class SupportingDocumentApiTests(TestCase):
         self.assertEqual(assessment["status"], "pending")
         self.assertIn("Validator runs the AI Assistant analysis", assessment["summary"])
 
-    def test_worker_dispatch_error_is_reported_as_failed_upload(self):
-        ProjectSupportingDocument.objects.create(
+    def test_worker_dispatch_error_does_not_change_uploaded_file_availability(self):
+        document = ProjectSupportingDocument.objects.create(
             project=self.project,
             original_filename="capture.png",
             content_type="image/png",
@@ -267,7 +310,64 @@ class SupportingDocumentApiTests(TestCase):
         assessment = serialize_document_assessment(self.project)
 
         self.assertEqual(assessment["status"], "unavailable")
-        self.assertEqual(assessment["summary"], "Failed to upload. Retry or remove the affected file.")
+        self.assertIn("uploaded files remain available", assessment["summary"])
+        download = self.client.get(f"/api/project-supporting-documents/{document.id}/download/")
+        self.assertEqual(download.status_code, 200)
+        self.assertEqual(download.content, b"png contents")
+
+    def test_contributor_cannot_retry_ai_processing(self):
+        document = ProjectSupportingDocument.objects.create(
+            project=self.project,
+            original_filename="failed.csv",
+            content_type="text/csv",
+            extension="csv",
+            size_bytes=4,
+            checksum_sha256="2" * 64,
+            content=b"a,b\n",
+            extraction_status="failed",
+            processing_error="Worker unavailable",
+            uploaded_by=self.contributor,
+        )
+
+        response = self.client.post(f"/api/project-supporting-documents/{document.id}/retry/", {})
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_validator_receives_retryable_error_when_ai_assessment_provider_is_unavailable(self):
+        self.project.status = "proposed"
+        self.project.save(update_fields=["status"])
+        document = ProjectSupportingDocument.objects.create(
+            project=self.project,
+            original_filename="ready.csv",
+            content_type="text/csv",
+            extension="csv",
+            size_bytes=4,
+            checksum_sha256="6" * 64,
+            content=b"a,b\n",
+            extraction_status="ready",
+            extracted_text="Evidence that can be assessed.",
+            uploaded_by=self.contributor,
+        )
+        ProjectDocumentAssessment.objects.create(
+            project=self.project,
+            source_hash=current_document_source_hash(self.project),
+            status="unavailable",
+            policy_snapshot=policy(),
+            error_message="The assessment provider is unavailable.",
+        )
+
+        self.client.force_authenticate(self.validator)
+        response = self.client.post(
+            f"/api/validator/projects/{self.project.id}/priority-analysis/run/",
+            {"supplements": {}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data["code"], "document_processing_failed")
+        self.assertTrue(response.data["retry_available"])
+        self.assertEqual(response.data["document_assessment"]["id"], ProjectDocumentAssessment.objects.get(project=self.project).id)
+        self.assertEqual(document.upload_status, "uploaded")
 
     def test_validator_can_view_submitted_document_but_content_editor_cannot(self):
         self.project.status = "proposed"
@@ -317,8 +417,7 @@ class SupportingDocumentApiTests(TestCase):
             size_bytes=4,
             checksum_sha256="9" * 64,
             content=b"a,b\n",
-            extraction_status="ready",
-            extracted_text="River rehabilitation budget evidence.",
+            extraction_status="not_processed",
             uploaded_by=self.contributor,
         )
 
@@ -357,6 +456,72 @@ class SupportingDocumentApiTests(TestCase):
         assessment = self.project.document_assessments.get()
         self.assertEqual(assessment.status, "queued")
         dispatch.assert_called_once_with(assessment.id)
+
+    @patch("projects.document_assessments.dispatch_document_processing", return_value=True)
+    def test_validator_scorer_starts_processing_for_uploaded_unprocessed_document(self, dispatch):
+        self.project.status = "proposed"
+        self.project.save(update_fields=["status"])
+        document = ProjectSupportingDocument.objects.create(
+            project=self.project,
+            original_filename="evidence.csv",
+            content_type="text/csv",
+            extension="csv",
+            size_bytes=4,
+            checksum_sha256="0" * 64,
+            content=b"a,b\n",
+            extraction_status="not_processed",
+            uploaded_by=self.contributor,
+        )
+        self.client.force_authenticate(self.validator)
+
+        response = self.client.post(
+            f"/api/validator/projects/{self.project.id}/priority-analysis/run/",
+            {"supplements": {}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 202, response.data)
+        self.assertTrue(response.data["processing"])
+        document.refresh_from_db()
+        self.assertEqual(document.upload_status, "uploaded")
+        self.assertEqual(document.extraction_status, "queued")
+        dispatch.assert_called_once_with(document.id)
+
+    def test_recovery_command_only_resets_stale_uploaded_documents(self):
+        stale = ProjectSupportingDocument.objects.create(
+            project=self.project,
+            original_filename="stale.csv",
+            content_type="text/csv",
+            extension="csv",
+            size_bytes=4,
+            checksum_sha256="3" * 64,
+            content=b"a,b\n",
+            extraction_status="processing",
+            uploaded_by=self.contributor,
+        )
+        recent = ProjectSupportingDocument.objects.create(
+            project=self.project,
+            original_filename="recent.csv",
+            content_type="text/csv",
+            extension="csv",
+            size_bytes=4,
+            checksum_sha256="4" * 64,
+            content=b"a,b\n",
+            extraction_status="queued",
+            uploaded_by=self.contributor,
+        )
+        ProjectSupportingDocument.objects.filter(pk=stale.pk).update(updated_at=timezone.now() - timedelta(hours=1))
+
+        call_command("recover_stuck_document_processing", "--stale-after-minutes=30")
+        stale.refresh_from_db()
+        self.assertEqual(stale.extraction_status, "processing")
+
+        call_command("recover_stuck_document_processing", "--stale-after-minutes=30", "--apply")
+        stale.refresh_from_db()
+        recent.refresh_from_db()
+        self.assertEqual(stale.upload_status, "uploaded")
+        self.assertEqual(stale.extraction_status, "not_processed")
+        self.assertEqual(recent.extraction_status, "queued")
 
     @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
     @patch("projects.views.analyze_project")

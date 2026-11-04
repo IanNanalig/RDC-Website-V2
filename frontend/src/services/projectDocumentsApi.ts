@@ -1,7 +1,8 @@
 import { api } from "./api";
 import { API_BASE_URL } from "../config/api";
 
-export type SupportingDocumentStatus = "queued" | "processing" | "ready" | "failed";
+export type SupportingDocumentStatus = "not_processed" | "queued" | "processing" | "ready" | "failed";
+export type SupportingDocumentUploadStatus = "uploaded" | "upload_failed";
 
 export type SupportingDocument = {
   id: number;
@@ -14,6 +15,9 @@ export type SupportingDocument = {
   extension: string;
   size_bytes: number;
   checksum_sha256: string;
+  upload_status: SupportingDocumentUploadStatus;
+  ai_processing_status: SupportingDocumentStatus;
+  /** Compatibility field supplied by the backend during the API transition. */
   extraction_status: SupportingDocumentStatus;
   extraction_metadata?: Record<string, unknown>;
   processing_error?: string;
@@ -25,7 +29,7 @@ export type SupportingDocument = {
 
 export type DocumentAssessment = {
   id?: number;
-  status: "not_required" | "missing" | "pending" | "queued" | "processing" | "pass" | "fail" | "unavailable";
+  status: "not_required" | "missing" | "not_processed" | "pending" | "queued" | "processing" | "pass" | "fail" | "unavailable";
   required?: boolean;
   collective_sufficient?: boolean;
   summary?: string;

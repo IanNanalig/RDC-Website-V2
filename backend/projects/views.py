@@ -108,6 +108,7 @@ from .document_policy import (
 from .document_assessments import (
     dispatch_document_assessment,
     dispatch_document_processing,
+    dispatch_project_document_processing,
     ensure_queued_assessment,
     serialize_document_assessment,
 )
@@ -3709,18 +3710,11 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
                     checksum_sha256=checksum,
                     content=data,
                     uploaded_by=request.user,
+                    upload_status=ProjectSupportingDocument.UPLOAD_UPLOADED,
+                    extraction_status=ProjectSupportingDocument.EXTRACTION_NOT_PROCESSED,
                 )
         except IntegrityError:
             return Response({"detail": f"{filename} is already attached to this project."}, status=409)
-        queued = dispatch_document_processing(document.id)
-        if not queued:
-            document.processing_error = "The document worker is unavailable. Retry processing when it is online."
-            document.save(update_fields=["processing_error", "updated_at"])
-        else:
-            # Eager local-development tasks complete before ``delay`` returns.
-            # Refresh so the response immediately reports Ready or Failed
-            # instead of returning the stale Queued instance.
-            document.refresh_from_db()
         _log_activity(
             request,
             "supporting_document_uploaded",
@@ -3761,15 +3755,34 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def retry(self, request, pk=None):
         document = self.get_object()
-        if not _can_change_project_documents(request.user, document.project, document.field_key):
-            raise PermissionDenied("Supporting documents are not editable for this project.")
+        if getattr(request.user, "role", "") not in {"validator", "admin"} or not _can_access_project_documents(request.user, document.project):
+            raise PermissionDenied("Only an assigned validator or administrator can retry AI document processing.")
+        if document.upload_status != ProjectSupportingDocument.UPLOAD_UPLOADED or not document.content:
+            return Response({"detail": "The uploaded file is unavailable and cannot be processed."}, status=400)
+        if document.extraction_status in {
+            ProjectSupportingDocument.EXTRACTION_QUEUED,
+            ProjectSupportingDocument.EXTRACTION_PROCESSING,
+        }:
+            return Response(self.get_serializer(document).data, status=status.HTTP_202_ACCEPTED)
+        if document.extraction_status == ProjectSupportingDocument.EXTRACTION_READY:
+            return Response(
+                {"detail": "This document has already completed AI processing."},
+                status=status.HTTP_409_CONFLICT,
+            )
         document.extraction_status = ProjectSupportingDocument.EXTRACTION_QUEUED
         document.processing_error = ""
         document.save(update_fields=["extraction_status", "processing_error", "updated_at"])
         if not dispatch_document_processing(document.id):
-            document.processing_error = "The document worker is unavailable. Try again later."
-            document.save(update_fields=["processing_error", "updated_at"])
+            document.extraction_status = ProjectSupportingDocument.EXTRACTION_FAILED
+            document.processing_error = "The document processing worker is unavailable. Try again later."
+            document.save(update_fields=["extraction_status", "processing_error", "updated_at"])
             return Response(self.get_serializer(document).data, status=503)
+        _log_activity(
+            request,
+            "supporting_document_processing_retried",
+            document.project,
+            {"document_id": document.id, "filename": document.original_filename},
+        )
         document.refresh_from_db()
         return Response(self.get_serializer(document).data)
 
@@ -3792,7 +3805,23 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
         if getattr(request.user, "role", "") not in {"validator", "admin"} or not _can_access_project_documents(request.user, project):
             raise PermissionDenied("Only an assigned validator or administrator can retry this assessment.")
         documents = list(active_project_documents(project))
-        if not documents or any(item.extraction_status != "ready" for item in documents):
+        if not documents:
+            return Response({"detail": "Upload supporting documents before running an assessment."}, status=400)
+        dispatch_result = dispatch_project_document_processing(project, retry_failed=True)
+        if dispatch_result["queued_ids"]:
+            _log_activity(
+                request,
+                "supporting_document_processing_retried",
+                project,
+                {"document_ids": dispatch_result["queued_ids"]},
+            )
+        document_assessment = serialize_document_assessment(project)
+        if document_assessment.get("status") == "processing":
+            return Response(document_assessment, status=status.HTTP_202_ACCEPTED)
+        if document_assessment.get("status") == "unavailable":
+            return Response(document_assessment, status=503)
+        documents = list(active_project_documents(project))
+        if any(item.extraction_status != ProjectSupportingDocument.EXTRACTION_READY for item in documents):
             return Response({"detail": "All active documents must be ready before assessment."}, status=400)
         assessment, created = ensure_queued_assessment(project)
         if assessment is None:
@@ -4239,6 +4268,16 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 {"detail": "Upload the required supporting documents before running AI Assistant analysis.", "document_assessment": document_assessment},
                 status=409,
             )
+        if document_assessment.get("status") == "not_processed":
+            dispatch_result = dispatch_project_document_processing(project)
+            if dispatch_result["queued_ids"]:
+                _log_activity(
+                    request,
+                    "supporting_document_processing_started",
+                    project,
+                    {"document_ids": dispatch_result["queued_ids"]},
+                )
+            document_assessment = serialize_document_assessment(project)
         if document_assessment.get("status") == "pending":
             assessment, _created = ensure_queued_assessment(project)
             if assessment and not dispatch_document_assessment(assessment.id):
@@ -4255,10 +4294,12 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 },
                 status=202,
             )
-        if document_assessment.get("status") == "unavailable" and not document_assessment.get("id"):
+        if document_assessment.get("status") == "unavailable":
             return Response(
                 {
-                    "detail": "Retry or replace the supporting documents that could not be prepared before running AI Assistant analysis.",
+                    "detail": "AI processing could not prepare the supporting documents. The uploaded files remain available; retry AI processing when the worker or provider is online.",
+                    "code": "document_processing_failed",
+                    "retry_available": True,
                     "document_assessment": document_assessment,
                 },
                 status=409,

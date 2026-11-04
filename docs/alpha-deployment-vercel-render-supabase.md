@@ -161,6 +161,18 @@ python manage.py createsuperuser
 https://rdc-website-v2-api-alpha.onrender.com
 ```
 
+### Supporting-document worker
+
+Vercel hosts only the frontend and cannot run the long-lived Celery worker. If Validators will use AI document analysis, create a second Render **Background Worker** from the same `backend/` root with the same build command and this start command:
+
+```text
+celery -A rdc_site worker --loglevel=INFO --concurrency=2
+```
+
+Create a Render Key Value/Redis instance in the same region. Set its private connection URL as both `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND` on the Render Web Service and Background Worker. Also copy `DATABASE_URL`, `SECRET_KEY`, `GROQ_API_KEY`, `GROQ_PRIMARY_MODEL`, and `GROQ_BACKUP_MODEL` to the worker. Never add Redis or Groq credentials to Vercel.
+
+Supporting-document files are stored in PostgreSQL. Contributor uploads do not need the worker; only a Validator's explicit AI Assistant Scorer action queues extraction and assessment.
+
 ## 4. Deploy Frontend On Vercel
 
 1. Open Vercel Dashboard.

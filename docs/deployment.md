@@ -372,11 +372,33 @@ The R2 token should be limited to the selected media bucket. `R2_PUBLIC_BASE_URL
 
 # Supporting-document worker
 
-Contributor supporting documents are stored in PostgreSQL and processed outside the web request. Production requires:
+Contributor supporting documents are stored in PostgreSQL. Uploading a file only validates and stores it; it does not contact Groq or enqueue a background task. A Validator starts extraction and AI document assessment explicitly from the AI-Assisted Priority Scorer.
+
+Production requires:
 
 - a Redis instance configured through `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`;
 - a worker using the same image and environment as the web service, started with `celery -A rdc_site worker --loglevel=INFO --concurrency=2`;
 - Tesseract and Poppler in the runtime image (the repository Dockerfile installs both);
 - the same `DATABASE_URL` and Groq variables on the web and worker services.
 
-If the worker or Groq is unavailable, uploads remain visible with a queued, failed, or unavailable status. The application deliberately blocks submission or endorsement until processing succeeds or a Validator records the allowed assessment override.
+Create the worker as a separate Render Background Worker using the same repository root and build command as the Django Web Service. Its start command is:
+
+```text
+celery -A rdc_site worker --loglevel=INFO --concurrency=2
+```
+
+Set `DATABASE_URL`, `SECRET_KEY`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, and all Groq settings on both Render services. Use the private Redis/Render Key Value connection string for the Celery variables; do not expose it to Vercel.
+
+If the worker or Groq is unavailable, the uploaded file remains downloadable and the Contributor submission remains valid. The Validator sees an AI-processing failure and can retry after the worker/service is restored. Celery and Redis must remain configured because Contact Us and project-concern delivery retries also use them.
+
+For records left in a queued or processing AI state by an earlier unavailable worker, inspect them first:
+
+```bash
+python manage.py recover_stuck_document_processing --stale-after-minutes=30
+```
+
+Only after reviewing that output, reset those stale AI states (without deleting files, extracted text, or assessments):
+
+```bash
+python manage.py recover_stuck_document_processing --stale-after-minutes=30 --apply
+```

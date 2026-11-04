@@ -54,8 +54,8 @@ const context = await browser.newContext({ viewport: { width: 1080, height: 800 
 const page = await context.newPage();
 let projectCreates = 0;
 let uploads = 0;
+let submissions = 0;
 let removals = 0;
-let retries = 0;
 let existingDocument = null;
 await page.addInitScript(() => {
   localStorage.setItem("isLoggedIn", "true");
@@ -101,6 +101,10 @@ await page.route("**/api/**", async (route) => {
       body: JSON.stringify({ enabled: true, is_open: true, can_encode: true, status_code: "open", message: "Open" }),
     });
   }
+  if (url.endsWith("/api/employee/projects/99/submit/") && method === "POST") {
+    submissions += 1;
+    return route.fulfill({ status: 200, headers, contentType: "application/json", body: JSON.stringify({ status: "proposed" }) });
+  }
   if (url.includes("employee/projects/") && method === "POST") {
     projectCreates += 1;
     return route.fulfill({
@@ -139,11 +143,11 @@ await page.route("**/api/**", async (route) => {
       headers,
       contentType: "application/json",
       body: JSON.stringify(existingDocument
-        ? existingDocument.extraction_status === "ready"
+        ? existingDocument.ai_processing_status === "ready"
           ? { status: "pending", required: true, document_results: [] }
-          : existingDocument.processing_error
-            ? { status: "unavailable", required: true, document_results: [], summary: "Failed to upload. Retry or remove the affected file." }
-            : { status: "processing", required: true, document_results: [], summary: "Supporting documents are being prepared." }
+          : existingDocument.ai_processing_status === "not_processed"
+            ? { status: "not_processed", required: true, document_results: [], summary: "Supporting documents are uploaded." }
+            : { status: "processing", required: true, document_results: [], summary: "The AI Assistant is preparing the supporting documents." }
         : { status: "missing", required: true, document_results: [] }),
     });
   }
@@ -154,12 +158,6 @@ await page.route("**/api/**", async (route) => {
       contentType: "application/json",
       body: JSON.stringify(existingDocument ? [existingDocument] : []),
     });
-  }
-  if (url.endsWith("/api/project-supporting-documents/501/retry/") && method === "POST") {
-    retries += 1;
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    existingDocument = { ...existingDocument, extraction_status: "ready", processing_error: "" };
-    return route.fulfill({ status: 200, headers, contentType: "application/json", body: JSON.stringify(existingDocument) });
   }
   if (url.endsWith("/api/project-supporting-documents/") && method === "POST") {
     uploads += 1;
@@ -178,7 +176,9 @@ await page.route("**/api/**", async (route) => {
         extension: "csv",
         size_bytes: 25,
         checksum_sha256: "a".repeat(64),
-        extraction_status: "queued",
+        upload_status: "uploaded",
+        ai_processing_status: "not_processed",
+        extraction_status: "not_processed",
         download_url: "/api/project-supporting-documents/501/download/",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -198,7 +198,7 @@ try {
   assert.equal(await page.getByLabel("Program", { exact: true }).inputValue(), "", "A new submission ignores and removes stale browser draft values.");
   assert.equal(await page.getByText("Recovered your unsaved local inputs", { exact: false }).count(), 0, "A new submission does not show a recovery notice.");
   await page.getByRole("heading", { name: "Supporting Documents", exact: true }).waitFor();
-  await page.getByText("File bytes are never sent to Groq.", { exact: false }).waitFor();
+  await page.getByText("They remain available after upload", { exact: false }).waitFor();
   const picker = page.locator('input[type="file"][multiple]');
   await picker.setInputFiles({ name: "proposal.csv", mimeType: "text/csv", buffer: Buffer.from("item,value\nscope,river\n") });
   await page.getByText("proposal.csv", { exact: true }).waitFor();
@@ -217,10 +217,11 @@ try {
   assert.equal(removals, 0, "Removing a queued file does not call the document delete endpoint.");
 
   await picker.setInputFiles({ name: "proposal.csv", mimeType: "text/csv", buffer: Buffer.from("item,value\nscope,river\n") });
-  await page.getByRole("button", { name: "Save Draft", exact: true }).click();
+  await page.getByRole("button", { name: "Submit for Validation", exact: true }).click();
   await page.waitForURL("**/employee/projects");
-  assert.equal(projectCreates, 1, "The project draft is created once.");
+  assert.equal(projectCreates, 1, "The project is created once.");
   assert.equal(uploads, 1, "The queued document uploads once after the project draft exists.");
+  assert.equal(submissions, 1, "An uploaded but unprocessed document does not block project submission.");
 
   existingDocument = {
     id: 501,
@@ -233,27 +234,18 @@ try {
     extension: "pdf",
     size_bytes: 166399,
     checksum_sha256: "b".repeat(64),
-    extraction_status: "queued",
-    processing_error: "The document worker is unavailable. Retry processing when it is online.",
+    upload_status: "uploaded",
+    ai_processing_status: "not_processed",
+    extraction_status: "not_processed",
+    processing_error: "",
     download_url: "/api/project-supporting-documents/501/download/",
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
   await page.goto(`${origin}/employee/projects/99/edit/simplified`, { waitUntil: "networkidle" });
   await page.getByText("uploaded-evidence.pdf", { exact: true }).waitFor();
-  await page.getByText("Failed to upload", { exact: true }).first().waitFor();
-  await page.getByText("Document processing must finish before the AI assessment can run.", { exact: true }).waitFor({ state: "detached" });
-
-  const retryButton = page.getByRole("button", { name: "Retry processing uploaded-evidence.pdf" });
-  assert.equal(await retryButton.isEnabled(), true, "Retry is an enabled native button.");
-  const retryBox = await retryButton.boundingBox();
-  assert.ok(retryBox && retryBox.height >= 32, "Retry has a usable click target.");
-  const retryClick = retryButton.click();
-  await page.getByRole("button", { name: "Retry processing uploaded-evidence.pdf" }).getByText("Retrying...", { exact: true }).waitFor();
-  await retryClick;
-  await page.getByText("Document processing completed.", { exact: true }).waitFor();
-  await page.getByText("Ready", { exact: true }).waitFor();
-  assert.equal(retries, 1, "Retry sends exactly one processing request.");
+  await page.getByText("Uploaded", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: /Retry AI processing/i }).count(), 0, "Contributors cannot trigger AI document processing.");
 
   const removeButton = page.getByRole("button", { name: "Remove uploaded-evidence.pdf" });
   assert.equal(await removeButton.isEnabled(), true, "Remove is an enabled native button.");
@@ -263,7 +255,7 @@ try {
   await page.getByText("uploaded-evidence.pdf", { exact: true }).waitFor({ state: "detached" });
   assert.equal(removals, 1, "Remove sends exactly one delete request after confirmation.");
 
-  console.log("PASS supporting-document queue, upload, Retry, and Remove interactions");
+  console.log("PASS contributor upload, immediate submission, and evidence removal interactions");
 } finally {
   await context.close();
   await browser.close();

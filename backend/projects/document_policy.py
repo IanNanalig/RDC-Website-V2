@@ -106,16 +106,19 @@ def active_project_documents(project):
 
 
 def validate_project_documents_for_submit(project, policy=None):
+    """Validate the contributor upload requirement, not AI processing.
+
+    The contributor workflow ends after a file has been validated and stored.
+    Extraction and AI sufficiency checks are a validator-only operation and
+    must never prevent a valid proposal from being submitted for review.
+    """
     policy = policy if isinstance(policy, dict) else resolve_project_document_policy(project, persist=True)
     if not policy:
         return None
-    documents = list(active_project_documents(project))
+    documents = [
+        document for document in active_project_documents(project)
+        if document.upload_status == document.UPLOAD_UPLOADED and bool(document.content)
+    ]
     if policy.get("required") and len(documents) < int(policy.get("min_files") or 1):
         return f"Upload at least {int(policy.get('min_files') or 1)} supporting document(s) before submitting."
-    pending = [item.original_filename for item in documents if item.extraction_status in {"queued", "processing"}]
-    if pending:
-        return "Supporting documents are still being processed: " + ", ".join(pending[:3])
-    failed = [item.original_filename for item in documents if item.extraction_status == "failed"]
-    if failed:
-        return "Retry or replace failed supporting documents before submitting: " + ", ".join(failed[:3])
     return None
