@@ -1750,7 +1750,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
                 ? "Uploaded · AI processing completed"
                 : aiStatus === "failed"
                 ? "Uploaded · AI processing failed"
-                : aiStatus === "processing" || aiStatus === "queued"
+                : aiStatus === "queued"
+                ? "Uploaded · Waiting for document worker"
+                : aiStatus === "processing"
                 ? "Uploaded · AI processing..."
                 : "Uploaded";
               const statusClass = !uploaded || aiStatus === "failed"
@@ -1775,11 +1777,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
             })}
           </div> : queuedDocuments.length === 0 && <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-500">No supporting documents attached.</p>}
           {documentNotice && <p role="status" className="text-xs font-medium text-amber-700">{documentNotice}</p>}
-          {documentAssessment && ["pass", "fail", "unavailable", "not_processed", "processing", "pending"].includes(documentAssessment.status) && (
+          {documentAssessment && ["pass", "fail", "failed", "unavailable", "stalled", "not_processed", "queued", "processing", "pending"].includes(documentAssessment.status) && (
             <div className={`rounded-lg border p-3 text-sm ${
               documentAssessment.status === "pass"
                 ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                : documentAssessment.status === "fail" || documentAssessment.status === "unavailable" && !documentAssessment.id
+                : documentAssessment.status === "fail" || documentAssessment.status === "failed" || documentAssessment.status === "unavailable" || documentAssessment.status === "stalled"
                 ? "border-rose-200 bg-rose-50 text-rose-800"
                 : documentAssessment.status === "pending" || documentAssessment.status === "not_processed"
                 ? "border-blue-200 bg-blue-50 text-blue-800"
@@ -1788,15 +1790,20 @@ const SimplifiedProjectSubmission: React.FC = () => {
               <strong>{
                 documentAssessment.status === "not_processed"
                   ? "Supporting documents: Uploaded"
+                  : documentAssessment.status === "queued"
+                  ? "Supporting documents: Waiting for document worker"
                   : documentAssessment.status === "processing" && !documentAssessment.id
                   ? "Supporting documents: AI processing"
+                  : documentAssessment.status === "stalled"
+                  ? "Supporting documents: AI processing stalled"
                   : documentAssessment.status === "unavailable" && !documentAssessment.id
                   ? "Supporting documents: AI processing unavailable"
                   : documentAssessment.status === "pending"
                   ? "Supporting documents: Ready for AI assessment"
-                  : `AI document assessment: ${documentAssessment.status === "pass" ? "Pass" : documentAssessment.status === "fail" ? "Fail" : documentAssessment.status === "processing" ? "Processing" : "Unavailable"}`
+                  : `AI document assessment: ${documentAssessment.status === "pass" ? "Pass" : documentAssessment.status === "fail" ? "Fail" : documentAssessment.status === "failed" ? "Failed" : documentAssessment.status === "processing" ? "Processing" : "Unavailable"}`
               }</strong>
               {documentAssessment.summary && <p className="mt-1 text-xs">{documentAssessment.summary}</p>}
+              {documentAssessment.job?.stage_label && <p className="mt-1 text-xs">Stage: {documentAssessment.job.stage_label}{typeof documentAssessment.job.elapsed_seconds === "number" ? ` (${documentAssessment.job.elapsed_seconds}s)` : ""}</p>}
               {documentAssessment.document_results?.map((result) => <div key={result.document_id} className="mt-2 border-t border-current/20 pt-2 text-xs"><strong>{result.filename}: {result.related ? "Related" : "Unrelated"}</strong><p>{result.explanation}</p>{result.citations?.length ? <p className="mt-1">Evidence: {result.citations.join(" · ")}</p> : null}</div>)}
             </div>
           )}

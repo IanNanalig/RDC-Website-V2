@@ -703,6 +703,13 @@ class ProjectSupportingDocument(models.Model):
     extracted_text = models.TextField(blank=True)
     extraction_metadata = models.JSONField(default=dict, blank=True)
     processing_error = models.TextField(blank=True)
+    processing_job = models.ForeignKey(
+        "ProjectAIProcessingJob",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="documents",
+    )
     uploaded_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -759,6 +766,13 @@ class ProjectDocumentAssessment(models.Model):
     used_backup_model = models.BooleanField(default=False)
     policy_snapshot = models.JSONField(default=dict, blank=True)
     error_message = models.TextField(blank=True)
+    processing_job = models.ForeignKey(
+        "ProjectAIProcessingJob",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assessments",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -773,6 +787,91 @@ class ProjectDocumentAssessment(models.Model):
 
     def __str__(self):
         return f"{self.project_id}: {self.status}"
+
+
+class ProjectAIProcessingJob(models.Model):
+    """One validator-initiated supporting-document AI processing attempt.
+
+    Documents keep their own availability/extraction state.  This record is
+    intentionally an operational timeline: it lets the API distinguish a
+    message waiting for a worker from work the worker has actually begun.
+    """
+
+    STATUS_QUEUED = "queued"
+    STATUS_PROCESSING = "processing"
+    STATUS_COMPLETED = "completed"
+    STATUS_FAILED = "failed"
+    STATUS_STALLED = "stalled"
+    STATUS_CHOICES = [
+        (STATUS_QUEUED, "Queued"),
+        (STATUS_PROCESSING, "Processing"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_FAILED, "Failed"),
+        (STATUS_STALLED, "Stalled"),
+    ]
+
+    STAGE_QUEUED = "queued"
+    STAGE_DISPATCH = "dispatch"
+    STAGE_EXTRACTION = "extraction"
+    STAGE_ASSESSMENT = "assessment"
+    STAGE_SCORING = "scoring"
+    STAGE_COMPLETED = "completed"
+    STAGE_FAILED = "failed"
+    STAGE_STALLED = "stalled"
+    STAGE_CHOICES = [
+        (STAGE_QUEUED, "Queued"),
+        (STAGE_DISPATCH, "Dispatching"),
+        (STAGE_EXTRACTION, "Extracting document text"),
+        (STAGE_ASSESSMENT, "Assessing documents"),
+        (STAGE_SCORING, "Scoring project"),
+        (STAGE_COMPLETED, "Completed"),
+        (STAGE_FAILED, "Failed"),
+        (STAGE_STALLED, "Stalled"),
+    ]
+
+    correlation_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False, db_index=True)
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="ai_processing_jobs")
+    requested_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name="requested_ai_processing_jobs"
+    )
+    source_hash = models.CharField(max_length=64, db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_QUEUED, db_index=True)
+    stage = models.CharField(max_length=20, choices=STAGE_CHOICES, default=STAGE_QUEUED, db_index=True)
+    celery_task_id = models.CharField(max_length=255, blank=True, db_index=True)
+    attempt_count = models.PositiveIntegerField(default=0)
+    requested_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    heartbeat_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    safe_error_code = models.CharField(max_length=80, blank=True)
+    safe_error_message = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-requested_at", "-id"]
+        indexes = [
+            models.Index(fields=["project", "status", "-requested_at"], name="project_ai_job_active_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.project_id}: {self.correlation_id} ({self.status})"
+
+
+class ProjectAIProcessingEvent(models.Model):
+    """Redacted operational event for an AI processing job."""
+
+    job = models.ForeignKey(ProjectAIProcessingJob, on_delete=models.CASCADE, related_name="events")
+    document = models.ForeignKey(ProjectSupportingDocument, on_delete=models.SET_NULL, null=True, blank=True)
+    assessment = models.ForeignKey(ProjectDocumentAssessment, on_delete=models.SET_NULL, null=True, blank=True)
+    event = models.CharField(max_length=64)
+    stage = models.CharField(max_length=20, blank=True)
+    celery_task_id = models.CharField(max_length=255, blank=True)
+    duration_ms = models.PositiveIntegerField(null=True, blank=True)
+    details = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [models.Index(fields=["job", "created_at"], name="ai_job_event_time_idx")]
 
 
 class PasswordSetupToken(models.Model):

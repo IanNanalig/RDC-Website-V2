@@ -22,6 +22,7 @@ from .document_processing import DocumentProcessingError, extract_document_text
 from .models import (
     PriorityRuleSet,
     Project,
+    ProjectAIProcessingJob,
     ProjectDocumentAssessment,
     ProjectPriorityAnalysis,
     ProjectSupportingDocument,
@@ -485,7 +486,77 @@ class SupportingDocumentApiTests(TestCase):
         document.refresh_from_db()
         self.assertEqual(document.upload_status, "uploaded")
         self.assertEqual(document.extraction_status, "queued")
+        job = ProjectAIProcessingJob.objects.get(project=self.project)
+        self.assertEqual(job.status, "queued")
+        self.assertTrue(job.events.filter(event="requested").exists())
         dispatch.assert_called_once_with(document.id)
+
+    @patch("projects.document_assessments.dispatch_document_processing", return_value=False)
+    def test_broker_publish_failure_marks_the_job_and_document_failed(self, _dispatch):
+        self.project.status = "proposed"
+        self.project.save(update_fields=["status"])
+        document = ProjectSupportingDocument.objects.create(
+            project=self.project,
+            original_filename="evidence.csv",
+            content_type="text/csv",
+            extension="csv",
+            size_bytes=4,
+            checksum_sha256="f" * 64,
+            content=b"a,b\n",
+            extraction_status="not_processed",
+            uploaded_by=self.contributor,
+        )
+        self.client.force_authenticate(self.validator)
+
+        response = self.client.post(
+            f"/api/validator/projects/{self.project.id}/priority-analysis/run/",
+            {"supplements": {}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409, response.data)
+        document.refresh_from_db()
+        job = ProjectAIProcessingJob.objects.get(project=self.project)
+        self.assertEqual(document.extraction_status, "failed")
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.safe_error_code, "broker_publish_failed")
+
+    def test_status_endpoint_marks_expired_worker_job_stalled_and_retryable(self):
+        self.project.status = "proposed"
+        self.project.save(update_fields=["status"])
+        old = timezone.now() - timedelta(minutes=20)
+        job = ProjectAIProcessingJob.objects.create(
+            project=self.project,
+            requested_by=self.validator,
+            source_hash="a" * 64,
+            status="queued",
+            stage="queued",
+            heartbeat_at=old,
+        )
+        document = ProjectSupportingDocument.objects.create(
+            project=self.project,
+            original_filename="waiting.csv",
+            content_type="text/csv",
+            extension="csv",
+            size_bytes=4,
+            checksum_sha256="b" * 64,
+            content=b"a,b\n",
+            extraction_status="queued",
+            processing_job=job,
+            uploaded_by=self.contributor,
+        )
+        ProjectAIProcessingJob.objects.filter(pk=job.pk).update(requested_at=old)
+        self.client.force_authenticate(self.validator)
+
+        response = self.client.get(f"/api/project-supporting-documents/assessment-status/?project={self.project.id}")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["status"], "stalled")
+        self.assertTrue(response.data["retry_available"])
+        document.refresh_from_db()
+        job.refresh_from_db()
+        self.assertEqual(document.extraction_status, "failed")
+        self.assertEqual(job.status, "stalled")
 
     def test_recovery_command_only_resets_stale_uploaded_documents(self):
         stale = ProjectSupportingDocument.objects.create(
@@ -510,7 +581,9 @@ class SupportingDocumentApiTests(TestCase):
             extraction_status="queued",
             uploaded_by=self.contributor,
         )
-        ProjectSupportingDocument.objects.filter(pk=stale.pk).update(updated_at=timezone.now() - timedelta(hours=1))
+        old = timezone.now() - timedelta(hours=1)
+        ProjectSupportingDocument.objects.filter(pk=stale.pk).update(updated_at=old)
+        ProjectSupportingDocument.objects.filter(pk=recent.pk).update(updated_at=old)
 
         call_command("recover_stuck_document_processing", "--stale-after-minutes=30")
         stale.refresh_from_db()
@@ -522,6 +595,15 @@ class SupportingDocumentApiTests(TestCase):
         self.assertEqual(stale.upload_status, "uploaded")
         self.assertEqual(stale.extraction_status, "not_processed")
         self.assertEqual(recent.extraction_status, "queued")
+
+        call_command(
+            "recover_stuck_document_processing",
+            "--stale-after-minutes=30",
+            "--include-queued",
+            "--apply",
+        )
+        recent.refresh_from_db()
+        self.assertEqual(recent.extraction_status, "not_processed")
 
     @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
     @patch("projects.views.analyze_project")

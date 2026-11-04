@@ -1071,7 +1071,7 @@ class ProjectSupportingDocumentSerializer(serializers.ModelSerializer):
             "id", "project", "field_key", "form_key", "form_version", "original_filename",
             "content_type", "extension", "size_bytes", "checksum_sha256", "upload_status",
             "ai_processing_status", "extraction_status",
-            "extraction_metadata", "processing_error", "uploaded_by_name", "created_at", "updated_at",
+            "extraction_metadata", "processing_error", "processing_job", "uploaded_by_name", "created_at", "updated_at",
             "download_url",
         ]
         read_only_fields = fields

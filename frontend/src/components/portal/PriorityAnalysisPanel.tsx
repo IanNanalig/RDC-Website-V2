@@ -23,9 +23,16 @@ type Confirmation = {
 };
 
 type DocumentAssessment = {
-  status: "not_required" | "missing" | "not_processed" | "pending" | "queued" | "processing" | "pass" | "fail" | "unavailable";
+  status: "not_required" | "missing" | "not_processed" | "pending" | "queued" | "processing" | "pass" | "fail" | "failed" | "unavailable" | "stalled";
   summary?: string;
   error_message?: string;
+  retry_available?: boolean;
+  job?: {
+    status: "queued" | "processing" | "completed" | "failed" | "stalled";
+    stage_label: string;
+    elapsed_seconds: number;
+    error_message?: string;
+  } | null;
   collective_sufficient?: boolean;
   document_results?: Array<{
     document_id: number;
@@ -262,6 +269,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [retryAvailable, setRetryAvailable] = useState(false);
   const [supplements, setSupplements] = useState<Record<string, string>>({});
   const [adjustedScores, setAdjustedScores] = useState<Record<string, number>>({});
   const [finalPriority, setFinalPriority] = useState("");
@@ -302,28 +310,37 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
   const run = async () => {
     setBusy(true);
     setNotice("");
+    setRetryAvailable(false);
     try {
       let response = await api.post(`validator/projects/${projectId}/priority-analysis/run/`, {
         supplements,
       });
       if (response?.processing) {
-        setNotice(response.detail || "The AI Assistant is reading the supporting documents...");
-        for (let attempt = 0; attempt < 45; attempt += 1) {
-          await new Promise((resolve) => window.setTimeout(resolve, 2000));
-          const documentStatus = await api.get(
+        let documentStatus = response?.document_assessment as DocumentAssessment | undefined;
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          const isQueued = documentStatus?.status === "queued" || documentStatus?.job?.status === "queued";
+          const stage = documentStatus?.job?.stage_label || (isQueued ? "Waiting for the document worker" : "Processing documents");
+          const elapsed = documentStatus?.job?.elapsed_seconds;
+          setNotice(`${stage}${typeof elapsed === "number" ? ` (${elapsed}s)` : ""}.`);
+          await new Promise((resolve) => window.setTimeout(resolve, 2500));
+          documentStatus = await api.get(
             `project-supporting-documents/assessment-status/?project=${projectId}`,
             true,
           ) as DocumentAssessment;
+          if (["unavailable", "failed", "stalled"].includes(documentStatus.status) || ["failed", "stalled"].includes(documentStatus.job?.status || "")) {
+            throw new Error(documentStatus.job?.error_message || documentStatus.error_message || documentStatus.summary || "AI document processing failed. You can retry it.");
+          }
           if (!["queued", "processing"].includes(documentStatus.status)) {
             response = await api.post(`validator/projects/${projectId}/priority-analysis/run/`, {
               supplements,
             });
-            break;
+            if (!response?.processing) break;
+            documentStatus = response?.document_assessment as DocumentAssessment | undefined;
           }
         }
       }
       if (response?.processing) {
-        setNotice("The AI Assistant is still reading the supporting documents. Please try again shortly.");
+        setNotice("AI processing is taking longer than five minutes. Check the processing status and retry if it is marked failed or stalled.");
         return;
       }
       const next = response?.analysis as Analysis;
@@ -332,6 +349,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
       setAnalyses((prev) => [next, ...prev.filter((item) => item.id !== next.id)]);
       setNotice(response?.reused ? "Identical inputs detected. Reused the existing deterministic scorecard." : "Priority analysis completed.");
     } catch (error) {
+      setRetryAvailable(true);
       setNotice(error instanceof Error ? error.message : "Failed to run priority analysis.");
     } finally {
       setBusy(false);
@@ -435,7 +453,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
               <label className="block md:col-span-2"><span className="text-xs font-medium text-slate-600">Readiness Evidence Notes</span><input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={supplements.readinessNotes || ""} onChange={(e) => setSupplements((prev) => ({ ...prev, readinessNotes: e.target.value }))} /></label>
             </div>
             <div className="mt-3 flex justify-end">
-              <button type="button" onClick={run} disabled={busy} className="portal-btn portal-btn-primary">{busy ? "Analyzing..." : "Run AI Scorer"}</button>
+              <button type="button" onClick={run} disabled={busy} className="portal-btn portal-btn-primary">{busy ? "Analyzing..." : retryAvailable ? "Retry AI Scorer" : "Run AI Scorer"}</button>
             </div>
           </div>
         )}

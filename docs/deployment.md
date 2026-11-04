@@ -381,13 +381,15 @@ Production requires:
 - Tesseract and Poppler in the runtime image (the repository Dockerfile installs both);
 - the same `DATABASE_URL` and Groq variables on the web and worker services.
 
-Create the worker as a separate Render Background Worker using the same repository root and build command as the Django Web Service. Its start command is:
+Create the worker as a separate Render Background Worker using the repository-root Docker image. The included `render.yaml` creates only this worker and deliberately leaves the existing Web Service and Key Value resource unmanaged by the Blueprint. Its start command is:
 
 ```text
-celery -A rdc_site worker --loglevel=INFO --concurrency=2
+celery -A rdc_site worker --loglevel=INFO --concurrency=1
 ```
 
-Set `DATABASE_URL`, `SECRET_KEY`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, and all Groq settings on both Render services. Use the private Redis/Render Key Value connection string for the Celery variables; do not expose it to Vercel.
+Set `DATABASE_URL`, `SECRET_KEY`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, and all Groq settings on both Render services. Use the private Redis/Render Key Value connection string for the Celery variables; do not expose it to Vercel. Keep the Key Value inbound-IP rule private: Render services in the same region can still reach it through that internal URL.
+
+The Docker entrypoint runs database migrations/static collection only when `RUN_DJANGO_STARTUP_TASKS=true`. Set that flag on the Web Service only; the worker must use `false` so it never races schema changes or waits for a nonexistent local `db` host.
 
 If the worker or Groq is unavailable, the uploaded file remains downloadable and the Contributor submission remains valid. The Validator sees an AI-processing failure and can retry after the worker/service is restored. Celery and Redis must remain configured because Contact Us and project-concern delivery retries also use them.
 

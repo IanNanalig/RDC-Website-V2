@@ -21,6 +21,7 @@ export type SupportingDocument = {
   extraction_status: SupportingDocumentStatus;
   extraction_metadata?: Record<string, unknown>;
   processing_error?: string;
+  processing_job?: number | null;
   uploaded_by_name?: string;
   download_url: string;
   created_at: string;
@@ -29,7 +30,7 @@ export type SupportingDocument = {
 
 export type DocumentAssessment = {
   id?: number;
-  status: "not_required" | "missing" | "not_processed" | "pending" | "queued" | "processing" | "pass" | "fail" | "unavailable";
+  status: "not_required" | "missing" | "not_processed" | "pending" | "queued" | "processing" | "pass" | "fail" | "failed" | "unavailable" | "stalled";
   required?: boolean;
   collective_sufficient?: boolean;
   summary?: string;
@@ -42,6 +43,18 @@ export type DocumentAssessment = {
     explanation: string;
     citations?: string[];
   }>;
+  retry_available?: boolean;
+  job?: {
+    id: number;
+    correlation_id: string;
+    status: "queued" | "processing" | "completed" | "failed" | "stalled";
+    stage: string;
+    stage_label: string;
+    attempt_count: number;
+    elapsed_seconds: number;
+    error_code?: string;
+    error_message?: string;
+  } | null;
 };
 
 const rows = (value: unknown): SupportingDocument[] => {

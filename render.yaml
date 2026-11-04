@@ -1,0 +1,48 @@
+services:
+  # This Blueprint intentionally creates only the missing worker. Do not add
+  # the existing Render Web Service or Key Value resource here: placing an
+  # existing resource in a second Blueprint can create duplicate resources.
+  - type: worker
+    name: rdc-ncr-celery-worker
+    runtime: docker
+    region: singapore
+    plan: 0.5c-512mb
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: celery -A rdc_site worker --loglevel=INFO --concurrency=1
+    maxShutdownDelaySeconds: 300
+    envVars:
+      - key: DJANGO_SETTINGS_MODULE
+        value: rdc_site.settings
+      - key: RUN_DJANGO_STARTUP_TASKS
+        value: "false"
+      - key: DATABASE_SSL_REQUIRE
+        value: "true"
+      - key: CELERY_TASK_TIME_LIMIT
+        value: "600"
+      - key: CELERY_TASK_SOFT_TIME_LIMIT
+        value: "540"
+      - key: AI_PROCESSING_STALE_AFTER_SECONDS
+        value: "900"
+      # Copy these exact values from the existing Render Web Service. Use the
+      # Key Value private URL for both Celery settings; never expose it to Vercel.
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: CELERY_BROKER_URL
+        sync: false
+      - key: CELERY_RESULT_BACKEND
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_PRIMARY_MODEL
+        sync: false
+      - key: GROQ_BACKUP_MODEL
+        sync: false
+      - key: GROQ_API_URL
+        sync: false
+      - key: GROQ_TIMEOUT_SECONDS
+        sync: false
+      - key: GROQ_MAX_COMPLETION_TOKENS
+        sync: false

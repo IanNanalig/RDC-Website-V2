@@ -335,7 +335,16 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = env_int("CELERY_TASK_TIME_LIMIT", 600)
 CELERY_TASK_SOFT_TIME_LIMIT = env_int("CELERY_TASK_SOFT_TIME_LIMIT", 540)
+AI_PROCESSING_STALE_AFTER_SECONDS = max(
+    CELERY_TASK_TIME_LIMIT + 120,
+    env_int("AI_PROCESSING_STALE_AFTER_SECONDS", 900),
+)
 CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", DEBUG)
+# If a Render worker disappears after receiving a task, Redis can redeliver it
+# to the replacement worker. Document/source locks make that redelivery safe.
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 
 # Sentry configuration (optional)
 SENTRY_DSN = os.environ.get('SENTRY_DSN', '')

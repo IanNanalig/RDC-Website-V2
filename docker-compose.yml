@@ -34,6 +34,7 @@ services:
     ports:
       - "8000:8000"
     environment:
+      RUN_DJANGO_STARTUP_TASKS: "true"
       SECRET_KEY: "${SECRET_KEY:-dev-secret}"
       DEBUG: "False"
       ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1,0.0.0.0}"
@@ -54,8 +55,9 @@ services:
 
   worker:
     build: .
-    command: celery -A rdc_site worker --loglevel=INFO --concurrency=2
+    command: celery -A rdc_site worker --loglevel=INFO --concurrency=1
     environment:
+      RUN_DJANGO_STARTUP_TASKS: "false"
       SECRET_KEY: "${SECRET_KEY:-dev-secret}"
       DEBUG: "False"
       ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1,0.0.0.0}"
