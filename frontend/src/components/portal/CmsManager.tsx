@@ -2329,7 +2329,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     {
                       title: "New Publication Category",
                       description: "Short public category description",
-                      icon: "file",
+                      icon: "",
                       color: "from-blue-600 to-cyan-500",
                       isVisible: true,
                       coverAssetId: "",
@@ -2600,7 +2600,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               <div key={index} className={`overflow-hidden rounded-xl border border-slate-200 bg-white ${isCommitteeCard ? "shadow-sm" : "p-3"}`}>
                 <div className={`flex items-center justify-between gap-3 ${isCommitteeCard ? `bg-gradient-to-r ${textValue(row.color) || "from-blue-600 to-blue-700"} px-5 py-4 text-white` : "mb-3"}`}>
                   <div className="flex items-center gap-3">
-                    {isCommitteeCard && <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/20 text-xl" aria-hidden="true">🏛️</span>}
+                    {isCommitteeCard && textValue(row.icon) && <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/20 text-xl" aria-hidden="true">🏛️</span>}
                     <strong className={`text-sm ${isCommitteeCard ? "text-white" : "text-slate-800"}`}>
                     {isCommitteeCard
                       ? aboutNodeEditorLabel(textValue(row.id)) || `Committee ${index + 1}`

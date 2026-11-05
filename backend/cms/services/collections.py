@@ -438,7 +438,7 @@ def sync_normalized_section_draft(section, user=None):
                     **common,
                     "name": str(row.get("title") or row.get("name") or "Publication category"),
                     "description": str(row.get("description") or ""),
-                    "icon": str(row.get("icon") or "document"),
+                    "icon": str(row.get("icon") or ""),
                     "color": str(row.get("color") or ""),
                     "cover_image": cover_image,
                     "cover_alt_text": str(row.get("coverAlt") or "").strip(),

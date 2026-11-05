@@ -71,7 +71,7 @@ const aboutIcon = (value: unknown, fallback: string) => {
   };
   const key = asString(value).toLowerCase();
   const fallbackKey = asString(fallback).toLowerCase();
-  return icons[key] || icons[fallbackKey] || icons.document;
+  return icons[key] || icons[fallbackKey] || (key ? key : "");
 };
 
 // Committee Data
@@ -142,9 +142,11 @@ const CommitteeModal: React.FC<{
           <div className={`bg-gradient-to-r ${committee.color} p-8 text-white`}>
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-4">
-                <div className="w-16 h-16 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center text-3xl">
-                  {committee.icon}
-                </div>
+                {committee.icon && (
+                  <div className="w-16 h-16 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center text-3xl">
+                    {committee.icon}
+                  </div>
+                )}
                 <div>
                   <h2 id="committee-dialog-title" className="text-3xl font-bold">{committee.title}</h2>
                   <p className="text-white/90 mt-2">{committee.description}</p>
@@ -431,7 +433,7 @@ export default function AboutRDC() {
         id: rowId || `committee-${index + 1}`,
         title: asString(row.title, `Committee ${index + 1}`),
         description: asString(row.description),
-        icon: aboutIcon(row.icon, "building"),
+        icon: aboutIcon(row.icon, ""),
         color: asString(row.color, "from-blue-500 to-blue-600"),
         url: asString(row.url || row.link) || undefined,
         content: {
@@ -803,11 +805,13 @@ export default function AboutRDC() {
                 className="bg-white rounded-2xl shadow-md hover:shadow-xl transition-all duration-300 overflow-hidden border border-slate-100 h-full flex flex-col items-center text-center p-6 hover:-translate-y-2 active:scale-95 group"
               >
                 {/* Icon Container */}
-                <div
-                  className={`w-20 h-20 bg-gradient-to-br ${committee.color} rounded-2xl flex items-center justify-center text-4xl mb-5 group-hover:scale-110 transition-transform duration-300 shadow-lg`}
-                >
-                  {committee.icon}
-                </div>
+                {committee.icon && (
+                  <div
+                    className={`w-20 h-20 bg-gradient-to-br ${committee.color} rounded-2xl flex items-center justify-center text-4xl mb-5 group-hover:scale-110 transition-transform duration-300 shadow-lg`}
+                  >
+                    {committee.icon}
+                  </div>
+                )}
 
                 {/* Title */}
                 <h3 className="text-lg font-bold text-slate-900 mb-2 group-hover:text-blue-600 transition">

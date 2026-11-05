@@ -54,7 +54,7 @@ const publicationIcon = (value: string) => {
     trend: "\u{1F4C8}",
   };
   const key = value.toLowerCase();
-  return icons[key] || value || icons.document;
+  return icons[key] || value || "";
 };
 
 const isVisible = (value: unknown) => {
@@ -134,7 +134,7 @@ const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
       id: nextId,
       title: asString(row.title, baseCategory?.title ?? "Publication Category"),
       description: asString(row.description, baseCategory?.description ?? ""),
-      icon: asString(row.icon, baseCategory?.icon ?? "document"),
+      icon: asString(row.icon, baseCategory?.icon ?? ""),
       color: asString(row.color, baseCategory?.color ?? "from-slate-600 to-slate-500"),
       coverImage: asString(row.coverImage, baseCategory?.coverImage ?? "") || undefined,
       coverAlt: asString(row.coverAlt, baseCategory?.coverAlt ?? title),
@@ -265,18 +265,23 @@ export default function Publications() {
                     <img
                       src={category.coverImage}
                       alt={category.coverAlt || category.title}
+                      onError={(event) => {
+                        event.currentTarget.style.display = "none";
+                      }}
                       className="mb-4 h-40 w-full rounded-xl object-cover"
                       loading="lazy"
                       decoding="async"
                     />
                   )}
-                  <div
-                    className={`w-16 h-16 rounded-xl bg-gradient-to-br ${category.color} flex items-center justify-center text-3xl mb-4 group-hover:scale-110 transition-transform leading-none text-center`}
-                  >
-                    <span className="leading-none align-middle">
-                      {publicationIcon(category.icon)}
-                    </span>
-                  </div>
+                  {publicationIcon(category.icon) && (
+                    <div
+                      className={`w-16 h-16 rounded-xl bg-gradient-to-br ${category.color} flex items-center justify-center text-3xl mb-4 group-hover:scale-110 transition-transform leading-none text-center`}
+                    >
+                      <span className="leading-none align-middle">
+                        {publicationIcon(category.icon)}
+                      </span>
+                    </div>
+                  )}
                   <h3 className="text-lg font-bold text-slate-900 mb-2 group-hover:text-blue-600 transition">
                     {category.title}
                   </h3>
@@ -328,9 +333,11 @@ export default function Publications() {
               className={`bg-gradient-to-br ${activeCategory?.color} rounded-2xl p-8 mb-8 text-white shadow-lg`}
             >
               <div className="flex items-start gap-4">
-                <div className="text-5xl leading-none text-center">
-                  {publicationIcon(activeCategory?.icon || "document")}
-                </div>
+                {publicationIcon(activeCategory?.icon || "") && (
+                  <div className="text-5xl leading-none text-center">
+                    {publicationIcon(activeCategory?.icon || "")}
+                  </div>
+                )}
                 <div>
                   <h2 className="text-3xl font-bold mb-2">
                     {activeCategory?.title}
