@@ -540,7 +540,7 @@ class CMSCarouselItemSerializer(CMSManagedContentSerializer):
     class Meta:
         model = CMSCarouselItem
         fields = [
-            "id", "stable_key", "title", "description", "image", "image_url", "legacy_image_url",
+            "id", "stable_key", "title", "description", "image", "image_url", "legacy_image_url", "image_alt_text",
             "primary_label", "primary_url", "secondary_label", "secondary_url", "sort_order",
             "status", "published_snapshot_json", "has_unpublished_changes", "review_notes",
             "created_by_name", "updated_by_name", "submitted_by_name", "reviewed_by_name",
@@ -574,17 +574,19 @@ class CMSCarouselItemSerializer(CMSManagedContentSerializer):
 
 class CMSPublicationCategorySerializer(CMSManagedContentSerializer):
     document_count = serializers.IntegerField(read_only=True, default=0)
+    cover_image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = CMSPublicationCategory
         fields = [
-            "id", "code", "name", "description", "icon", "color", "sort_order", "document_count",
+            "id", "code", "name", "description", "icon", "color", "cover_image", "cover_image_url",
+            "cover_alt_text", "sort_order", "document_count",
             "status", "published_snapshot_json", "has_unpublished_changes", "review_notes",
             "created_by_name", "updated_by_name", "submitted_by_name", "reviewed_by_name",
             "published_at", "archived_at", "created_at", "updated_at",
         ]
         read_only_fields = [
-            "id", "document_count", "status", "published_snapshot_json",
+            "id", "document_count", "cover_image_url", "status", "published_snapshot_json",
             "has_unpublished_changes", "review_notes", "created_by_name", "updated_by_name",
             "submitted_by_name", "reviewed_by_name", "published_at", "archived_at", "created_at", "updated_at",
         ]
@@ -592,6 +594,14 @@ class CMSPublicationCategorySerializer(CMSManagedContentSerializer):
     def validate_code(self, value):
         if self.instance and value != self.instance.code:
             raise serializers.ValidationError("Publication category codes cannot be changed.")
+        return value
+
+    def get_cover_image_url(self, obj):
+        return obj.cover_image.resolved_public_url if obj.cover_image and not obj.cover_image.is_archived else ""
+
+    def validate_cover_image(self, value):
+        if value and (value.is_archived or value.file_type != CMSMediaAsset.FILE_TYPE_IMAGE):
+            raise serializers.ValidationError("Choose an active image from the media library.")
         return value
 
 class CMSPublicationDocumentSerializer(CMSManagedContentSerializer):

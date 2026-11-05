@@ -78,6 +78,7 @@ def managed_content_snapshot(obj):
             "id": obj.stable_key,
             "title": obj.title,
             "subtitle": obj.description,
+            "imageAlt": obj.image_alt_text or (obj.image.alt_text if obj.image else ""),
             "button1": {"text": obj.primary_label, "link": obj.primary_url},
             "button2": {"text": obj.secondary_label, "link": obj.secondary_url},
             "sortOrder": obj.sort_order,
@@ -88,7 +89,7 @@ def managed_content_snapshot(obj):
             snapshot["imageKey"] = image_url
         return snapshot
     if isinstance(obj, CMSPublicationCategory):
-        return {
+        snapshot = {
             "id": obj.code,
             "title": obj.name,
             "description": obj.description,
@@ -96,6 +97,11 @@ def managed_content_snapshot(obj):
             "color": obj.color,
             "sortOrder": obj.sort_order,
         }
+        if obj.cover_image and not obj.cover_image.is_archived:
+            snapshot["coverAssetId"] = str(obj.cover_image_id)
+            snapshot["coverImage"] = obj.cover_image.resolved_public_url
+            snapshot["coverAlt"] = obj.cover_alt_text or obj.cover_image.alt_text or obj.name
+        return snapshot
     if isinstance(obj, CMSPublicationDocument):
         url = obj.attachment.resolved_public_url if obj.attachment and not obj.attachment.is_archived else obj.external_url
         return {
@@ -375,12 +381,23 @@ def sync_normalized_section_draft(section, user=None):
                 identity_changed = True
             first = row.get("button1") if isinstance(row.get("button1"), dict) else {}
             second = row.get("button2") if isinstance(row.get("button2"), dict) else {}
+            media_id = row.get("mediaAssetId") or row.get("imageAssetId")
+            try:
+                image = CMSMediaAsset.objects.filter(
+                    pk=media_id,
+                    is_archived=False,
+                    file_type=CMSMediaAsset.FILE_TYPE_IMAGE,
+                ).first() if media_id else None
+            except (TypeError, ValueError):
+                image = None
             _upsert(
                 CMSCarouselItem, {"stable_key": key}, {
                     **common,
                     "title": str(row.get("title") or "Untitled slide"),
                     "description": str(row.get("subtitle") or row.get("description") or ""),
                     "legacy_image_url": str(row.get("imageUrl") or row.get("image") or row.get("imageKey") or "").strip(),
+                    "image": image,
+                    "image_alt_text": str(row.get("imageAlt") or "").strip(),
                     "primary_label": str(first.get("text") or ""),
                     "primary_url": _safe_url(first.get("link")),
                     "secondary_label": str(second.get("text") or ""),
@@ -407,6 +424,15 @@ def sync_normalized_section_draft(section, user=None):
                 row["id"] = code
                 row["code"] = code
                 identity_changed = True
+            cover_media_id = row.get("coverAssetId") or row.get("coverImageAssetId")
+            try:
+                cover_image = CMSMediaAsset.objects.filter(
+                    pk=cover_media_id,
+                    is_archived=False,
+                    file_type=CMSMediaAsset.FILE_TYPE_IMAGE,
+                ).first() if cover_media_id else None
+            except (TypeError, ValueError):
+                cover_image = None
             category = _upsert(
                 CMSPublicationCategory, {"code": code}, {
                     **common,
@@ -414,6 +440,8 @@ def sync_normalized_section_draft(section, user=None):
                     "description": str(row.get("description") or ""),
                     "icon": str(row.get("icon") or "document"),
                     "color": str(row.get("color") or ""),
+                    "cover_image": cover_image,
+                    "cover_alt_text": str(row.get("coverAlt") or "").strip(),
                     "sort_order": category_index,
                 }, user,
             )

@@ -286,6 +286,7 @@ class CMSCarouselItem(CMSManagedContent):
         related_name="carousel_items",
     )
     legacy_image_url = models.CharField(max_length=1000, blank=True)
+    image_alt_text = models.CharField(max_length=300, blank=True)
     primary_label = models.CharField(max_length=120, blank=True)
     primary_url = models.CharField(max_length=500, blank=True)
     secondary_label = models.CharField(max_length=120, blank=True)
@@ -305,6 +306,11 @@ class CMSPublicationCategory(CMSManagedContent):
     description = models.TextField(blank=True)
     icon = models.CharField(max_length=80, blank=True)
     color = models.CharField(max_length=120, blank=True)
+    cover_image = models.ForeignKey(
+        CMSMediaAsset, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="publication_category_covers",
+    )
+    cover_alt_text = models.CharField(max_length=300, blank=True)
     sort_order = models.PositiveIntegerField(default=1)
 
     class Meta:

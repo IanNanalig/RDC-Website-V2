@@ -86,6 +86,11 @@ type Committee = {
     overview: string;
     functions: string[];
     members: string[];
+    subCommittees: Array<{
+      title: string;
+      description: string;
+      functions: string[];
+    }>;
   };
 };
 
@@ -170,15 +175,17 @@ const CommitteeModal: React.FC<{
 
           {/* Modal Content */}
           <div className="p-8 max-h-[75vh] overflow-y-auto">
-            {/* Overview Section */}
-            <div className="mb-8">
-              <h3 className="text-xl font-bold text-slate-900 mb-4">
-                Overview
-              </h3>
-              <p className="text-slate-700 leading-relaxed">
-                {committee.content.overview}
-              </p>
-            </div>
+            {/* Overview is optional and disappears when cleared in the CMS. */}
+            {committee.content.overview && (
+              <div className="mb-8">
+                <h3 className="text-xl font-bold text-slate-900 mb-4">
+                  Overview
+                </h3>
+                <p className="whitespace-pre-wrap text-slate-700 leading-relaxed">
+                  {committee.content.overview}
+                </p>
+              </div>
+            )}
 
             {committee.content.functions.length > 0 && (
               <div className="mb-8">
@@ -191,6 +198,27 @@ const CommitteeModal: React.FC<{
                     </li>
                   ))}
                 </ul>
+              </div>
+            )}
+
+            {committee.content.subCommittees.length > 0 && (
+              <div className="mb-8 space-y-4">
+                {committee.content.subCommittees.map((entry, index) => (
+                  <section key={`${entry.title}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 p-5">
+                    <h3 className="font-bold text-slate-900">{index + 1}. {entry.title}</h3>
+                    {entry.description && <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{entry.description}</p>}
+                    {entry.functions.length > 0 && (
+                      <div className="mt-3">
+                        <h4 className="text-sm font-semibold text-slate-800">Functions:</h4>
+                        <ul className="mt-1 space-y-1">
+                          {entry.functions.map((item, functionIndex) => (
+                            <li key={functionIndex} className="text-sm leading-relaxed text-slate-700">{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </section>
+                ))}
               </div>
             )}
 
@@ -391,6 +419,14 @@ export default function AboutRDC() {
       const members = asArray(row.members || nestedContent.members)
         .map((item) => asString(item))
         .filter(Boolean);
+      const subCommittees = asArray(row.subCommittees || nestedContent.subCommittees)
+        .map(asRecord)
+        .map((item) => ({
+          title: asString(item.title || item.name),
+          description: asString(item.description),
+          functions: asArray(item.functions).map((value) => asString(value)).filter(Boolean),
+        }))
+        .filter((item) => item.title);
       const entry: Committee = {
         id: rowId || `committee-${index + 1}`,
         title: asString(row.title, `Committee ${index + 1}`),
@@ -402,6 +438,7 @@ export default function AboutRDC() {
           overview: asString(row.overview || nestedContent.overview),
           functions: hasFunctions ? functions : [],
           members: hasMembers ? members : [],
+          subCommittees,
         },
       };
       if (matchedIndex >= 0) entries[matchedIndex] = entry;

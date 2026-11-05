@@ -187,7 +187,8 @@ async function requestErrorMessageFromResponse(res: Response) {
 
 function flattenApiValidationErrors(value: unknown, path = ""): string[] {
   if (typeof value === "string" && value.trim()) {
-    return [path && path !== "detail" ? `${path}: ${value.trim()}` : value.trim()];
+    const isInternalCmsPath = path === "content_json" || path.startsWith("content_json.") || path.startsWith("content_json[");
+    return [path && path !== "detail" && !isInternalCmsPath ? `${path}: ${value.trim()}` : value.trim()];
   }
   if (Array.isArray(value)) {
     return value.flatMap((item, index) =>

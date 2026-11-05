@@ -775,7 +775,10 @@ class CMSManagedContentViewSet(viewsets.ModelViewSet):
 class AdminCMSCarouselItemViewSet(CMSManagedContentViewSet):
     queryset = CMSCarouselItem.objects.select_related("image")
     serializer_class = CMSCarouselItemSerializer
-    search_fields = ("title", "description")
+    # Publishing validation identifies removed slides by their immutable key.
+    # Include it in collection search so the administrator recovery flow can
+    # find and archive a renamed slide before publishing Home.
+    search_fields = ("stable_key", "title", "description")
     content_type_key = "carousel_item"
 
 

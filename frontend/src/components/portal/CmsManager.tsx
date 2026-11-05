@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import cmsApi, {
   type CMSArticle,
   type CMSMediaAsset,
@@ -1969,6 +1970,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
 
     if (sectionForm.section_key === "resolutions-archive") {
       const years = Array.isArray(sectionContent.years) ? sectionContent.years : [];
+      const usedResolutionYears = new Set(years.map((value) => textValue(parseRecord(value).year)));
+      const nextResolutionYear = () => {
+        let candidate = new Date().getFullYear();
+        while (candidate >= 1900 && usedResolutionYears.has(String(candidate))) candidate -= 1;
+        return String(candidate);
+      };
       const legendItems = Array.isArray(sectionContent.legendItems) ? sectionContent.legendItems : [];
       const categoryItems = Array.isArray(sectionContent.categoryItems) ? sectionContent.categoryItems : [];
       const updateYear = (yearIndex: number, nextYear: Record<string, unknown>) => {
@@ -2032,7 +2039,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   ...sectionContent,
                   years: [
                     ...years,
-                    { year: String(new Date().getFullYear()), replaceExisting: false, resolutions: [] },
+                    { year: nextResolutionYear(), replaceExisting: false, resolutions: [] },
                   ],
                 })}
               >
@@ -2325,6 +2332,9 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                       icon: "file",
                       color: "from-blue-600 to-cyan-500",
                       isVisible: true,
+                      coverAssetId: "",
+                      coverImage: "",
+                      coverAlt: "",
                       documents: [],
                     },
                     ...categories,
@@ -2363,6 +2373,26 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   <Area label="Description" value={textValue(category.description)} onChange={(value) => updateCategory(categoryIndex, { ...category, description: value })} rows={2} />
                   <Select label="Icon" value={textValue(category.icon)} onChange={(value) => updateCategory(categoryIndex, { ...category, icon: value })} options={iconOptions.map((icon) => ({ label: icon.replace(/-/g, " "), value: icon }))} />
                   <Select label="Color" value={textValue(category.color)} onChange={(value) => updateCategory(categoryIndex, { ...category, color: value })} options={colorOptions} emptyLabel="Use the current category color" />
+                  <MediaAssetPicker
+                    {...mediaPickerStatus}
+                    label="Category Cover Image"
+                    assets={media.filter((item) => item.file_type === "image")}
+                    value={stringValue(category.coverAssetId || category.coverImageAssetId)}
+                    onChange={(value) => {
+                      const selected = mediaById.get(value);
+                      updateCategory(categoryIndex, {
+                        ...category,
+                        coverAssetId: selected?.id || "",
+                        coverImageAssetId: selected?.id || "",
+                        coverImage: selected ? portableMediaUrl(selected.url) : "",
+                        coverAlt: selected
+                          ? textValue(category.coverAlt) || selected.alt_text || selected.caption || textValue(category.title)
+                          : "",
+                      });
+                    }}
+                    helper="Optional image displayed at the top of this public category card."
+                  />
+                  <Field label="Cover Image Description" value={textValue(category.coverAlt)} onChange={(value) => updateCategory(categoryIndex, { ...category, coverAlt: value })} helper="Describe the cover image for visitors using assistive technology." />
                   <Select
                     label="Visibility"
                     value={category.isVisible === false ? "false" : "true"}
@@ -2565,15 +2595,19 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           </div>
           {items.map((item, index) => {
             const row = parseRecord(item);
+            const isCommitteeCard = sectionForm.section_key === "committees";
             return (
-              <div key={index} className="rounded-xl border border-slate-200 bg-white p-3">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <strong className="text-sm text-slate-800">
-                    {sectionForm.section_key === "committees"
-                      ? `${aboutNodeEditorLabel(textValue(row.id)) || `Committee ${index + 1}`} (fixed committee)`
+              <div key={index} className={`overflow-hidden rounded-xl border border-slate-200 bg-white ${isCommitteeCard ? "shadow-sm" : "p-3"}`}>
+                <div className={`flex items-center justify-between gap-3 ${isCommitteeCard ? `bg-gradient-to-r ${textValue(row.color) || "from-blue-600 to-blue-700"} px-5 py-4 text-white` : "mb-3"}`}>
+                  <div className="flex items-center gap-3">
+                    {isCommitteeCard && <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/20 text-xl" aria-hidden="true">🏛️</span>}
+                    <strong className={`text-sm ${isCommitteeCard ? "text-white" : "text-slate-800"}`}>
+                    {isCommitteeCard
+                      ? aboutNodeEditorLabel(textValue(row.id)) || `Committee ${index + 1}`
                       : `Card ${index + 1}`}
-                  </strong>
-                  {sectionForm.section_key !== "committees" && (
+                    </strong>
+                  </div>
+                  {!isCommitteeCard && (
                     <button
                       type="button"
                       className="text-sm text-red-600"
@@ -2586,17 +2620,20 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     </button>
                   )}
                 </div>
+                <div className={isCommitteeCard ? "p-4" : ""}>
                 <div className="grid min-w-0 gap-3 md:grid-cols-2">
-                  {developerMode && isAdmin && sectionForm.section_key !== "committees" && <Field label="Developer: Stable ID" value={textValue(row.id)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, id: value }))} />}
+                  {developerMode && isAdmin && !isCommitteeCard && <Field label="Developer: Stable ID" value={textValue(row.id)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, id: value }))} />}
                   <Field label="Title" value={textValue(row.title)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, title: value }))} />
-                  <Field label="Category Label" value={textValue(row.category)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, category: value }))} />
-                  <Field label="Description" value={textValue(row.description)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, description: value }))} />
                   <Select
                     label="Icon"
                     value={textValue(row.icon)}
                     onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, icon: value }))}
                     options={iconOptions.map((icon) => ({ label: icon, value: icon }))}
                   />
+                  {isCommitteeCard && <Select label="Card Color" value={textValue(row.color)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, color: value }))} options={colorOptions} emptyLabel="Use the default committee color" />}
+                  <div className={isCommitteeCard ? "md:col-span-2" : ""}><Area label="Description" value={textValue(row.description)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, description: value }))} rows={isCommitteeCard ? 3 : 2} /></div>
+                  {!isCommitteeCard && <>
+                  <Field label="Category Label" value={textValue(row.category)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, category: value }))} />
                   <MediaAssetPicker
                     {...mediaPickerStatus}
                     label="CMS Document / PDF"
@@ -2636,12 +2673,55 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, isVisible: value === "true" }))}
                     options={[{ label: "Visible", value: "true" }, { label: "Hidden", value: "false" }]}
                   />
+                  </>}
                 </div>
-                {sectionForm.section_key === "committees" && (
-                  <div className="mt-3 grid min-w-0 gap-3 md:grid-cols-2">
-                    <Area label="Committee Overview" value={textValue(row.overview || parseRecord(row.content).overview)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, overview: value }))} rows={3} />
-                    <Area label="Functions (one per line)" value={stringListToText(row.functions || parseRecord(row.content).functions)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, functions: stringListFromText(value) }))} rows={4} />
-                    <Area label="Members (one per line)" value={stringListToText(row.members || parseRecord(row.content).members)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, members: stringListFromText(value) }))} rows={4} />
+                {isCommitteeCard && (
+                  <div className="mt-3 space-y-4">
+                    <div className="grid min-w-0 gap-3 md:grid-cols-2">
+                      <Area label="Committee Overview (optional)" value={textValue(row.overview || parseRecord(row.content).overview)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, overview: value }))} rows={3} helper="Enter text to show the Overview section on the public page. Clear this field to remove it." />
+                      <Area label="Main Functions (one per line)" value={stringListToText(row.functions || parseRecord(row.content).functions)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, functions: stringListFromText(value) }))} rows={4} />
+                      <Area label="Members (one per line)" value={stringListToText(row.members || parseRecord(row.content).members)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, members: stringListFromText(value) }))} rows={4} />
+                    </div>
+                    {(() => {
+                      const nestedContent = parseRecord(row.content);
+                      const subCommittees = Array.isArray(row.subCommittees)
+                        ? row.subCommittees
+                        : Array.isArray(nestedContent.subCommittees)
+                          ? nestedContent.subCommittees
+                          : [];
+                      const updateSubCommittees = (next: unknown[]) => updateDocumentItem(index, (current) => ({ ...current, subCommittees: next }));
+                      return (
+                        <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <h5 className="font-bold text-slate-900">Committee Information Cards</h5>
+                              <p className="text-xs text-slate-600">Add numbered entries with a committee name, description, and functions.</p>
+                            </div>
+                            <button type="button" className="portal-btn portal-btn-ghost" onClick={() => updateSubCommittees([...subCommittees, { title: "New Committee", description: "", functions: [] }])}>Add Committee Information</button>
+                          </div>
+                          <div className="mt-3 space-y-3">
+                            {subCommittees.length === 0 && <p className="text-sm text-slate-500">No detailed committee information has been added.</p>}
+                            {subCommittees.map((entry, subIndex) => {
+                              const detail = parseRecord(entry);
+                              const updateDetail = (next: Record<string, unknown>) => updateSubCommittees(subCommittees.map((item, itemIndex) => itemIndex === subIndex ? next : item));
+                              return (
+                                <div key={subIndex} className="rounded-lg border border-slate-200 bg-white p-3">
+                                  <div className="mb-3 flex items-center justify-between gap-3">
+                                    <strong className="text-sm text-slate-800">{subIndex + 1}. Committee Information</strong>
+                                    <button type="button" className="text-sm text-red-600" onClick={() => updateSubCommittees(subCommittees.filter((_, itemIndex) => itemIndex !== subIndex))}>Remove</button>
+                                  </div>
+                                  <div className="grid gap-3 md:grid-cols-2">
+                                    <Field label="Committee Name" value={textValue(detail.title || detail.name)} onChange={(value) => updateDetail({ ...detail, title: value })} />
+                                    <div className="md:col-span-2"><Area label="Description" value={textValue(detail.description)} onChange={(value) => updateDetail({ ...detail, description: value })} rows={3} /></div>
+                                    <div className="md:col-span-2"><Area label="Functions (one per line)" value={stringListToText(detail.functions)} onChange={(value) => updateDetail({ ...detail, functions: stringListFromText(value) })} rows={5} /></div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
                 {sectionForm.section_key !== "investment-programming" && sectionForm.section_key !== "committees" && (
@@ -2653,6 +2733,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     />
                   </div>
                 )}
+                </div>
               </div>
             );
           })}
@@ -3963,7 +4044,7 @@ const MediaAssetPicker = ({
         {selected && <button type="button" className="portal-btn portal-btn-ghost" onClick={() => onChange("")}>Remove</button>}
       </div>
       {helper && <span className="mt-1 block text-xs text-slate-500">{helper}</span>}
-      {open && (
+      {open && createPortal((
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-3 sm:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closePicker(); }}>
           <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={`${pickerId}-title`} className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
             <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4 sm:p-5">
@@ -4040,7 +4121,7 @@ const MediaAssetPicker = ({
             </div>
           </section>
         </div>
-      )}
+      ), document.body)}
     </div>
   );
 };

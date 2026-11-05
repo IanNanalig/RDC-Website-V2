@@ -6,6 +6,7 @@ from cms.models import (
     CMSMediaAsset,
     CMSPage,
     CMSPageSection,
+    CMSPublicationCategory,
     CMSPublicationDocument,
     CMSResolution,
 )
@@ -84,6 +85,7 @@ def get_media_usage_map(media_assets):
 
     normalized_sources = (
         (CMSCarouselItem, "image_id", "carousel", "Home carousel image"),
+        (CMSPublicationCategory, "cover_image_id", "publication_category", "Publication category cover"),
         (CMSPublicationDocument, "attachment_id", "publication", "Publication document"),
         (CMSResolution, "attachment_id", "resolution", "RDC resolution document"),
     )

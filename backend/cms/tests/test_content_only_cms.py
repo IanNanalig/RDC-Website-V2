@@ -210,7 +210,8 @@ class ContentOnlyCMSTests(APITestCase):
         slides = list(content.get("slides") or [])
         slides.insert(0, {
             "id": "new-fixed-slide", "title": "New fixed slide", "subtitle": "Draft copy",
-            "imageKey": "photo1", "button1": {"text": "Read", "link": "/about"},
+            "imageKey": "photo1", "imageAlt": "Metro Manila skyline at night",
+            "button1": {"text": "Read", "link": "/about"},
             "button2": {"text": "Contact", "link": "/contact"},
         })
         content["slides"] = slides
@@ -221,6 +222,8 @@ class ContentOnlyCMSTests(APITestCase):
         item = CMSCarouselItem.objects.get(stable_key="new-fixed-slide")
         self.assertEqual(item.status, "draft")
         self.assertTrue(item.has_unpublished_changes)
+        self.assertEqual(item.image_alt_text, "Metro Manila skyline at night")
+        self.assertEqual(item.published_snapshot_json, {})
 
     def test_legacy_carousel_identity_is_persisted_and_survives_title_change(self):
         section = CMSPageSection.objects.get(page__slug="home", section_key="hero-carousel")
@@ -376,6 +379,14 @@ class ContentOnlyCMSTests(APITestCase):
         published = self.client.post("/api/admin/cms/modules/home/publish/", {}, format="json")
         self.assertEqual(published.status_code, 200, published.data)
 
+    def test_carousel_collection_search_accepts_stable_key_used_by_publish_recovery(self):
+        item = CMSCarouselItem.objects.exclude(status="archived").first()
+        self.assertIsNotNone(item)
+        response = self.client.get("/api/admin/cms/carousel-items/", {"q": item.stable_key})
+        self.assertEqual(response.status_code, 200, response.data)
+        rows = response.data.get("results", response.data) if isinstance(response.data, dict) else response.data
+        self.assertIn(item.stable_key, {row["stable_key"] for row in rows})
+
     def test_removed_migrated_carousel_is_retired_during_publish(self):
         page = CMSPage.objects.get(slug="home")
         section = page.sections.get(section_key="hero-carousel")
@@ -448,6 +459,22 @@ class ContentOnlyCMSTests(APITestCase):
         self.assertEqual(restored.status_code, 200, restored.data)
         section.refresh_from_db()
         self.assertIn(item.stable_key, {row.get("id") for row in section.content_json["slides"] if isinstance(row, dict)})
+
+    def test_archiving_every_carousel_item_then_publishing_clears_public_home(self):
+        page = CMSPage.objects.get(slug="home")
+        section = page.sections.get(section_key="hero-carousel")
+        keys = [row.get("id") for row in section.content_json.get("slides", []) if isinstance(row, dict)]
+        self.assertTrue(keys)
+
+        for item in CMSCarouselItem.objects.filter(stable_key__in=keys):
+            archived = self.client.post(f"/api/admin/cms/carousel-items/{item.pk}/archive/", {}, format="json")
+            self.assertEqual(archived.status_code, 200, archived.data)
+
+        published = self.client.post("/api/admin/cms/modules/home/publish/", {}, format="json")
+        self.assertEqual(published.status_code, 200, published.data)
+        public_page = self.client.get("/api/public/cms/pages/home/")
+        carousel = next(row for row in public_page.data["sections"] if row["sectionKey"] == "hero-carousel")
+        self.assertEqual(carousel["content"]["slides"], [])
 
     def test_normalized_content_mutation_marks_owning_page_unpublished(self):
         page = CMSPage.objects.get(slug="home")

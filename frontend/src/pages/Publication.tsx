@@ -22,6 +22,8 @@ type Category = {
   description: string;
   icon: string;
   color: string;
+  coverImage?: string;
+  coverAlt?: string;
   documents: DocumentItem[];
 };
 
@@ -134,6 +136,8 @@ const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
       description: asString(row.description, baseCategory?.description ?? ""),
       icon: asString(row.icon, baseCategory?.icon ?? "document"),
       color: asString(row.color, baseCategory?.color ?? "from-slate-600 to-slate-500"),
+      coverImage: asString(row.coverImage, baseCategory?.coverImage ?? "") || undefined,
+      coverAlt: asString(row.coverAlt, baseCategory?.coverAlt ?? title),
       documents,
     };
 
@@ -257,6 +261,15 @@ export default function Publications() {
                   onClick={() => handleCategorySelect(category.id)}
                   className="bg-white rounded-2xl shadow-md hover:shadow-xl transition-all transform hover:-translate-y-1 p-6 text-left group border border-slate-100 h-full flex flex-col justify-between"
                 >
+                  {category.coverImage && (
+                    <img
+                      src={category.coverImage}
+                      alt={category.coverAlt || category.title}
+                      className="mb-4 h-40 w-full rounded-xl object-cover"
+                      loading="lazy"
+                      decoding="async"
+                    />
+                  )}
                   <div
                     className={`w-16 h-16 rounded-xl bg-gradient-to-br ${category.color} flex items-center justify-center text-3xl mb-4 group-hover:scale-110 transition-transform leading-none text-center`}
                   >

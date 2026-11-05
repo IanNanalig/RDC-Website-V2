@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import {
   getPublicProjects,
   getPublicProjectsStats,
@@ -286,11 +286,11 @@ const Home: React.FC = () => {
   );
   const [publicStatsError, setPublicStatsError] = useState<string>("");
   const [homeCmsPage, setHomeCmsPage] = useState<CMSPageSnapshot | null>(null);
+  const [homeCmsError, setHomeCmsError] = useState("");
   const [cmsNewsArticles, setCmsNewsArticles] = useState<HomeNewsArticle[]>([]);
   const [homeAnnouncement, setHomeAnnouncement] = useState<Record<string, unknown> | null>(null);
   const [loadBelowFold, setLoadBelowFold] = useState(false);
   const belowFoldRef = useRef<HTMLDivElement>(null);
-  const navigate = useNavigate();
 
   const buildStatsFromProjects = useCallback(
     (
@@ -363,6 +363,7 @@ const Home: React.FC = () => {
           preloadSrc: imageUrl || keyedImage?.preloadSrc || keyedImage?.src || "",
           title: asString(row.title),
           subtitle: asString(row.subtitle),
+          imageAlt: asString(row.imageAlt),
           button1: { text: asString(button1.text), link: asString(button1.link) },
           button2: { text: asString(button2.text), link: asString(button2.link) },
         };
@@ -577,11 +578,15 @@ const Home: React.FC = () => {
 
     const loadHomeCmsPage = async () => {
       try {
+        setHomeCmsError("");
         const page = await cmsApi.getPublicPage("home");
         if (!cancelled) setHomeCmsPage(page);
       } catch (error) {
         console.error(error);
-        if (!cancelled) setHomeCmsPage(null);
+        if (!cancelled) {
+          setHomeCmsPage(null);
+          setHomeCmsError("Home content could not be loaded. Please refresh the page and try again.");
+        }
       }
     };
 
@@ -790,15 +795,11 @@ const Home: React.FC = () => {
     );
   };
 
-  const handleDocumentClick = (link: string) => {
-    navigate(link);
-  };
-
   const renderDocumentCard = (doc: DocCard) => (
-    <div
+    <a
       key={doc.title}
+      href={doc.link}
       className="bg-white rounded-lg border border-gray-200 hover:border-green-500 hover:shadow-lg transition-all duration-300 group cursor-pointer"
-      onClick={() => handleDocumentClick(doc.link)}
     >
       <div className="p-5">
         <div className="flex items-start gap-4">
@@ -829,7 +830,7 @@ const Home: React.FC = () => {
           </div>
         </div>
       </div>
-    </div>
+    </a>
   );
 
   type StatProps = {
@@ -929,7 +930,7 @@ const Home: React.FC = () => {
                 {slide.webpSrcSet && <source type="image/webp" srcSet={slide.webpSrcSet} sizes="100vw" />}
                 <img
                   src={slide.src}
-                  alt=""
+                  alt={slide.imageAlt}
                   width={1920}
                   height={1080}
                   fetchPriority={currentSlide === 0 ? "high" : "auto"}
@@ -951,18 +952,18 @@ const Home: React.FC = () => {
                   </p>
 
                   <div className="flex flex-wrap gap-4">
-                    <Link
+                    {slide.button1.text && slide.button1.link && <Link
                       to={slide.button1.link}
                       className="bg-white text-green-800 hover:bg-gray-100 px-6 py-3 rounded-lg font-semibold text-lg shadow-lg hover:shadow-xl transition-all duration-300"
                     >
                       {slide.button1.text}
-                    </Link>
-                    <Link
+                    </Link>}
+                    {slide.button2.text && slide.button2.link && <Link
                       to={slide.button2.link}
                       className="bg-transparent border-2 border-white hover:bg-white/10 text-white px-6 py-3 rounded-lg font-semibold text-lg transition-all duration-300"
                     >
                       {slide.button2.text}
-                    </Link>
+                    </Link>}
                   </div>
                 </div>
               </div>
@@ -977,7 +978,7 @@ const Home: React.FC = () => {
         </div>
 
         {/* Carousel Controls */}
-        <button
+        {carouselImages.length > 1 && <button
           onClick={prevSlide}
           className="absolute left-4 top-1/2 -translate-y-1/2 z-20 bg-white/20 hover:bg-white/30 text-white p-3 rounded-full transition-all duration-300 backdrop-blur-sm hover:scale-110"
           aria-label="Previous slide"
@@ -995,9 +996,9 @@ const Home: React.FC = () => {
               d="M15 19l-7-7 7-7"
             />
           </svg>
-        </button>
+        </button>}
 
-        <button
+        {carouselImages.length > 1 && <button
           onClick={nextSlide}
           className="absolute right-4 top-1/2 -translate-y-1/2 z-20 bg-white/20 hover:bg-white/30 text-white p-3 rounded-full transition-all duration-300 backdrop-blur-sm hover:scale-110"
           aria-label="Next slide"
@@ -1015,7 +1016,7 @@ const Home: React.FC = () => {
               d="M9 5l7 7-7 7"
             />
           </svg>
-        </button>
+        </button>}
 
         {/* Carousel Indicators */}
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex gap-2">
@@ -1034,8 +1035,11 @@ const Home: React.FC = () => {
         </div>
       </section>
 
-      {/* Announcement Banner */}
-      <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white py-2 px-4 text-center"></div>
+      {homeCmsError && (
+        <div role="alert" className="border-y border-red-200 bg-red-50 px-4 py-3 text-center text-sm font-semibold text-red-700">
+          {homeCmsError}
+        </div>
+      )}
 
       {/* Main Content Area */}
       <main className="container mx-auto px-4 pb-8 pt-6">
@@ -1062,10 +1066,10 @@ const Home: React.FC = () => {
               </div>
               <div className="p-5 space-y-5">
                 {investmentProgramming.map((doc, index) => (
-                  <div
+                  <a
                     key={index}
+                    href={doc.link}
                     className="bg-white rounded-lg border border-gray-200 hover:border-green-500 hover:shadow-lg transition-all duration-300 group cursor-pointer"
-                    onClick={() => handleDocumentClick(doc.link)}
                   >
                     <div className="p-5">
                       <div className="flex items-start gap-4">
@@ -1096,7 +1100,7 @@ const Home: React.FC = () => {
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </a>
                 ))}
                 {investmentProgramming.length === 0 && <p className="text-sm text-slate-500">No published investment-programming links are configured.</p>}
                 {investmentQuickLinks.length > 0 && (
@@ -1104,17 +1108,16 @@ const Home: React.FC = () => {
                     <h5 className="font-semibold text-gray-700 mb-3">Quick Access:</h5>
                     <div className="space-y-2">
                       {investmentQuickLinks.map((quickLink, index) => (
-                        <button
-                          type="button"
+                        <a
+                          href={quickLink.link}
                           key={`${quickLink.label}-${index}`}
                           className="flex w-full items-center justify-between rounded-lg bg-gray-50 p-3 text-left transition-colors hover:bg-gray-100 group"
-                          onClick={() => handleDocumentClick(quickLink.link)}
                         >
                           <span className="font-medium text-gray-800">{quickLink.label}</span>
                           <svg className="w-4 h-4 text-gray-400 group-hover:text-green-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                           </svg>
-                        </button>
+                        </a>
                       ))}
                     </div>
                   </div>
