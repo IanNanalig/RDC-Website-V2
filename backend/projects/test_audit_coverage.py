@@ -264,20 +264,32 @@ class AuditCoverageTests(APITestCase):
         self.assertEqual(descending.status_code, status.HTTP_200_OK, descending.data)
         self.assertEqual(descending.data["results"][0]["target_label"], "Zulu target")
 
-    def test_form_lock_actions_are_admin_only_and_audited(self):
+    def test_form_lock_actions_follow_cms_roles_and_are_audited(self):
         form = CMSContributorForm.objects.get(key="simplified-rdip")
+
+        # Ordinary contributors cannot enter the CMS editing workflow.
+        self.as_user(self.contributor)
+        for action in ("lock", "heartbeat", "unlock"):
+            with self.subTest(role="contributor", action=action):
+                denied = self.client.post(
+                    f"/api/admin/cms/forms/{form.id}/{action}/", {}, format="json"
+                )
+                self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Content Editors must own and maintain a lock while preparing a draft.
         self.as_user(self.editor)
-        denied = self.client.post(f"/api/admin/cms/forms/{form.id}/lock/", {}, format="json")
-        self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertFalse(UserActivity.objects.filter(user=self.editor, event="cms_form_lock_acquired").exists())
+        editor_lock = self.client.post(f"/api/admin/cms/forms/{form.id}/lock/", {}, format="json")
+        self.assertEqual(editor_lock.status_code, status.HTTP_200_OK)
+        self.assertTrue(UserActivity.objects.filter(user=self.editor, event="cms_form_lock_acquired").exists())
         self.assertEqual(
             self.client.post(f"/api/admin/cms/forms/{form.id}/heartbeat/", {}, format="json").status_code,
-            status.HTTP_403_FORBIDDEN,
+            status.HTTP_200_OK,
         )
         self.assertEqual(
             self.client.post(f"/api/admin/cms/forms/{form.id}/unlock/", {}, format="json").status_code,
-            status.HTTP_403_FORBIDDEN,
+            status.HTTP_200_OK,
         )
+        self.assertTrue(UserActivity.objects.filter(user=self.editor, event="cms_form_lock_released").exists())
 
         self.as_user(self.admin)
         locked = self.client.post(f"/api/admin/cms/forms/{form.id}/lock/", {}, format="json")
