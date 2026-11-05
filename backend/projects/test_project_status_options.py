@@ -9,9 +9,11 @@ from django.test import TestCase
 from rest_framework import serializers
 
 from cms.form_schema import CURRENT_PROJECT_STATUS_VALUES, default_simplified_form_schema
+from cms.models import CMSContributorForm
 from projects.models import Project
 from projects.project_status import canonical_implementation_status
-from projects.serializers import ProjectSerializer
+from projects.serializers import ProjectSerializer, PublicProjectSerializer
+from cms.services.publishing import publish_contributor_form
 
 
 class ProjectStatusOptionsTests(TestCase):
@@ -37,9 +39,18 @@ class ProjectStatusOptionsTests(TestCase):
         )
         self.assertEqual(
             [option["value"] for option in status_field["options"]],
-            ["Completed", "New", "Ongoing", "Not Implemented"],
+            ["New", "Not Implemented", "Ongoing", "Completed", "On Hold", "Cancelled"],
         )
-        self.assertEqual(len(CURRENT_PROJECT_STATUS_VALUES), 4)
+        self.assertEqual(len(CURRENT_PROJECT_STATUS_VALUES), 6)
+
+        live_form = CMSContributorForm.objects.select_related("current_published_version").get(key="simplified-rdip")
+        live_status = next(
+            field for section in live_form.current_published_version.schema_json["sections"]
+            for field in section["fields"] if field["key"] == "status"
+        )
+        self.assertEqual([option["value"] for option in live_status["options"]], [
+            "New", "Not Implemented", "Ongoing", "Completed", "On Hold", "Cancelled",
+        ])
 
     def test_new_projects_reject_retired_statuses(self):
         serializer = ProjectSerializer()
@@ -47,10 +58,60 @@ class ProjectStatusOptionsTests(TestCase):
             with self.subTest(status=retired), self.assertRaises(serializers.ValidationError):
                 serializer.validate_profile_data(self.profile(retired))
 
-        for current in ("Completed", "New", "Ongoing", "Not Implemented"):
+        for current in ("Completed", "New", "Ongoing", "Not Implemented", "On Hold", "Cancelled"):
             with self.subTest(status=current):
                 validated = serializer.validate_profile_data(self.profile(current))
                 self.assertEqual(validated["simplified_form"]["status"], current)
+
+        self.assertEqual(canonical_implementation_status("On hold"), "On Hold")
+
+    def test_new_projects_accept_and_display_a_published_custom_status(self):
+        """CMS status additions use stable values but must show their editable labels."""
+        form = CMSContributorForm.objects.select_related("current_published_version").get(
+            key="simplified-rdip"
+        )
+        schema = deepcopy(form.draft_schema_json)
+        status_field = next(
+            field for section in schema["sections"] for field in section["fields"]
+            if field["key"] == "status"
+        )
+        status_field["options"].append({"value": "option_1", "label": "Test"})
+        form.draft_schema_json = schema
+        form.has_unpublished_changes = True
+        form.status = CMSContributorForm.STATUS_DRAFT
+        form.save(update_fields=["draft_schema_json", "has_unpublished_changes", "status", "updated_at"])
+        published = publish_contributor_form(form)
+        published.refresh_from_db()
+
+        validated = ProjectSerializer().validate_profile_data(self.profile("option_1"))
+        self.assertEqual(validated["simplified_form"]["status"], "option_1")
+        self.assertEqual(
+            validated["form_schema"]["version"],
+            published.current_published_version.version_number,
+        )
+
+        project = Project.objects.create(
+            name="Custom status test project",
+            implementing_agency="DPWH",
+            municipality="Quezon City",
+            status="completed",
+            cost=0,
+            latitude=14.6,
+            validated=True,
+            profile_data=validated,
+        )
+        self.assertEqual(PublicProjectSerializer(project).data["implementation_status"], "Test")
+        filtered = self.client.get("/api/public/projects/?status=Test")
+        self.assertEqual(filtered.status_code, 200)
+        self.assertEqual([item["title"] for item in filtered.data], [project.name])
+
+    def test_new_and_not_implemented_projects_reject_accomplishment_values(self):
+        serializer = ProjectSerializer()
+        for status in ("New", "Not Implemented"):
+            profile = self.profile(status)
+            profile["simplified_form"]["physicalAccomplishment"] = "50% complete"
+            with self.subTest(status=status), self.assertRaises(serializers.ValidationError):
+                serializer.validate_profile_data(profile)
 
     def test_existing_legacy_status_is_normalized_on_next_save(self):
         project = Project(profile_data=self.profile("Dropped"))

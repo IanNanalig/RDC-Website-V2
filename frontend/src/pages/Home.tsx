@@ -475,6 +475,8 @@ const Home: React.FC = () => {
       discontinued: "Not Implemented",
       dropped: "Not Implemented",
       "not implemented": "Not Implemented",
+      "on hold": "On Hold",
+      cancelled: "Cancelled",
       "n/a": "N/A",
       na: "N/A",
       unspecified: "Unspecified",

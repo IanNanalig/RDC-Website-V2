@@ -17,6 +17,8 @@ const STATUS_COLORS: Record<string, string> = {
   Completed: "#10B981",
   Ongoing: "#F59E0B",
   New: "#3B82F6",
+  "On Hold": "#F97316",
+  Cancelled: "#DC2626",
   Updated: "#6366F1",
   Discontinued: "#EF4444",
   "Not Implemented": "#94A3B8",

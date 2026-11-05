@@ -319,32 +319,52 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
         const values = dependencies.get(field.condition.field) || new Set<string>();
         if (field.condition.equals !== undefined) values.add(field.condition.equals);
         if (field.condition.not_equals !== undefined) values.add(field.condition.not_equals);
+        for (const value of field.condition.one_of || []) values.add(value);
+        for (const value of field.condition.not_one_of || []) values.add(value);
         dependencies.set(field.condition.field, values);
       }
     }
     return dependencies;
   }, [schema]);
 
-  const load = useCallback(async (resetEditor = false) => {
+  const clearLoadedForm = useCallback(() => {
+    setSelected(null);
+    setSchema(null);
+    setVersions([]);
+    setBaseline("");
+    setCompareVersion(null);
+  }, []);
+
+  const load = useCallback(async (resetEditor = false): Promise<boolean> => {
     setLoading(true);
+    // A refresh after publishing must never leave an older version on screen
+    // if the request fails.  A clear error state is safer than stale data.
+    if (resetEditor) clearLoadedForm();
     try {
       const rows = await cmsApi.listContributorForms();
       const next = rows.find((row) => row.key === selectedKeyRef.current) || rows[0] || null;
-      setSelected(next);
-      if (next) {
-        setVersions(next.versions_summary || []);
-        if (resetEditor || !editModeRef.current) {
-          const nextSchema = normalizeContributorSchema(next.draft_schema_json);
-          setSchema(nextSchema);
-          setBaseline(JSON.stringify(nextSchema));
-        }
+      if (!next) {
+        clearLoadedForm();
+        setNotice("No contributor form definition is available. Retry after it has been provisioned.");
+        return false;
       }
+      setSelected(next);
+      setVersions(next.versions_summary || []);
+      if (resetEditor || !editModeRef.current) {
+        const nextSchema = normalizeContributorSchema(next.draft_schema_json);
+        setSchema(nextSchema);
+        setBaseline(JSON.stringify(nextSchema));
+      }
+      setNotice("");
+      return true;
     } catch (error) {
+      clearLoadedForm();
       setNotice(errorDetail(error, "Failed to load contributor forms."));
+      return false;
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [clearLoadedForm]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -684,14 +704,14 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
       if (action === "submit") updated = await cmsApi.submitContributorForm(selected.id) as CMSContributorForm;
       if (action === "publish") updated = await cmsApi.publishContributorForm(selected.id) as CMSContributorForm;
       if (action === "reject") updated = await cmsApi.rejectContributorForm(selected.id, remarks || "") as CMSContributorForm;
-      setNotice(action === "submit" ? "Form submitted for administrator review." : action === "publish" ? "New contributor form version published." : "Form draft returned with review notes.");
       if (action === "publish") {
-        await load(true);
+        if (await load(true)) setNotice("New contributor form version published.");
       } else if (updated) {
         const updatedSchema = normalizeContributorSchema(updated.draft_schema_json);
         setSelected(updated);
         setSchema(updatedSchema);
         setBaseline(JSON.stringify(updatedSchema));
+        setNotice(action === "submit" ? "Form submitted for administrator review." : "Form draft returned with review notes.");
       }
     } catch (error) {
       setNotice(errorDetail(error, `Failed to ${action} the contributor form.`));
@@ -728,7 +748,10 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   };
 
   if (!selected || !schema) {
-    return <div className="portal-card p-5 text-sm text-slate-600">{loading ? "Loading contributor forms..." : notice || "No contributor form definition is available."}</div>;
+    return <div className="portal-card space-y-3 p-5 text-sm text-slate-600">
+      <p>{loading ? "Loading contributor forms..." : notice || "No contributor form definition is available."}</p>
+      {!loading && <button type="button" className="portal-btn portal-btn-ghost" onClick={() => void load(true)}>Retry</button>}
+    </div>;
   }
 
   const normalizedNotice = notice.toLowerCase();

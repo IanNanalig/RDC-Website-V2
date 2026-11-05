@@ -147,6 +147,12 @@ def publish_contributor_form(form, user=None):
             "status", "current_published_version", "has_unpublished_changes", "review_notes", "reviewed_by",
             "updated_by", "published_at", "lock_owner", "lock_acquired_at", "updated_at",
         ])
+        # Status labels are resolved from immutable contributor-form versions
+        # for project and public-list presentation.  A new version can add or
+        # rename a label, so discard any process-local lookup cache now.
+        from projects.project_status import clear_status_presentation_cache
+
+        clear_status_presentation_cache()
         return locked_form
 
 

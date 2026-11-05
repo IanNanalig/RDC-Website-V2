@@ -132,7 +132,7 @@ class ContributorFormWorkflowTests(APITestCase):
         self.assertTrue(lock_queries)
         self.assertNotIn("JOIN", lock_queries[0].upper())
 
-    def test_only_admin_can_acquire_or_release_form_lock(self):
+    def test_content_editor_can_prepare_and_submit_form_but_only_admin_can_publish(self):
         other_editor = User.objects.create_user(
             username="other-form-editor",
             email="other-form-editor@example.com",
@@ -140,11 +140,20 @@ class ContributorFormWorkflowTests(APITestCase):
             role="content_editor",
         )
         self.authenticate(self.editor)
-        self.assertEqual(self.client.get("/api/admin/cms/forms/").status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(self.client.get(f"/api/admin/cms/forms/{self.form.id}/").status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(self.client.post(f"/api/admin/cms/forms/{self.form.id}/lock/", {}, format="json").status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(self.client.post(f"/api/admin/cms/forms/{self.form.id}/submit/", {}, format="json").status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json").status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.get("/api/admin/cms/forms/").status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.get(f"/api/admin/cms/forms/{self.form.id}/").status_code, status.HTTP_200_OK)
+        locked = self.client.post(f"/api/admin/cms/forms/{self.form.id}/lock/", {}, format="json")
+        self.assertEqual(locked.status_code, status.HTTP_200_OK)
+        saved = self.client.patch(
+            f"/api/admin/cms/forms/{self.form.id}/",
+            {
+                "draft_schema_json": locked.data["draft_schema_json"],
+                "expected_updated_at": locked.data["updated_at"],
+                "edit_mode": "update",
+            },
+            format="json",
+        )
+        self.assertEqual(saved.status_code, status.HTTP_200_OK)
 
         self.authenticate(self.admin)
         acquired = self.client.post(f"/api/admin/cms/forms/{self.form.id}/lock/", {}, format="json")
@@ -152,17 +161,33 @@ class ContributorFormWorkflowTests(APITestCase):
 
         self.authenticate(other_editor)
         blocked = self.client.post(f"/api/admin/cms/forms/{self.form.id}/lock/", {}, format="json")
-        self.assertEqual(blocked.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(blocked.status_code, status.HTTP_423_LOCKED)
         save = self.client.patch(
             f"/api/admin/cms/forms/{self.form.id}/",
             {"draft_schema_json": acquired.data["draft_schema_json"], "edit_mode": "update"},
             format="json",
         )
-        self.assertEqual(save.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(save.status_code, status.HTTP_423_LOCKED)
 
         self.authenticate(self.admin)
         released = self.client.post(f"/api/admin/cms/forms/{self.form.id}/unlock/", {}, format="json")
         self.assertEqual(released.status_code, status.HTTP_200_OK)
+
+        self.authenticate(self.editor)
+        submitted = self.client.post(f"/api/admin/cms/forms/{self.form.id}/submit/", {}, format="json")
+        self.assertEqual(submitted.status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json").status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.post(f"/api/admin/cms/forms/{self.form.id}/restore-version/", {"version_id": self.form.current_published_version_id}, format="json").status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_contributor_form_cannot_be_archived_by_any_administrator_action(self):
+        self.authenticate(self.admin)
+
+        response = self.client.post(f"/api/admin/cms/forms/{self.form.id}/archive/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.form.refresh_from_db()
+        self.assertEqual(self.form.status, CMSContributorForm.STATUS_PUBLISHED)
+        self.assertIsNotNone(self.form.current_published_version_id)
 
     def test_expired_form_lock_can_be_taken_over(self):
         self.form.lock_owner = self.editor
@@ -718,7 +743,7 @@ class ContributorFormWorkflowTests(APITestCase):
         self.assertEqual(rejected.status_code, status.HTTP_200_OK)
         notification = Notification.objects.get(recipient=self.editor, event_type="cms_form_rejected")
         self.assertIn("Clarify the agency reference label", notification.message)
-        self.assertEqual(notification.link_path, "/admin/forms")
+        self.assertEqual(notification.link_path, "/content/forms")
 
     def test_current_form_uses_etag_revalidation(self):
         self.authenticate(self.contributor)
@@ -730,6 +755,26 @@ class ContributorFormWorkflowTests(APITestCase):
             HTTP_IF_NONE_MATCH=first["ETag"],
         )
         self.assertEqual(unchanged.status_code, status.HTTP_304_NOT_MODIFIED)
+
+    def test_current_form_never_silently_falls_back_to_legacy_version_one(self):
+        """A new submission must fail clearly if there is no live CMS version."""
+        self.form.current_published_version = None
+        self.form.save(update_fields=["current_published_version"])
+        self.authenticate(self.contributor)
+
+        current = self.client.get("/api/contributor-forms/simplified-rdip/current/")
+
+        self.assertEqual(current.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_missing_historical_form_version_returns_not_found_instead_of_builtin_schema(self):
+        self.form.current_published_version = None
+        self.form.save(update_fields=["current_published_version"])
+        self.form.versions.filter(version_number=1).delete()
+        self.authenticate(self.contributor)
+
+        historical = self.client.get("/api/contributor-forms/simplified-rdip/versions/1/")
+
+        self.assertEqual(historical.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_new_projects_use_live_version_while_existing_projects_stay_pinned(self):
         self.assertEqual(self._save_draft(self._draft_with_custom_field()).status_code, status.HTTP_200_OK)

@@ -83,6 +83,7 @@ const navByRole: Record<Role, NavItem[]> = {
   ],
   content_editor: [
     { label: "Content Management", to: "/content/dashboard" },
+    { label: "Contributor Forms", to: "/content/forms" },
   ],
 };
 

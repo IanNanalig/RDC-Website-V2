@@ -332,6 +332,21 @@ const AdminContributorFormsPage = () => (
   </PortalLayout>
 );
 
+const contentEditorDisplayName = () => {
+  try {
+    const user = JSON.parse(localStorage.getItem("user") || "{}") as User;
+    return userDisplayName(user, "Content Editor");
+  } catch {
+    return "Content Editor";
+  }
+};
+
+const ContentEditorContributorFormsPage = () => (
+  <PortalLayout title="Contributor Forms" subtitle="Prepare and submit contributor submission form drafts" role="content_editor" userName={contentEditorDisplayName()}>
+    <ContributorFormsManager mode="editor" />
+  </PortalLayout>
+);
+
 const AdminAIScoringPage = () => (
   <PortalLayout title="AI Scoring" subtitle="Manage priority scoring rules and review scoring history" role="admin" userName={adminDisplayName()}>
     <AIScoringManager mode="admin" />
@@ -577,6 +592,14 @@ export default function App() {
           element={
             <ProtectedRoute roles={["content_editor"]}>
               <ContentManagementPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/content/forms"
+          element={
+            <ProtectedRoute roles={["content_editor"]}>
+              <ContentEditorContributorFormsPage />
             </ProtectedRoute>
           }
         />

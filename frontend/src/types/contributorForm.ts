@@ -31,7 +31,7 @@ export type ContributorFormField = {
   help_text?: string;
   placeholder?: string;
   options?: ContributorFormOption[];
-  condition?: { field: string; equals?: string; not_equals?: string };
+  condition?: { field: string; equals?: string; not_equals?: string; one_of?: string[]; not_one_of?: string[] };
   condition_required?: boolean;
   retired_from?: ContributorFormRetiredOrigin;
   allowed_extensions?: Array<"pdf" | "docx" | "xlsx" | "csv" | "png" | "jpg" | "jpeg">;
@@ -68,7 +68,7 @@ export type ContributorFormPayload = {
 const options = (values: string[]): ContributorFormOption[] =>
   values.map((value) => ({ value, label: value }));
 
-export const PROJECT_STATUS_OPTIONS = ["Completed", "New", "Ongoing", "Not Implemented"] as const;
+export const PROJECT_STATUS_OPTIONS = ["New", "Not Implemented", "Ongoing", "Completed", "On Hold", "Cancelled"] as const;
 export const NCR_LOCATION_OPTIONS = [
   "Caloocan",
   "Las Piñas",
@@ -219,12 +219,16 @@ export const DEFAULT_CONTRIBUTOR_FORM_SCHEMA: ContributorFormSchema = {
       title: "Accomplishment and Remarks",
       fields: [
         field("physicalAccomplishment", "Physical Accomplishment", "textarea", {
-          condition: { field: "status", not_equals: "New" }, condition_required: true,
+          condition: { field: "status", one_of: ["Ongoing", "Completed"] }, condition_required: true,
         }),
         field("financialAccomplishment", "Financial Accomplishment", "textarea", {
-          condition: { field: "status", not_equals: "New" }, condition_required: true,
+          condition: { field: "status", one_of: ["Ongoing", "Completed"] }, condition_required: true,
         }),
-        field("remarks", "Remarks", "textarea"),
+        field("remarks", "Remarks", "textarea", {
+          condition: { field: "status", one_of: ["On Hold", "Cancelled"] },
+          condition_required: true,
+          help_text: "Explain the reason for the hold or cancellation.",
+        }),
       ],
     },
     {
@@ -288,5 +292,7 @@ export const contributorFieldApplies = (
   const value = values[field.condition.field];
   if (field.condition.equals !== undefined) return value === field.condition.equals;
   if (field.condition.not_equals !== undefined) return value !== field.condition.not_equals;
+  if (field.condition.one_of !== undefined) return field.condition.one_of.includes(String(value ?? ""));
+  if (field.condition.not_one_of !== undefined) return !field.condition.not_one_of.includes(String(value ?? ""));
   return true;
 };

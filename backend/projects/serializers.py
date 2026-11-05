@@ -1,10 +1,10 @@
 from rest_framework import serializers
 from datetime import datetime
 from copy import deepcopy
-from cms.form_schema import CURRENT_PROJECT_STATUS_VALUES, FormSchemaError, validate_simplified_answers
+from cms.form_schema import FormSchemaError, validate_simplified_answers
 from .audit_presentation import actor_label, presentation_for, sanitize_audit_details
 from .agency_catalog import is_protected_agency, update_agency_metadata
-from .project_status import canonical_implementation_status
+from .project_status import display_implementation_status
 from .models import (
     AccessRequest,
     Agency,
@@ -87,6 +87,11 @@ class ContributorFormVersionStatusMixin:
         saved = self._saved_form_version(obj)
         current = self._live_form_version(obj)
         return bool(saved is not None and current is not None and saved < current)
+
+    def _display_rdip_status(self, obj, value):
+        profile = self._form_profile(obj)
+        marker = profile.get("form_schema") if isinstance(profile.get("form_schema"), dict) else None
+        return display_implementation_status(value, marker)
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -596,16 +601,11 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
         if isinstance(simplified, dict):
             value = deepcopy(value)
             value["submission_type"] = "simplified"
-            project_status = str(simplified.get("status") or "").strip()
             previous_status = ""
             if self.instance and isinstance(self.instance.profile_data, dict):
                 previous_form = self.instance.profile_data.get("simplified_form")
                 if isinstance(previous_form, dict):
                     previous_status = str(previous_form.get("status") or "").strip()
-            if project_status and project_status not in CURRENT_PROJECT_STATUS_VALUES and project_status != previous_status:
-                raise serializers.ValidationError(
-                    "Choose a current project status: Completed, New, Ongoing, or Not Implemented."
-                )
             self._validate_simplified_funding(simplified)
             value = deepcopy(value)
             if self.instance and isinstance(self.instance.profile_data, dict):
@@ -626,7 +626,7 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
                 validate_simplified_answers(
                     value,
                     require_complete=False,
-                    legacy_status=previous_status if project_status == previous_status else None,
+                    legacy_status=previous_status if str(simplified.get("status") or "").strip() == previous_status else None,
                 )
             except FormSchemaError as exc:
                 raise serializers.ValidationError(str(exc)) from exc
@@ -946,7 +946,7 @@ class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.Mo
 
     def get_rdip_status(self, obj):
         simplified = self._profile(obj).get("simplified_form")
-        return canonical_implementation_status(simplified.get("status")) if isinstance(simplified, dict) else ""
+        return self._display_rdip_status(obj, simplified.get("status")) if isinstance(simplified, dict) else ""
 
     def get_review_status(self, obj):
         return str(self._review(obj).get("review_status") or "").strip().lower()
@@ -1275,7 +1275,9 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         sf = self._simplified(obj)
         value = str(sf.get("status") or "").strip()
         if value:
-            return canonical_implementation_status(value)
+            profile = getattr(obj, "profile_data", None)
+            marker = profile.get("form_schema") if isinstance(profile, dict) and isinstance(profile.get("form_schema"), dict) else None
+            return display_implementation_status(value, marker)
         return str(getattr(obj, "status", "") or "").strip()
 
     def get_year(self, obj):

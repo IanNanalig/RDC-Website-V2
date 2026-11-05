@@ -97,7 +97,8 @@ from .public_summary import build_public_summary
 from .project_status import (
     NOT_IMPLEMENTED_LEGACY_VALUES,
     ONGOING_LEGACY_VALUES,
-    canonical_implementation_status,
+    display_implementation_status,
+    stored_status_values_for_label,
 )
 from .priority_scoring import PriorityInputError, analyze_project, confirm_analysis, ensure_analysis_guidance, has_matching_confirmation
 from .document_policy import (
@@ -1290,7 +1291,10 @@ def _archive_project(request, project):
         return False, reason
     profile = project.profile_data if isinstance(project.profile_data, dict) else {}
     simplified = profile.get("simplified_form") if isinstance(profile.get("simplified_form"), dict) else {}
-    implementation_status = canonical_implementation_status(simplified.get("status")) if simplified else ""
+    implementation_status = display_implementation_status(
+        simplified.get("status"),
+        profile.get("form_schema") if isinstance(profile.get("form_schema"), dict) else None,
+    ) if simplified else ""
     project.archived = True
     project.is_active = False
     project.save(update_fields=["archived", "is_active", "updated_at"])
@@ -4619,7 +4623,10 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             project = Project.objects.select_for_update().get(pk=self.get_object().pk)
             profile = project.profile_data if isinstance(project.profile_data, dict) else {}
             simplified = profile.get("simplified_form") if isinstance(profile.get("simplified_form"), dict) else {}
-            implementation_status = canonical_implementation_status(simplified.get("status")) if simplified else ""
+            implementation_status = display_implementation_status(
+                simplified.get("status"),
+                profile.get("form_schema") if isinstance(profile.get("form_schema"), dict) else None,
+            ) if simplified else ""
             expected = request.data.get("expected_implementation_status")
             if expected is not None and str(expected).strip() != implementation_status:
                 return Response({
@@ -7777,13 +7784,12 @@ def _filter_public_project_status(queryset, status_value):
         "not implemented": NOT_IMPLEMENTED_LEGACY_VALUES,
         "ongoing": ONGOING_LEGACY_VALUES,
     }
-    aliases = legacy_groups.get(status_value.casefold())
-    if aliases:
-        selected = Q(profile_data__simplified_form__status__iexact=status_value)
-        for alias in aliases:
-            selected |= Q(profile_data__simplified_form__status__iexact=alias)
-        return queryset.filter(selected)
-    return queryset.filter(profile_data__simplified_form__status__iexact=status_value)
+    values = {status_value, *stored_status_values_for_label(status_value)}
+    values.update(legacy_groups.get(status_value.casefold(), ()))
+    selected = Q()
+    for value in values:
+        selected |= Q(profile_data__simplified_form__status__iexact=value)
+    return queryset.filter(selected)
 
 
 class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
@@ -7981,8 +7987,11 @@ class PublicProjectsStatsView(APIView):
             sf = {}
             if isinstance(p.profile_data, dict) and isinstance(p.profile_data.get("simplified_form"), dict):
                 sf = p.profile_data.get("simplified_form") or {}
-            impl_status = canonical_implementation_status(
-                sf.get("status") or getattr(p, "status", "")
+            impl_status = display_implementation_status(
+                sf.get("status") or getattr(p, "status", ""),
+                p.profile_data.get("form_schema")
+                if isinstance(p.profile_data, dict) and isinstance(p.profile_data.get("form_schema"), dict)
+                else None,
             ) or "Unspecified"
             agency_name = str(sf.get("agencyName") or getattr(p, "agency", "") or "").strip() or "Other"
             location_raw = format_project_locations(sf.get("location"))

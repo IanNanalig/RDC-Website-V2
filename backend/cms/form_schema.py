@@ -75,7 +75,7 @@ RDP_CHAPTER_OPTIONS = _options([
     "16 Accelerate Climate Action and Strengthen Disaster Resilience Climate",
 ])
 STATUS_OPTIONS = _options([
-    "Completed", "New", "Ongoing", "Not Implemented",
+    "New", "Not Implemented", "Ongoing", "Completed", "On Hold", "Cancelled",
 ])
 CURRENT_PROJECT_STATUS_VALUES = frozenset(option["value"] for option in STATUS_OPTIONS)
 NCR_LOCATION_OPTIONS = _options([
@@ -210,13 +210,18 @@ DEFAULT_SIMPLIFIED_FORM_SCHEMA = {
             "fields": [
                 _field(
                     "physicalAccomplishment", "Physical Accomplishment", "textarea",
-                    condition={"field": "status", "not_equals": "New"}, condition_required=True,
+                    condition={"field": "status", "one_of": ["Ongoing", "Completed"]}, condition_required=True,
                 ),
                 _field(
                     "financialAccomplishment", "Financial Accomplishment", "textarea",
-                    condition={"field": "status", "not_equals": "New"}, condition_required=True,
+                    condition={"field": "status", "one_of": ["Ongoing", "Completed"]}, condition_required=True,
                 ),
-                _field("remarks", "Remarks", "textarea"),
+                _field(
+                    "remarks", "Remarks", "textarea",
+                    condition={"field": "status", "one_of": ["On Hold", "Cancelled"]},
+                    condition_required=True,
+                    help_text="Explain the reason for the hold or cancellation.",
+                ),
             ],
         },
         {
@@ -342,6 +347,22 @@ def _field_map(schema):
         for field in section.get("fields", [])
         if isinstance(field, dict) and field.get("key")
     }
+
+
+def _condition_applies(condition, values):
+    """Evaluate the small, declarative condition format used by form fields."""
+    if not isinstance(condition, dict):
+        return True
+    current = values.get(condition.get("field"))
+    if "equals" in condition:
+        return current == condition.get("equals")
+    if "not_equals" in condition:
+        return current != condition.get("not_equals")
+    if "one_of" in condition:
+        return current in condition.get("one_of", [])
+    if "not_one_of" in condition:
+        return current not in condition.get("not_one_of", [])
+    return True
 
 
 def build_form_migration_plan(previous_schema, next_schema):
@@ -547,11 +568,21 @@ def validate_form_schema(schema, published_schema=None):
             for option in source.get("options", [])
             if isinstance(option, dict)
         }
-        for operator in ("equals", "not_equals"):
-            if operator in condition and str(condition.get(operator)) not in allowed_values:
-                raise FormSchemaError(
-                    f"Option {condition.get(operator)} cannot be removed from {source_key} because it controls a conditional field."
-                )
+        operators = [operator for operator in ("equals", "not_equals", "one_of", "not_one_of") if operator in condition]
+        if len(operators) != 1:
+            raise FormSchemaError(f"Conditional field {field.get('key')} needs exactly one supported condition.")
+        operator = operators[0]
+        values = condition.get(operator)
+        expected = values if operator in {"one_of", "not_one_of"} else [values]
+        if (
+            not isinstance(expected, list)
+            or not expected
+            or any(not isinstance(value, str) or value not in allowed_values for value in expected)
+        ):
+            referenced = ", ".join(str(value) for value in expected) if isinstance(expected, list) else str(values)
+            raise FormSchemaError(
+                f"Option {referenced} cannot be removed from {source_key} because it controls a conditional field."
+            )
 
     if isinstance(published_schema, dict):
         validate_system_managed_sections(schema, published_schema)
@@ -656,21 +687,23 @@ def validate_simplified_answers(profile_data, require_complete=False, legacy_sta
     simplified = profile_data["simplified_form"]
     saved_status = simplified.get("status")
     normalized_status = canonical_implementation_status(saved_status)
-    if normalized_status and normalized_status != str(saved_status or "").strip():
+    # Retired implementation statuses are only normalized while preserving an
+    # unchanged historical project.  A new or edited submission must select a
+    # value from its published CMS form instead.  This keeps the official
+    # legacy migration path without letting values such as "Updated" bypass a
+    # current schema merely because they have a canonical replacement.
+    if (
+        normalized_status
+        and normalized_status != str(saved_status or "").strip()
+        and str(saved_status or "").strip() == str(legacy_status or "").strip()
+    ):
         simplified["status"] = normalized_status
     custom = simplified.get("custom_fields") if isinstance(simplified.get("custom_fields"), dict) else {}
     missing = []
     invalid = []
     for field in schema_fields(schema):
         condition = field.get("condition") if isinstance(field.get("condition"), dict) else None
-        applies = True
-        if condition:
-            current = simplified.get(condition.get("field"))
-            if "equals" in condition:
-                applies = current == condition.get("equals")
-            elif "not_equals" in condition:
-                applies = current != condition.get("not_equals")
-        if not applies:
+        if not _condition_applies(condition, simplified):
             continue
         key = str(field.get("key"))
         field_type = field.get("type")
@@ -711,6 +744,13 @@ def validate_simplified_answers(profile_data, require_complete=False, legacy_sta
                 for item in selected
             ):
                 invalid.append(str(field.get("label") or key))
+    if simplified.get("status") in {"New", "Not Implemented"}:
+        for key, label in (
+            ("physicalAccomplishment", "Physical Accomplishment"),
+            ("financialAccomplishment", "Financial Accomplishment"),
+        ):
+            if str(simplified.get(key) or "").strip():
+                invalid.append(f"{label} (not applicable to {simplified.get('status')})")
     if missing:
         raise FormSchemaError("Complete the required form fields: " + ", ".join(missing) + ".")
     if invalid:

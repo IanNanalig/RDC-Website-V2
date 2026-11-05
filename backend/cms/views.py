@@ -186,6 +186,7 @@ def _notify_form_users(users, *, actor, form, event_type, title, message, dedupe
     for recipient in users:
         if actor and recipient.pk == actor.pk:
             continue
+        form_path = "/content/forms" if getattr(recipient, "role", "") == "content_editor" else "/admin/forms"
         Notification.objects.update_or_create(
             dedupe_key=f"cms-form:{form.pk}:{dedupe_event}:user:{recipient.pk}",
             defaults={
@@ -194,7 +195,7 @@ def _notify_form_users(users, *, actor, form, event_type, title, message, dedupe
                 "event_type": event_type,
                 "title": title,
                 "message": message,
-                "link_path": "/admin/forms",
+                "link_path": form_path,
             },
         )
 
@@ -987,7 +988,10 @@ class AdminCMSModuleActionView(APIView):
 
 class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
     serializer_class = CMSContributorFormSerializer
-    permission_classes = [permissions.IsAuthenticated, IsCMSAdmin]
+    # Content Editors prepare and submit drafts.  Publication, rejection,
+    # restoration, and every structural/system decision stay Administrator-only
+    # on their individual actions below.
+    permission_classes = [permissions.IsAuthenticated, IsCMSUser]
     content_type_key = "form"
     http_method_names = ["get", "patch", "put", "post", "head", "options"]
 
@@ -1042,9 +1046,11 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def archive(self, request, pk=None):
-        if getattr(request.user, "role", "") != "admin":
-            raise PermissionDenied("Only administrators can archive contributor forms.")
-        return CMSWorkflowMixin.archive(self, request, pk)
+        # The form is a system-provisioned singleton.  Archiving it used to
+        # clear current_published_version, which stopped all new submissions
+        # from loading a form.  Keep this endpoint as an explicit 405 for
+        # compatibility rather than exposing a destructive hidden action.
+        return Response({"detail": "Contributor forms cannot be deleted or archived."}, status=405)
 
     @action(detail=True, methods=["post"])
     def lock(self, request, pk=None):
@@ -1103,7 +1109,7 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
                 "event_type": "cms_form_access_requested",
                 "title": "Contributor form access requested",
                 "message": f"{request.user.get_full_name() or request.user.username} requested access to {form.name}.",
-                "link_path": "/admin/forms",
+                "link_path": "/content/forms" if getattr(form.lock_owner, "role", "") == "content_editor" else "/admin/forms",
             },
         )
         _log_cms_activity(
@@ -1211,18 +1217,19 @@ class ContributorFormCurrentView(APIView):
         if form and form.status == "archived":
             raise Http404("Contributor form is archived.")
         if not form or not form.current_published_version:
-            if key != SIMPLIFIED_FORM_KEY:
-                raise Http404("Published contributor form not found.")
-            payload = {"key": key, "name": "Simplified RDIP Contributor Form", "version": 1, "schema": default_simplified_form_schema()}
-        else:
-            version = form.current_published_version
-            payload = {
-                "key": form.key,
-                "name": form.name,
-                "version": version.version_number,
-                "schema": version.schema_json,
-                "published_at": version.published_at,
-            }
+            # A fresh submission may only use an explicitly published CMS
+            # version.  Returning the built-in Version 1 schema here hid an
+            # interrupted/misconfigured publication and made new submissions
+            # appear to use an old form.
+            raise Http404("Published contributor form not found.")
+        version = form.current_published_version
+        payload = {
+            "key": form.key,
+            "name": form.name,
+            "version": version.version_number,
+            "schema": version.schema_json,
+            "published_at": version.published_at,
+        }
         return _with_private_cache(request, payload)
 
 
@@ -1234,17 +1241,17 @@ class ContributorFormVersionView(APIView):
             form__key=key, version_number=version_number,
         ).first()
         if version is None:
-            if key != SIMPLIFIED_FORM_KEY or version_number != 1:
-                raise Http404("Contributor form version not found.")
-            payload = {"key": key, "name": "Simplified RDIP Contributor Form", "version": 1, "schema": default_simplified_form_schema()}
-        else:
-            payload = {
-                "key": version.form.key,
-                "name": version.form.name,
-                "version": version.version_number,
-                "schema": version.schema_json,
-                "published_at": version.published_at,
-            }
+            # Historical projects must use their retained immutable version.
+            # Do not substitute a built-in schema: doing so hides data repair
+            # problems and can display the wrong form for an existing project.
+            raise Http404("Contributor form version not found.")
+        payload = {
+            "key": version.form.key,
+            "name": version.form.name,
+            "version": version.version_number,
+            "schema": version.schema_json,
+            "published_at": version.published_at,
+        }
         return _with_private_cache(request, payload)
 
 

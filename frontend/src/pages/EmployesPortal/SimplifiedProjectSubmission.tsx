@@ -182,7 +182,10 @@ const rdpChapterOptions = [
   "15 Practice Good Governance and Improve Bureaucratic Efficiency Governance",
   "16 Accelerate Climate Action and Strengthen Disaster Resilience Climate",
 ];
-const statusOptions = [...PROJECT_STATUS_OPTIONS];
+// The built-in options are only a compatibility fallback.  New submissions
+// load the published Contributor Form, whose Status field may contain
+// additional administrator-managed choices.
+const defaultStatusOptions = [...PROJECT_STATUS_OPTIONS];
 const sdgOptions = [
   "1 - No poverty",
   "2 - Zero hunger",
@@ -651,6 +654,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const [formSchema, setFormSchema] = useState<ContributorFormSchema>(() => cloneContributorFormSchema(DEFAULT_CONTRIBUTOR_FORM_SCHEMA));
   const [formSchemaKey, setFormSchemaKey] = useState("simplified-rdip");
   const [formSchemaVersion, setFormSchemaVersion] = useState(1);
+  const [formSchemaLoading, setFormSchemaLoading] = useState(!isEditMode);
+  const [formSchemaError, setFormSchemaError] = useState("");
+  const [formSchemaRequest, setFormSchemaRequest] = useState(0);
   const [loading, setLoading] = useState(false);
   const [projectStatus, setProjectStatus] = useState<string>("planning");
   const [workflowStatus, setWorkflowStatus] = useState<string>("draft");
@@ -715,6 +721,20 @@ const SimplifiedProjectSubmission: React.FC = () => {
       .find((field) => field.type === "document_upload" && field.visible !== false),
     [formSchema],
   );
+  const statusOptions = useMemo(() => {
+    const statusField = formSchema.sections
+      .filter((section) => section.visible !== false && !section.admin_only)
+      .flatMap((section) => section.fields)
+      .find((field) => field.key === "status" && field.visible !== false);
+    const configured = (statusField?.options || []).filter((option) =>
+      Boolean(String(option.value || "").trim()) && Boolean(String(option.label || "").trim()),
+    );
+    return configured.length > 0 ? configured : defaultStatusOptions;
+  }, [formSchema]);
+  const statusValues = useMemo(
+    () => new Set(statusOptions.map((option) => typeof option === "string" ? option : option.value)),
+    [statusOptions],
+  );
   const canChangeSupportingDocuments = Boolean(
     isEmployee && projectAccessLevel !== "collaborator" && !isRevisionMode && (
       !isEditMode || projectStatus === "planning" || canReviseSubmitted && documentField && editableFields.includes(documentField.key)
@@ -775,8 +795,14 @@ const SimplifiedProjectSubmission: React.FC = () => {
   }, [navigate, user]);
 
   useEffect(() => {
-    if (isEditMode) return;
+    if (isEditMode) {
+      setFormSchemaLoading(false);
+      setFormSchemaError("");
+      return;
+    }
     let active = true;
+    setFormSchemaLoading(true);
+    setFormSchemaError("");
     cmsApi.getContributorForm("simplified-rdip")
       .then((payload) => {
         if (!active) return;
@@ -784,9 +810,17 @@ const SimplifiedProjectSubmission: React.FC = () => {
         setFormSchemaKey(payload.key);
         setFormSchemaVersion(payload.version);
       })
-      .catch((error) => console.warn("Using the built-in contributor form definition:", error));
+      .catch((error) => {
+        console.error("Could not load the current published contributor form:", error);
+        if (active) {
+          setFormSchemaError("The current published Contributor Form could not be loaded. Retry before creating a new submission.");
+        }
+      })
+      .finally(() => {
+        if (active) setFormSchemaLoading(false);
+      });
     return () => { active = false; };
-  }, [isEditMode]);
+  }, [isEditMode, formSchemaRequest]);
 
   useEffect(() => {
     const loadExisting = async () => {
@@ -1463,6 +1497,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
   const save = async (e: React.FormEvent, action: FormAction) => {
     e.preventDefault();
+    if (!isEditMode && (formSchemaLoading || formSchemaError)) {
+      alert("Wait for the current published Contributor Form to load before creating a submission.");
+      return;
+    }
     if (isReadOnly) {
       alert(isAdmin ? "Admin form view is read-only." : currentWindowMessage || "This form is view-only.");
       return;
@@ -1483,8 +1521,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
       alert("Year range is too large. Please keep the span within 15 years.");
       return;
     }
-    if (isEmployee && form.status && !statusOptions.some((status) => status === form.status) && !revisionFieldLocked("status")) {
-      alert("This project uses a previous Status choice. Please select Completed, New, Ongoing, or Not Implemented before saving.");
+    if (isEmployee && form.status && !statusValues.has(form.status) && !revisionFieldLocked("status")) {
+      const choices = statusOptions.map((option) => typeof option === "string" ? option : option.label);
+      alert(`This project uses a previous Status choice. Please select ${choices.join(", ")} before saving.`);
       return;
     }
     if (isValidator && action === "reviewed") {
@@ -1673,6 +1712,20 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const setConfiguredFieldValue = (field: ContributorFormField, value: string | string[]) => {
     if (isEmployee && field.key === "agencyName") return;
     if (revisionFieldLocked(field.key)) return;
+    if (field.key === "status") {
+      const status = String(value);
+      updateFormWithLocalDraft((previous) => ({
+        ...previous,
+        status,
+        // These statuses mean implementation has not started. Clear any old
+        // accomplishment text rather than carrying an inapplicable percentage
+        // into the new status.
+        ...(status === "New" || status === "Not Implemented"
+          ? { physicalAccomplishment: "", financialAccomplishment: "" }
+          : {}),
+      }));
+      return;
+    }
     if (field.key.startsWith("custom_")) {
       updateFormWithLocalDraft((previous) => ({
         ...previous,
@@ -1931,6 +1984,49 @@ const SimplifiedProjectSubmission: React.FC = () => {
     );
   }
 
+  // A new project must always start from the latest published CMS schema.  Do
+  // not briefly render the built-in legacy schema while the request is pending:
+  // that made a failed request look like a valid Version 1 form.
+  if (!isEditMode && formSchemaLoading) {
+    return (
+      <PortalLayout
+        title="Loading Contributor Form"
+        subtitle="Retrieving the latest published version"
+        role={(user.role || "employee") as "admin" | "validator" | "employee"}
+        userName={displayName}
+        topActions={<button type="button" onClick={() => navigate("/employee/projects")} className="portal-btn portal-btn-ghost">Back to Projects</button>}
+      >
+        <div className="portal-card p-5 text-sm text-slate-600" role="status">
+          Loading the current Contributor Form…
+        </div>
+      </PortalLayout>
+    );
+  }
+
+  if (!isEditMode && formSchemaError) {
+    return (
+      <PortalLayout
+        title="Contributor Form unavailable"
+        subtitle="A new submission cannot use an outdated form"
+        role={(user.role || "employee") as "admin" | "validator" | "employee"}
+        userName={displayName}
+        topActions={<button type="button" onClick={() => navigate("/employee/projects")} className="portal-btn portal-btn-ghost">Back to Projects</button>}
+      >
+        <div className="portal-card border-rose-200 bg-rose-50 p-5 text-rose-900" role="alert">
+          <h2 className="text-lg font-semibold">The latest Contributor Form could not be loaded</h2>
+          <p className="mt-2 text-sm">{formSchemaError}</p>
+          <button
+            type="button"
+            onClick={() => setFormSchemaRequest((request) => request + 1)}
+            className="portal-btn portal-btn-primary mt-4"
+          >
+            Retry loading form
+          </button>
+        </div>
+      </PortalLayout>
+    );
+  }
+
   if (isEmployee && !isEditMode && !encodingWindow.loading && !canEncode) {
     return (
       <PortalLayout
@@ -2043,6 +2139,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
       {isEmployee && !isEditMode && !String(user?.agency || "").trim() && (
         <div className="portal-card p-3 mb-3 border-rose-200 bg-rose-50 text-rose-800" role="alert">
           Your account has no agency. Ask an administrator to update it before creating a project.
+        </div>
+      )}
+      {!isEditMode && (
+        <div className="portal-card mb-3 border-cyan-200 bg-cyan-50 p-3 text-sm text-cyan-900" role="status">
+          Creating a new submission with published Contributor Form version <strong>{formSchemaVersion}</strong>.
         </div>
       )}
       {periodFundingNotice && (
