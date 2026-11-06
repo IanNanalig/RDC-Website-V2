@@ -93,8 +93,8 @@ def managed_content_snapshot(obj):
             "id": obj.code,
             "title": obj.name,
             "description": obj.description,
-            "icon": obj.icon,
             "color": obj.color,
+            "categoryNumber": obj.display_number,
             "sortOrder": obj.sort_order,
         }
         if obj.cover_image and not obj.cover_image.is_archived:
@@ -104,7 +104,7 @@ def managed_content_snapshot(obj):
         return snapshot
     if isinstance(obj, CMSPublicationDocument):
         url = obj.attachment.resolved_public_url if obj.attachment and not obj.attachment.is_archived else obj.external_url
-        return {
+        snapshot = {
             "id": obj.stable_key,
             "title": obj.title,
             "description": obj.description,
@@ -116,6 +116,11 @@ def managed_content_snapshot(obj):
             "categoryCode": obj.category.code,
             "sortOrder": obj.sort_order,
         }
+        if obj.cover_image and not obj.cover_image.is_archived:
+            snapshot["coverAssetId"] = str(obj.cover_image_id)
+            snapshot["coverImage"] = obj.cover_image.resolved_public_url
+            snapshot["coverAlt"] = obj.cover_alt_text or obj.cover_image.alt_text or obj.title
+        return snapshot
     if isinstance(obj, CMSResolution):
         url = obj.attachment.resolved_public_url if obj.attachment and not obj.attachment.is_archived else obj.external_url
         snapshot = {
@@ -433,15 +438,29 @@ def sync_normalized_section_draft(section, user=None):
                 ).first() if cover_media_id else None
             except (TypeError, ValueError):
                 cover_image = None
+            existing_category = CMSPublicationCategory.objects.filter(code=code).first()
+            try:
+                display_number = max(1, int(row.get("categoryNumber")))
+            except (TypeError, ValueError):
+                if existing_category:
+                    display_number = existing_category.display_number
+                else:
+                    highest_number = CMSPublicationCategory.objects.order_by("-display_number").values_list(
+                        "display_number", flat=True,
+                    ).first() or 0
+                    display_number = highest_number + 1
+                row["categoryNumber"] = display_number
+                identity_changed = True
             category = _upsert(
                 CMSPublicationCategory, {"code": code}, {
                     **common,
                     "name": str(row.get("title") or row.get("name") or "Publication category"),
                     "description": str(row.get("description") or ""),
-                    "icon": str(row.get("icon") or ""),
+                    "icon": "",
                     "color": str(row.get("color") or ""),
                     "cover_image": cover_image,
                     "cover_alt_text": str(row.get("coverAlt") or "").strip(),
+                    "display_number": display_number,
                     "sort_order": category_index,
                 }, user,
             )
@@ -471,6 +490,15 @@ def sync_normalized_section_draft(section, user=None):
                     publication_date = date.fromisoformat(raw_date) if raw_date else _year_date(item.get("year"))
                 except ValueError:
                     publication_date = _year_date(item.get("year"))
+                cover_media_id = item.get("coverAssetId") or item.get("coverImageAssetId")
+                try:
+                    document_cover = CMSMediaAsset.objects.filter(
+                        pk=cover_media_id,
+                        is_archived=False,
+                        file_type=CMSMediaAsset.FILE_TYPE_IMAGE,
+                    ).first() if cover_media_id else None
+                except (TypeError, ValueError):
+                    document_cover = None
                 _upsert(
                     CMSPublicationDocument, {"stable_key": key}, {
                         **common,
@@ -479,6 +507,8 @@ def sync_normalized_section_draft(section, user=None):
                         "description": str(item.get("description") or ""),
                         "publication_date": publication_date,
                         "document_type": str(item.get("fileType") or "PDF"),
+                        "cover_image": document_cover,
+                        "cover_alt_text": str(item.get("coverAlt") or "").strip(),
                         "external_url": _safe_url(item.get("url")),
                         "legacy_file_size": str(item.get("fileSize") or ""),
                         "sort_order": document_index,

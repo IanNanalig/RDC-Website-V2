@@ -580,7 +580,7 @@ class CMSPublicationCategorySerializer(CMSManagedContentSerializer):
         model = CMSPublicationCategory
         fields = [
             "id", "code", "name", "description", "icon", "color", "cover_image", "cover_image_url",
-            "cover_alt_text", "sort_order", "document_count",
+            "cover_alt_text", "display_number", "sort_order", "document_count",
             "status", "published_snapshot_json", "has_unpublished_changes", "review_notes",
             "created_by_name", "updated_by_name", "submitted_by_name", "reviewed_by_name",
             "published_at", "archived_at", "created_at", "updated_at",
@@ -606,25 +606,30 @@ class CMSPublicationCategorySerializer(CMSManagedContentSerializer):
 
 class CMSPublicationDocumentSerializer(CMSManagedContentSerializer):
     attachment_url = serializers.SerializerMethodField()
+    cover_image_url = serializers.SerializerMethodField()
     category_code = serializers.CharField(source="category.code", read_only=True)
 
     class Meta:
         model = CMSPublicationDocument
         fields = [
             "id", "stable_key", "category", "category_code", "title", "description", "publication_date",
-            "document_type", "attachment", "attachment_url", "external_url", "legacy_file_size", "sort_order",
+            "document_type", "attachment", "attachment_url", "cover_image", "cover_image_url",
+            "cover_alt_text", "external_url", "legacy_file_size", "sort_order",
             "status", "published_snapshot_json", "has_unpublished_changes", "review_notes", "created_by_name",
             "updated_by_name", "submitted_by_name", "reviewed_by_name", "published_at", "archived_at",
             "created_at", "updated_at",
         ]
         read_only_fields = [
-            "id", "category_code", "attachment_url", "status", "published_snapshot_json",
+            "id", "category_code", "attachment_url", "cover_image_url", "status", "published_snapshot_json",
             "has_unpublished_changes", "review_notes", "created_by_name", "updated_by_name",
             "submitted_by_name", "reviewed_by_name", "published_at", "archived_at", "created_at", "updated_at",
         ]
 
     def get_attachment_url(self, obj):
         return obj.attachment.resolved_public_url if obj.attachment and not obj.attachment.is_archived else ""
+
+    def get_cover_image_url(self, obj):
+        return obj.cover_image.resolved_public_url if obj.cover_image and not obj.cover_image.is_archived else ""
 
     def validate_stable_key(self, value):
         if self.instance and value != self.instance.stable_key:
@@ -639,6 +644,11 @@ class CMSPublicationDocumentSerializer(CMSManagedContentSerializer):
     def validate_attachment(self, value):
         if value and (value.is_archived or value.file_type != CMSMediaAsset.FILE_TYPE_DOCUMENT):
             raise serializers.ValidationError("Choose an active document from the media library.")
+        return value
+
+    def validate_cover_image(self, value):
+        if value and (value.is_archived or value.file_type != CMSMediaAsset.FILE_TYPE_IMAGE):
+            raise serializers.ValidationError("Choose an active image from the media library.")
         return value
 
     def validate_external_url(self, value):

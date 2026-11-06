@@ -1,10 +1,19 @@
 from urllib.parse import urlsplit
 from copy import deepcopy
+import re
 
 from django.conf import settings
 from django.utils import timezone
 
 from cms.services.sanitizers import sanitize_public_html, sanitize_public_structure, sanitize_public_text
+
+
+def _publication_document_sort_key(item):
+    """Newest dated document first, including legacy titles with year ranges."""
+    values = " ".join(str(item.get(key) or "") for key in ("publicationDate", "year", "title"))
+    years = [int(value) for value in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", values)]
+    newest_year = max(years, default=0)
+    return (-newest_year, int(item.get("sortOrder") or 0), str(item.get("title") or ""))
 
 
 def _portable_media_references(value):
@@ -168,12 +177,12 @@ def compose_public_page_snapshot(page):
         for row in CMSPublicationCategory.objects.filter(
             published_at__isnull=False,
             code__in=published_references["categories"],
-        ).exclude(status="archived").order_by("sort_order", "id"):
+        ).exclude(status="archived").order_by("-display_number", "id"):
             if not row.published_snapshot_json:
                 continue
             category = deepcopy(row.published_snapshot_json)
             category["documents"] = sorted(
-                documents.get(row.code, []), key=lambda item: (item.get("sortOrder", 0), item.get("title", ""))
+                documents.get(row.code, []), key=_publication_document_sort_key,
             )
             categories.append(category)
         if categories:
@@ -188,7 +197,7 @@ def compose_public_page_snapshot(page):
         for row in CMSResolution.objects.filter(
             published_at__isnull=False,
             stable_key__in=published_references["resolutions"],
-        ).exclude(status="archived").order_by("-year", "sort_order", "id"):
+        ).exclude(status="archived").order_by("-year", "-sort_order", "-id"):
             if row.published_snapshot_json:
                 years.setdefault(row.year, []).append(row.published_snapshot_json)
         if years:

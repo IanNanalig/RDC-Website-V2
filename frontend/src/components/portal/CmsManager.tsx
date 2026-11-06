@@ -373,6 +373,22 @@ const formatMediaSize = (bytes: number) => {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 };
 
+const publicationDocumentNewestYear = (value: unknown) => {
+  const row = parseRecord(value);
+  const years = [row.publicationDate, row.year, row.title]
+    .map((part) => String(part || ""))
+    .join(" ")
+    .match(/(?<!\d)(?:19|20)\d{2}(?!\d)/g)
+    ?.map(Number) || [];
+  return years.length ? Math.max(...years) : 0;
+};
+
+const sortPublicationDocumentsNewestFirst = (values: unknown[]) =>
+  values
+    .map((value, index) => ({ value, index, year: publicationDocumentNewestYear(value) }))
+    .sort((left, right) => right.year - left.year || left.index - right.index)
+    .map(({ value }) => value);
+
 const mediaFileTypeLabel = (item: CMSMediaAsset) => {
   if (item.mime_type === "application/pdf") return "PDF";
   if (item.file_type === "image") return "Image";
@@ -818,7 +834,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     const values = parseRecord(row?.value_json);
     return {
       image: Number(values.image || 5 * 1024 * 1024),
-      document: Number(values.document || 20 * 1024 * 1024),
+      document: Number(values.document || 50 * 1024 * 1024),
       audio: Number(values.audio || 20 * 1024 * 1024),
       video: Number(values.video || 50 * 1024 * 1024),
     };
@@ -1842,12 +1858,15 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const renderSectionVisualEditor = () => {
     if (sectionForm.section_type === "hero_carousel") {
       const slides = Array.isArray(sectionContent.slides) ? sectionContent.slides : [];
+      const cmsSlides = slides
+        .map((slide, originalIndex) => ({ slide, originalIndex }))
+        .reverse();
       return (
         <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h4 className="font-bold text-slate-900">Hero Carousel Slides</h4>
-              <p className="text-xs text-slate-500">Use image keys like photo1, photo2, or paste a media URL.</p>
+              <p className="text-xs text-slate-500">Newest slides appear first in this editor. The public carousel keeps its original oldest-first order.</p>
             </div>
             <button type="button" className="portal-btn portal-btn-ghost" onClick={addHeroSlide}>
               Add Slide
@@ -1856,31 +1875,31 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           {slides.length === 0 ? (
             <p className="text-sm text-slate-500">No slides yet.</p>
           ) : (
-            slides.map((slide, index) => {
+            cmsSlides.map(({ slide, originalIndex }) => {
               const row = parseRecord(slide);
               const button1 = parseRecord(row.button1);
               const button2 = parseRecord(row.button2);
               return (
-                <div key={index} className="rounded-xl border border-slate-200 bg-white p-3">
+                <div key={textValue(row.id || row.key) || originalIndex} className="rounded-xl border border-slate-200 bg-white p-3">
                   <div className="mb-3 flex items-center justify-between gap-3">
-                    <strong className="text-sm text-slate-800">Slide {index + 1}</strong>
+                    <strong className="text-sm text-slate-800">Slide {originalIndex + 1}</strong>
                     <button
                       type="button"
                       className="text-sm text-red-600"
                       onClick={() => void removeManagedCollectionItem(
                         "carousel-items",
                         textValue(row.id || row.key),
-                        textValue(row.title) || `Slide ${index + 1}`,
-                        () => setSectionContent({ ...sectionContent, slides: slides.filter((_, slideIndex) => slideIndex !== index) }),
+                        textValue(row.title) || `Slide ${originalIndex + 1}`,
+                        () => setSectionContent({ ...sectionContent, slides: slides.filter((_, slideIndex) => slideIndex !== originalIndex) }),
                       )}
                     >
                       Remove
                     </button>
                   </div>
                   <div className="grid min-w-0 gap-3 md:grid-cols-2">
-                    <Field label="Title" value={textValue(row.title)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, title: value }))} />
-                    <Field label="Subtitle" value={textValue(row.subtitle)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, subtitle: value }))} />
-                    {developerMode && isAdmin && <Field label="Developer: Built-in Image Key" value={textValue(row.imageKey)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, imageKey: value }))} />}
+                    <Field label="Title" value={textValue(row.title)} onChange={(value) => updateHeroSlide(originalIndex, (current) => ({ ...current, title: value }))} />
+                    <Field label="Subtitle" value={textValue(row.subtitle)} onChange={(value) => updateHeroSlide(originalIndex, (current) => ({ ...current, subtitle: value }))} />
+                    {developerMode && isAdmin && <Field label="Developer: Built-in Image Key" value={textValue(row.imageKey)} onChange={(value) => updateHeroSlide(originalIndex, (current) => ({ ...current, imageKey: value }))} />}
                     <MediaAssetPicker
                       {...mediaPickerStatus}
                       label="Uploaded Image"
@@ -1888,7 +1907,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                       value={stringValue(row.mediaAssetId || row.imageAssetId)}
                       onChange={(value) => {
                         const selected = mediaById.get(value);
-                        updateHeroSlide(index, (current) => {
+                        updateHeroSlide(originalIndex, (current) => {
                           if (!selected) {
                             return {
                               ...current,
@@ -1909,12 +1928,12 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                       }}
                       helper="Choose a CMS image to fill the image URL automatically."
                     />
-                    {developerMode && isAdmin && <Field label="Developer: Manual Image URL" value={textValue(row.imageUrl)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, imageUrl: value }))} />}
-                    <Field label="Image Alt Text" value={textValue(row.imageAlt)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, imageAlt: value }))} helper="Short description for accessibility." />
-                    <Field label="Primary Button Text" value={textValue(button1.text)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, button1: { ...parseRecord(current.button1), text: value } }))} />
-                    <Field label="Primary Button Link" value={textValue(button1.link)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, button1: { ...parseRecord(current.button1), link: value } }))} />
-                    <Field label="Secondary Button Text" value={textValue(button2.text)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, button2: { ...parseRecord(current.button2), text: value } }))} />
-                    <Field label="Secondary Button Link" value={textValue(button2.link)} onChange={(value) => updateHeroSlide(index, (current) => ({ ...current, button2: { ...parseRecord(current.button2), link: value } }))} />
+                    {developerMode && isAdmin && <Field label="Developer: Manual Image URL" value={textValue(row.imageUrl)} onChange={(value) => updateHeroSlide(originalIndex, (current) => ({ ...current, imageUrl: value }))} />}
+                    <Field label="Image Alt Text" value={textValue(row.imageAlt)} onChange={(value) => updateHeroSlide(originalIndex, (current) => ({ ...current, imageAlt: value }))} helper="Short description for accessibility." />
+                    <Field label="Primary Button Text" value={textValue(button1.text)} onChange={(value) => updateHeroSlide(originalIndex, (current) => ({ ...current, button1: { ...parseRecord(current.button1), text: value } }))} />
+                    <Field label="Primary Button Link" value={textValue(button1.link)} onChange={(value) => updateHeroSlide(originalIndex, (current) => ({ ...current, button1: { ...parseRecord(current.button1), link: value } }))} />
+                    <Field label="Secondary Button Text" value={textValue(button2.text)} onChange={(value) => updateHeroSlide(originalIndex, (current) => ({ ...current, button2: { ...parseRecord(current.button2), text: value } }))} />
+                    <Field label="Secondary Button Link" value={textValue(button2.link)} onChange={(value) => updateHeroSlide(originalIndex, (current) => ({ ...current, button2: { ...parseRecord(current.button2), link: value } }))} />
                   </div>
                 </div>
               );
@@ -1990,6 +2009,13 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         next[yearIndex] = nextYear;
         setSectionContent({ ...sectionContent, years: next });
       };
+      const displayedYears = years
+        .map((yearValue, originalYearIndex) => ({ yearValue, originalYearIndex }))
+        .sort((left, right) => {
+          const yearDifference = Number(parseRecord(right.yearValue).year || 0)
+            - Number(parseRecord(left.yearValue).year || 0);
+          return yearDifference || right.originalYearIndex - left.originalYearIndex;
+        });
       return (
         <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
           <div className="grid min-w-0 gap-3 md:grid-cols-2">
@@ -2059,13 +2085,16 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               No resolution records are in this draft. Add a year and its documents before publishing.
             </div>
           )}
-          {years.map((yearValue, yearIndex) => {
+          {displayedYears.map(({ yearValue, originalYearIndex: yearIndex }) => {
             const year = parseRecord(yearValue);
             const resolutions = Array.isArray(year.resolutions)
               ? year.resolutions
               : Array.isArray(year.items)
                 ? year.items
                 : [];
+            const displayedResolutions = resolutions
+              .map((resolutionValue, originalResolutionIndex) => ({ resolutionValue, originalResolutionIndex }))
+              .reverse();
             return (
               <div key={yearIndex} className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
                 <div className="flex flex-wrap items-end justify-between gap-3">
@@ -2078,7 +2107,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                       className="font-semibold text-blue-600"
                       onClick={() => updateYear(yearIndex, {
                         ...year,
-                        resolutions: [...resolutions, { number: "", title: "New RDC-NCR Resolution", description: "", date: "", url: "" }],
+                        resolutions: [...resolutions, { title: "New RDC-NCR Resolution", description: "" }],
                       })}
                     >
                       Add Resolution
@@ -2094,7 +2123,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     </button>
                   </div>
                 </div>
-                {resolutions.map((resolutionValue, resolutionIndex) => {
+                {displayedResolutions.map(({ resolutionValue, originalResolutionIndex: resolutionIndex }) => {
                   const resolution = typeof resolutionValue === "string"
                     ? { title: resolutionValue, url: "" }
                     : parseRecord(resolutionValue);
@@ -2106,27 +2135,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   return (
                     <div key={resolutionIndex} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                       <div className="grid min-w-0 gap-3 md:grid-cols-2">
-                        <Field label="Resolution Number" value={textValue(resolution.number || resolution.resolutionNumber)} onChange={(value) => updateResolution({ ...resolution, number: value, resolutionNumber: value })} helper="Example: RDC-NCR Resolution No. 01, s. 2026" />
-                        <Field label="Resolution Date (optional)" value={textValue(resolution.date)} onChange={(value) => updateResolution({ ...resolution, date: value })} helper="Use YYYY-MM-DD." />
                         <div className="md:col-span-2"><Area label={`Resolution ${resolutionIndex + 1} Title`} value={textValue(resolution.title)} onChange={(value) => updateResolution({ ...resolution, title: value })} rows={2} /></div>
                         <div className="md:col-span-2"><Area label="Description (optional)" value={textValue(resolution.description)} onChange={(value) => updateResolution({ ...resolution, description: value })} rows={3} /></div>
-                        <MediaAssetPicker
-                          {...mediaPickerStatus}
-                          label="CMS Resolution Document"
-                          assets={media.filter((item) => item.file_type === "document" || item.mime_type === "application/pdf")}
-                          value={stringValue(resolution.mediaAssetId || resolution.documentAssetId || resolution.attachment)}
-                          onChange={(value) => {
-                            const selected = mediaById.get(value);
-                            updateResolution({
-                              ...resolution,
-                              mediaAssetId: selected?.id || "",
-                              documentAssetId: selected?.id || "",
-                              url: selected ? portableMediaUrl(selected.url) : textValue(resolution.url),
-                            });
-                          }}
-                          helper="Choose an existing document from the Media Library, or provide a public URL."
-                        />
-                        <Field label="Document URL (optional)" value={textValue(resolution.url)} onChange={(value) => updateResolution({ ...resolution, url: value })} />
                         <button type="button" className="justify-self-start text-sm font-semibold text-red-600 md:col-span-2" onClick={() => void removeManagedCollectionItem(
                           "resolutions",
                           textValue(resolution.id),
@@ -2246,7 +2256,17 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     }
 
     if (sectionForm.section_type === "publication_catalog") {
-      const categories = Array.isArray(sectionContent.categories) ? sectionContent.categories : [];
+      const rawCategories = Array.isArray(sectionContent.categories) ? sectionContent.categories : [];
+      const categories = rawCategories
+        .map((entry, index) => {
+          const category = parseRecord(entry);
+          const savedNumber = Number(category.categoryNumber);
+          return {
+            ...category,
+            categoryNumber: Number.isInteger(savedNumber) && savedNumber > 0 ? savedNumber : index + 1,
+          };
+        })
+        .sort((left, right) => Number(right.categoryNumber) - Number(left.categoryNumber));
       const updateCategory = (categoryIndex: number, nextCategory: Record<string, unknown>) => {
         const next = [...categories];
         next[categoryIndex] = nextCategory;
@@ -2324,19 +2344,23 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h4 className="font-bold text-slate-900">Publication Categories</h4>
-              <p className="text-xs text-slate-500">Document IDs use built-in PDFs/covers by default. Select CMS Media to override with uploaded PDFs or cover images.</p>
+              <p className="text-xs text-slate-500">Newest categories appear first in the CMS and on the public website. Category numbers remain fixed after creation.</p>
             </div>
             <button
               type="button"
               className="portal-btn portal-btn-ghost"
               onClick={() => {
+                const nextCategoryNumber = categories.reduce(
+                  (highest, entry) => Math.max(highest, Number(parseRecord(entry).categoryNumber) || 0),
+                  0,
+                ) + 1;
                 setSectionContent({
                   ...sectionContent,
                   categories: [
                     {
                       title: "New Publication Category",
                       description: "Short public category description",
-                      icon: "",
+                      categoryNumber: nextCategoryNumber,
                       color: "from-blue-600 to-cyan-500",
                       isVisible: true,
                       coverAssetId: "",
@@ -2356,18 +2380,20 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
 
           {categories.map((categoryEntry, categoryIndex) => {
             const category = parseRecord(categoryEntry);
-            const documents = Array.isArray(category.documents) ? category.documents : [];
+            const documents = sortPublicationDocumentsNewestFirst(
+              Array.isArray(category.documents) ? category.documents : [],
+            );
             return (
               <div key={categoryIndex} className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <strong className="text-sm text-slate-800">Category {categoryIndex + 1}</strong>
+                  <strong className="text-sm text-slate-800">Category {textValue(category.categoryNumber)}</strong>
                   <button
                     type="button"
                     className="text-sm text-red-600"
                       onClick={() => void removeManagedCollectionItem(
                         "publication-categories",
                         textValue(category.code || category.id),
-                        textValue(category.title || category.name) || `Category ${categoryIndex + 1}`,
+                        textValue(category.title || category.name) || `Category ${textValue(category.categoryNumber)}`,
                         () => setSectionContent({ ...sectionContent, categories: categories.filter((_, itemIndex) => itemIndex !== categoryIndex) }),
                       )}
                   >
@@ -2378,7 +2404,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   {developerMode && isAdmin && <Field label="Developer: Category ID" value={textValue(category.id)} onChange={(value) => updateCategory(categoryIndex, { ...category, id: value })} />}
                   <Field label="Title" value={textValue(category.title)} onChange={(value) => updateCategory(categoryIndex, { ...category, title: value })} />
                   <Area label="Description" value={textValue(category.description)} onChange={(value) => updateCategory(categoryIndex, { ...category, description: value })} rows={2} />
-                  <Select label="Icon" value={textValue(category.icon)} onChange={(value) => updateCategory(categoryIndex, { ...category, icon: value })} options={iconOptions.map((icon) => ({ label: icon.replace(/-/g, " "), value: icon }))} />
                   <Select label="Color" value={textValue(category.color)} onChange={(value) => updateCategory(categoryIndex, { ...category, color: value })} options={colorOptions} emptyLabel="Use the current category color" />
                   <MediaAssetPicker
                     {...mediaPickerStatus}
@@ -2412,7 +2437,10 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                 </div>
 
                 <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-3">
-                  <span className="text-sm font-semibold text-slate-700">Documents</span>
+                  <div>
+                    <span className="text-sm font-semibold text-slate-700">Documents</span>
+                    <p className="text-xs text-slate-500">Maximum {formatMediaSize(mediaUploadLimits.document)} per document file.</p>
+                  </div>
                   <button
                     type="button"
                     className="text-sm font-semibold text-blue-600"
@@ -2498,11 +2526,11 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                           assets={media.filter((item) => item.file_type === "document" || item.mime_type === "application/pdf")}
                           value={stringValue(document.mediaAssetId)}
                           onChange={(value) => setPublicationDocumentMedia(categoryIndex, documentIndex, document, value)}
-                          helper="Upload PDFs in Media Library first. The selected file becomes public only after the draft is approved and published."
+                          helper={`Upload the file in Media Library first. Maximum ${formatMediaSize(mediaUploadLimits.document)} per file. The selected file becomes public only after publishing.`}
                         />
                         <MediaAssetPicker
                           {...mediaPickerStatus}
-                          label="Cover Image from Media Library"
+                          label="Document Cover Image from Media Library"
                           assets={media.filter((item) => item.file_type === "image")}
                           value={stringValue(document.coverAssetId)}
                           onChange={(value) => setPublicationCoverMedia(categoryIndex, documentIndex, document, value)}
@@ -2684,11 +2712,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                 </div>
                 {isCommitteeCard && (
                   <div className="mt-3 space-y-4">
-                    <div className="grid min-w-0 gap-3 md:grid-cols-2">
-                      <Area label="Committee Overview (optional)" value={textValue(row.overview || parseRecord(row.content).overview)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, overview: value }))} rows={3} helper="Enter text to show the Overview section on the public page. Clear this field to remove it." />
-                      <Area label="Main Functions (one per line)" value={stringListToText(row.functions || parseRecord(row.content).functions)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, functions: stringListFromText(value) }))} rows={4} />
-                      <Area label="Members (one per line)" value={stringListToText(row.members || parseRecord(row.content).members)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, members: stringListFromText(value) }))} rows={4} />
-                    </div>
                     {(() => {
                       const nestedContent = parseRecord(row.content);
                       const subCommittees = Array.isArray(row.subCommittees)

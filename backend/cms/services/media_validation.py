@@ -27,7 +27,7 @@ DEFAULT_ALLOWED_TYPES = {
 }
 DEFAULT_MAX_BYTES = {
     "image": 5 * 1024 * 1024,
-    "document": 20 * 1024 * 1024,
+    "document": 50 * 1024 * 1024,
     "audio": 20 * 1024 * 1024,
     "video": 50 * 1024 * 1024,
 }

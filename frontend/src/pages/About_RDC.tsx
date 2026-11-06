@@ -515,7 +515,7 @@ export default function AboutRDC() {
       }
     });
 
-    return years;
+    return years.sort((left, right) => Number(right.year) - Number(left.year));
   }, [resolutionsContent]);
 
   const resolutionDateRange = useMemo(() => {

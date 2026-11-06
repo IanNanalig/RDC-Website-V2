@@ -14,14 +14,16 @@ type DocumentItem = {
   url: string;
   coverImage?: string;
   coverAlt?: string;
+  publicationDate?: string;
+  sortOrder: number;
 };
 
 type Category = {
   id: string;
   title: string;
   description: string;
-  icon: string;
   color: string;
+  categoryNumber: number;
   coverImage?: string;
   coverAlt?: string;
   documents: DocumentItem[];
@@ -39,22 +41,12 @@ const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [
 const asString = (value: unknown, fallback = "") =>
   typeof value === "string" && value.trim() ? value.trim() : fallback;
 
-const publicationIcon = (value: string) => {
-  const icons: Record<string, string> = {
-    briefcase: "\u{1F4BC}",
-    "chart-bar": "\u{1F4CA}",
-    "chart-line": "\u{1F4C8}",
-    clipboard: "\u{1F4CB}",
-    document: "\u{1F4C4}",
-    file: "\u{1F4C4}",
-    gear: "\u2699\uFE0F",
-    leaf: "\u{1F331}",
-    refresh: "\u{1F504}",
-    target: "\u{1F3AF}",
-    trend: "\u{1F4C8}",
-  };
-  const key = value.toLowerCase();
-  return icons[key] || value || "";
+const publicationDocumentNewestYear = (document: DocumentItem) => {
+  const years = [document.publicationDate, document.year, document.title]
+    .join(" ")
+    .match(/(?<!\d)(?:19|20)\d{2}(?!\d)/g)
+    ?.map(Number) || [];
+  return years.length ? Math.max(...years) : 0;
 };
 
 const isVisible = (value: unknown) => {
@@ -96,13 +88,20 @@ const mergeDocuments = (cmsDocuments: unknown[], baseCategory?: Category): Docum
       url,
       coverImage: coverImage || undefined,
       coverAlt: asString(documentRow.coverAlt, baseDocument?.coverAlt ?? ""),
+      publicationDate: asString(documentRow.publicationDate, baseDocument?.publicationDate ?? ""),
+      sortOrder: Number(documentRow.sortOrder ?? baseDocument?.sortOrder ?? documentIndex + 1),
     };
 
     if (matchIndex >= 0) result[matchIndex] = nextDocument;
     else result.push(nextDocument);
   });
 
-  return result;
+  return result.sort((left, right) => {
+    return publicationDocumentNewestYear(right) - publicationDocumentNewestYear(left)
+      || right.publicationDate?.localeCompare(left.publicationDate || "") || 0
+      || left.sortOrder - right.sortOrder
+      || left.title.localeCompare(right.title);
+  });
 };
 
 const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
@@ -134,8 +133,8 @@ const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
       id: nextId,
       title: asString(row.title, baseCategory?.title ?? "Publication Category"),
       description: asString(row.description, baseCategory?.description ?? ""),
-      icon: asString(row.icon, baseCategory?.icon ?? ""),
       color: asString(row.color, baseCategory?.color ?? "from-slate-600 to-slate-500"),
+      categoryNumber: Number(row.categoryNumber ?? baseCategory?.categoryNumber ?? categoryIndex + 1),
       coverImage: asString(row.coverImage, baseCategory?.coverImage ?? "") || undefined,
       coverAlt: asString(row.coverAlt, baseCategory?.coverAlt ?? title),
       documents,
@@ -145,7 +144,9 @@ const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
     else result.push(nextCategory);
   });
 
-  return result;
+  return result.sort((left, right) =>
+    right.categoryNumber - left.categoryNumber || left.title.localeCompare(right.title),
+  );
 };
 
 export default function Publications() {
@@ -157,6 +158,8 @@ export default function Publications() {
     categoryParam || null,
   );
   const [downloadingDocumentId, setDownloadingDocumentId] = useState<string | null>(null);
+  const [failedCategoryCovers, setFailedCategoryCovers] = useState<Set<string>>(() => new Set());
+  const [failedDocumentCovers, setFailedDocumentCovers] = useState<Set<string>>(() => new Set());
 
   const categories = useMemo(() => buildCategoriesFromCms(cmsPage), [cmsPage]);
   const catalogContent = getPublicationCatalog(cmsPage);
@@ -259,46 +262,44 @@ export default function Publications() {
                 <button
                   key={category.id}
                   onClick={() => handleCategorySelect(category.id)}
-                  className="bg-white rounded-2xl shadow-md hover:shadow-xl transition-all transform hover:-translate-y-1 p-6 text-left group border border-slate-100 h-full flex flex-col justify-between"
+                  className="h-full overflow-hidden rounded-xl border border-slate-100 bg-white text-left shadow-md transition-all hover:-translate-y-1 hover:shadow-xl group"
                 >
-                  {category.coverImage && (
-                    <img
-                      src={category.coverImage}
-                      alt={category.coverAlt || category.title}
-                      onError={(event) => {
-                        event.currentTarget.style.display = "none";
-                      }}
-                      className="mb-4 h-40 w-full rounded-xl object-cover"
-                      loading="lazy"
-                      decoding="async"
-                    />
-                  )}
-                  {publicationIcon(category.icon) && (
-                    <div
-                      className={`w-16 h-16 rounded-xl bg-gradient-to-br ${category.color} flex items-center justify-center text-3xl mb-4 group-hover:scale-110 transition-transform leading-none text-center`}
-                    >
-                      <span className="leading-none align-middle">
-                        {publicationIcon(category.icon)}
-                      </span>
+                  <div className={`h-2 bg-gradient-to-r ${category.color}`} />
+                  <div className="flex h-[calc(100%-0.5rem)] flex-col p-4">
+                    <div className="mb-4 w-full aspect-[3/4] overflow-hidden rounded-lg border border-slate-100 bg-slate-50">
+                    {category.coverImage && !failedCategoryCovers.has(category.id) ? (
+                      <img
+                        src={category.coverImage}
+                        alt={category.coverAlt || category.title}
+                        onError={() => setFailedCategoryCovers((current) => {
+                          const next = new Set(current);
+                          next.add(category.id);
+                          return next;
+                        })}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    ) : (
+                      <div className={`flex h-full w-full flex-col items-center justify-center bg-gradient-to-br ${category.color} px-4 text-center text-white/90`}>
+                        <p className="text-xs font-semibold uppercase tracking-wider text-white/80">
+                          Publication Cover
+                        </p>
+                        <p className="mt-2 line-clamp-5 text-sm font-semibold">
+                          {category.title}
+                        </p>
+                      </div>
+                    )}
                     </div>
-                  )}
-                  <h3 className="text-lg font-bold text-slate-900 mb-2 group-hover:text-blue-600 transition">
-                    {category.title}
-                  </h3>
-                  <p className="text-sm text-slate-600 line-clamp-2">
-                    {category.description}
-                  </p>
-                  <div className="mt-4 flex items-center text-sm text-blue-600 font-medium">
-                    <span>View documents</span>
-                    <svg
-                      className="w-4 h-4 ml-1 group-hover:translate-x-1 transition"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      viewBox="0 0 24 24"
-                    >
-                      <path d="M9 5l7 7-7 7" />
-                    </svg>
+                    <h3 className="mb-2 line-clamp-3 font-bold text-slate-900 transition group-hover:text-blue-600">
+                      {category.title}
+                    </h3>
+                    <p className="mb-4 line-clamp-2 text-sm text-slate-600">
+                      {category.description}
+                    </p>
+                    <span className="mt-auto block w-full rounded-lg bg-blue-600 px-4 py-2 text-center text-sm font-medium text-white transition group-hover:bg-blue-700">
+                      View documents
+                    </span>
                   </div>
                 </button>
               ))}
@@ -333,11 +334,6 @@ export default function Publications() {
               className={`bg-gradient-to-br ${activeCategory?.color} rounded-2xl p-8 mb-8 text-white shadow-lg`}
             >
               <div className="flex items-start gap-4">
-                {publicationIcon(activeCategory?.icon || "") && (
-                  <div className="text-5xl leading-none text-center">
-                    {publicationIcon(activeCategory?.icon || "")}
-                  </div>
-                )}
                 <div>
                   <h2 className="text-3xl font-bold mb-2">
                     {activeCategory?.title}
@@ -373,7 +369,7 @@ export default function Publications() {
                     {/* Cover */}
                     <div className="mb-4">
                       <div className="w-full aspect-[3/4] rounded-lg overflow-hidden border border-slate-100 bg-slate-50">
-                        {doc.coverImage ? (
+                        {doc.coverImage && !failedDocumentCovers.has(doc.id) ? (
                           <img
                             src={doc.coverImage}
                             alt={doc.coverAlt || doc.title}
@@ -381,6 +377,11 @@ export default function Publications() {
                             height={800}
                             loading="lazy"
                             decoding="async"
+                            onError={() => setFailedDocumentCovers((current) => {
+                              const next = new Set(current);
+                              next.add(doc.id);
+                              return next;
+                            })}
                             className="w-full h-full object-cover"
                           />
                         ) : (

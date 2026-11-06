@@ -311,6 +311,7 @@ class CMSPublicationCategory(CMSManagedContent):
         related_name="publication_category_covers",
     )
     cover_alt_text = models.CharField(max_length=300, blank=True)
+    display_number = models.PositiveIntegerField(default=1)
     sort_order = models.PositiveIntegerField(default=1)
 
     class Meta:
@@ -333,6 +334,11 @@ class CMSPublicationDocument(CMSManagedContent):
         CMSMediaAsset, null=True, blank=True, on_delete=models.PROTECT,
         related_name="publication_documents",
     )
+    cover_image = models.ForeignKey(
+        CMSMediaAsset, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="publication_document_covers",
+    )
+    cover_alt_text = models.CharField(max_length=300, blank=True)
     external_url = models.CharField(max_length=1000, blank=True)
     legacy_file_size = models.CharField(max_length=40, blank=True)
     sort_order = models.PositiveIntegerField(default=1)

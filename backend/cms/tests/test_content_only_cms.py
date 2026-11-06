@@ -7,13 +7,14 @@ from rest_framework.test import APITestCase
 
 from cms.models import (
     CMSCarouselItem,
+    CMSMediaAsset,
     CMSPage,
     CMSPageSection,
     CMSPublicationCategory,
     CMSPublicationDocument,
     CMSResolution,
 )
-from cms.services.snapshots import compose_public_page_snapshot
+from cms.services.snapshots import _publication_document_sort_key, compose_public_page_snapshot
 from projects.models import User, UserActivity
 
 
@@ -26,6 +27,22 @@ class ContentOnlyCMSTests(APITestCase):
             username="fixed-editor", email="fixed-editor@example.com", password="StrongTest123!", role="content_editor",
         )
         self.client.force_authenticate(self.admin)
+
+    def test_publication_document_year_ranges_sort_newest_first(self):
+        rows = [
+            {"title": "RDP-NCR 2017-2022 Brochure", "sortOrder": 1},
+            {"title": "RDP-NCR 2023-2028 Brochure", "sortOrder": 2},
+            {"title": "Undated publication", "sortOrder": 3},
+        ]
+        ordered = sorted(rows, key=_publication_document_sort_key)
+        self.assertEqual(
+            [row["title"] for row in ordered],
+            [
+                "RDP-NCR 2023-2028 Brochure",
+                "RDP-NCR 2017-2022 Brochure",
+                "Undated publication",
+            ],
+        )
 
     def test_fixed_module_registry_rejects_structural_mutations(self):
         page = CMSPage.objects.get(slug="contact")
@@ -389,6 +406,56 @@ class ContentOnlyCMSTests(APITestCase):
             rebuilt_document = CMSPublicationDocument.objects.get(stable_key=key)
             self.assertEqual(rebuilt_document.status, "published")
             self.assertTrue(rebuilt_document.published_snapshot_json)
+
+    def test_publications_publish_document_covers_and_newest_categories_first(self):
+        page = CMSPage.objects.get(slug="publications")
+        section = page.sections.get(section_key="publication-catalog")
+        content = dict(section.content_json)
+        categories = [dict(row) for row in content.get("categories") or []]
+        self.assertGreaterEqual(len(categories), 2)
+        categories[0]["categoryNumber"] = 1
+        categories[1]["categoryNumber"] = 2
+        categories[0]["documents"] = [dict(row) for row in categories[0].get("documents") or []]
+        self.assertTrue(categories[0]["documents"])
+        cover = CMSMediaAsset.objects.create(
+            file="cms/publication-cover.png",
+            public_url="/media/cms/publication-cover.png",
+            file_type=CMSMediaAsset.FILE_TYPE_IMAGE,
+            mime_type="image/png",
+            alt_text="Publication cover",
+        )
+        categories[0]["documents"][0].update({
+            "coverAssetId": str(cover.pk),
+            "coverImage": cover.public_url,
+            "coverAlt": "Document cover description",
+        })
+        content["categories"] = categories
+        saved = self.client.patch(
+            f"/api/admin/cms/sections/{section.pk}/",
+            {"content_json": content},
+            format="json",
+        )
+        self.assertEqual(saved.status_code, 200, saved.data)
+        published = self.client.post(f"/api/admin/cms/pages/{page.pk}/publish/", {}, format="json")
+        self.assertEqual(published.status_code, 200, published.data)
+
+        document_key = saved.data["content_json"]["categories"][0]["documents"][0]["id"]
+        document = CMSPublicationDocument.objects.get(stable_key=document_key)
+        self.assertEqual(document.cover_image_id, cover.pk)
+        self.assertEqual(document.cover_alt_text, "Document cover description")
+
+        public_page = self.client.get("/api/public/cms/pages/publications/")
+        catalog = next(
+            row["content"] for row in public_page.data["sections"]
+            if row["sectionKey"] == "publication-catalog"
+        )
+        public_categories = catalog["categories"]
+        self.assertGreater(public_categories[0]["categoryNumber"], public_categories[1]["categoryNumber"])
+        self.assertNotIn("icon", public_categories[0])
+        covered = next(row for row in public_categories if row["id"] == categories[0].get("id"))
+        covered_document = next(row for row in covered["documents"] if row["id"] == document_key)
+        self.assertEqual(covered_document["coverImage"], cover.public_url)
+        self.assertEqual(covered_document["coverAlt"], "Document cover description")
 
     def test_publication_category_and_document_identities_survive_title_edits(self):
         page = CMSPage.objects.get(slug="publications")
