@@ -193,16 +193,48 @@ def compose_public_page_snapshot(page):
         and "resolutions-archive" in by_key
         and "resolutions-archive" not in unresolved_sections
     ):
-        years = {}
-        for row in CMSResolution.objects.filter(
-            published_at__isnull=False,
+        archive_content = by_key["resolutions-archive"]["content"]
+        referenced_rows = list(CMSResolution.objects.filter(
             stable_key__in=published_references["resolutions"],
-        ).exclude(status="archived").order_by("-year", "-sort_order", "-id"):
-            if row.published_snapshot_json:
-                years.setdefault(row.year, []).append(row.published_snapshot_json)
-        if years:
-            by_key["resolutions-archive"]["content"]["years"] = [
-                {"year": str(year), "resolutions": rows} for year, rows in sorted(years.items(), reverse=True)
-            ]
+        ))
+        archived_keys = {
+            row.stable_key for row in referenced_rows if row.status == "archived"
+        }
+        normalized_rows = [
+            row for row in referenced_rows
+            if row.published_at is not None and row.status != "archived"
+        ]
+        normalized_by_key = {
+            row.stable_key: row.published_snapshot_json
+            for row in normalized_rows
+            if row.published_snapshot_json
+        }
+        # The fixed page snapshot is the authoritative list. A normalized row
+        # enriches its matching entry, but a missing/stale normalized row must
+        # never make an otherwise published resolution disappear publicly.
+        # Draft entries are stored oldest-first, so reverse each year for the
+        # requested newest-added-first public presentation.
+        years = []
+        for year_row in archive_content.get("years") or []:
+            if not isinstance(year_row, dict):
+                continue
+            raw_year = str(year_row.get("year") or "").strip()
+            if not raw_year.isdigit():
+                continue
+            resolutions = []
+            for item in reversed(year_row.get("resolutions") or year_row.get("items") or []):
+                if isinstance(item, dict):
+                    stable_key = str(item.get("id") or "").strip()
+                    if stable_key in archived_keys:
+                        continue
+                    resolutions.append(deepcopy(normalized_by_key.get(stable_key) or item))
+                elif isinstance(item, str) and item.strip():
+                    resolutions.append(item)
+            years.append({"year": raw_year, "resolutions": resolutions})
+        archive_content["years"] = sorted(
+            years,
+            key=lambda row: int(row["year"]),
+            reverse=True,
+        )
 
     return snapshot

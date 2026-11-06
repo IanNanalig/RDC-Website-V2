@@ -221,6 +221,42 @@ class ContentOnlyCMSTests(APITestCase):
         self.assertTrue(published["content"].get("legendItems"))
         self.assertTrue(published["content"].get("categoryItems"))
 
+    def test_public_about_page_returns_every_published_resolution(self):
+        section = CMSPageSection.objects.get(page__slug="about-rdc", section_key="resolutions-archive")
+        content = dict(section.content_json)
+        content["years"] = [{
+            "year": "2026",
+            "resolutions": [
+                {"id": f"resolution-2026-{index}", "title": f"Resolution {index}", "description": ""}
+                for index in range(1, 8)
+            ],
+        }]
+        saved = self.client.patch(
+            "/api/admin/cms/modules/about-rdc/",
+            {"sections": {"resolutions-archive": content}},
+            format="json",
+        )
+        self.assertEqual(saved.status_code, 200, saved.data)
+        published = self.client.post("/api/admin/cms/modules/about-rdc/publish/", {}, format="json")
+        self.assertEqual(published.status_code, 200, published.data)
+
+        # A stale/missing normalized mirror must not cap or remove an entry
+        # that is present in the authoritative published page snapshot.
+        CMSResolution.objects.filter(stable_key="resolution-2026-4").delete()
+
+        public_page = self.client.get("/api/public/cms/pages/about-rdc/")
+        self.assertEqual(public_page.status_code, 200, public_page.data)
+        archive = next(
+            row for row in public_page.data["sections"]
+            if row["sectionKey"] == "resolutions-archive"
+        )
+        year = next(row for row in archive["content"]["years"] if row["year"] == "2026")
+        self.assertEqual(len(year["resolutions"]), 7)
+        self.assertEqual(
+            [row["title"] for row in year["resolutions"]],
+            [f"Resolution {index}" for index in range(7, 0, -1)],
+        )
+
     def test_carousel_section_syncs_normalized_draft(self):
         section = CMSPageSection.objects.get(page__slug="home", section_key="hero-carousel")
         content = dict(section.content_json)
