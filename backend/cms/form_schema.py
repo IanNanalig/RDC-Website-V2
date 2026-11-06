@@ -662,14 +662,11 @@ def schema_fields(schema):
                 yield field
 
 
-def validate_simplified_answers(profile_data, require_complete=False, legacy_status=None, schema_version=None):
-    if not isinstance(profile_data, dict) or not isinstance(profile_data.get("simplified_form"), dict):
-        return profile_data
+def resolve_simplified_form_schema(profile_data, schema_version=None):
+    """Return the immutable schema selected by a project profile marker."""
     from cms.models import CMSContributorForm, CMSContributorFormVersion
-    from projects.project_status import canonical_implementation_status
 
-    marker = profile_data.get("form_schema") if isinstance(profile_data.get("form_schema"), dict) else {}
-    legacy_marker = marker.get("legacy") is True
+    marker = profile_data.get("form_schema") if isinstance(profile_data, dict) and isinstance(profile_data.get("form_schema"), dict) else {}
     key = str(marker.get("key") or SIMPLIFIED_FORM_KEY)
     try:
         version_number = int(marker.get("version") or 0)
@@ -679,11 +676,21 @@ def validate_simplified_answers(profile_data, require_complete=False, legacy_sta
     if version is None and version_number:
         version = CMSContributorFormVersion.objects.filter(
             form__key=key, version_number=version_number,
-        ).first()
+        ).select_related("form").first()
     if version is None:
         form = CMSContributorForm.objects.filter(key=key).select_related("current_published_version").first()
         version = form.current_published_version if form else None
-    schema = version.schema_json if version else default_simplified_form_schema()
+    return (version.schema_json if version else default_simplified_form_schema()), version
+
+
+def validate_simplified_answers(profile_data, require_complete=False, legacy_status=None, schema_version=None):
+    if not isinstance(profile_data, dict) or not isinstance(profile_data.get("simplified_form"), dict):
+        return profile_data
+    from projects.project_status import canonical_implementation_status
+
+    marker = profile_data.get("form_schema") if isinstance(profile_data.get("form_schema"), dict) else {}
+    legacy_marker = marker.get("legacy") is True
+    schema, version = resolve_simplified_form_schema(profile_data, schema_version)
     if version:
         profile_data["form_schema"] = {"key": version.form.key, "version": version.version_number}
     else:

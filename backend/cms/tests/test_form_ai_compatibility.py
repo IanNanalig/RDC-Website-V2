@@ -3,9 +3,11 @@ from copy import deepcopy
 from django.test import TestCase
 
 from cms.form_schema import default_simplified_form_schema, validate_form_schema
+from cms.models import CMSContributorFormVersion
 from projects.priority_scoring import default_priority_rule_config
 from projects.scoring_contract import (
     contract_for_form_schema,
+    contract_for_project_snapshot,
     default_scoring_input_contract,
     form_compatibility_report,
     runtime_input_report,
@@ -152,6 +154,26 @@ class FormAIScoringCompatibilityTests(TestCase):
 
         self.assertTrue(validated["reset_from_scratch"])
         self.assertNotEqual(report["status"], "incompatible")
+
+    def test_project_snapshot_uses_top_level_immutable_form_version_marker(self):
+        version = CMSContributorFormVersion.objects.select_related("form").first()
+        schema = deepcopy(version.schema_json)
+        development_sector = next(
+            field for section in schema["sections"] for field in section["fields"]
+            if field["key"] == "developmentSector"
+        )
+        development_sector["visible"] = False
+        development_sector["required"] = False
+        development_sector["ai_scoring_enabled"] = False
+        version.schema_json = schema
+        version.save(update_fields=["schema_json"])
+
+        effective = contract_for_project_snapshot({
+            "form_schema": {"key": version.form.key, "version": version.version_number},
+            "simplified_form": {"projectActivity": "Versioned sample"},
+        })
+
+        self.assertNotIn("developmentSector", {item["key"] for item in effective["dependencies"]})
 
     def test_legacy_submission_keeps_current_contributor_requirements_compatible(self):
         report = runtime_input_report(

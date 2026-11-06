@@ -721,6 +721,16 @@ const SimplifiedProjectSubmission: React.FC = () => {
       .find((field) => field.type === "document_upload" && field.visible !== false),
     [formSchema],
   );
+  const visibleContributorFieldKeys = useMemo(
+    () => new Set(
+      formSchema.sections
+        .filter((section) => section.visible !== false && !section.admin_only)
+        .flatMap((section) => section.fields)
+        .filter((field) => field.visible !== false)
+        .map((field) => field.key),
+    ),
+    [formSchema],
+  );
   const statusOptions = useMemo(() => {
     const statusField = formSchema.sections
       .filter((section) => section.visible !== false && !section.admin_only)
@@ -1564,7 +1574,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
           return;
         }
       }
-      if (parseYear(form.startYear) === null || parseYear(form.endYear) === null) {
+      const usesImplementationYears = visibleContributorFieldKeys.has("startYear")
+        || visibleContributorFieldKeys.has("endYear")
+        || visibleContributorFieldKeys.has("fundingRequirementByYear")
+        || visibleContributorFieldKeys.has("actualFundingByYear");
+      if (usesImplementationYears && (parseYear(form.startYear) === null || parseYear(form.endYear) === null)) {
         alert("Start Year and End Year must be valid years.");
         return;
       }

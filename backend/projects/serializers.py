@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from datetime import datetime
 from copy import deepcopy
-from cms.form_schema import FormSchemaError, validate_simplified_answers
+from cms.form_schema import FormSchemaError, resolve_simplified_form_schema, schema_fields, validate_simplified_answers
 from .audit_presentation import actor_label, presentation_for, sanitize_audit_details
 from .agency_catalog import is_protected_agency, update_agency_metadata
 from .project_status import display_implementation_status
@@ -606,7 +606,6 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
                 previous_form = self.instance.profile_data.get("simplified_form")
                 if isinstance(previous_form, dict):
                     previous_status = str(previous_form.get("status") or "").strip()
-            self._validate_simplified_funding(simplified)
             value = deepcopy(value)
             if self.instance and isinstance(self.instance.profile_data, dict):
                 existing_marker = self.instance.profile_data.get("form_schema")
@@ -630,6 +629,7 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
                 )
             except FormSchemaError as exc:
                 raise serializers.ValidationError(str(exc)) from exc
+            self._validate_simplified_funding(simplified, value.get("form_schema"))
         return value
 
     def validate(self, attrs):
@@ -748,7 +748,15 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
             return None
         return n
 
-    def _validate_simplified_funding(self, simplified):
+    def _validate_simplified_funding(self, simplified, form_marker=None):
+        marker = form_marker if isinstance(form_marker, dict) else {}
+        schema, _ = resolve_simplified_form_schema({"form_schema": marker})
+        visible_keys = {str(field.get("key") or "") for field in schema_fields(schema)}
+        year_driven_keys = {
+            "startYear", "endYear", "fundingRequirementByYear", "actualFundingByYear",
+        }
+        if not (visible_keys & year_driven_keys):
+            return
         start = self._parse_year(simplified.get("startYear"))
         end = self._parse_year(simplified.get("endYear"))
         if start is None or end is None:

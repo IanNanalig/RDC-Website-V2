@@ -168,6 +168,23 @@ class ContributorFormWorkflowTests(APITestCase):
             len([section for section in historical.data["schema"]["sections"] if section.get("visible", True)]),
             1,
         )
+        clean_profile = ProjectSerializer().validate_profile_data({
+            "form_schema": {"key": "simplified-rdip"},
+            "simplified_form": {
+                "agencyName": "DOH",
+                "collaboratingAgencies": [],
+                "program": "Public Health Modernization",
+                "projectActivity": "Sample Health Facility",
+                "location": ["Quezon City"],
+                "description": "Fictional beta-testing project.",
+                "objective": "Improve access to public health services.",
+                "custom_fields": {},
+            },
+        })
+        self.assertEqual(
+            clean_profile["form_schema"]["version"],
+            published.data["current_published_version_number"],
+        )
 
     def test_form_lock_query_does_not_join_nullable_owner(self):
         with CaptureQueriesContext(connection) as queries:

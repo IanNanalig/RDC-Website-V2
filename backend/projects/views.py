@@ -39,7 +39,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import SimpleRateThrottle
 from rest_framework.views import APIView
-from cms.form_schema import FormSchemaError, validate_simplified_answers
+from cms.form_schema import FormSchemaError, resolve_simplified_form_schema, schema_fields, validate_simplified_answers
 from rest_framework_simplejwt.tokens import AccessToken
 from .authentication import SESSION_IDLE_TIMEOUT
 from .audit_presentation import (
@@ -3094,6 +3094,12 @@ def _validate_simplified_funding(profile_data):
         return None
     simplified = profile_data.get("simplified_form")
     if not isinstance(simplified, dict):
+        return None
+    schema, _ = resolve_simplified_form_schema(profile_data)
+    visible_keys = {str(field.get("key") or "") for field in schema_fields(schema)}
+    if not visible_keys.intersection({
+        "startYear", "endYear", "fundingRequirementByYear", "actualFundingByYear",
+    }):
         return None
     start = _parse_year_value(simplified.get("startYear"))
     end = _parse_year_value(simplified.get("endYear"))

@@ -231,7 +231,12 @@ def contract_for_project_snapshot(
     if not isinstance(snapshot, dict):
         return normalize_scoring_input_contract(contract)
     form = snapshot.get("simplified_form") if isinstance(snapshot.get("simplified_form"), dict) else snapshot
-    marker = form.get("form_schema") if isinstance(form.get("form_schema"), dict) else {}
+    # Project profiles store the immutable form marker beside simplified_form.
+    # Some older snapshots embedded it inside simplified_form, so retain that
+    # fallback while preferring the current canonical location.
+    marker = snapshot.get("form_schema") if isinstance(snapshot.get("form_schema"), dict) else {}
+    if not marker and isinstance(form.get("form_schema"), dict):
+        marker = form.get("form_schema")
     key = str(marker.get("key") or "")
     version_number = marker.get("version")
     if not key or not version_number:
