@@ -39,6 +39,7 @@ export type ContributorFormField = {
   max_files?: number;
   max_file_bytes?: number;
   ai_sufficiency_instructions?: string;
+  ai_scoring_enabled?: boolean;
 };
 
 export type ContributorFormSection = {
@@ -54,6 +55,7 @@ export type ContributorFormSchema = {
   format_version: number;
   title: string;
   description?: string;
+  reset_from_scratch?: boolean;
   sections: ContributorFormSection[];
 };
 

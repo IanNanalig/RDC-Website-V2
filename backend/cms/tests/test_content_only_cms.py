@@ -225,6 +225,79 @@ class ContentOnlyCMSTests(APITestCase):
         self.assertEqual(item.image_alt_text, "Metro Manila skyline at night")
         self.assertEqual(item.published_snapshot_json, {})
 
+    def test_clearing_carousel_image_removes_it_from_public_snapshot(self):
+        page = CMSPage.objects.get(slug="home")
+        section = page.sections.get(section_key="hero-carousel")
+        content = dict(section.content_json)
+        slides = [dict(row) for row in content.get("slides") or []]
+        self.assertTrue(slides)
+        slide = slides[0]
+        slide["imageUrl"] = "https://example.com/old-carousel-image.jpg"
+        slide["imageKey"] = ""
+        slide["mediaAssetId"] = ""
+        slide["imageAssetId"] = ""
+        content["slides"] = slides
+        saved = self.client.patch(
+            f"/api/admin/cms/sections/{section.pk}/", {"content_json": content}, format="json",
+        )
+        self.assertEqual(saved.status_code, 200, saved.data)
+
+        cleared = dict(saved.data["content_json"])
+        cleared_slides = [dict(row) for row in cleared["slides"]]
+        cleared_slides[0].update({
+            "imageUrl": "", "imageKey": "", "mediaAssetId": "", "imageAssetId": "",
+        })
+        cleared["slides"] = cleared_slides
+        cleared_response = self.client.patch(
+            f"/api/admin/cms/sections/{section.pk}/", {"content_json": cleared}, format="json",
+        )
+        self.assertEqual(cleared_response.status_code, 200, cleared_response.data)
+        item = CMSCarouselItem.objects.get(stable_key=cleared_slides[0]["id"])
+        self.assertIsNone(item.image)
+        self.assertEqual(item.legacy_image_url, "")
+
+        published = self.client.post(f"/api/admin/cms/pages/{page.pk}/publish/", {}, format="json")
+        self.assertEqual(published.status_code, 200, published.data)
+        public_page = self.client.get("/api/public/cms/pages/home/")
+        self.assertEqual(public_page.status_code, 200, public_page.data)
+        carousel = next(
+            row for row in public_page.data["sections"] if row["sectionKey"] == "hero-carousel"
+        )
+        public_slide = next(
+            row for row in carousel["content"]["slides"] if row["id"] == cleared_slides[0]["id"]
+        )
+        self.assertNotIn("imageUrl", public_slide)
+        self.assertNotIn("imageKey", public_slide)
+
+    def test_new_carousel_slide_does_not_reuse_archived_title_identity(self):
+        archived = CMSCarouselItem.objects.create(
+            stable_key="new-carousel-slide",
+            title="New carousel slide",
+            status="archived",
+            archived_at=timezone.now(),
+        )
+        section = CMSPageSection.objects.get(page__slug="home", section_key="hero-carousel")
+        content = dict(section.content_json)
+        slides = [dict(row) for row in content.get("slides") or []]
+        slides.append({
+            "title": "New carousel slide",
+            "subtitle": "A genuinely new slide",
+            "imageKey": "photo1",
+            "button1": {"text": "Learn More", "link": "/"},
+            "button2": {"text": "View Details", "link": "/"},
+        })
+        content["slides"] = slides
+
+        saved = self.client.patch(
+            f"/api/admin/cms/sections/{section.pk}/", {"content_json": content}, format="json",
+        )
+        self.assertEqual(saved.status_code, 200, saved.data)
+        created_key = saved.data["content_json"]["slides"][-1]["id"]
+        self.assertNotEqual(created_key, archived.stable_key)
+        self.assertTrue(CMSCarouselItem.objects.filter(stable_key=created_key, status="draft").exists())
+        archived.refresh_from_db()
+        self.assertEqual(archived.status, "archived")
+
     def test_legacy_carousel_identity_is_persisted_and_survives_title_change(self):
         section = CMSPageSection.objects.get(page__slug="home", section_key="hero-carousel")
         content = dict(section.content_json)

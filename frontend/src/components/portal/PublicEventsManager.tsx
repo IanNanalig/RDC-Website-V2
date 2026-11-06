@@ -178,6 +178,10 @@ const PublicEventsManager: React.FC<Props> = ({ mode, onChanged }) => {
     event: PublicEventRow,
     action: "submit" | "publish" | "reject" | "archive" | "unarchive",
   ) => {
+    if (
+      action === "publish"
+      && !window.confirm(`Publish "${event.title}" to the public Events Calendar now?`)
+    ) return;
     setNotice("");
     try {
       await api.post(`admin/cms/events/${event.id}/${action}/`, {});

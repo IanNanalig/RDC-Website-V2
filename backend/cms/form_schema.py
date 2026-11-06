@@ -289,6 +289,10 @@ FIXED_FIELD_TYPES = {
     "collaboratingAgencies": "multiselect_dropdown",
 }
 PROTECTED_OPTION_FIELDS = {"collaboratingAgencies"}
+RESET_PRESERVED_FIELD_KEYS = {
+    "agencyName", "collaboratingAgencies", "program", "projectActivity",
+    "location", "description", "objective",
+}
 
 
 class FormSchemaError(ValueError):
@@ -507,6 +511,7 @@ def validate_form_schema(schema, published_schema=None):
 
     current = _field_map(schema)
     published_fields = _field_map(published_schema) if isinstance(published_schema, dict) else {}
+    reset_from_scratch = schema.get("reset_from_scratch") is True
     section_visible_for_field = {
         str(field.get("key")): section.get("visible") is not False
         for section in sections
@@ -515,17 +520,18 @@ def validate_form_schema(schema, published_schema=None):
     }
     for key, original in CORE_FIELDS.items():
         candidate = current[key]
+        reset_retired = reset_from_scratch and key not in RESET_PRESERVED_FIELD_KEYS
         if key in REQUIRED_CORE_FIELDS and (
             not candidate.get("required")
             or candidate.get("visible") is False
             or not section_visible_for_field.get(key, False)
-        ):
+        ) and not reset_retired:
             raise FormSchemaError(f"Required workflow field {key} must remain visible and required.")
         if key in CONDITION_REQUIRED_CORE_FIELDS and (
             not candidate.get("condition_required")
             or candidate.get("visible") is False
             or not section_visible_for_field.get(key, False)
-        ):
+        ) and not reset_retired:
             raise FormSchemaError(f"Conditional validation for {key} must remain visible and cannot be removed.")
         original_values = [option["value"] for option in original.get("options", [])]
         if original_values:

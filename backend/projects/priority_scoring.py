@@ -8,6 +8,7 @@ from django.conf import settings
 
 from .models import PriorityRuleSet, Project, ProjectPriorityAnalysis, ProjectPriorityConfirmation
 from .scoring_contract import (
+    contract_for_project_snapshot,
     contract_for_rule_set,
     default_scoring_input_contract,
     runtime_input_report,
@@ -1443,7 +1444,25 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         existing._current_learning_assessment = ensure_learning_assessment(existing)
         return existing, True
 
-    form = _scoring_form(snapshot)
+    base_contract = contract_for_rule_set(rules)
+    effective_contract = contract_for_project_snapshot(snapshot, base_contract)
+    form = deepcopy(_scoring_form(snapshot))
+    enabled_contributor_keys = {
+        dependency["key"]
+        for dependency in effective_contract["dependencies"]
+        if dependency.get("source") == "contributor"
+    }
+    for dependency in base_contract["dependencies"]:
+        if (
+            dependency.get("source") == "contributor"
+            and dependency["key"] not in enabled_contributor_keys
+        ):
+            form.pop(dependency["key"], None)
+    scoring_snapshot = deepcopy(snapshot)
+    if isinstance(scoring_snapshot.get("simplified_form"), dict):
+        scoring_snapshot["simplified_form"] = form
+    else:
+        scoring_snapshot = form
     facts = _merge_facts(form, supplements)
     # The form answer intentionally contains no document binary or metadata.
     # Resolve this gate from the authoritative active-document relation so a
@@ -1462,7 +1481,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
             "Economic and Environment" in str(form.get("developmentSector") or "")
         ),
         legacy_form=is_legacy_form,
-        contract=contract_for_rule_set(rules),
+        contract=effective_contract,
     )
     if enforce_input_contract and not input_report["can_evaluate"]:
         raise PriorityInputError(input_report)
@@ -1543,7 +1562,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
 
         groq_analysis = analyze_priority_with_groq(
             project,
-            snapshot,
+            scoring_snapshot,
             supplements,
             outcome_rules,
             track,
@@ -1722,7 +1741,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         }
     suggested_scores.update(
         _build_analysis_guidance(
-            snapshot,
+            scoring_snapshot,
             suggested_scores,
             regional,
             {"negative_matches": negative, "risks": risks},

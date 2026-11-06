@@ -98,15 +98,7 @@ def normalize_scoring_input_contract(value: Any) -> dict[str, Any]:
     candidate = deepcopy(value)
     if candidate.get("format") != CONTRACT_VERSION:
         return default_scoring_input_contract()
-    required_keys = {item["key"] for item in DEFAULT_SCORING_INPUT_CONTRACT["dependencies"]}
-    seen = {
-        str(item.get("key") or "")
-        for item in candidate["dependencies"]
-        if isinstance(item, dict)
-    }
-    # A persisted contract may add future optional dependencies, but it may not
-    # omit a current required definition while this implementation uses it.
-    if not required_keys.issubset(seen):
+    if not all(isinstance(item, dict) and str(item.get("key") or "") for item in candidate["dependencies"]):
         return default_scoring_input_contract()
     return candidate
 
@@ -191,6 +183,71 @@ def _schema_fields(schema: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
     return fields
 
 
+def contract_for_form_schema(
+    schema: dict[str, Any] | None,
+    contract: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Apply the published form's optional AI-input selections to a contract.
+
+    Contributor inputs are included by default for backward compatibility and
+    may be explicitly unchecked by an Administrator for a published form
+    version. Validator and system inputs remain controlled by the rule set.
+    """
+    current = normalize_scoring_input_contract(contract)
+    fields = _schema_fields(schema)
+    dependencies = []
+    for dependency in current["dependencies"]:
+        field = fields.get(dependency["key"])
+        disabled = (
+            dependency.get("source") == "contributor"
+            and field is not None
+            and field.get("ai_scoring_enabled") is False
+        )
+        if not disabled:
+            dependencies.append(deepcopy(dependency))
+    known_keys = {dependency["key"] for dependency in dependencies}
+    for field in fields.values():
+        key = str(field.get("key") or "")
+        if not key or key in known_keys or field.get("ai_scoring_enabled") is not True:
+            continue
+        dependencies.append(_dependency(
+            key,
+            str(field.get("label") or key),
+            source="contributor",
+            expected_types=[str(field.get("type") or "text")],
+            criteria=["outcome_rules"],
+            required_for_input=False,
+            required_in_schema=False,
+            description="Administrator-enabled contributor form context.",
+        ))
+    return {**deepcopy(current), "dependencies": dependencies}
+
+
+def contract_for_project_snapshot(
+    snapshot: dict[str, Any] | None,
+    contract: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve the immutable form version attached to a project snapshot."""
+    if not isinstance(snapshot, dict):
+        return normalize_scoring_input_contract(contract)
+    form = snapshot.get("simplified_form") if isinstance(snapshot.get("simplified_form"), dict) else snapshot
+    marker = form.get("form_schema") if isinstance(form.get("form_schema"), dict) else {}
+    key = str(marker.get("key") or "")
+    version_number = marker.get("version")
+    if not key or not version_number:
+        return normalize_scoring_input_contract(contract)
+    try:
+        from cms.models import CMSContributorFormVersion
+
+        version = CMSContributorFormVersion.objects.filter(
+            form__key=key,
+            version_number=version_number,
+        ).only("schema_json").first()
+    except (TypeError, ValueError):
+        version = None
+    return contract_for_form_schema(version.schema_json, contract) if version else normalize_scoring_input_contract(contract)
+
+
 def _issue(status: str, dependency: dict[str, Any], message: str, recommendation: str) -> dict[str, Any]:
     return {
         "status": status,
@@ -208,10 +265,30 @@ def form_compatibility_report(schema: dict[str, Any], config: dict[str, Any] | N
     fields = _schema_fields(schema)
     issues: list[dict[str, Any]] = []
     dependencies = criterion_dependencies(config, contract)
+    dependency_keys = {dependency["key"] for dependency in dependencies}
+    effective_dependencies = criterion_dependencies(config, contract_for_form_schema(schema, contract))
+    dependencies.extend(
+        dependency for dependency in effective_dependencies
+        if dependency["key"] not in dependency_keys
+    )
     for dependency in dependencies:
+        field = fields.get(dependency["key"])
+        enabled = not (
+            dependency.get("source") == "contributor"
+            and field is not None
+            and field.get("ai_scoring_enabled") is False
+        )
+        dependency["enabled"] = enabled
+        if not enabled:
+            if dependency.get("required_for_input"):
+                issues.append(_issue(
+                    "potential_issue", dependency,
+                    f"{dependency['label']} is excluded from AI scoring for this form version.",
+                    "Review the affected AI criteria before publishing this form version.",
+                ))
+            continue
         if not dependency.get("required_in_schema"):
             continue
-        field = fields.get(dependency["key"])
         blocking = bool(dependency.get("required_for_input"))
         severity = "incompatible" if blocking else "potential_issue"
         if field is None:

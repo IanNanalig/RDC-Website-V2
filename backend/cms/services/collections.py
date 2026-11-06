@@ -29,10 +29,10 @@ def _generated_key(model, field, prefix, max_length=120):
 
 def _existing_key(model, field, candidates, *, position=None, title_field=None, title=None):
     for candidate in candidates:
-        if candidate and model.objects.filter(**{field: candidate}).exists():
+        if candidate and model.objects.exclude(status="archived").filter(**{field: candidate}).exists():
             return candidate
     if position is not None and title_field and str(title or "").strip():
-        matches = model.objects.filter(
+        matches = model.objects.exclude(status="archived").filter(
             sort_order=position,
             **{f"{title_field}__iexact": str(title).strip()},
         ).values_list(field, flat=True)[:2]

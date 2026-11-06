@@ -149,6 +149,7 @@ export type CMSScoringDependency = {
   criterion_categories?: string[];
   criteria: Array<{ key: string; label: string }>;
   description?: string;
+  enabled?: boolean;
 };
 
 export type CMSScoringContractDependency = Omit<CMSScoringDependency, "criteria"> & {

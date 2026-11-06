@@ -118,6 +118,57 @@ class ContributorFormWorkflowTests(APITestCase):
             [field["key"] for section in legacy.data["schema"]["sections"] for field in section["fields"]],
         )
 
+    def test_admin_can_publish_clean_slate_form_without_changing_historical_version(self):
+        original_version = self.form.current_published_version.version_number
+        schema = deepcopy(self.form.draft_schema_json)
+        schema["reset_from_scratch"] = True
+        preserved = {
+            "agencyName", "collaboratingAgencies", "program", "projectActivity",
+            "location", "description", "objective",
+        }
+        for section in schema["sections"]:
+            if section.get("admin_only"):
+                continue
+            keep_section = section["key"] == "project_information"
+            section["visible"] = keep_section
+            for field in section["fields"]:
+                if keep_section and field["key"] in preserved:
+                    continue
+                field.update({
+                    "visible": False,
+                    "required": False,
+                    "condition_required": False,
+                    "ai_scoring_enabled": False,
+                })
+
+        saved = self._save_draft(schema, edit_mode="change")
+        self.assertEqual(saved.status_code, status.HTTP_200_OK, saved.data)
+        self.authenticate(self.admin)
+        published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
+        self.assertEqual(published.status_code, status.HTTP_200_OK, published.data)
+
+        self.authenticate(self.contributor)
+        current = self.client.get("/api/contributor-forms/simplified-rdip/current/")
+        historical = self.client.get(
+            f"/api/contributor-forms/simplified-rdip/versions/{original_version}/"
+        )
+        visible_sections = [
+            section for section in current.data["schema"]["sections"]
+            if section.get("visible", True) and not section.get("admin_only")
+        ]
+
+        self.assertEqual(current.status_code, status.HTTP_200_OK)
+        self.assertEqual([section["key"] for section in visible_sections], ["project_information"])
+        self.assertEqual(
+            {field["key"] for field in visible_sections[0]["fields"] if field.get("visible", True)},
+            preserved,
+        )
+        self.assertEqual(historical.status_code, status.HTTP_200_OK)
+        self.assertGreater(
+            len([section for section in historical.data["schema"]["sections"] if section.get("visible", True)]),
+            1,
+        )
+
     def test_form_lock_query_does_not_join_nullable_owner(self):
         with CaptureQueriesContext(connection) as queries:
             form, acquired = acquire_form_lock(self.form.id, self.editor)

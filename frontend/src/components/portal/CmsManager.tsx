@@ -873,6 +873,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const addHeroSlide = () => {
     const slides = Array.isArray(sectionContent.slides) ? [...sectionContent.slides] : [];
     slides.push({
+      id: `slide-${crypto.randomUUID()}`,
       title: "New carousel slide",
       subtitle: "Short supporting message",
       imageKey: "photo1",
@@ -1889,7 +1890,13 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                         const selected = mediaById.get(value);
                         updateHeroSlide(index, (current) => {
                           if (!selected) {
-                            return { ...current, mediaAssetId: "", imageAssetId: "" };
+                            return {
+                              ...current,
+                              mediaAssetId: "",
+                              imageAssetId: "",
+                              imageUrl: "",
+                              imageKey: "",
+                            };
                           }
                           return {
                             ...current,
