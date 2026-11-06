@@ -750,13 +750,17 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
 
     def _validate_simplified_funding(self, simplified, form_marker=None):
         marker = form_marker if isinstance(form_marker, dict) else {}
-        schema, _ = resolve_simplified_form_schema({"form_schema": marker})
-        visible_keys = {str(field.get("key") or "") for field in schema_fields(schema)}
-        year_driven_keys = {
-            "startYear", "endYear", "fundingRequirementByYear", "actualFundingByYear",
-        }
-        if not (visible_keys & year_driven_keys):
-            return
+        # Direct callers without a version marker use the original pure
+        # year-range validation and must not require database access. Real
+        # project writes always carry the server-resolved immutable marker.
+        if marker:
+            schema, _ = resolve_simplified_form_schema({"form_schema": marker})
+            visible_keys = {str(field.get("key") or "") for field in schema_fields(schema)}
+            year_driven_keys = {
+                "startYear", "endYear", "fundingRequirementByYear", "actualFundingByYear",
+            }
+            if not (visible_keys & year_driven_keys):
+                return
         start = self._parse_year(simplified.get("startYear"))
         end = self._parse_year(simplified.get("endYear"))
         if start is None or end is None:

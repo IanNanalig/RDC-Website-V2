@@ -3095,12 +3095,14 @@ def _validate_simplified_funding(profile_data):
     simplified = profile_data.get("simplified_form")
     if not isinstance(simplified, dict):
         return None
-    schema, _ = resolve_simplified_form_schema(profile_data)
-    visible_keys = {str(field.get("key") or "") for field in schema_fields(schema)}
-    if not visible_keys.intersection({
-        "startYear", "endYear", "fundingRequirementByYear", "actualFundingByYear",
-    }):
-        return None
+    marker = profile_data.get("form_schema") if isinstance(profile_data.get("form_schema"), dict) else {}
+    if marker:
+        schema, _ = resolve_simplified_form_schema(profile_data)
+        visible_keys = {str(field.get("key") or "") for field in schema_fields(schema)}
+        if not visible_keys.intersection({
+            "startYear", "endYear", "fundingRequirementByYear", "actualFundingByYear",
+        }):
+            return None
     start = _parse_year_value(simplified.get("startYear"))
     end = _parse_year_value(simplified.get("endYear"))
     if start is None or end is None:
