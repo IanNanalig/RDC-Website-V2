@@ -57,6 +57,8 @@ class AIPriorityCMSTests(APITestCase):
         self.snapshot = {
             "simplified_form": {
                 "projectActivity": "Regional flood-control drainage",
+                "program": "Metro Manila Flood Resilience Program",
+                "objective": "Reduce flooding and protect regional mobility.",
                 "developmentSector": "Infrastructure",
                 "description": "Flood resilient drainage and road connectivity.",
                 "rdpMainChapter": "Connectivity and climate resilience",
@@ -130,6 +132,8 @@ class AIPriorityCMSTests(APITestCase):
         snapshot = {
             "simplified_form": {
                 "projectActivity": "Regional drainage improvement",
+                "program": "Metro Manila Flood Resilience Program",
+                "objective": "Reduce flood exposure and improve drainage capacity.",
                 "developmentSector": "Infrastructure",
                 "description": "Improve drainage capacity and reduce flood exposure for communities.",
                 "rdpMainChapter": "Connectivity and climate resilience",
@@ -197,7 +201,7 @@ class AIPriorityCMSTests(APITestCase):
             {"project_id": self.project.pk},
             format="json",
         )
-        self.assertEqual(preview.status_code, status.HTTP_409_CONFLICT, preview.data)
+        self.assertEqual(preview.status_code, status.HTTP_200_OK, preview.data)
         self.assertEqual(preview.data["status"], "incomplete")
         self.assertFalse(preview.data["input_preflight"]["can_evaluate"])
         self.assertEqual(ProjectPriorityAnalysis.objects.count(), before_analysis_count)

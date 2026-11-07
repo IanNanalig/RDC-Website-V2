@@ -302,13 +302,13 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
     try {
       const result = await cmsApi.previewAIScoringDraft(draft.id, Number(previewProjectId));
       setPreviewResult(result);
-      setNotice(result.status === "complete" ? "Preview completed. No official analysis was saved." : "Preview found missing required input. No AI request or official analysis was created.");
+      setNotice(result.status === "complete" ? "Preview completed. No official analysis was saved." : "Preview is incomplete. No official analysis was saved.");
     } catch (error) {
       try {
         const parsed = JSON.parse(error instanceof Error ? error.message : "{}") as CMSAIPreview;
         if (parsed.preview) {
           setPreviewResult(parsed);
-          setNotice("Preview found missing required input. No official analysis was created.");
+          setNotice("Preview is incomplete. No official analysis was saved.");
           return;
         }
       } catch { /* Use standard API error below. */ }
@@ -578,7 +578,13 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
               <label className="block"><span className="text-sm font-semibold text-amber-950">Required change note</span><textarea rows={2} value={changeNote} onChange={(event) => setChangeNote(event.target.value)} className="mt-2 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" placeholder="Example: Updated thresholds based on the approved RDC scoring memorandum." /></label>
               <div className="mt-3 flex flex-wrap items-end justify-between gap-3"><div className="min-w-[220px] flex-1"><label className="block"><span className="text-xs font-semibold text-amber-950">Preview project ID</span><input value={previewProjectId} onChange={(event) => setPreviewProjectId(event.target.value)} inputMode="numeric" className="mt-1 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" placeholder="Eligible project ID" /></label><p className="mt-1 text-xs text-amber-900">Preview is read-only and never saves an official analysis.</p></div><div className="flex flex-wrap gap-2"><button type="button" disabled={saving} onClick={() => void save()} className="portal-btn portal-btn-primary">{saving ? "Saving..." : draft ? "Save Draft" : "Create Draft"}</button>{draft && <button type="button" disabled={saving || previewing} onClick={() => void previewDraft()} className="portal-btn portal-btn-ghost">{previewing ? "Previewing..." : "Run Preview"}</button>}{draft && <button type="button" disabled={saving || draft.compatibility.status === "incompatible"} onClick={() => void activateDraft()} className="portal-btn portal-btn-primary">Activate Draft</button>}</div></div>
-              {previewResult && <div className={`mt-3 rounded-lg border p-3 text-sm ${previewResult.status === "complete" ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>{previewResult.status === "complete" && previewResult.result ? <><p className="font-semibold">Preview: {priorityLabel(previewResult.result.suggested_priority)} · {Number(previewResult.result.base_score).toFixed(2)}/100</p><p className="mt-1">{previewResult.result.summary}</p></> : <><p className="font-semibold">Preview incomplete</p><ul className="mt-1 list-disc pl-5">{previewResult.input_preflight?.missing.map((item) => <li key={item.field_key}>{item.field_label}: {item.message}</li>)}</ul></>}</div>}
+              {previewResult && <div className={`mt-3 rounded-lg border p-3 text-sm ${previewResult.status === "complete" ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
+                <p className="font-semibold">Preview: {previewResult.result ? priorityLabel(previewResult.result.suggested_priority) : "Incomplete"}{previewResult.result ? ` · ${Number(previewResult.result.base_score).toFixed(2)}/100` : ""}</p>
+                {previewResult.result && <p className="mt-1">{previewResult.result.summary}</p>}
+                {previewResult.criterion_coverage && <p className="mt-2">Criteria covered: {previewResult.criterion_coverage.covered_criteria}/{previewResult.criterion_coverage.total_criteria} ({previewResult.criterion_coverage.coverage_percent}%). Supported subtotal: {previewResult.criterion_coverage.covered_subtotal.toFixed(2)}.</p>}
+                {previewResult.input_preflight?.missing?.length ? <ul className="mt-2 list-disc pl-5">{previewResult.input_preflight.missing.map((item) => <li key={item.field_key}>{item.field_label}: {item.message}</li>)}</ul> : null}
+                <p className="mt-2 text-xs">Applicable answers: {previewResult.form_inputs?.filter((item) => item.answer_state === "answered").length || 0}. Hidden fields: {previewResult.hidden_fields?.length || 0}. External provider {previewResult.external_provider_expected ? "may be used" : "is not configured"}.</p>
+              </div>}
             </div>
           )}
         </div>

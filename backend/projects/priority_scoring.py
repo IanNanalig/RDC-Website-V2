@@ -11,6 +11,7 @@ from .scoring_contract import (
     contract_for_project_snapshot,
     contract_for_rule_set,
     default_scoring_input_contract,
+    form_version_for_project_snapshot,
     runtime_input_report,
     scoring_text_field_keys,
 )
@@ -1447,6 +1448,23 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     base_contract = contract_for_rule_set(rules)
     effective_contract = contract_for_project_snapshot(snapshot, base_contract)
     form = deepcopy(_scoring_form(snapshot))
+    marker = snapshot.get("form_schema") if isinstance(snapshot, dict) else None
+    if isinstance(marker, dict) and marker.get("version"):
+        from cms.form_schema import applicable_field_keys, resolve_simplified_form_schema
+
+        schema, _ = resolve_simplified_form_schema(snapshot)
+        applicable = applicable_field_keys(schema, form)
+        for section in schema.get("sections", []):
+            for field in section.get("fields", []):
+                key = str(field.get("key") or "")
+                if key in applicable or field.get("type") == "document_upload":
+                    continue
+                if key.startswith("custom_"):
+                    custom = form.get("custom_fields")
+                    if isinstance(custom, dict):
+                        custom.pop(key, None)
+                else:
+                    form.pop(key, None)
     enabled_contributor_keys = {
         dependency["key"]
         for dependency in effective_contract["dependencies"]
@@ -1483,11 +1501,12 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         legacy_form=is_legacy_form,
         contract=effective_contract,
     )
-    if enforce_input_contract and not input_report["can_evaluate"]:
-        raise PriorityInputError(input_report)
+    # Missing evidence no longer blocks the whole analysis. Supported criteria
+    # are evaluated and the result remains explicitly incomplete until the
+    # Validator supplies the missing facts and reruns it.
     text = _normalized_text(form)
     lgu_count = len(derive_ncr_lgus(form.get("location")))
-    missing = []
+    missing = [str(item.get("field_label") or item.get("field_key")) for item in input_report["missing"]]
 
     readiness = _scale_rating(dictionaries["readiness"], facts.get("readinessLevel"))
     if readiness is None:
@@ -1705,6 +1724,21 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         if risks:
             summary += f" Review {len(risks)} identified risk flag(s) before endorsement."
 
+    unsupported_criteria = {
+        str(criterion)
+        for item in input_report.get("missing", [])
+        for criterion in item.get("criteria", [])
+    }
+    coverage_items = []
+    for criterion in pap:
+        criterion["status"] = "incomplete" if criterion.get("key") in unsupported_criteria else "complete"
+        coverage_items.append(criterion)
+    for criterion in outcomes:
+        criterion["status"] = "incomplete" if "outcome_rules" in unsupported_criteria else "complete"
+        coverage_items.append(criterion)
+    covered_items = [item for item in coverage_items if item["status"] == "complete"]
+    covered_subtotal = round(sum(float(item.get("score") or 0) for item in covered_items), 2)
+    coverage_percent = round((len(covered_items) / len(coverage_items) * 100), 2) if coverage_items else 100.0
     suggested_scores = {
         "pap": pap,
         "pap_total": round(pap_total, 2),
@@ -1713,6 +1747,16 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         "rdp_total": round(outcome_total, 2),
         "base_total": base_score,
         "missing_facts": missing,
+        "input_preflight": input_report,
+        "criterion_coverage": {
+            "status": "incomplete" if input_report["missing"] or missing else "complete",
+            "missing": input_report["missing"],
+            "covered_criteria": len(covered_items),
+            "total_criteria": len(coverage_items),
+            "coverage_percent": coverage_percent,
+            "covered_subtotal": covered_subtotal,
+            "possible_total": round(sum(float(item.get("weight") or 0) for item in coverage_items), 2),
+        },
         "budget_priority_override": {
             "applied": below_regional_cutoff and not missing,
             "cutoff": thresholds["regional_project_cost"],
@@ -1814,6 +1858,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         project=project,
         validator=validator,
         rule_set=rules,
+        form_version=form_version_for_project_snapshot(snapshot),
         source_hash=digest,
         input_snapshot=snapshot if isinstance(snapshot, dict) else {},
         supplements=supplements,
@@ -1875,10 +1920,12 @@ def confirm_analysis(
         raise ValueError("Priority decisions are locked after endorsement.")
     scores = analysis.suggested_scores if isinstance(analysis.suggested_scores, dict) else {}
     missing = scores.get("missing_facts") or []
+    if analysis.suggested_priority == "incomplete" or missing:
+        raise ValueError("Incomplete priority analyses cannot be confirmed. Supply the missing facts and rerun the analysis first.")
     if final_priority not in ("high", "low"):
         raise ValueError("Final priority must be high or low.")
-    if (final_priority != analysis.suggested_priority or missing) and not str(override_rationale or "").strip():
-        raise ValueError("An override rationale is required for an incomplete analysis or a changed priority.")
+    if final_priority != analysis.suggested_priority and not str(override_rationale or "").strip():
+        raise ValueError("An override rationale is required for a changed priority.")
     from .document_assessments import current_document_assessment
     from .document_policy import resolve_project_document_policy
 

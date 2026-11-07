@@ -1049,6 +1049,37 @@ const SimplifiedProjectSubmission: React.FC = () => {
     formRef.current = form;
   }, [form]);
 
+  useEffect(() => {
+    if (!formReady || !formSchema?.sections) return;
+    updateFormWithLocalDraft((previous) => {
+      let changed = false;
+      const next = { ...previous, custom_fields: { ...previous.custom_fields }, priorityAnalysisFacts: { ...previous.priorityAnalysisFacts } };
+      const values = previous as unknown as Record<string, unknown>;
+      for (const section of formSchema.sections) {
+        if (section.visible === false || section.admin_only) continue;
+        for (const field of section.fields) {
+          if (field.visible === false || contributorFieldApplies(field, values, formSchema)) continue;
+          if (field.key.startsWith("custom_")) {
+            if (field.key in next.custom_fields) {
+              delete next.custom_fields[field.key];
+              changed = true;
+            }
+          } else if (field.key.startsWith("priorityAnalysisFacts.")) {
+            const key = field.key.split(".")[1] as keyof SimplifiedForm["priorityAnalysisFacts"];
+            if (next.priorityAnalysisFacts[key]) {
+              next.priorityAnalysisFacts = { ...next.priorityAnalysisFacts, [key]: "" };
+              changed = true;
+            }
+          } else if (field.key in next && (next as unknown as Record<string, unknown>)[field.key] !== "") {
+            (next as unknown as Record<string, unknown>)[field.key] = Array.isArray((next as unknown as Record<string, unknown>)[field.key]) ? [] : "";
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : previous;
+    });
+  }, [form, formReady, formSchema, updateFormWithLocalDraft]);
+
   const loadSupportingDocuments = useCallback(async () => {
     if (!id || !documentField) return;
     try {
@@ -1552,7 +1583,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
       const missing = formSchema.sections
         .filter((section) => section.visible !== false && (!section.admin_only || isAdmin))
         .flatMap((section) => section.fields)
-        .filter((field) => field.visible !== false && contributorFieldApplies(field, formValues))
+        .filter((field) => field.visible !== false && contributorFieldApplies(field, formValues, formSchema))
         .filter((field) => field.type !== "document_upload")
         .filter((field) => field.required || field.condition_required)
         .filter((field) => {
@@ -2226,7 +2257,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
             .filter((section) => section.visible !== false && (!section.admin_only || isAdmin))
             .map((section) => {
               const fields = section.fields.filter((field) =>
-                field.visible !== false && contributorFieldApplies(field, form as unknown as Record<string, unknown>),
+                field.visible !== false && contributorFieldApplies(field, form as unknown as Record<string, unknown>, formSchema),
               );
               if (!fields.length) return null;
               return (

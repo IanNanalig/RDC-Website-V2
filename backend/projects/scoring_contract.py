@@ -187,28 +187,14 @@ def contract_for_form_schema(
     schema: dict[str, Any] | None,
     contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Apply the published form's optional AI-input selections to a contract.
-
-    Contributor inputs are included by default for backward compatibility and
-    may be explicitly unchecked by an Administrator for a published form
-    version. Validator and system inputs remain controlled by the rule set.
-    """
+    """Add every contributor field as labelled AI context for this form version."""
     current = normalize_scoring_input_contract(contract)
     fields = _schema_fields(schema)
-    dependencies = []
-    for dependency in current["dependencies"]:
-        field = fields.get(dependency["key"])
-        disabled = (
-            dependency.get("source") == "contributor"
-            and field is not None
-            and field.get("ai_scoring_enabled") is False
-        )
-        if not disabled:
-            dependencies.append(deepcopy(dependency))
+    dependencies = [deepcopy(dependency) for dependency in current["dependencies"]]
     known_keys = {dependency["key"] for dependency in dependencies}
     for field in fields.values():
         key = str(field.get("key") or "")
-        if not key or key in known_keys or field.get("ai_scoring_enabled") is not True:
+        if not key or key in known_keys or field.get("type") == "document_upload":
             continue
         dependencies.append(_dependency(
             key,
@@ -218,7 +204,7 @@ def contract_for_form_schema(
             criteria=["outcome_rules"],
             required_for_input=False,
             required_in_schema=False,
-            description="Administrator-enabled contributor form context.",
+            description="Applicable contributor-form context from the project's immutable form version.",
         ))
     return {**deepcopy(current), "dependencies": dependencies}
 
@@ -253,6 +239,26 @@ def contract_for_project_snapshot(
     return contract_for_form_schema(version.schema_json, contract) if version else normalize_scoring_input_contract(contract)
 
 
+def form_version_for_project_snapshot(snapshot: dict[str, Any] | None):
+    """Resolve the exact immutable CMS form version recorded by a project."""
+    if not isinstance(snapshot, dict):
+        return None
+    form = snapshot.get("simplified_form") if isinstance(snapshot.get("simplified_form"), dict) else snapshot
+    marker = snapshot.get("form_schema") if isinstance(snapshot.get("form_schema"), dict) else {}
+    if not marker and isinstance(form.get("form_schema"), dict):
+        marker = form.get("form_schema")
+    key, version_number = str(marker.get("key") or ""), marker.get("version")
+    if not key or not version_number:
+        return None
+    try:
+        from cms.models import CMSContributorFormVersion
+        return CMSContributorFormVersion.objects.filter(
+            form__key=key, version_number=version_number,
+        ).first()
+    except (TypeError, ValueError):
+        return None
+
+
 def _issue(status: str, dependency: dict[str, Any], message: str, recommendation: str) -> dict[str, Any]:
     return {
         "status": status,
@@ -265,7 +271,12 @@ def _issue(status: str, dependency: dict[str, Any], message: str, recommendation
     }
 
 
-def form_compatibility_report(schema: dict[str, Any], config: dict[str, Any] | None = None, contract: dict[str, Any] | None = None) -> dict[str, Any]:
+def form_compatibility_report(
+    schema: dict[str, Any],
+    config: dict[str, Any] | None = None,
+    contract: dict[str, Any] | None = None,
+    baseline_schema: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Check a candidate contributor schema without saving it."""
     fields = _schema_fields(schema)
     issues: list[dict[str, Any]] = []
@@ -278,24 +289,11 @@ def form_compatibility_report(schema: dict[str, Any], config: dict[str, Any] | N
     )
     for dependency in dependencies:
         field = fields.get(dependency["key"])
-        enabled = not (
-            dependency.get("source") == "contributor"
-            and field is not None
-            and field.get("ai_scoring_enabled") is False
-        )
-        dependency["enabled"] = enabled
-        if not enabled:
-            if dependency.get("required_for_input"):
-                issues.append(_issue(
-                    "potential_issue", dependency,
-                    f"{dependency['label']} is excluded from AI scoring for this form version.",
-                    "Review the affected AI criteria before publishing this form version.",
-                ))
-            continue
+        dependency["enabled"] = True
         if not dependency.get("required_in_schema"):
             continue
         blocking = bool(dependency.get("required_for_input"))
-        severity = "incompatible" if blocking else "potential_issue"
+        severity = "potential_issue"
         if field is None:
             issues.append(_issue(
                 severity, dependency,
@@ -310,11 +308,11 @@ def form_compatibility_report(schema: dict[str, Any], config: dict[str, Any] | N
                 "Keep the field and its section active, or remove the dependent scoring use after review.",
             ))
             continue
-        if blocking and isinstance(field.get("condition"), dict):
+        if blocking and (isinstance(field.get("condition"), dict) or isinstance(field.get("condition_group"), dict)):
             issues.append(_issue(
-                "incompatible", dependency,
+                "potential_issue", dependency,
                 f"{dependency['label']} is conditionally hidden, so scoring cannot rely on it for every eligible project.",
-                "Make the required scoring field always available before publishing.",
+                "Review the affected criteria; analyses without this answer will identify the evidence gap.",
             ))
             continue
         expected = set(dependency.get("expected_types") or [])
@@ -333,11 +331,23 @@ def form_compatibility_report(schema: dict[str, Any], config: dict[str, Any] | N
             }
             if not option_values:
                 issues.append(_issue(
-                    "incompatible", dependency,
+                    "potential_issue", dependency,
                     f"{dependency['label']} has no valid selectable values.",
                     "Restore at least one valid option before publishing the form.",
                 ))
-    status = "incompatible" if any(item["status"] == "incompatible" for item in issues) else "potential_issue" if issues else "compatible"
+    status = "potential_issue" if issues else "compatible"
+    baseline_fields = _schema_fields(baseline_schema) if isinstance(baseline_schema, dict) else {}
+    added = sorted(set(fields) - set(baseline_fields))
+    retired = sorted(
+        key for key in set(baseline_fields) - set(fields)
+        if baseline_fields[key].get("visible") is not False
+    )
+    modified = []
+    review_keys = ("type", "options", "required", "visible", "condition", "condition_group")
+    for key in sorted(set(fields) & set(baseline_fields)):
+        changes = [name for name in review_keys if fields[key].get(name) != baseline_fields[key].get(name)]
+        if changes:
+            modified.append({"field_key": key, "field_label": fields[key].get("label") or key, "changes": changes})
     return {
         "status": status,
         "status_label": {
@@ -347,6 +357,14 @@ def form_compatibility_report(schema: dict[str, Any], config: dict[str, Any] | N
         }[status],
         "issues": issues,
         "dependencies": dependencies,
+        "impact": {
+            "structurally_valid": status != "incompatible",
+            "added_fields": added,
+            "retired_fields": retired,
+            "modified_fields": modified,
+            "dependency_conflicts": [issue for issue in issues if issue["status"] == "incompatible"],
+            "ai_review_warnings": [issue for issue in issues if issue["status"] == "potential_issue"],
+        },
     }
 
 

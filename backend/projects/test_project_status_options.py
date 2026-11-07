@@ -105,13 +105,14 @@ class ProjectStatusOptionsTests(TestCase):
         self.assertEqual(filtered.status_code, 200)
         self.assertEqual([item["title"] for item in filtered.data], [project.name])
 
-    def test_new_and_not_implemented_projects_reject_accomplishment_values(self):
+    def test_new_and_not_implemented_projects_strip_hidden_accomplishment_values(self):
         serializer = ProjectSerializer()
         for status in ("New", "Not Implemented"):
             profile = self.profile(status)
             profile["simplified_form"]["physicalAccomplishment"] = "50% complete"
-            with self.subTest(status=status), self.assertRaises(serializers.ValidationError):
-                serializer.validate_profile_data(profile)
+            with self.subTest(status=status):
+                validated = serializer.validate_profile_data(profile)
+                self.assertNotIn("physicalAccomplishment", validated["simplified_form"])
 
     def test_existing_legacy_status_is_normalized_on_next_save(self):
         project = Project(profile_data=self.profile("Dropped"))

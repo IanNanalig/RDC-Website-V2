@@ -35,20 +35,22 @@ class SupportingDocumentSchemaTests(TestCase):
         with self.assertRaisesMessage(FormSchemaError, "only one active"):
             validate_form_schema(schema)
 
-    def test_document_field_can_be_hidden_or_removed_from_a_future_version(self):
+    def test_active_document_field_is_protected_from_hiding_or_removal(self):
         published = default_simplified_form_schema()
         hidden = deepcopy(published)
         for section in hidden["sections"]:
             for field in section["fields"]:
                 if field.get("type") == "document_upload":
                     field["visible"] = False
-        validate_form_schema(hidden, published_schema=published)
+        with self.assertRaisesMessage(FormSchemaError, "Required workflow field"):
+            validate_form_schema(hidden, published_schema=published)
 
         removed = deepcopy(published)
         removed["sections"] = [
             section for section in removed["sections"] if section.get("key") != "supporting_documents"
         ]
-        validate_form_schema(removed, published_schema=published)
+        with self.assertRaisesMessage(FormSchemaError, "Required workflow fields"):
+            validate_form_schema(removed, published_schema=published)
 
 
 class ContributorFormControlTests(TestCase):

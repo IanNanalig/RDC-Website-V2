@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+from copy import deepcopy
 
 from .features import FEATURE_SCHEMA_VERSION, normalized_project_text
 from .groq_client import GroqUnavailable, complete_json, is_groq_enabled
@@ -46,21 +47,71 @@ def _form(snapshot):
 def _project_payload(snapshot):
     form = _form(snapshot)
     payload = {}
-    for key in PROJECT_CONTEXT_FIELDS:
-        value = form.get(key)
-        if value not in (None, "", [], {}):
-            payload[key] = value
+    try:
+        from cms.form_schema import applicable_field_keys, resolve_simplified_form_schema
+
+        schema, _version = resolve_simplified_form_schema(snapshot if isinstance(snapshot, dict) else {})
+        applicable_field_keys_set = applicable_field_keys(schema, form)
+        form_fields = []
+        applicable_keys = set()
+        for section in schema.get("sections", []):
+            if not isinstance(section, dict) or section.get("visible") is False or section.get("admin_only") is True:
+                continue
+            for field in section.get("fields", []):
+                if not isinstance(field, dict) or field.get("visible") is False or field.get("type") == "document_upload":
+                    continue
+                key = str(field.get("key") or "")
+                applicable = key in applicable_field_keys_set
+                if key.startswith("custom_"):
+                    custom = form.get("custom_fields") if isinstance(form.get("custom_fields"), dict) else {}
+                    answer = custom.get(key)
+                elif key.startswith("priorityAnalysisFacts."):
+                    facts = form.get("priorityAnalysisFacts") if isinstance(form.get("priorityAnalysisFacts"), dict) else {}
+                    answer = facts.get(key.split(".", 1)[1])
+                else:
+                    answer = form.get(key)
+                empty = answer in (None, "", [], {})
+                if applicable:
+                    applicable_keys.add(key)
+                form_fields.append({
+                    "key": key,
+                    "label": str(field.get("label") or key),
+                    "help_text": str(field.get("help_text") or ""),
+                    "type": str(field.get("type") or "text"),
+                    "required": bool(field.get("required") or field.get("condition_required")),
+                    "applicability": "applicable" if applicable else "hidden_by_condition",
+                    "answer_state": (
+                        "hidden_by_condition" if not applicable else
+                        "required_missing" if empty and (field.get("required") or field.get("condition_required")) else
+                        "optional_empty" if empty else "answered"
+                    ),
+                    "answer": answer if applicable and not empty else None,
+                    "options": [
+                        {"value": option.get("value"), "label": option.get("label")}
+                        for option in field.get("options", []) if isinstance(option, dict)
+                    ],
+                })
+        for key in PROJECT_CONTEXT_FIELDS:
+            value = form.get(key)
+            if key in applicable_keys and value not in (None, "", [], {}):
+                payload[key] = value
+        payload["form_version"] = deepcopy(snapshot.get("form_schema") or {}) if isinstance(snapshot, dict) else {}
+        payload["form_fields"] = form_fields
+    except Exception:
+        # Historical or isolated test snapshots can predate the CMS form table.
+        # Keep the canonical safe payload available in that case.
+        for key in PROJECT_CONTEXT_FIELDS:
+            value = form.get(key)
+            if value not in (None, "", [], {}):
+                payload[key] = value
     encoded = json.dumps(payload, ensure_ascii=False, default=str)
     if len(encoded) <= 24000:
         return payload
-    return {
-        "projectActivity": str(form.get("projectActivity") or form.get("projectTitle") or "")[:500],
-        "description": str(form.get("description") or "")[:8000],
-        "objective": str(form.get("objective") or "")[:6000],
-        "remarks": str(form.get("remarks") or "")[:3000],
-        "developmentSector": str(form.get("developmentSector") or "")[:300],
-        "location": str(form.get("location") or "")[:500],
-    }
+    compact = {key: value for key, value in payload.items() if key not in {"form_fields", "form_version"}}
+    if isinstance(payload.get("form_fields"), list):
+        compact["form_fields"] = payload["form_fields"][:100]
+        compact["form_version"] = payload.get("form_version") or {}
+    return compact
 
 
 def _active_reference_model():
@@ -314,7 +365,11 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
         exclude_project_id=getattr(project, "pk", None),
     )
     project_payload = _project_payload(snapshot)
-    field_keys = set(project_payload.keys())
+    field_keys = {
+        str(item.get("key") or "")
+        for item in project_payload.get("form_fields", [])
+        if isinstance(item, dict) and item.get("key")
+    } | {key for key in project_payload if key not in {"form_fields", "form_version"}}
     criteria_payload = [
         {
             "key": item["key"],

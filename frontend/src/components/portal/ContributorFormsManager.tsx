@@ -9,6 +9,8 @@ import {
   contributorFieldApplies,
   type ContributorFormField,
   type ContributorFormFieldType,
+  type ContributorConditionGroup,
+  type ContributorConditionOperator,
   type ContributorFormRetiredOrigin,
   type ContributorFormSchema,
   type ContributorFormSection,
@@ -31,8 +33,51 @@ const fieldTypeOptions: Array<{ value: ContributorFormFieldType; label: string }
 ];
 const documentExtensions = ["pdf", "docx", "xlsx", "csv", "png", "jpg", "jpeg"] as const;
 const choiceFieldTypes: ContributorFormFieldType[] = ["select", "multiselect", "multiselect_dropdown"];
-const fixedFieldTypeKeys = new Set(["agencyName", "collaboratingAgencies"]);
+const fixedFieldTypeKeys = new Set(["agencyName", "projectActivity", "custom_supporting_documents"]);
 const protectedOptionKeys = new Set(["collaboratingAgencies"]);
+const protectedWorkflowKeys = new Set(["agencyName", "projectActivity", "custom_supporting_documents"]);
+
+const conditionOperators = (type: ContributorFormFieldType): Array<{ value: ContributorConditionOperator; label: string }> => {
+  const empty: Array<{ value: ContributorConditionOperator; label: string }> = [
+    { value: "is_empty", label: "Is empty" }, { value: "is_not_empty", label: "Is not empty" },
+  ];
+  if (type === "select") return [
+    { value: "equals", label: "Equals" }, { value: "not_equals", label: "Does not equal" },
+    { value: "one_of", label: "Is one of" }, { value: "not_one_of", label: "Is not one of" }, ...empty,
+  ];
+  if (type === "multiselect" || type === "multiselect_dropdown") return [
+    { value: "contains", label: "Contains" }, { value: "not_contains", label: "Does not contain" },
+    { value: "contains_any", label: "Contains any of" }, ...empty,
+  ];
+  if (type === "number" || type === "year") return [
+    { value: "equals", label: "Equals" }, { value: "not_equals", label: "Does not equal" },
+    { value: "greater_than", label: "Greater than" }, { value: "less_than", label: "Less than" },
+    { value: "at_least", label: "At least" }, { value: "at_most", label: "At most" }, ...empty,
+  ];
+  if (type === "date") return [
+    { value: "equals", label: "Equals" }, { value: "before", label: "Before" }, { value: "after", label: "After" }, ...empty,
+  ];
+  return [{ value: "equals", label: "Equals" }, { value: "not_equals", label: "Does not equal" }, ...empty];
+};
+
+const normalizedConditionGroup = (field: ContributorFormField): ContributorConditionGroup | undefined => {
+  if (field.condition_group?.conditions?.length) return field.condition_group;
+  if (!field.condition?.field) return undefined;
+  for (const operator of ["equals", "not_equals", "one_of", "not_one_of"] as const) {
+    if (field.condition[operator] === undefined) continue;
+    return {
+      match: "all",
+      conditions: [{
+        field: field.condition.field,
+        operator,
+        ...(operator === "one_of" || operator === "not_one_of"
+          ? { values: field.condition[operator] as string[] }
+          : { value: field.condition[operator] as string }),
+      }],
+    };
+  }
+  return undefined;
+};
 
 const errorDetail = (error: unknown, fallback: string) => {
   if (!(error instanceof Error) || !error.message) return fallback;
@@ -93,8 +138,7 @@ const normalizeContributorSchema = (schema: ContributorFormSchema) => {
 };
 
 const resetPreservedFieldKeys = new Set([
-  "agencyName", "collaboratingAgencies", "program", "projectActivity",
-  "location", "description", "objective",
+  "agencyName", "projectActivity", "custom_supporting_documents",
 ]);
 
 const cleanSlateSchema = (source: ContributorFormSchema): ContributorFormSchema => ({
@@ -102,20 +146,21 @@ const cleanSlateSchema = (source: ContributorFormSchema): ContributorFormSchema 
   reset_from_scratch: true,
   sections: source.sections.map((section) => {
     if (section.admin_only) return { ...section, fields: section.fields.map((field) => ({ ...field })) };
-    const isProjectInformation = section.key === "project_information";
+    const hasProtectedField = section.fields.some((field) => resetPreservedFieldKeys.has(field.key));
     return {
       ...section,
-      visible: isProjectInformation,
+      visible: hasProtectedField,
       fields: section.fields.map((field) => {
-        if (isProjectInformation && resetPreservedFieldKeys.has(field.key)) {
+        if (resetPreservedFieldKeys.has(field.key)) {
           return { ...field, visible: true };
         }
+        const retired = { ...field };
+        delete retired.condition_required;
+        delete retired.ai_scoring_enabled;
         return {
-          ...field,
+          ...retired,
           visible: false,
           required: false,
-          condition_required: false,
-          ai_scoring_enabled: false,
         };
       }),
     };
@@ -213,8 +258,63 @@ const ChangeSummary = ({ live, draft }: { live?: ContributorFormSchema; draft: C
   return <ul className="list-disc space-y-1 pl-5 text-sm text-slate-700">{changes.map((change, index) => <li key={`${index}-${change}`}>{change}</li>)}</ul>;
 };
 
+const ConditionalDisplayBuilder = ({
+  field,
+  fields,
+  onChange,
+}: {
+  field: ContributorFormField;
+  fields: ContributorFormField[];
+  onChange: (next?: ContributorConditionGroup) => void;
+}) => {
+  const group = normalizedConditionGroup(field);
+  const candidates = fields.filter((candidate) => candidate.key !== field.key && candidate.type !== "document_upload");
+  const updateGroup = (next?: ContributorConditionGroup) => onChange(next);
+  return (
+    <div className="mt-3 rounded-xl border border-violet-200 bg-violet-50 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div><p className="text-sm font-semibold text-violet-950">Conditional Display</p><p className="text-xs text-violet-800">Show this field only when its saved rules match.</p></div>
+        <label className="flex items-center gap-2 text-xs font-semibold text-violet-900"><input type="checkbox" checked={Boolean(group)} onChange={(event) => updateGroup(event.target.checked && candidates[0] ? { match: "all", conditions: [{ field: candidates[0].key, operator: conditionOperators(candidates[0].type)[0].value, value: "" }] } : undefined)} />Enable conditional display</label>
+      </div>
+      {group && <div className="mt-3 space-y-2">
+        <label className="block text-xs font-semibold text-slate-700">Match rules <select className="ml-2 rounded border border-slate-300 bg-white px-2 py-1" value={group.match} onChange={(event) => updateGroup({ ...group, match: event.target.value as "all" | "any" })}><option value="all">All (AND)</option><option value="any">Any (OR)</option></select></label>
+        {group.conditions.map((rule, ruleIndex) => {
+          const source = fields.find((candidate) => candidate.key === rule.field) || candidates[0];
+          const operators = conditionOperators(source?.type || "text");
+          const operator = operators.some((item) => item.value === rule.operator) ? rule.operator : operators[0].value;
+          const noValue = operator === "is_empty" || operator === "is_not_empty";
+          const manyValues = operator === "one_of" || operator === "not_one_of" || operator === "contains_any";
+          const updateRule = (nextRule: typeof rule) => updateGroup({ ...group, conditions: group.conditions.map((item, index) => index === ruleIndex ? nextRule : item) });
+          return <div key={`${rule.field}-${ruleIndex}`} className="grid gap-2 rounded-lg border border-violet-100 bg-white p-2 md:grid-cols-[1fr_180px_1fr_auto]">
+            <select aria-label="Condition source question" className="rounded-lg border border-slate-300 px-2 py-2 text-sm" value={source?.key || ""} onChange={(event) => { const nextSource = fields.find((candidate) => candidate.key === event.target.value); const nextOperator = conditionOperators(nextSource?.type || "text")[0].value; updateRule({ field: event.target.value, operator: nextOperator, value: "", values: [] }); }}>{candidates.map((candidate) => <option key={candidate.key} value={candidate.key}>{candidate.label}</option>)}</select>
+            <select aria-label="Condition operator" className="rounded-lg border border-slate-300 px-2 py-2 text-sm" value={operator} onChange={(event) => updateRule({ ...rule, operator: event.target.value as ContributorConditionOperator, value: "", values: [] })}>{operators.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+            {noValue ? <span className="self-center text-xs text-slate-500">No comparison value needed</span> : source?.options?.length ? (
+              manyValues ? <select multiple aria-label="Expected answers" className="min-h-20 rounded-lg border border-slate-300 px-2 py-1 text-sm" value={rule.values || []} onChange={(event) => updateRule({ ...rule, values: Array.from(event.target.selectedOptions, (option) => option.value), value: undefined })}>{source.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+                : <select aria-label="Expected answer" className="rounded-lg border border-slate-300 px-2 py-2 text-sm" value={rule.value || ""} onChange={(event) => updateRule({ ...rule, value: event.target.value, values: undefined })}><option value="">Choose an answer</option>{source.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+            ) : <input aria-label="Expected answer" type={source?.type === "date" ? "date" : source?.type === "number" || source?.type === "year" ? "number" : "text"} className="rounded-lg border border-slate-300 px-2 py-2 text-sm" value={manyValues ? (rule.values || []).join(", ") : rule.value || ""} onChange={(event) => manyValues ? updateRule({ ...rule, values: event.target.value.split(",").map((value) => value.trim()).filter(Boolean), value: undefined }) : updateRule({ ...rule, value: event.target.value, values: undefined })} placeholder={manyValues ? "Comma-separated values" : "Expected answer"} />}
+            <button type="button" className="text-xs font-semibold text-rose-700" onClick={() => { const conditions = group.conditions.filter((_, index) => index !== ruleIndex); updateGroup(conditions.length ? { ...group, conditions } : undefined); }}>Remove</button>
+          </div>;
+        })}
+        <button type="button" className="text-xs font-semibold text-violet-800" disabled={!candidates.length} onClick={() => { const source = candidates[0]; if (source) updateGroup({ ...group, conditions: [...group.conditions, { field: source.key, operator: conditionOperators(source.type)[0].value, value: "" }] }); }}>Add condition</button>
+      </div>}
+    </div>
+  );
+};
+
 const FormPreview = ({ schema }: { schema: ContributorFormSchema }) => {
   const [previewValues, setPreviewValues] = useState<Record<string, string | string[]>>({});
+  useEffect(() => {
+    setPreviewValues((current) => {
+      const next = { ...current };
+      let changed = false;
+      for (const field of schema.sections.flatMap((section) => section.fields)) {
+        if (contributorFieldApplies(field, current, schema) || !(field.key in next)) continue;
+        delete next[field.key];
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [previewValues, schema]);
   const setValue = (key: string, value: string | string[]) => {
     setPreviewValues((current) => ({ ...current, [key]: value }));
   };
@@ -236,7 +336,7 @@ const FormPreview = ({ schema }: { schema: ContributorFormSchema }) => {
           <h4 className="font-bold text-slate-800">{section.title}</h4>
           {section.description && <p className="mb-3 mt-1 text-xs text-slate-500">{section.description}</p>}
           <div className="mt-3 grid gap-3 md:grid-cols-2">
-            {section.fields.filter((field) => field.visible !== false && contributorFieldApplies(field, previewValues)).map((field) => (
+            {section.fields.filter((field) => field.visible !== false && contributorFieldApplies(field, previewValues, schema)).map((field) => (
               <label key={field.key} className={field.type === "textarea" || field.type === "multiselect" || field.type === "multiselect_dropdown" || field.type === "currency_by_year" || field.type === "document_upload" ? "md:col-span-2" : ""}>
                 <span className="text-sm font-medium text-slate-700">{field.label}</span>
                 {field.type === "textarea" ? (
@@ -345,6 +445,12 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     const dependencies = new Map<string, Set<string>>();
     for (const section of schema?.sections || []) {
       for (const field of section.fields) {
+        for (const condition of field.condition_group?.conditions || []) {
+          const values = dependencies.get(condition.field) || new Set<string>();
+          const expected = Array.isArray(condition.value) ? condition.value : [condition.value];
+          for (const value of expected) if (value !== undefined && value !== null) values.add(String(value));
+          dependencies.set(condition.field, values);
+        }
         if (!field.condition?.field) continue;
         const values = dependencies.get(field.condition.field) || new Set<string>();
         if (field.condition.equals !== undefined) values.add(field.condition.equals);
@@ -413,16 +519,9 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     return () => { current = false; window.clearTimeout(timer); };
   }, [schema, selectedFormId]);
 
-  const dependenciesByField = useMemo(() => new Map(
-    (compatibility?.dependencies || []).map((dependency) => [dependency.key, dependency]),
-  ), [compatibility]);
-  const compatibilityIssuesByField = useMemo(() => {
-    const issues = new Map<string, CMSCompatibilityReport["issues"]>();
-    for (const issue of compatibility?.issues || []) {
-      issues.set(issue.field_key, [...(issues.get(issue.field_key) || []), issue]);
-    }
-    return issues;
-  }, [compatibility]);
+  const allFields = useMemo(() => schema?.sections
+    .filter((section) => section.visible !== false && !section.admin_only)
+    .flatMap((section) => section.fields.filter((field) => field.visible !== false)) || [], [schema]);
 
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
@@ -585,8 +684,21 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   const removeField = (sectionIndex: number, fieldIndex: number) => {
     if (!schema) return;
     const field = schema.sections[sectionIndex]?.fields[fieldIndex];
-    if (!field || publishedFieldKeys.has(field.key) && field.type !== "document_upload") return;
+    if (!field || protectedWorkflowKeys.has(field.key)) return;
+    const dependents = allFields.filter((candidate) => candidate.key !== field.key && (
+      candidate.condition_group?.conditions.some((condition) => condition.field === field.key)
+      || candidate.condition?.field === field.key
+    ));
+    if (dependents.length) {
+      setValidationTarget(field.key);
+      setNotice(`Before retiring ${field.label}, remove or reassign the conditional rules used by: ${dependents.map((candidate) => candidate.label).join(", ")}.`);
+      return;
+    }
     if (!window.confirm(`Remove the field "${field.label}" from future form versions? Existing project records will keep their historical policy.`)) return;
+    if (publishedFieldKeys.has(field.key)) {
+      updateField(sectionIndex, fieldIndex, (value) => ({ ...value, visible: false }));
+      return;
+    }
     updateSection(sectionIndex, (section) => ({
       ...section,
       fields: section.fields.filter((_, index) => index !== fieldIndex),
@@ -754,7 +866,24 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
 
   const workflow = async (action: "submit" | "publish" | "reject") => {
     if (!selected) return;
-    if (action === "publish" && !window.confirm(`Publish ${selected.name}? New project drafts will use the next version.`)) return;
+    if (action === "publish") {
+      try {
+        const report = await cmsApi.getContributorFormCompatibility(selected.id, selected.draft_schema_json);
+        setCompatibility(report);
+        if (report.status === "incompatible") {
+          setNotice("Resolve the form configuration errors before publishing.");
+          return;
+        }
+        const impact = report.impact;
+        const summary = impact
+          ? `${impact.added_fields.length} added, ${impact.retired_fields.length} retired, and ${impact.modified_fields.length} modified fields. ${impact.ai_review_warnings.length} scoring review warnings.`
+          : "Review the draft changes before publishing.";
+        if (!window.confirm(`Publish ${selected.name}? New projects will use the next form version.\n\n${summary}`)) return;
+      } catch (error) {
+        setNotice(errorDetail(error, "Could not review the form impact before publishing."));
+        return;
+      }
+    }
     const remarks = action === "reject" ? window.prompt("Reason for rejection:", selected.review_notes || "") : "";
     if (action === "reject" && remarks === null) return;
     setLoading(true);
@@ -860,11 +989,12 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
 
       <section className={`portal-card overflow-hidden ${compatibility?.status === "incompatible" ? "border-rose-300" : compatibility?.status === "potential_issue" ? "border-amber-300" : "border-emerald-200"}`}>
         <div className="portal-card-header flex flex-wrap items-center justify-between gap-2">
-          <div><h3 className="font-bold text-slate-900">AI Scoring Compatibility</h3><p className="text-xs text-slate-500">Field keys, types, and visibility are checked against the active scoring inputs before publication.</p></div>
+          <div><h3 className="font-bold text-slate-900">Configuration Impact Review</h3><p className="text-xs text-slate-500">Structural rules and scoring-information effects are reviewed before publication. Ordinary content changes are warnings, not false incompatibilities.</p></div>
           <span className={`rounded-full px-3 py-1 text-xs font-semibold ${compatibility?.status === "incompatible" ? "bg-rose-100 text-rose-800" : compatibility?.status === "potential_issue" ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>{compatibilityLoading ? "Checking…" : compatibility?.status_label || "Checking"}</span>
         </div>
         {compatibility && <div className="portal-card-body space-y-2">
-          {compatibility.issues.length === 0 ? <p className="text-sm text-emerald-800">Compatible. Editing labels or order will not change AI input because scoring uses stable field keys.</p> : compatibility.issues.map((issue) => <div key={`${issue.status}-${issue.field_key}`} className={`rounded-lg border p-3 text-sm ${issue.status === "incompatible" ? "border-rose-200 bg-rose-50 text-rose-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}><p className="font-semibold">{issue.field_label}</p><p className="mt-1">{issue.message}</p><p className="mt-1 text-xs">Next step: {issue.recommendation}</p></div>)}
+          {compatibility.impact && <div className="flex flex-wrap gap-2 text-xs text-slate-700"><span className="rounded-full bg-blue-50 px-2 py-1">{compatibility.impact.added_fields.length} added</span><span className="rounded-full bg-slate-100 px-2 py-1">{compatibility.impact.retired_fields.length} retired</span><span className="rounded-full bg-violet-50 px-2 py-1">{compatibility.impact.modified_fields.length} modified</span></div>}
+          {compatibility.issues.length === 0 ? <p className="text-sm text-emerald-800">Configuration is valid. All applicable published answers will be supplied to the scorer automatically.</p> : compatibility.issues.map((issue) => <div key={`${issue.status}-${issue.field_key}`} className={`rounded-lg border p-3 text-sm ${issue.status === "incompatible" ? "border-rose-200 bg-rose-50 text-rose-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}><p className="font-semibold">{issue.field_label}</p><p className="mt-1">{issue.message}</p><p className="mt-1 text-xs">Next step: {issue.recommendation}</p></div>)}
         </div>}
       </section>
 
@@ -879,8 +1009,13 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
       )}
 
       {editMode ? (
-        <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.55fr)]">
-          <div className="portal-card overflow-hidden">
+        <div className="space-y-4">
+          <aside className="portal-card p-4 text-sm text-slate-600" aria-label="Administrator editing guidance">
+            <h3 className="font-bold text-slate-900">Administrator editing</h3>
+            <p className="mt-2">Change Form lets Administrators edit field labels, guidance, placeholders, order, choices, and field types. Agency Name keeps its Short text type because its value is supplied by the contributor&apos;s account. Update Form remains limited to wording and safe additions. Published fields are hidden instead of deleted for historical compatibility; new unpublished fields and sections can be removed permanently.</p>
+            <p className="mt-2">The validator AI analysis is system-managed and is intentionally excluded from this contributor-form editor.</p>
+          </aside>
+          <div className="portal-card min-w-0 overflow-hidden">
             <div className="portal-card-header flex flex-wrap items-center justify-between gap-3">
               <div><h3 className="font-bold text-slate-900">{editMode === "update" ? "Update Form" : "Change Form"}</h3><p className="text-xs text-slate-500">{editMode === "update" ? "Edit wording and add small fields without changing the structure." : "Reorder, hide optional items, and make controlled structural changes."}</p></div>
               <div className="flex gap-2"><button disabled={loading || Boolean(busyAction)} className="portal-btn portal-btn-ghost disabled:opacity-50" onClick={() => setPreview((value) => !value)}>{preview ? "Hide Preview" : "Preview as Contributor"}</button><button disabled={loading || Boolean(busyAction)} className="portal-btn portal-btn-ghost disabled:opacity-50" onClick={() => void closeEditor()}>{busyAction === "discarding" ? "Cancelling..." : "Cancel"}</button></div>
@@ -915,56 +1050,26 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                       if (schema.reset_from_scratch && item.visible === false) return null;
                       const isCustom = item.key.startsWith("custom_");
                       const isPublished = publishedFieldKeys.has(item.key);
-                      const canRemove = isCustom && (!isPublished || item.type === "document_upload") && (editMode === "change" || !baselineFieldKeys.has(item.key));
+                      const isProtected = protectedWorkflowKeys.has(item.key);
+                      const canRemove = !isProtected && (editMode === "change" || !baselineFieldKeys.has(item.key));
                       const isRetired = section.key === "retired_fields";
                       const retiredOrigin = isRetired ? resolveRetiredOrigin(item) : undefined;
                       const canReorder = !isRetired && (editMode === "change" || (isCustom && !baselineFieldKeys.has(item.key)));
                       const typeIsFixed = fixedFieldTypeKeys.has(item.key);
                       const optionsAreProtected = protectedOptionKeys.has(item.key);
-                      const scoringDependency = dependenciesByField.get(item.key);
-                      const scoringEnabled = scoringDependency
-                        ? scoringDependency.enabled !== false
-                        : Boolean(item.ai_scoring_enabled);
-                      const scoringToggleLocked = false;
-                      const scoringIssues = compatibilityIssuesByField.get(item.key) || [];
-                      const hasBlockingScoringIssue = scoringIssues.some((issue) => issue.status === "incompatible");
-                      const scoringCategories = (scoringDependency?.criterion_categories || [])
-                        .map((category) => category.replace(/_/g, " "))
-                        .join(", ");
                       return (
-                        <div key={item.key} data-form-field-key={item.key} className={`rounded-xl border bg-white p-3 ${validationTarget === item.key || hasBlockingScoringIssue ? "border-rose-400 ring-2 ring-rose-100" : scoringIssues.length ? "border-amber-300 ring-1 ring-amber-100" : "border-slate-200"}`}>
-                          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                        <div key={item.key} data-form-field-key={item.key} className={`rounded-xl border bg-white p-3 ${validationTarget === item.key ? "border-rose-400 ring-2 ring-rose-100" : "border-slate-200"}`}>
+                          <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-600">Basic Information</h4>
+                          <div className="grid gap-3 sm:grid-cols-2">
                             <label><span className="text-xs font-semibold text-slate-600">Label</span><input className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.label} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, label: event.target.value }))} /></label>
                             <label><span className="text-xs font-semibold text-slate-600">Help text</span><input className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.help_text || ""} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, help_text: event.target.value }))} /></label>
                             <label><span className="text-xs font-semibold text-slate-600">Placeholder</span><input className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.placeholder || ""} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, placeholder: event.target.value }))} /></label>
                             <label><span className="text-xs font-semibold text-slate-600">Field type</span><select disabled={typeIsFixed || editMode === "update" && baselineFieldKeys.has(item.key)} title={typeIsFixed ? "Agency Name is supplied by the contributor's account, so its field type cannot be changed." : editMode === "update" && baselineFieldKeys.has(item.key) ? "Use Change Form to change an existing field type." : undefined} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500" value={item.type} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => { const nextType = event.target.value as ContributorFormFieldType; return { ...fieldValue, type: nextType, options: choiceFieldTypes.includes(nextType) ? fieldValue.options || [{ value: "option_1", label: "Option 1" }] : undefined, ...(nextType === "document_upload" ? { allowed_extensions: [...documentExtensions], min_files: 0, max_files: 10, max_file_bytes: 20 * 1024 * 1024, ai_sufficiency_instructions: "Documents should substantiate the project scope, objectives, budget, readiness, beneficiaries, or outcomes." } : {}) }; })}>{fieldTypeOptions.map((option) => <option key={option.value} value={option.value} disabled={(option.value === "document_upload" && (!isCustom || item.type !== "document_upload" && schema.sections.some((candidate) => candidate.visible !== false && candidate.fields.some((field) => field.visible !== false && field.type === "document_upload")))) || (option.value === "currency_by_year" && !["fundingRequirementByYear", "actualFundingByYear"].includes(item.key))}>{option.label}</option>)}</select></label>
                           </div>
+                          <h4 className="mb-1 mt-3 text-xs font-bold uppercase tracking-wide text-slate-600">Validation and Field Management</h4>
                           <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-600">
                             <span className={`rounded-full px-2 py-0.5 font-semibold ${isPublished ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}`}>{isPublished ? "Published field" : "New field"}</span>
                             <span className="rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-600">Order {fieldIndex + 1}</span>
-                            <span className="font-mono">{item.key}</span>
-                            <label
-                              className={`flex items-center gap-1 font-semibold ${scoringEnabled ? "text-violet-800" : "text-slate-500"}`}
-                              title={scoringDependency
-                                ? scoringDependency.required_for_input && scoringEnabled
-                                  ? `Required by the default AI configuration${scoringCategories ? `: ${scoringCategories}` : ""}. An Administrator may disable it for the next published form version.`
-                                  : `${scoringEnabled ? "Included in" : "Excluded from"} AI scoring${scoringCategories ? `: ${scoringCategories}` : ""}.`
-                                : scoringEnabled
-                                  ? "Included as general AI scoring context. Save and publish the form version to apply it to new submissions."
-                                  : "Not currently used by AI scoring. An Administrator may enable it as general AI scoring context."}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={scoringEnabled}
-                                disabled={scoringToggleLocked}
-                                onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({
-                                  ...fieldValue,
-                                  ai_scoring_enabled: event.target.checked,
-                                }))}
-                                aria-label={`${item.label} used by AI scoring`}
-                              />
-                              Used by AI scoring
-                            </label>
                             {canReorder && <><button type="button" disabled={fieldIndex === 0} className="font-semibold text-blue-700 disabled:cursor-not-allowed disabled:text-slate-300" aria-label={`Move ${item.label} up`} onClick={() => updateSection(sectionIndex, (current) => ({ ...current, fields: move(current.fields, fieldIndex, -1) }))}>Move up</button><button type="button" disabled={fieldIndex === section.fields.length - 1} className="font-semibold text-blue-700 disabled:cursor-not-allowed disabled:text-slate-300" aria-label={`Move ${item.label} down`} onClick={() => updateSection(sectionIndex, (current) => ({ ...current, fields: move(current.fields, fieldIndex, 1) }))}>Move down</button></>}
                             {editMode === "change" && (isRetired ? (
                               <button
@@ -976,15 +1081,10 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                               >
                                 {retiredOrigin ? `Reactivate in ${retiredOrigin.section_title}` : "Original location unavailable"}
                               </button>
-                            ) : <>{(isCustom || !item.required && !item.condition_required) && <label className="flex items-center gap-1"><input type="checkbox" checked={item.visible !== false} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, visible: event.target.checked }))} />{item.visible === false ? "Reactivate" : "Visible"}</label>}{isCustom && <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(item.required)} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, required: event.target.checked, min_files: fieldValue.type === "document_upload" ? event.target.checked ? Math.max(1, fieldValue.min_files || 1) : 0 : fieldValue.min_files }))} />Required</label>}</>)}
+                            ) : <>{!isProtected && <label className="flex items-center gap-1"><input type="checkbox" checked={item.visible !== false} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, visible: event.target.checked }))} />{item.visible === false ? "Reactivate" : "Visible"}</label>}{!isProtected && <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(item.required)} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, required: event.target.checked }))} />Required when visible</label>}</>)}
                             {canRemove && <button type="button" className="font-semibold text-rose-700" onClick={() => removeField(sectionIndex, fieldIndex)}>Remove field</button>}
                           </div>
-                          {scoringIssues.map((issue) => (
-                            <div key={`${issue.status}-${issue.field_key}`} className={`mt-2 rounded-lg border px-3 py-2 text-xs ${issue.status === "incompatible" ? "border-rose-200 bg-rose-50 text-rose-900" : "border-amber-200 bg-amber-50 text-amber-900"}`} role={issue.status === "incompatible" ? "alert" : "status"}>
-                              <strong>{issue.status === "incompatible" ? "AI compatibility error:" : "AI compatibility warning:"}</strong> {issue.message}
-                              <span className="mt-1 block">{issue.recommendation}</span>
-                            </div>
-                          ))}
+                          {!isProtected && item.type !== "document_upload" && <ConditionalDisplayBuilder field={item} fields={allFields} onChange={(condition_group) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, condition_group, condition: undefined, condition_required: undefined }))} />}
                           {isCustom && editMode === "update" && !baselineFieldKeys.has(item.key) && <label className="mt-2 flex items-center gap-1 text-xs text-slate-600"><input type="checkbox" checked={Boolean(item.required)} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, required: event.target.checked }))} />Required for submission</label>}
                           {item.type === "document_upload" && <div className="mt-3 space-y-3 rounded-xl border border-blue-100 bg-blue-50 p-3">
                             <div className="grid gap-3 sm:grid-cols-3">
@@ -1014,7 +1114,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
               <div className="flex justify-end gap-2 border-t border-slate-200 pt-4"><button type="button" className="portal-btn portal-btn-ghost" disabled={loading || Boolean(busyAction)} onClick={() => void closeEditor()}>{busyAction === "discarding" ? "Discarding..." : "Discard"}</button><button type="button" className="portal-btn portal-btn-primary" disabled={loading || Boolean(busyAction) || !dirty} onClick={() => void saveDraft()}>{busyAction === "saving" ? "Saving..." : "Save Draft"}</button></div>
             </fieldset>
           </div>
-          <div>{preview ? <FormPreview schema={schema} /> : <div className="portal-card p-4 text-sm text-slate-600"><h3 className="font-bold text-slate-800">Administrator editing</h3><p className="mt-2">Change Form lets Administrators edit field labels, guidance, placeholders, order, choices, and field types. Agency Name keeps its Short text type because its value is supplied by the contributor&apos;s account. Update Form remains limited to wording and safe additions. Published fields are hidden instead of deleted for historical compatibility; new unpublished fields and sections can be removed permanently.</p><p className="mt-2">The validator AI analysis is system-managed and is intentionally excluded from this contributor-form editor.</p></div>}</div>
+          {preview && <div className="portal-card p-4"><h3 className="mb-3 font-bold text-slate-900">Contributor preview</h3><FormPreview schema={schema} /></div>}
         </div>
       ) : (
         <div className="grid gap-4 xl:grid-cols-2">

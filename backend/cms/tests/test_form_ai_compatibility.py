@@ -2,6 +2,7 @@ from copy import deepcopy
 
 from django.test import TestCase
 
+from ai_engine.groq_priority import _project_payload
 from cms.form_schema import default_simplified_form_schema, validate_form_schema
 from cms.models import CMSContributorFormVersion
 from projects.priority_scoring import default_priority_rule_config
@@ -32,7 +33,7 @@ class FormAIScoringCompatibilityTests(TestCase):
 
         self.assertEqual(report["status"], "compatible")
 
-    def test_required_scoring_field_cannot_be_hidden(self):
+    def test_hidden_scoring_information_is_a_review_warning(self):
         schema = deepcopy(default_simplified_form_schema())
         next(
             field for section in schema["sections"] for field in section["fields"]
@@ -41,10 +42,10 @@ class FormAIScoringCompatibilityTests(TestCase):
 
         report = self.report(schema)
 
-        self.assertEqual(report["status"], "incompatible")
+        self.assertEqual(report["status"], "potential_issue")
         self.assertTrue(any(issue["field_key"] == "description" for issue in report["issues"]))
 
-    def test_required_scoring_field_type_must_remain_compatible(self):
+    def test_changed_scoring_information_type_is_a_review_warning(self):
         schema = deepcopy(default_simplified_form_schema())
         next(
             field for section in schema["sections"] for field in section["fields"]
@@ -53,7 +54,7 @@ class FormAIScoringCompatibilityTests(TestCase):
 
         report = self.report(schema)
 
-        self.assertEqual(report["status"], "incompatible")
+        self.assertEqual(report["status"], "potential_issue")
         self.assertTrue(any(issue["field_key"] == "fundingRequirementByYear" for issue in report["issues"]))
 
     def test_validator_only_inputs_do_not_require_contributor_answers(self):
@@ -62,7 +63,7 @@ class FormAIScoringCompatibilityTests(TestCase):
 
         self.assertEqual(report["status"], "compatible")
 
-    def test_required_scoring_select_needs_valid_options(self):
+    def test_scoring_select_without_options_is_a_review_warning(self):
         schema = deepcopy(default_simplified_form_schema())
         next(
             field for section in schema["sections"] for field in section["fields"]
@@ -71,10 +72,10 @@ class FormAIScoringCompatibilityTests(TestCase):
 
         report = self.report(schema)
 
-        self.assertEqual(report["status"], "incompatible")
+        self.assertEqual(report["status"], "potential_issue")
         self.assertTrue(any(issue["field_key"] == "developmentSector" for issue in report["issues"]))
 
-    def test_optional_ai_input_can_be_disabled_and_is_removed_from_contract(self):
+    def test_legacy_ai_toggle_is_ignored_and_field_remains_available(self):
         schema = deepcopy(default_simplified_form_schema())
         field = next(
             field for section in schema["sections"] for field in section["fields"]
@@ -87,10 +88,10 @@ class FormAIScoringCompatibilityTests(TestCase):
         effective = contract_for_form_schema(schema, default_scoring_input_contract())
 
         self.assertEqual(report["status"], "compatible")
-        self.assertFalse(dependency["enabled"])
-        self.assertNotIn(field["key"], {item["key"] for item in effective["dependencies"]})
+        self.assertTrue(dependency["enabled"])
+        self.assertIn(field["key"], {item["key"] for item in effective["dependencies"]})
 
-    def test_admin_can_disable_default_required_ai_input_with_warning(self):
+    def test_legacy_ai_toggle_cannot_disable_canonical_system_fact(self):
         schema = deepcopy(default_simplified_form_schema())
         field = next(
             field for section in schema["sections"] for field in section["fields"]
@@ -101,12 +102,8 @@ class FormAIScoringCompatibilityTests(TestCase):
         report = self.report(schema)
         effective = contract_for_form_schema(schema, default_scoring_input_contract())
 
-        self.assertEqual(report["status"], "potential_issue")
-        self.assertTrue(any(
-            issue["field_key"] == "description" and "excluded" in issue["message"]
-            for issue in report["issues"]
-        ))
-        self.assertNotIn("description", {item["key"] for item in effective["dependencies"]})
+        self.assertEqual(report["status"], "compatible")
+        self.assertIn("description", {item["key"] for item in effective["dependencies"]})
 
     def test_admin_can_enable_custom_field_as_general_ai_context(self):
         schema = deepcopy(default_simplified_form_schema())
@@ -131,13 +128,12 @@ class FormAIScoringCompatibilityTests(TestCase):
         schema = deepcopy(default_simplified_form_schema())
         schema["reset_from_scratch"] = True
         preserved = {
-            "agencyName", "collaboratingAgencies", "program", "projectActivity",
-            "location", "description", "objective",
+            "agencyName", "projectActivity", "custom_supporting_documents",
         }
         for section in schema["sections"]:
             if section.get("admin_only"):
                 continue
-            keep_section = section["key"] == "project_information"
+            keep_section = any(field["key"] in preserved for field in section["fields"])
             section["visible"] = keep_section
             for field in section["fields"]:
                 if keep_section and field["key"] in preserved:
@@ -173,7 +169,7 @@ class FormAIScoringCompatibilityTests(TestCase):
             "simplified_form": {"projectActivity": "Versioned sample"},
         })
 
-        self.assertNotIn("developmentSector", {item["key"] for item in effective["dependencies"]})
+        self.assertIn("developmentSector", {item["key"] for item in effective["dependencies"]})
 
     def test_legacy_submission_keeps_current_contributor_requirements_compatible(self):
         report = runtime_input_report(
@@ -194,3 +190,26 @@ class FormAIScoringCompatibilityTests(TestCase):
         )
 
         self.assertTrue(report["can_evaluate"])
+
+    def test_groq_payload_automatically_labels_all_applicable_versioned_fields(self):
+        version = CMSContributorFormVersion.objects.select_related("form").first()
+        schema = deepcopy(version.schema_json)
+        schema["sections"][0]["fields"].extend([
+            {"key": "custom_public_benefit", "label": "Public Benefit", "help_text": "State the measurable benefit.", "type": "text", "visible": True, "required": False},
+            {"key": "custom_completed_note", "label": "Completion Note", "type": "text", "visible": True, "required": False,
+             "condition_group": {"match": "all", "conditions": [{"field": "status", "operator": "equals", "value": "Completed"}]}},
+        ])
+        version.schema_json = schema
+        version.save(update_fields=["schema_json"])
+        payload = _project_payload({
+            "form_schema": {"key": version.form.key, "version": version.version_number},
+            "simplified_form": {
+                "status": "New",
+                "custom_fields": {"custom_public_benefit": "Serves 20,000 residents", "custom_completed_note": "stale"},
+            },
+        })
+        fields = {item["key"]: item for item in payload["form_fields"]}
+        self.assertEqual(fields["custom_public_benefit"]["answer"], "Serves 20,000 residents")
+        self.assertEqual(fields["custom_public_benefit"]["answer_state"], "answered")
+        self.assertEqual(fields["custom_completed_note"]["applicability"], "hidden_by_condition")
+        self.assertIsNone(fields["custom_completed_note"]["answer"])

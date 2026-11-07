@@ -11,6 +11,22 @@ export type ContributorFormFieldType =
   | "document_upload";
 
 export type ContributorFormOption = { value: string; label: string };
+export type ContributorConditionOperator =
+  | "equals" | "not_equals" | "one_of" | "not_one_of"
+  | "contains" | "not_contains" | "contains_any"
+  | "is_empty" | "is_not_empty"
+  | "greater_than" | "less_than" | "at_least" | "at_most"
+  | "before" | "after";
+export type ContributorConditionRule = {
+  field: string;
+  operator: ContributorConditionOperator;
+  value?: string;
+  values?: string[];
+};
+export type ContributorConditionGroup = {
+  match: "all" | "any";
+  conditions: ContributorConditionRule[];
+};
 
 export type ContributorFormRetiredOrigin = {
   section_key: string;
@@ -32,6 +48,7 @@ export type ContributorFormField = {
   placeholder?: string;
   options?: ContributorFormOption[];
   condition?: { field: string; equals?: string; not_equals?: string; one_of?: string[]; not_one_of?: string[] };
+  condition_group?: ContributorConditionGroup;
   condition_required?: boolean;
   retired_from?: ContributorFormRetiredOrigin;
   allowed_extensions?: Array<"pdf" | "docx" | "xlsx" | "csv" | "png" | "jpg" | "jpeg">;
@@ -39,7 +56,7 @@ export type ContributorFormField = {
   max_files?: number;
   max_file_bytes?: number;
   ai_sufficiency_instructions?: string;
-  ai_scoring_enabled?: boolean;
+  ai_scoring_enabled?: boolean; // Legacy read compatibility; ignored by current scoring.
 };
 
 export type ContributorFormSection = {
@@ -120,7 +137,7 @@ const field = (
 });
 
 export const DEFAULT_CONTRIBUTOR_FORM_SCHEMA: ContributorFormSchema = {
-  format_version: 1,
+  format_version: 2,
   title: "Simplified RDIP Contributor Form",
   description: "RDIP 2023-2028 list of projects format (data-type aligned)",
   sections: [
@@ -163,7 +180,10 @@ export const DEFAULT_CONTRIBUTOR_FORM_SCHEMA: ContributorFormSchema = {
           "NG-Local Funds (GAA)", "ODA", "PPP", "Agency", "GOCC/GFIs", "LGUs", "NGOs",
           "Special/Trust Fund", "NDRRM", "N/A", "Others",
         ]) }),
-        field("uacsCode", "UACS Code (if GAA-funded)"),
+        field("uacsCode", "UACS Code (if GAA-funded)", "text", {
+          required: true,
+          condition_group: { match: "all", conditions: [{ field: "fundingSource", operator: "equals", value: "NG-Local Funds (GAA)" }] },
+        }),
         field("pipIncluded", "PIP Included", "select", { required: true, options: options(["Yes", "No"]) }),
         field("arnipapIncluded", "ARNIPAP Included", "select", { required: true, options: options(["Yes", "No"]) }),
         field("ludipIncluded", "LUDIP (for SUCs)", "select", { required: true, options: options(["Yes", "No", "Not Applicable"]) }),
@@ -178,8 +198,8 @@ export const DEFAULT_CONTRIBUTOR_FORM_SCHEMA: ContributorFormSchema = {
             "Philippine Anti-Illegal Drug Strategy (PADS)", "Water Resources Program (WRP)",
             "PCB on the Sustainable Development Goals (SDGs)", "PCB on Livelihood and Employment",
           ]),
-          condition: { field: "pcbIncluded", equals: "Yes" },
-          condition_required: true,
+          condition_group: { match: "all", conditions: [{ field: "pcbIncluded", operator: "equals", value: "Yes" }] },
+          required: true,
         }),
         field("rdcEndorsed", "RDC-NCR Endorsed", "select", { required: true, options: options(["Yes", "No"]) }),
         field("developmentSector", "RDC-NCR Development Sector", "select", { required: true, options: options([
@@ -221,14 +241,14 @@ export const DEFAULT_CONTRIBUTOR_FORM_SCHEMA: ContributorFormSchema = {
       title: "Accomplishment and Remarks",
       fields: [
         field("physicalAccomplishment", "Physical Accomplishment", "textarea", {
-          condition: { field: "status", one_of: ["Ongoing", "Completed"] }, condition_required: true,
+          condition_group: { match: "all", conditions: [{ field: "status", operator: "one_of", values: ["Ongoing", "Completed"] }] }, required: true,
         }),
         field("financialAccomplishment", "Financial Accomplishment", "textarea", {
-          condition: { field: "status", one_of: ["Ongoing", "Completed"] }, condition_required: true,
+          condition_group: { match: "all", conditions: [{ field: "status", operator: "one_of", values: ["Ongoing", "Completed"] }] }, required: true,
         }),
         field("remarks", "Remarks", "textarea", {
-          condition: { field: "status", one_of: ["On Hold", "Cancelled"] },
-          condition_required: true,
+          condition_group: { match: "all", conditions: [{ field: "status", operator: "one_of", values: ["On Hold", "Cancelled"] }] },
+          required: true,
           help_text: "Explain the reason for the hold or cancellation.",
         }),
       ],
@@ -289,9 +309,70 @@ export const normalizeReadinessLevelValue = (value: string) => ({
 export const contributorFieldApplies = (
   field: ContributorFormField,
   values: Record<string, unknown>,
+  schema?: ContributorFormSchema,
 ) => {
+  if (schema) {
+    const fields = new Map(schema.sections.flatMap((section) => section.fields.map((item) => [item.key, {
+      field: item, sectionVisible: section.visible !== false,
+    }] as const)));
+    const visiting = new Set<string>();
+    const resolved = new Map<string, boolean>();
+    const visible = (key: string): boolean => {
+      if (resolved.has(key)) return resolved.get(key)!;
+      const source = fields.get(key);
+      if (!source || !source.sectionVisible || source.field.visible === false || visiting.has(key)) return false;
+      visiting.add(key);
+      const group = source.field.condition_group;
+      const legacy = source.field.condition;
+      const conditions = group?.conditions || (legacy ? [{ field: legacy.field }] : []);
+      const matches = conditions.map((rule) => visible(rule.field) && contributorFieldApplies(source.field, values));
+      const result = !conditions.length || (group?.match === "any" ? matches.some(Boolean) : matches.every(Boolean));
+      visiting.delete(key);
+      resolved.set(key, result);
+      return result;
+    };
+    return visible(field.key);
+  }
+  const answerFor = (key: string) => {
+    if (key.startsWith("priorityAnalysisFacts.")) {
+      const facts = values.priorityAnalysisFacts;
+      return facts && typeof facts === "object" ? (facts as Record<string, unknown>)[key.split(".", 2)[1]] : undefined;
+    }
+    if (key.startsWith("custom_")) {
+      const custom = values.custom_fields;
+      return custom && typeof custom === "object" ? (custom as Record<string, unknown>)[key] : values[key];
+    }
+    return values[key];
+  };
+  const group = field.condition_group;
+  if (group?.conditions?.length) {
+    const results = group.conditions.map((condition) => {
+      const current = answerFor(condition.field);
+      const currentText = String(current ?? "").trim();
+      const expected = String(condition.value ?? "").trim();
+      switch (condition.operator) {
+        case "equals": return currentText.toLocaleLowerCase() === expected.toLocaleLowerCase();
+        case "not_equals": return currentText.toLocaleLowerCase() !== expected.toLocaleLowerCase();
+        case "one_of": return (condition.values || []).includes(currentText);
+        case "not_one_of": return !(condition.values || []).includes(currentText);
+        case "contains": return Array.isArray(current) && current.includes(condition.value);
+        case "not_contains": return !Array.isArray(current) || !current.includes(condition.value);
+        case "contains_any": return Array.isArray(current) && (condition.values || []).some((value) => current.includes(value));
+        case "is_empty": return current == null || current === "" || Array.isArray(current) && current.length === 0;
+        case "is_not_empty": return !(current == null || current === "" || Array.isArray(current) && current.length === 0);
+        case "greater_than": return currentText !== "" && Number.isFinite(Number(currentText)) && Number(currentText) > Number(condition.value);
+        case "less_than": return currentText !== "" && Number.isFinite(Number(currentText)) && Number(currentText) < Number(condition.value);
+        case "at_least": return currentText !== "" && Number.isFinite(Number(currentText)) && Number(currentText) >= Number(condition.value);
+        case "at_most": return currentText !== "" && Number.isFinite(Number(currentText)) && Number(currentText) <= Number(condition.value);
+        case "before": return Boolean(currentText && expected && currentText < expected);
+        case "after": return Boolean(currentText && expected && currentText > expected);
+        default: return false;
+      }
+    });
+    return group.match === "any" ? results.some(Boolean) : results.every(Boolean);
+  }
   if (!field.condition) return true;
-  const value = values[field.condition.field];
+  const value = answerFor(field.condition.field);
   if (field.condition.equals !== undefined) return value === field.condition.equals;
   if (field.condition.not_equals !== undefined) return value !== field.condition.not_equals;
   if (field.condition.one_of !== undefined) return field.condition.one_of.includes(String(value ?? ""));

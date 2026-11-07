@@ -54,12 +54,12 @@ class ValidatorPriorityOverrideTests(APITestCase):
     def confirm_url(self, project, analysis):
         return f"/api/validator/projects/{project.id}/priority-analysis/{analysis.id}/confirm/"
 
-    def test_incomplete_override_requires_rationale_and_preserves_ai_result(self):
+    def test_incomplete_analysis_cannot_be_overridden_or_confirmed(self):
         project, analysis, _ = self.make_analysis()
         url = self.confirm_url(project, analysis)
         without_reason = self.client.post(url, {"final_priority": "high"}, format="json")
         self.assertEqual(without_reason.status_code, 400)
-        self.assertIn("override rationale", without_reason.data["detail"].lower())
+        self.assertIn("cannot be confirmed", without_reason.data["detail"].lower())
         invalid_label = self.client.post(url, {
             "final_priority": "incomplete", "override_rationale": "Validator decision",
         }, format="json")
@@ -68,56 +68,17 @@ class ValidatorPriorityOverrideTests(APITestCase):
         response = self.client.post(url, {
             "final_priority": "high", "override_rationale": "Regional impact merits high priority.",
         }, format="json")
-        self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data["suggested_priority"], "incomplete")
-        self.assertEqual(response.data["base_score"], "58.50")
-        self.assertEqual(response.data["suggested_scores"]["missing_facts"], ["Readiness Level"])
-        self.assertEqual(response.data["latest_confirmation"]["final_priority"], "high")
-        self.assertEqual(response.data["latest_confirmation"]["override_rationale"], "Regional impact merits high priority.")
-        self.assertEqual(ProjectPriorityConfirmation.objects.filter(analysis=analysis).count(), 1)
-        record = AITrainingRecord.objects.get(confirmation__analysis=analysis)
-        self.assertFalse(record.is_eligible)
-        self.assertIn("incomplete AI result", record.exclusion_reason)
-        self.assertTrue(UserActivity.objects.filter(project=project, event="priority_analysis_overridden").exists())
-        self.assertTrue(Notification.objects.filter(project=project, recipient=self.contributor, event_type="classification_priority").exists())
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(ProjectPriorityConfirmation.objects.filter(analysis=analysis).count(), 0)
 
-        self.client.force_authenticate(user=self.admin)
-        history = self.client.get("/api/admin/ai/training-data/")
-        self.assertEqual(history.status_code, 200)
-        row = next(item for item in history.data["results"] if item["id"] == record.id)
-        self.assertFalse(row["is_eligible"])
-        self.assertEqual(row["target_priority"], "high")
-        included = self.client.patch(f"/api/admin/ai/training-data/{record.id}/", {
-            "is_eligible": True,
-        }, format="json")
-        self.assertEqual(included.status_code, 200, included.data)
-        sync_all_training_records()
-        record.refresh_from_db()
-        self.assertTrue(record.is_eligible, "Background resync must preserve the administrator's approval")
-
-    def test_incomplete_low_override_allows_endorsement_but_locks_later_changes(self):
+    def test_incomplete_low_override_is_blocked(self):
         project, analysis, profile = self.make_analysis()
         confirmed = self.client.post(self.confirm_url(project, analysis), {
             "final_priority": "low", "override_rationale": "Evidence supports a local-scale priority.",
         }, format="json")
-        self.assertEqual(confirmed.status_code, 200, confirmed.data)
-        stale_analysis = ProjectPriorityAnalysis.objects.select_related("project").get(pk=analysis.pk)
-        endorsed = self.client.post(f"/api/validator/projects/{project.id}/validate/", {
-            "action": "endorse", "edited_profile_data": profile, "editable_fields": [],
-        }, format="json")
-        self.assertEqual(endorsed.status_code, 200, endorsed.data)
-        project.refresh_from_db()
-        self.assertEqual(project.status, "completed")
-        self.assertEqual(project.priority_analyses.first().confirmations.first().final_priority, "low")
-
-        changed = self.client.post(self.confirm_url(project, analysis), {
-            "final_priority": "high", "override_rationale": "Attempted later change.",
-        }, format="json")
-        self.assertEqual(changed.status_code, 400)
-        self.assertIn("locked after endorsement", changed.data["detail"])
-        self.assertEqual(ProjectPriorityConfirmation.objects.filter(analysis=analysis).count(), 1)
-        with self.assertRaisesRegex(ValueError, "locked after endorsement"):
-            confirm_analysis(stale_analysis, self.validator, {}, "high", "Attempted direct change.", [])
+        self.assertEqual(confirmed.status_code, 400, confirmed.data)
+        self.assertIn("cannot be confirmed", confirmed.data["detail"].lower())
+        self.assertEqual(ProjectPriorityConfirmation.objects.filter(analysis=analysis).count(), 0)
 
     def test_completed_result_overrides_still_require_rationale(self):
         for suggested, final in (("low", "high"), ("high", "low")):

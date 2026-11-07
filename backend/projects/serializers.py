@@ -1028,6 +1028,7 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
             "validator_name",
             "rule_version",
             "algorithm_version",
+            "form_version",
             "source_hash",
             "supplements",
             "suggested_scores",

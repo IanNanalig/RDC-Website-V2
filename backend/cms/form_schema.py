@@ -1,9 +1,10 @@
 from copy import deepcopy
+from datetime import date
 import re
 
 
 SIMPLIFIED_FORM_KEY = "simplified-rdip"
-FORM_SCHEMA_FORMAT_VERSION = 1
+FORM_SCHEMA_FORMAT_VERSION = 2
 ALLOWED_FIELD_TYPES = {
     "text",
     "textarea",
@@ -185,7 +186,12 @@ DEFAULT_SIMPLIFIED_FORM_SCHEMA = {
             "visible": True,
             "fields": [
                 _field("fundingSource", "Funding Source", "select", required=True, options=FUNDING_SOURCE_OPTIONS),
-                _field("uacsCode", "UACS Code (if GAA-funded)"),
+                _field(
+                    "uacsCode", "UACS Code (if GAA-funded)", required=True,
+                    condition_group={"match": "all", "conditions": [{
+                        "field": "fundingSource", "operator": "equals", "value": "NG-Local Funds (GAA)",
+                    }]},
+                ),
                 _field("pipIncluded", "PIP Included", "select", required=True, options=YES_NO_OPTIONS),
                 _field("arnipapIncluded", "ARNIPAP Included", "select", required=True, options=YES_NO_OPTIONS),
                 _field("ludipIncluded", "LUDIP (for SUCs)", "select", required=True, options=YES_NO_NA_OPTIONS),
@@ -193,7 +199,7 @@ DEFAULT_SIMPLIFIED_FORM_SCHEMA = {
                 _field("pcbIncluded", "Part of the Convergence Program (PCB)", "select", required=True, options=YES_NO_OPTIONS),
                 _field(
                     "pcbProgram", "Convergence Program (PCB)", "select", options=PCB_PROGRAM_OPTIONS,
-                    condition={"field": "pcbIncluded", "equals": "Yes"}, condition_required=True,
+                    condition_group={"match": "all", "conditions": [{"field": "pcbIncluded", "operator": "equals", "value": "Yes"}]}, required=True,
                 ),
                 _field("rdcEndorsed", "RDC-NCR Endorsed", "select", required=True, options=YES_NO_OPTIONS),
                 _field("developmentSector", "RDC-NCR Development Sector", "select", required=True, options=DEVELOPMENT_SECTOR_OPTIONS),
@@ -210,16 +216,16 @@ DEFAULT_SIMPLIFIED_FORM_SCHEMA = {
             "fields": [
                 _field(
                     "physicalAccomplishment", "Physical Accomplishment", "textarea",
-                    condition={"field": "status", "one_of": ["Ongoing", "Completed"]}, condition_required=True,
+                    condition_group={"match": "all", "conditions": [{"field": "status", "operator": "one_of", "values": ["Ongoing", "Completed"]}]}, required=True,
                 ),
                 _field(
                     "financialAccomplishment", "Financial Accomplishment", "textarea",
-                    condition={"field": "status", "one_of": ["Ongoing", "Completed"]}, condition_required=True,
+                    condition_group={"match": "all", "conditions": [{"field": "status", "operator": "one_of", "values": ["Ongoing", "Completed"]}]}, required=True,
                 ),
                 _field(
                     "remarks", "Remarks", "textarea",
-                    condition={"field": "status", "one_of": ["On Hold", "Cancelled"]},
-                    condition_required=True,
+                    condition_group={"match": "all", "conditions": [{"field": "status", "operator": "one_of", "values": ["On Hold", "Cancelled"]}]},
+                    required=True,
                     help_text="Explain the reason for the hold or cancellation.",
                 ),
             ],
@@ -283,16 +289,17 @@ CORE_FIELDS = {
     if not str(field.get("key") or "").startswith("custom_")
 }
 REQUIRED_CORE_FIELDS = {key for key, field in CORE_FIELDS.items() if field.get("required")}
-CONDITION_REQUIRED_CORE_FIELDS = {key for key, field in CORE_FIELDS.items() if field.get("condition_required")}
+CONDITION_REQUIRED_CORE_FIELDS = set()
 FIXED_FIELD_TYPES = {
     "agencyName": "text",
-    "collaboratingAgencies": "multiselect_dropdown",
+    "projectActivity": "text",
+    "custom_supporting_documents": "document_upload",
 }
 PROTECTED_OPTION_FIELDS = {"collaboratingAgencies"}
 RESET_PRESERVED_FIELD_KEYS = {
-    "agencyName", "collaboratingAgencies", "program", "projectActivity",
-    "location", "description", "objective",
+    "agencyName", "projectActivity", "custom_supporting_documents",
 }
+PROTECTED_WORKFLOW_FIELD_KEYS = {"agencyName", "projectActivity", "custom_supporting_documents"}
 
 
 class FormSchemaError(ValueError):
@@ -315,6 +322,33 @@ def normalize_system_managed_sections(schema, reference_schema=None):
         if isinstance(section, dict) and section.get("admin_only") is True
     ]
     result["sections"] = editable_sections + system_sections
+    # Older immutable versions may predate a minimum workflow field. Restoring
+    # them creates a new draft, so reintroduce only missing protected fields
+    # from the current published schema without rewriting the old version.
+    reference_fields = _field_map(reference_schema) if isinstance(reference_schema, dict) else {}
+    current_fields = _field_map(result)
+    reference_sections = {
+        str(field.get("key")): section
+        for section in (reference_schema or {}).get("sections", [])
+        if isinstance(section, dict)
+        for field in section.get("fields", [])
+        if isinstance(field, dict) and field.get("key")
+    } if isinstance(reference_schema, dict) else {}
+    for key in PROTECTED_WORKFLOW_FIELD_KEYS - set(current_fields):
+        field = reference_fields.get(key)
+        source_section = reference_sections.get(key)
+        if not field or not source_section:
+            continue
+        target = next((section for section in result["sections"] if section.get("key") == source_section.get("key")), None)
+        if target is None:
+            target = {name: deepcopy(value) for name, value in source_section.items() if name != "fields"}
+            target["fields"] = []
+            first_system = next(
+                (index for index, section in enumerate(result["sections"]) if section.get("admin_only") is True),
+                len(result["sections"]),
+            )
+            result["sections"].insert(first_system, target)
+        target.setdefault("fields", []).append(deepcopy(field))
     return result
 
 
@@ -353,20 +387,128 @@ def _field_map(schema):
     }
 
 
-def _condition_applies(condition, values):
-    """Evaluate the small, declarative condition format used by form fields."""
-    if not isinstance(condition, dict):
+def legacy_condition_group(condition):
+    if not isinstance(condition, dict) or not condition.get("field"):
+        return None
+    for operator in ("equals", "not_equals", "one_of", "not_one_of"):
+        if operator in condition:
+            rule = {"field": str(condition["field"]), "operator": operator}
+            if operator in {"one_of", "not_one_of"}:
+                rule["values"] = list(condition.get(operator) or [])
+            else:
+                rule["value"] = condition.get(operator)
+            return {"match": "all", "conditions": [rule]}
+    return None
+
+
+def field_condition_group(field):
+    if not isinstance(field, dict):
+        return None
+    group = field.get("condition_group")
+    if isinstance(group, dict):
+        return group
+    return legacy_condition_group(field.get("condition"))
+
+
+def _condition_value(values, key):
+    if key.startswith("priorityAnalysisFacts."):
+        facts = values.get("priorityAnalysisFacts") if isinstance(values.get("priorityAnalysisFacts"), dict) else {}
+        return facts.get(key.split(".", 1)[1])
+    if key.startswith("custom_"):
+        custom = values.get("custom_fields") if isinstance(values.get("custom_fields"), dict) else {}
+        return custom.get(key)
+    return values.get(key)
+
+
+def _compare_condition(current, rule):
+    operator = str(rule.get("operator") or "")
+    expected = rule.get("value")
+    expected_values = rule.get("values") if isinstance(rule.get("values"), list) else []
+    if operator == "equals":
+        return str(current or "").strip().casefold() == str(expected or "").strip().casefold()
+    if operator == "not_equals":
+        return str(current or "").strip().casefold() != str(expected or "").strip().casefold()
+    if operator == "one_of":
+        return str(current or "") in {str(value) for value in expected_values}
+    if operator == "not_one_of":
+        return str(current or "") not in {str(value) for value in expected_values}
+    if operator in {"contains", "not_contains", "contains_any"}:
+        members = current if isinstance(current, list) else []
+        if operator == "contains_any":
+            return any(value in members for value in expected_values)
+        result = expected in members
+        return result if operator == "contains" else not result
+    if operator == "is_empty":
+        return current in (None, "", [], {})
+    if operator == "is_not_empty":
+        return current not in (None, "", [], {})
+    if operator in {"greater_than", "less_than", "at_least", "at_most"}:
+        try:
+            left, right = float(str(current).replace(",", "")), float(str(expected).replace(",", ""))
+        except (TypeError, ValueError):
+            return False
+        return {
+            "greater_than": left > right, "less_than": left < right,
+            "at_least": left >= right, "at_most": left <= right,
+        }[operator]
+    if operator in {"before", "after"}:
+        left, right = str(current or ""), str(expected or "")
+        return bool(left and right and (left < right if operator == "before" else left > right))
+    return False
+
+
+def condition_group_applies(group, values):
+    if not isinstance(group, dict) or not group.get("conditions"):
         return True
-    current = values.get(condition.get("field"))
-    if "equals" in condition:
-        return current == condition.get("equals")
-    if "not_equals" in condition:
-        return current != condition.get("not_equals")
-    if "one_of" in condition:
-        return current in condition.get("one_of", [])
-    if "not_one_of" in condition:
-        return current not in condition.get("not_one_of", [])
-    return True
+    results = [
+        _compare_condition(_condition_value(values, str(rule.get("field") or "")), rule)
+        for rule in group.get("conditions", []) if isinstance(rule, dict)
+    ]
+    return (any(results) if group.get("match") == "any" else all(results)) if results else True
+
+
+def field_applies(field, values):
+    return condition_group_applies(field_condition_group(field), values)
+
+
+def applicable_field_keys(schema, values):
+    """Resolve conditional chains against the immutable schema, independent of field order."""
+    fields = _field_map(schema)
+    section_active = {
+        str(field.get("key")): section.get("visible") is not False and section.get("admin_only") is not True
+        for section in schema.get("sections", [])
+        if isinstance(section, dict)
+        for field in section.get("fields", [])
+        if isinstance(field, dict) and field.get("key")
+    }
+    resolved = {}
+    visiting = set()
+
+    def visible(key):
+        if key in resolved:
+            return resolved[key]
+        if key in visiting:
+            return False
+        field = fields.get(key)
+        if not field or field.get("visible") is False or not section_active.get(key, False):
+            resolved[key] = False
+            return False
+        visiting.add(key)
+        group = field_condition_group(field)
+        if group:
+            results = [
+                visible(str(rule.get("field") or ""))
+                and _compare_condition(_condition_value(values, str(rule.get("field") or "")), rule)
+                for rule in group.get("conditions", []) if isinstance(rule, dict)
+            ]
+            result = (any(results) if group.get("match") == "any" else all(results)) if results else False
+        else:
+            result = True
+        visiting.remove(key)
+        resolved[key] = result
+        return result
+
+    return {key for key in fields if visible(key)}
 
 
 def build_form_migration_plan(previous_schema, next_schema):
@@ -505,7 +647,7 @@ def validate_form_schema(schema, published_schema=None):
         raise FormSchemaError("A form can contain at most 100 fields.")
     if len(active_document_fields) > 1:
         raise FormSchemaError("A contributor form can contain only one active supporting-document field.")
-    missing = set(CORE_FIELDS) - field_keys
+    missing = PROTECTED_WORKFLOW_FIELD_KEYS - field_keys
     if missing:
         raise FormSchemaError(f"Required workflow fields cannot be removed: {', '.join(sorted(missing))}.")
 
@@ -513,20 +655,26 @@ def validate_form_schema(schema, published_schema=None):
     published_fields = _field_map(published_schema) if isinstance(published_schema, dict) else {}
     reset_from_scratch = schema.get("reset_from_scratch") is True
     section_visible_for_field = {
-        str(field.get("key")): section.get("visible") is not False
+        str(field.get("key")): section.get("visible") is not False and section.get("admin_only") is not True
         for section in sections
         for field in section.get("fields", [])
         if isinstance(field, dict) and field.get("key")
     }
-    for key, original in CORE_FIELDS.items():
-        candidate = current[key]
-        reset_retired = reset_from_scratch and key not in RESET_PRESERVED_FIELD_KEYS
-        if key in REQUIRED_CORE_FIELDS and (
+    for key in PROTECTED_WORKFLOW_FIELD_KEYS:
+        candidate = current.get(key)
+        if candidate is None:
+            continue
+        if (
             not candidate.get("required")
             or candidate.get("visible") is False
             or not section_visible_for_field.get(key, False)
-        ) and not reset_retired:
+        ):
             raise FormSchemaError(f"Required workflow field {key} must remain visible and required.")
+    for key, original in CORE_FIELDS.items():
+        candidate = current.get(key)
+        if candidate is None:
+            continue
+        reset_retired = reset_from_scratch and key not in RESET_PRESERVED_FIELD_KEYS
         if key in CONDITION_REQUIRED_CORE_FIELDS and (
             not candidate.get("condition_required")
             or candidate.get("visible") is False
@@ -559,36 +707,79 @@ def validate_form_schema(schema, published_schema=None):
         if candidate is not None and original is not None and candidate.get("options") != original.get("options"):
             raise FormSchemaError("Collaborating Agency choices are managed by the Agency catalog and cannot be edited in the form builder.")
 
+    operator_types = {
+        "select": {"equals", "not_equals", "one_of", "not_one_of", "is_empty", "is_not_empty"},
+        "multiselect": {"contains", "not_contains", "contains_any", "is_empty", "is_not_empty"},
+        "multiselect_dropdown": {"contains", "not_contains", "contains_any", "is_empty", "is_not_empty"},
+        "text": {"equals", "not_equals", "is_empty", "is_not_empty"},
+        "textarea": {"equals", "not_equals", "is_empty", "is_not_empty"},
+        "number": {"equals", "not_equals", "greater_than", "less_than", "at_least", "at_most", "is_empty", "is_not_empty"},
+        "year": {"equals", "not_equals", "greater_than", "less_than", "at_least", "at_most", "is_empty", "is_not_empty"},
+        "date": {"equals", "not_equals", "before", "after", "is_empty", "is_not_empty"},
+    }
+    active_fields = {
+        key for key, field in current.items()
+        if field.get("visible") is not False and section_visible_for_field.get(key, False)
+    }
+    dependency_graph = {key: set() for key in active_fields}
     for field in current.values():
-        condition = field.get("condition") if isinstance(field.get("condition"), dict) else None
-        if not condition:
+        if field.get("key") not in active_fields:
             continue
-        source_key = str(condition.get("field") or "")
-        source = current.get(source_key)
-        if source is None:
-            raise FormSchemaError(f"Conditional field {field.get('key')} references a missing field.")
-        if source.get("type") not in {"select", "multiselect", "multiselect_dropdown"}:
+        group = field_condition_group(field)
+        if not group:
             continue
-        allowed_values = {
-            str(option.get("value"))
-            for option in source.get("options", [])
-            if isinstance(option, dict)
-        }
-        operators = [operator for operator in ("equals", "not_equals", "one_of", "not_one_of") if operator in condition]
-        if len(operators) != 1:
-            raise FormSchemaError(f"Conditional field {field.get('key')} needs exactly one supported condition.")
-        operator = operators[0]
-        values = condition.get(operator)
-        expected = values if operator in {"one_of", "not_one_of"} else [values]
-        if (
-            not isinstance(expected, list)
-            or not expected
-            or any(not isinstance(value, str) or value not in allowed_values for value in expected)
-        ):
-            referenced = ", ".join(str(value) for value in expected) if isinstance(expected, list) else str(values)
-            raise FormSchemaError(
-                f"Option {referenced} cannot be removed from {source_key} because it controls a conditional field."
-            )
+        if group.get("match") not in {"all", "any"} or not isinstance(group.get("conditions"), list) or not group["conditions"]:
+            raise FormSchemaError(f"Conditional field {field.get('key')} needs a valid ALL or ANY rule group.")
+        for rule in group["conditions"]:
+            if not isinstance(rule, dict):
+                raise FormSchemaError(f"Conditional field {field.get('key')} contains an invalid rule.")
+            source_key = str(rule.get("field") or "")
+            source = current.get(source_key)
+            if source is None:
+                raise FormSchemaError(f"Conditional field {field.get('key')} references a missing field.")
+            if source_key == field.get("key"):
+                raise FormSchemaError(f"Field {source_key} cannot depend on itself.")
+            if source_key not in active_fields:
+                raise FormSchemaError(f"Conditional field {field.get('key')} references an inaccessible field {source_key}.")
+            operator = str(rule.get("operator") or "")
+            if operator not in operator_types.get(str(source.get("type") or ""), set()):
+                raise FormSchemaError(f"Operator {operator or '(missing)'} is not valid for {source.get('label') or source_key}.")
+            dependency_graph[str(field.get("key"))].add(source_key)
+            expected = rule.get("values") if operator in {"one_of", "not_one_of", "contains_any"} else [rule.get("value")]
+            if operator not in {"is_empty", "is_not_empty"} and (not isinstance(expected, list) or not expected):
+                raise FormSchemaError(f"Conditional field {field.get('key')} needs an expected answer.")
+            if operator not in {"is_empty", "is_not_empty"} and any(value is None or str(value).strip() == "" for value in expected):
+                raise FormSchemaError(f"Conditional field {field.get('key')} needs a non-empty expected answer.")
+            if source.get("type") in {"number", "year"} and operator not in {"is_empty", "is_not_empty"}:
+                try:
+                    for value in expected:
+                        float(str(value).replace(",", ""))
+                except (ValueError, TypeError) as exc:
+                    raise FormSchemaError(f"Conditional field {field.get('key')} needs a valid number for {source_key}.") from exc
+            if source.get("type") == "date" and operator not in {"is_empty", "is_not_empty"}:
+                try:
+                    for value in expected:
+                        date.fromisoformat(str(value))
+                except (ValueError, TypeError) as exc:
+                    raise FormSchemaError(f"Conditional field {field.get('key')} needs a valid date for {source_key}.") from exc
+            if source.get("type") in {"select", "multiselect", "multiselect_dropdown"} and operator not in {"is_empty", "is_not_empty"}:
+                allowed_values = {str(option.get("value")) for option in source.get("options", []) if isinstance(option, dict)}
+                if any(str(value) not in allowed_values for value in expected):
+                    raise FormSchemaError(f"A condition for {field.get('key')} references an unavailable choice in {source_key}.")
+
+    visiting, visited = set(), set()
+    def visit(key):
+        if key in visiting:
+            raise FormSchemaError("Conditional fields cannot contain circular dependencies.")
+        if key in visited:
+            return
+        visiting.add(key)
+        for source_key in dependency_graph.get(key, set()):
+            visit(source_key)
+        visiting.remove(key)
+        visited.add(key)
+    for field_key in dependency_graph:
+        visit(field_key)
 
     if isinstance(published_schema, dict):
         validate_system_managed_sections(schema, published_schema)
@@ -644,7 +835,7 @@ def validate_update_mode(previous_schema, next_schema):
             new_field = new_field_map.get(old_field.get("key"))
             if not new_field:
                 raise FormSchemaError("Update Form cannot remove fields. Use Change Form instead.")
-            for key in ("type", "required", "visible", "condition", "condition_required"):
+            for key in ("type", "required", "visible", "condition", "condition_group", "condition_required"):
                 if old_field.get(key) != new_field.get(key):
                     raise FormSchemaError("Update Form only changes wording and adds fields. Use Change Form for structural changes.")
             old_values = [option.get("value") for option in old_field.get("options", []) if isinstance(option, dict)]
@@ -712,11 +903,29 @@ def validate_simplified_answers(profile_data, require_complete=False, legacy_sta
     ):
         simplified["status"] = normalized_status
     custom = simplified.get("custom_fields") if isinstance(simplified.get("custom_fields"), dict) else {}
+    applicable = applicable_field_keys(schema, simplified)
+    for key, field in _field_map(schema).items():
+        if key in applicable or field.get("type") == "document_upload" or key.startswith("priorityAnalysisFacts."):
+            continue
+        if key.startswith("custom_"):
+            custom.pop(key, None)
+        elif key.startswith("priorityAnalysisFacts."):
+            facts = simplified.get("priorityAnalysisFacts") if isinstance(simplified.get("priorityAnalysisFacts"), dict) else {}
+            facts.pop(key.split(".", 1)[1], None)
+        else:
+            simplified.pop(key, None)
     missing = []
     invalid = []
     for field in schema_fields(schema):
-        condition = field.get("condition") if isinstance(field.get("condition"), dict) else None
-        if not _condition_applies(condition, simplified):
+        if field.get("key") not in applicable:
+            key = str(field.get("key"))
+            if key.startswith("custom_"):
+                custom.pop(key, None)
+            elif key.startswith("priorityAnalysisFacts."):
+                facts = simplified.get("priorityAnalysisFacts") if isinstance(simplified.get("priorityAnalysisFacts"), dict) else {}
+                facts.pop(key.split(".", 1)[1], None)
+            else:
+                simplified.pop(key, None)
             continue
         key = str(field.get("key"))
         field_type = field.get("type")

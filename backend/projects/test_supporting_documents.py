@@ -199,11 +199,12 @@ class SupportingDocumentApiTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, 409, response.data)
-        self.assertEqual(response.data["code"], "ai_input_incomplete")
-        self.assertIn("Missing: Program", response.data["detail"])
-        self.assertIn("Location", response.data["detail"])
-        self.assertEqual(response.data["input_preflight"]["status"], "incomplete")
+        self.assertEqual(response.status_code, 200, response.data)
+        analysis = response.data["analysis"]
+        self.assertEqual(analysis["suggested_priority"], "incomplete")
+        self.assertIn("Program", analysis["suggested_scores"]["missing_facts"])
+        self.assertIn("Location", analysis["suggested_scores"]["missing_facts"])
+        self.assertEqual(analysis["suggested_scores"]["input_preflight"]["status"], "incomplete")
 
     def test_priority_preflight_accepts_comma_formatted_funding(self):
         report = runtime_input_report(

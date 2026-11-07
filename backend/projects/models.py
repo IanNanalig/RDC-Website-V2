@@ -603,6 +603,13 @@ class ProjectPriorityAnalysis(models.Model):
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="priority_analyses")
     validator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="priority_analyses")
     rule_set = models.ForeignKey(PriorityRuleSet, on_delete=models.PROTECT, related_name="analyses")
+    form_version = models.ForeignKey(
+        "cms.CMSContributorFormVersion",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="priority_analyses",
+    )
     source_hash = models.CharField(max_length=64, db_index=True)
     input_snapshot = models.JSONField(default=dict)
     supplements = models.JSONField(default=dict, blank=True)

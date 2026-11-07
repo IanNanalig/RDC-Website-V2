@@ -122,6 +122,14 @@ type Analysis = {
     rdp_total?: number;
     base_total?: number;
     missing_facts?: string[];
+    criterion_coverage?: {
+      status: "complete" | "incomplete";
+      covered_criteria: number;
+      total_criteria: number;
+      coverage_percent: number;
+      covered_subtotal: number;
+      possible_total: number;
+    };
     reasoning?: ScoreReasoning;
     recommendations?: ScoreRecommendation[];
     revision_fields?: GuidanceField[];
@@ -519,7 +527,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
         ) : (
           <>
             <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-xl border border-slate-200 p-3"><p className="text-xs uppercase text-slate-500">Base Score</p><p className="mt-1 text-2xl font-bold text-slate-900">{Number(analysis.base_score).toFixed(2)}<span className="text-sm text-slate-500"> / 100</span></p></div>
+              <div className="rounded-xl border border-slate-200 p-3"><p className="text-xs uppercase text-slate-500">Base Score</p><p className="mt-1 text-2xl font-bold text-slate-900">{Number(analysis.base_score).toFixed(2)}<span className="text-sm text-slate-500"> / 100</span></p>{analysis.suggested_scores.criterion_coverage && <p className="mt-1 text-xs text-slate-600">Coverage: {analysis.suggested_scores.criterion_coverage.coverage_percent}% · supported subtotal {analysis.suggested_scores.criterion_coverage.covered_subtotal.toFixed(2)}</p>}</div>
               <div className="rounded-xl border border-slate-200 p-3"><p className="text-xs uppercase text-slate-500">Suggested</p><p className="mt-1 font-semibold">{priorityLabel(analysis.suggested_priority)}</p></div>
               <div className="rounded-xl border border-slate-200 p-3"><p className="text-xs uppercase text-slate-500">Rule Version</p><p className="mt-1 font-semibold">{analysis.rule_version || "-"}</p></div>
             </div>
@@ -663,13 +671,13 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
                 <p className="text-sm font-semibold">Validator Confirmation</p>
                 {incompleteResult && (
                   <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-                    The AI result is Incomplete. You may still set the official Low or High Priority with a written rationale. Missing facts remain listed above, and this decision is excluded from AI training unless an administrator approves it.
+                    The AI result is incomplete and cannot be confirmed yet. Supply the missing information and rerun the scorer to produce a reliable Low or High recommendation.
                   </div>
                 )}
                 <Select label="Final Priority" value={finalPriority} onChange={setFinalPriority} options={[["high", "High Priority"], ["low", "Low Priority"]]} />
                 <label className="block"><span className="text-xs font-medium text-slate-600">Override rationale {rationaleRequired ? "(required)" : "(required if final priority differs)"}</span><textarea className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" rows={2} value={overrideRationale} onChange={(e) => setOverrideRationale(e.target.value)} /></label>
                 {documentOverrideRequired && <div className="rounded-lg border border-rose-200 bg-rose-50 p-3"><label className="flex items-start gap-2 text-sm font-semibold text-rose-900"><input type="checkbox" checked={documentOverride} onChange={(event) => setDocumentOverride(event.target.checked)} /><span>Override the non-passing supporting-document assessment</span></label><label className="mt-2 block"><span className="text-xs font-medium text-rose-800">Document override rationale (required)</span><textarea className="mt-1 w-full rounded-lg border border-rose-200 px-3 py-2 text-sm" rows={3} value={documentOverrideRationale} onChange={(event) => setDocumentOverrideRationale(event.target.value)} /></label></div>}
-                <div className="flex justify-end"><button type="button" onClick={confirm} disabled={busy || !finalPriority || (rationaleRequired && !overrideRationale.trim()) || (documentOverrideRequired && (!documentOverride || !documentOverrideRationale.trim()))} className="portal-btn portal-btn-primary">{busy ? "Saving..." : "Confirm Priority Analysis"}</button></div>
+                <div className="flex justify-end"><button type="button" onClick={confirm} disabled={busy || incompleteResult || !finalPriority || (rationaleRequired && !overrideRationale.trim()) || (documentOverrideRequired && (!documentOverride || !documentOverrideRationale.trim()))} className="portal-btn portal-btn-primary">{busy ? "Saving..." : "Confirm Priority Analysis"}</button></div>
               </div>
             )}
             {confirmed && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">Official validator decision: <strong>{priorityLabel(confirmed.final_priority)}</strong> (AI result: {priorityLabel(analysis.suggested_priority)}){confirmed.validator_name ? ` by ${confirmed.validator_name}` : ""}{confirmed.created_at ? ` on ${new Date(confirmed.created_at).toLocaleString()}` : ""}.</div>}

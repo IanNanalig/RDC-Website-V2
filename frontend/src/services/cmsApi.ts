@@ -173,6 +173,14 @@ export type CMSCompatibilityReport = {
   status_label: string;
   issues: CMSCompatibilityIssue[];
   dependencies: CMSScoringDependency[];
+  impact?: {
+    structurally_valid: boolean;
+    added_fields: string[];
+    retired_fields: string[];
+    modified_fields: Array<{ field_key: string; field_label: string; changes: string[] }>;
+    dependency_conflicts: unknown[];
+    ai_review_warnings: unknown[];
+  };
 };
 
 export type CMSContributorFormVersion = {
@@ -395,6 +403,10 @@ export type CMSAIRuleSet = {
 export type CMSAIPreview = {
   preview: true;
   status: "complete" | "incomplete";
+  form_inputs?: Array<{ key: string; label: string; answer_state: string; answer?: unknown }>;
+  hidden_fields?: string[];
+  criterion_coverage?: { covered_criteria: number; total_criteria: number; coverage_percent: number; covered_subtotal: number };
+  external_provider_expected?: boolean;
   input_preflight?: {
     status: "incomplete";
     missing: Array<{ field_key: string; field_label: string; source: string; message: string }>;

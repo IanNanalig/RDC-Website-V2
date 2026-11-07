@@ -7,7 +7,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from cms.form_schema import FormSchemaError, validate_simplified_answers
+from cms.form_schema import FormSchemaError, condition_group_applies, validate_simplified_answers
 from cms.models import CMSContributorForm
 from cms.services.locking import acquire_form_lock
 from cms.services.publishing import publish_contributor_form, restore_contributor_form_version
@@ -123,13 +123,12 @@ class ContributorFormWorkflowTests(APITestCase):
         schema = deepcopy(self.form.draft_schema_json)
         schema["reset_from_scratch"] = True
         preserved = {
-            "agencyName", "collaboratingAgencies", "program", "projectActivity",
-            "location", "description", "objective",
+            "agencyName", "projectActivity", "custom_supporting_documents",
         }
         for section in schema["sections"]:
             if section.get("admin_only"):
                 continue
-            keep_section = section["key"] == "project_information"
+            keep_section = any(field["key"] in preserved for field in section["fields"])
             section["visible"] = keep_section
             for field in section["fields"]:
                 if keep_section and field["key"] in preserved:
@@ -158,9 +157,9 @@ class ContributorFormWorkflowTests(APITestCase):
         ]
 
         self.assertEqual(current.status_code, status.HTTP_200_OK)
-        self.assertEqual([section["key"] for section in visible_sections], ["project_information"])
+        self.assertEqual([section["key"] for section in visible_sections], ["project_information", "supporting_documents"])
         self.assertEqual(
-            {field["key"] for field in visible_sections[0]["fields"] if field.get("visible", True)},
+            {field["key"] for section in visible_sections for field in section["fields"] if field.get("visible", True)},
             preserved,
         )
         self.assertEqual(historical.status_code, status.HTTP_200_OK)
@@ -532,6 +531,12 @@ class ContributorFormWorkflowTests(APITestCase):
 
     def test_change_mode_can_change_other_workflow_field_types(self):
         schema = deepcopy(self.form.draft_schema_json)
+        for section in schema["sections"]:
+            for field in section["fields"]:
+                group = field.get("condition_group") or {}
+                if any(rule.get("field") == "status" for rule in group.get("conditions", [])):
+                    field.pop("condition_group", None)
+                    field.pop("condition", None)
         status_field = next(
             field for section in schema["sections"] for field in section["fields"]
             if field["key"] == "status"
@@ -684,7 +689,7 @@ class ContributorFormWorkflowTests(APITestCase):
         rejected = self._save_draft(schema, edit_mode="change")
 
         self.assertEqual(rejected.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("controls a conditional field", str(rejected.data))
+        self.assertIn("references an unavailable choice", str(rejected.data))
 
     def test_stale_form_save_returns_conflict(self):
         self.authenticate(self.admin)
@@ -1025,3 +1030,91 @@ class ContributorFormWorkflowTests(APITestCase):
         validate_simplified_answers(profile, require_complete=False)
         with self.assertRaises(FormSchemaError):
             validate_simplified_answers(profile, require_complete=True)
+
+    def test_generic_condition_groups_support_all_and_any(self):
+        values = {"status": "Ongoing", "startYear": "2027", "fundingSource": "GAA"}
+        self.assertTrue(condition_group_applies({
+            "match": "all",
+            "conditions": [
+                {"field": "status", "operator": "one_of", "values": ["Ongoing", "Completed"]},
+                {"field": "startYear", "operator": "at_least", "value": 2026},
+            ],
+        }, values))
+        self.assertTrue(condition_group_applies({
+            "match": "any",
+            "conditions": [
+                {"field": "fundingSource", "operator": "equals", "value": "Foreign"},
+                {"field": "status", "operator": "equals", "value": "Ongoing"},
+            ],
+        }, values))
+
+    def test_hidden_conditional_answers_are_stripped_from_saved_profile(self):
+        schema = deepcopy(self.form.draft_schema_json)
+        schema["format_version"] = 2
+        schema["sections"][0]["fields"].append({
+            "key": "custom_ongoing_note",
+            "label": "Ongoing note",
+            "type": "text",
+            "visible": True,
+            "required": True,
+            "condition_group": {
+                "match": "all",
+                "conditions": [{"field": "status", "operator": "equals", "value": "Ongoing"}],
+            },
+        })
+        saved = self._save_draft(schema, edit_mode="change")
+        self.assertEqual(saved.status_code, status.HTTP_200_OK, saved.data)
+        self.authenticate(self.admin)
+        published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
+        self.assertEqual(published.status_code, status.HTTP_200_OK, published.data)
+        profile = {
+            "form_schema": {"key": "simplified-rdip", "version": published.data["current_published_version_number"]},
+            "simplified_form": {"status": "New", "custom_fields": {"custom_ongoing_note": "stale"}},
+        }
+        validate_simplified_answers(profile, require_complete=False)
+        self.assertNotIn("custom_ongoing_note", profile["simplified_form"]["custom_fields"])
+
+    def test_circular_generic_conditions_are_rejected(self):
+        schema = deepcopy(self.form.draft_schema_json)
+        fields = schema["sections"][0]["fields"]
+        fields.extend([
+            {"key": "custom_first", "label": "First", "type": "text", "visible": True, "required": False,
+             "condition_group": {"match": "all", "conditions": [{"field": "custom_second", "operator": "is_not_empty"}]}},
+            {"key": "custom_second", "label": "Second", "type": "text", "visible": True, "required": False,
+             "condition_group": {"match": "all", "conditions": [{"field": "custom_first", "operator": "is_not_empty"}]}},
+        ])
+        rejected = self._save_draft(schema, edit_mode="change")
+        self.assertEqual(rejected.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("circular", str(rejected.data).lower())
+
+    def test_hidden_dependency_chain_clears_answers_even_when_fields_are_out_of_order(self):
+        schema = deepcopy(self.form.draft_schema_json)
+        schema["sections"][0]["fields"] = [
+            {"key": "custom_child", "label": "Child", "type": "text", "visible": True, "required": True,
+             "condition_group": {"match": "all", "conditions": [{"field": "custom_parent", "operator": "equals", "value": "yes"}]}},
+            {"key": "custom_parent", "label": "Parent", "type": "text", "visible": True, "required": False,
+             "condition_group": {"match": "all", "conditions": [{"field": "status", "operator": "equals", "value": "Ongoing"}]}},
+            *schema["sections"][0]["fields"],
+        ]
+        saved = self._save_draft(schema, edit_mode="change")
+        self.assertEqual(saved.status_code, status.HTTP_200_OK, saved.data)
+        self.authenticate(self.admin)
+        published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
+        self.assertEqual(published.status_code, status.HTTP_200_OK, published.data)
+        profile = {
+            "form_schema": {"key": "simplified-rdip", "version": published.data["current_published_version_number"]},
+            "simplified_form": {"status": "New", "custom_fields": {"custom_parent": "yes", "custom_child": "stale"}},
+        }
+        validate_simplified_answers(profile, require_complete=False)
+        self.assertEqual(profile["simplified_form"]["custom_fields"], {})
+
+    def test_visible_condition_cannot_depend_on_hidden_source(self):
+        schema = deepcopy(self.form.draft_schema_json)
+        schema["sections"][0]["fields"].append({
+            "key": "custom_dependent", "label": "Dependent", "type": "text", "visible": True, "required": False,
+            "condition_group": {"match": "all", "conditions": [{"field": "program", "operator": "is_not_empty"}]},
+        })
+        next(field for field in schema["sections"][0]["fields"] if field["key"] == "program")["visible"] = False
+        response = self._save_draft(schema, edit_mode="change")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("inaccessible", str(response.data))

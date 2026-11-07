@@ -20,7 +20,7 @@ from ai_engine.models import AIModelVersion
 from ai_engine.serializers import AIModelVersionSerializer
 from ai_engine.services import get_active_model, sync_training_record, training_dataset_summary
 
-from cms.form_schema import FormSchemaError, SIMPLIFIED_FORM_KEY, default_simplified_form_schema
+from cms.form_schema import FormSchemaError, SIMPLIFIED_FORM_KEY, default_simplified_form_schema, validate_form_schema
 from cms.models import (
     CMSArticle,
     CMSCarouselItem,
@@ -1161,11 +1161,27 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
         schema = request.data.get("draft_schema_json", form.draft_schema_json)
         if not isinstance(schema, dict):
             return Response({"detail": "draft_schema_json must be an object."}, status=400)
+        published_schema = form.current_published_version.schema_json if form.current_published_version_id else None
+        try:
+            validate_form_schema(schema, published_schema=published_schema)
+        except FormSchemaError as exc:
+            return Response({
+                "status": "incompatible",
+                "status_label": "Invalid configuration",
+                "issues": [{
+                    "status": "incompatible", "field_key": "form", "field_label": "Contributor form",
+                    "source": "configuration", "criteria": [], "message": str(exc),
+                    "recommendation": "Resolve this structural or conditional dependency error before publishing.",
+                }],
+                "dependencies": [],
+                "impact": {"structurally_valid": False, "added_fields": [], "retired_fields": [], "modified_fields": [], "dependency_conflicts": [str(exc)], "ai_review_warnings": []},
+            })
         active_rules = get_active_priority_rule_set()
         report = form_compatibility_report(
             schema,
             priority_rule_config(active_rules),
             contract_for_rule_set(active_rules),
+            published_schema,
         )
         return Response(report)
 
@@ -1590,7 +1606,22 @@ class AdminAIPriorityDraftPreviewView(APIView):
                 {"preview": True, "status": "incomplete", "input_preflight": exc.report},
                 status=status.HTTP_409_CONFLICT,
             )
-        return Response({"preview": True, "status": "complete", "result": preview})
+        preview_status = "incomplete" if preview.get("suggested_priority") == "incomplete" else "complete"
+        from ai_engine.groq_priority import _project_payload
+        form_inputs = _project_payload(profile).get("form_fields", [])
+        _log_cms_activity(request, "cms_content_updated", {
+            "content_type": "ai_priority_preview", "project_id": project.pk, "rule_set_id": draft.pk,
+        })
+        return Response({
+            "preview": True,
+            "status": preview_status,
+            "result": preview,
+            "input_preflight": preview.get("suggested_scores", {}).get("input_preflight"),
+            "form_inputs": form_inputs,
+            "hidden_fields": [item["key"] for item in form_inputs if item.get("answer_state") == "hidden_by_condition"],
+            "criterion_coverage": preview.get("suggested_scores", {}).get("criterion_coverage"),
+            "external_provider_expected": bool(getattr(settings, "GROQ_ENABLED", False)),
+        })
 
 
 class AdminAIPriorityCMSView(APIView):

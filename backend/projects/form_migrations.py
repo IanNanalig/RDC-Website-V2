@@ -163,7 +163,11 @@ def analyze_profile_migration(profile_data, *, version_cache=None):
         }
     migrated["form_schema"] = {"key": target.form.key, "version": target.version_number}
     attention = []
+    from cms.form_schema import applicable_field_keys
+    applicable = applicable_field_keys(target.schema_json, migrated["simplified_form"])
     for field in schema_fields(target.schema_json):
+        if field.get("key") not in applicable:
+            continue
         if field.get("type") == "document_upload" or field.get("visible") is False:
             continue
         if (field.get("required") or field.get("condition_required")) and _is_empty(
