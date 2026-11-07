@@ -39,7 +39,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import SimpleRateThrottle
 from rest_framework.views import APIView
-from cms.form_schema import FormSchemaError, resolve_simplified_form_schema, schema_fields, validate_simplified_answers
+from cms.form_schema import DOCUMENT_UPLOAD_MAX_BYTES, FormSchemaError, resolve_simplified_form_schema, schema_fields, validate_simplified_answers
 from rest_framework_simplejwt.tokens import AccessToken
 from .authentication import SESSION_IDLE_TIMEOUT
 from .audit_presentation import (
@@ -3692,7 +3692,7 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
         extension = Path(filename).suffix.lower().lstrip(".")
         if extension not in set(policy.get("allowed_extensions") or []):
             return Response({"detail": f"{filename} is not an allowed file type."}, status=400)
-        max_file_bytes = min(int(policy.get("max_file_bytes") or 0), 20 * 1024 * 1024)
+        max_file_bytes = min(int(policy.get("max_file_bytes") or 0), DOCUMENT_UPLOAD_MAX_BYTES)
         if upload.size <= 0 or upload.size > max_file_bytes:
             return Response({"detail": f"{filename} must be no larger than {max_file_bytes // (1024 * 1024)} MB."}, status=400)
         data = upload.read(max_file_bytes + 1)

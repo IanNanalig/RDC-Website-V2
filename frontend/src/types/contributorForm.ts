@@ -1,3 +1,6 @@
+export const CONTRIBUTOR_DOCUMENT_MAX_BYTES = 50 * 1024 * 1024;
+export const CONTRIBUTOR_DOCUMENT_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
+
 export type ContributorFormFieldType =
   | "text"
   | "textarea"
@@ -73,6 +76,8 @@ export type ContributorFormSchema = {
   title: string;
   description?: string;
   reset_from_scratch?: boolean;
+  validator_fact_fields?: ContributorFormField[];
+  scoring_mappings?: Record<string, string>;
   sections: ContributorFormSection[];
 };
 
@@ -137,7 +142,7 @@ const field = (
 });
 
 export const DEFAULT_CONTRIBUTOR_FORM_SCHEMA: ContributorFormSchema = {
-  format_version: 2,
+  format_version: 3,
   title: "Simplified RDIP Contributor Form",
   description: "RDIP 2023-2028 list of projects format (data-type aligned)",
   sections: [
@@ -264,17 +269,13 @@ export const DEFAULT_CONTRIBUTOR_FORM_SCHEMA: ContributorFormSchema = {
           allowed_extensions: ["pdf", "docx", "xlsx", "csv", "png", "jpg", "jpeg"],
           min_files: 1,
           max_files: 10,
-          max_file_bytes: 20 * 1024 * 1024,
+          max_file_bytes: CONTRIBUTOR_DOCUMENT_MAX_BYTES,
           ai_sufficiency_instructions: "The documents should substantiate the stated project scope, objectives, budget, readiness, intended beneficiaries, or expected outcomes.",
         }),
       ],
     },
-    {
-      key: "priority_analysis",
-      title: "Priority Analysis Facts",
-      description: "Optional factual inputs for the AI-assisted priority recommendation.",
-      admin_only: true,
-      fields: [
+  ],
+  validator_fact_fields: [
         field("priorityAnalysisFacts.readinessLevel", "Readiness Level", "select", { options: options([
           "With completed documents such as pre-FS/FS/POW and detailed design, where applicable",
           "Ongoing pre-FS/FS/POW and detailed design, where applicable",
@@ -288,8 +289,6 @@ export const DEFAULT_CONTRIBUTOR_FORM_SCHEMA: ContributorFormSchema = {
         ]) }),
         field("priorityAnalysisFacts.beneficiaryCount", "Estimated Beneficiary Count", "number"),
         field("priorityAnalysisFacts.readinessNotes", "Readiness Evidence Notes", "textarea"),
-      ],
-    },
   ],
 };
 

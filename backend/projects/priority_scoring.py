@@ -8,6 +8,7 @@ from django.conf import settings
 
 from .models import PriorityRuleSet, Project, ProjectPriorityAnalysis, ProjectPriorityConfirmation
 from .scoring_contract import (
+    apply_scoring_mappings,
     contract_for_project_snapshot,
     contract_for_rule_set,
     default_scoring_input_contract,
@@ -1465,6 +1466,9 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
                         custom.pop(key, None)
                 else:
                     form.pop(key, None)
+        # The published form version owns these mappings. Labels may change,
+        # while stable keys keep historical analyses reproducible.
+        form = apply_scoring_mappings(form, schema, applicable, base_contract)
     enabled_contributor_keys = {
         dependency["key"]
         for dependency in effective_contract["dependencies"]

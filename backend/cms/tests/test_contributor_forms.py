@@ -7,7 +7,10 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from cms.form_schema import FormSchemaError, condition_group_applies, validate_simplified_answers
+from cms.form_schema import (
+    FormSchemaError, PROTECTED_WORKFLOW_FIELD_KEYS, condition_group_applies,
+    default_simplified_form_schema, validate_simplified_answers,
+)
 from cms.models import CMSContributorForm
 from cms.services.locking import acquire_form_lock
 from cms.services.publishing import publish_contributor_form, restore_contributor_form_version
@@ -123,7 +126,8 @@ class ContributorFormWorkflowTests(APITestCase):
         schema = deepcopy(self.form.draft_schema_json)
         schema["reset_from_scratch"] = True
         preserved = {
-            "agencyName", "projectActivity", "custom_supporting_documents",
+            "agencyName", "projectActivity", "startYear", "endYear",
+            "fundingRequirementByYear", "actualFundingByYear", "custom_supporting_documents",
         }
         for section in schema["sections"]:
             if section.get("admin_only"):
@@ -157,7 +161,7 @@ class ContributorFormWorkflowTests(APITestCase):
         ]
 
         self.assertEqual(current.status_code, status.HTTP_200_OK)
-        self.assertEqual([section["key"] for section in visible_sections], ["project_information", "supporting_documents"])
+        self.assertEqual([section["key"] for section in visible_sections], ["project_information", "implementation_and_funding", "supporting_documents"])
         self.assertEqual(
             {field["key"] for section in visible_sections for field in section["fields"] if field.get("visible", True)},
             preserved,
@@ -174,6 +178,9 @@ class ContributorFormWorkflowTests(APITestCase):
                 "collaboratingAgencies": [],
                 "program": "Public Health Modernization",
                 "projectActivity": "Sample Health Facility",
+                "startYear": "2027",
+                "endYear": "2028",
+                "fundingRequirementByYear": {"2027": "1000000", "2028": "1000000"},
                 "location": ["Quezon City"],
                 "description": "Fictional beta-testing project.",
                 "objective": "Improve access to public health services.",
@@ -418,6 +425,26 @@ class ContributorFormWorkflowTests(APITestCase):
             ).status_code,
             status.HTTP_200_OK,
         )
+        # The old version predates the protected funding/evidence minimum.
+        # Restore remains possible as a draft; add those core items before
+        # publishing a new version of it.
+        self.form.refresh_from_db()
+        restored_schema = deepcopy(self.form.draft_schema_json)
+        default_schema = default_simplified_form_schema()
+        restored_by_key = {section["key"]: section for section in restored_schema["sections"]}
+        for core_section in default_schema["sections"]:
+            if core_section["key"] not in {"project_information", "implementation_and_funding", "supporting_documents"}:
+                continue
+            if core_section["key"] not in restored_by_key:
+                restored_schema["sections"].append(deepcopy(core_section))
+                continue
+            existing_keys = {field["key"] for field in restored_by_key[core_section["key"]]["fields"]}
+            restored_by_key[core_section["key"]]["fields"].extend(
+                deepcopy(field) for field in core_section["fields"]
+                if field["key"] in PROTECTED_WORKFLOW_FIELD_KEYS and field["key"] not in existing_keys
+            )
+        self.form.draft_schema_json = restored_schema
+        self.form.save(update_fields=["draft_schema_json"])
         published_retirement = self.client.post(
             f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json"
         )
@@ -526,8 +553,11 @@ class ContributorFormWorkflowTests(APITestCase):
 
         response = self._save_draft(schema, edit_mode="change")
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("managed by the system", str(response.data))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.authenticate(self.admin)
+        rejected = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
+        self.assertEqual(rejected.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("managed by the system", str(rejected.data))
 
     def test_change_mode_can_change_other_workflow_field_types(self):
         schema = deepcopy(self.form.draft_schema_json)
@@ -607,12 +637,7 @@ class ContributorFormWorkflowTests(APITestCase):
             "Concept paper / none",
         ]
         legacy_schema = deepcopy(self.form.draft_schema_json)
-        readiness = next(
-            field
-            for section in legacy_schema["sections"]
-            for field in section["fields"]
-            if field["key"] == "priorityAnalysisFacts.readinessLevel"
-        )
+        readiness = next(field for field in legacy_schema["validator_fact_fields"] if field["key"] == "priorityAnalysisFacts.readinessLevel")
         readiness["options"] = [{"value": value, "label": value} for value in legacy_values]
         self.form.draft_schema_json = legacy_schema
         self.form.current_published_version.schema_json = deepcopy(legacy_schema)
@@ -627,18 +652,19 @@ class ContributorFormWorkflowTests(APITestCase):
 
     def test_system_managed_ai_section_cannot_be_changed_or_exposed(self):
         schema = deepcopy(self.form.draft_schema_json)
-        system_section = next(section for section in schema["sections"] if section.get("admin_only"))
-        system_section["title"] = "Contributor AI Questions"
+        schema["validator_fact_fields"][0]["label"] = "Contributor AI Questions"
         response = self._save_draft(schema, edit_mode="change")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("System-managed AI analysis", str(response.data))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.authenticate(self.admin)
+        rejected = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
+        self.assertEqual(rejected.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Validator Facts", str(rejected.data))
 
         schema = deepcopy(self.form.draft_schema_json)
-        system_section = next(section for section in schema["sections"] if section.get("admin_only"))
-        system_section["admin_only"] = False
+        schema["sections"].append({"key": "priority_analysis", "title": "Validator Facts", "admin_only": True, "fields": []})
         response = self._save_draft(schema, edit_mode="change")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("System-managed AI analysis", str(response.data))
+        self.assertIn("Validator Facts", str(response.data))
 
     def test_workflow_select_options_can_be_added_reordered_and_removed(self):
         schema = deepcopy(self.form.draft_schema_json)
@@ -688,8 +714,11 @@ class ContributorFormWorkflowTests(APITestCase):
 
         rejected = self._save_draft(schema, edit_mode="change")
 
-        self.assertEqual(rejected.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("references an unavailable choice", str(rejected.data))
+        self.assertEqual(rejected.status_code, status.HTTP_200_OK)
+        self.authenticate(self.admin)
+        published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
+        self.assertEqual(published.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("references an unavailable choice", str(published.data))
 
     def test_stale_form_save_returns_conflict(self):
         self.authenticate(self.admin)
@@ -1084,8 +1113,11 @@ class ContributorFormWorkflowTests(APITestCase):
              "condition_group": {"match": "all", "conditions": [{"field": "custom_first", "operator": "is_not_empty"}]}},
         ])
         rejected = self._save_draft(schema, edit_mode="change")
-        self.assertEqual(rejected.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("circular", str(rejected.data).lower())
+        self.assertEqual(rejected.status_code, status.HTTP_200_OK)
+        self.authenticate(self.admin)
+        published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
+        self.assertEqual(published.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("circular", str(published.data).lower())
 
     def test_hidden_dependency_chain_clears_answers_even_when_fields_are_out_of_order(self):
         schema = deepcopy(self.form.draft_schema_json)
@@ -1116,5 +1148,8 @@ class ContributorFormWorkflowTests(APITestCase):
         })
         next(field for field in schema["sections"][0]["fields"] if field["key"] == "program")["visible"] = False
         response = self._save_draft(schema, edit_mode="change")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("inaccessible", str(response.data))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.authenticate(self.admin)
+        published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
+        self.assertEqual(published.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("inaccessible", str(published.data))

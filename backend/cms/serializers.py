@@ -6,8 +6,9 @@ from rest_framework import serializers
 
 from cms.form_schema import (
     FormSchemaError,
+    describe_form_error,
     normalize_system_managed_sections,
-    validate_form_schema,
+    validate_draft_schema,
     validate_update_mode,
 )
 from cms.models import (
@@ -867,14 +868,17 @@ class CMSContributorFormSerializer(serializers.ModelSerializer):
         if self.instance and self.instance.current_published_version_id:
             published_schema = self.instance.current_published_version.schema_json
         try:
-            validate_form_schema(schema, published_schema=published_schema)
+            if isinstance(schema, dict) and schema.get("format_version", 0) < 3:
+                schema = normalize_system_managed_sections(schema, published_schema)
+                attrs["draft_schema_json"] = schema
+            validate_draft_schema(schema)
             if self.instance and attrs.get("edit_mode", "update") == "update":
                 previous_schema = normalize_system_managed_sections(
                     self.instance.draft_schema_json or {}, published_schema
                 )
                 validate_update_mode(previous_schema, schema)
         except FormSchemaError as exc:
-            raise serializers.ValidationError({"draft_schema_json": str(exc)}) from exc
+            raise serializers.ValidationError({"draft_schema_json": describe_form_error(exc, schema)}) from exc
         expected = attrs.get("expected_updated_at")
         if self.instance and expected and expected != self.instance.updated_at:
             raise serializers.ValidationError({"detail": "This form changed after you opened it. Reload before saving."})

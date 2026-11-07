@@ -5,6 +5,9 @@ import cmsApi, {
   type CMSCompatibilityReport,
 } from "../../services/cmsApi";
 import {
+  DEFAULT_CONTRIBUTOR_FORM_SCHEMA,
+  CONTRIBUTOR_DOCUMENT_MAX_BYTES,
+  CONTRIBUTOR_DOCUMENT_MAX_TOTAL_BYTES,
   cloneContributorFormSchema,
   contributorFieldApplies,
   type ContributorFormField,
@@ -33,9 +36,9 @@ const fieldTypeOptions: Array<{ value: ContributorFormFieldType; label: string }
 ];
 const documentExtensions = ["pdf", "docx", "xlsx", "csv", "png", "jpg", "jpeg"] as const;
 const choiceFieldTypes: ContributorFormFieldType[] = ["select", "multiselect", "multiselect_dropdown"];
-const fixedFieldTypeKeys = new Set(["agencyName", "projectActivity", "custom_supporting_documents"]);
+const fixedFieldTypeKeys = new Set(["agencyName", "projectActivity", "startYear", "endYear", "fundingRequirementByYear", "actualFundingByYear", "custom_supporting_documents"]);
 const protectedOptionKeys = new Set(["collaboratingAgencies"]);
-const protectedWorkflowKeys = new Set(["agencyName", "projectActivity", "custom_supporting_documents"]);
+const protectedWorkflowKeys = new Set(["agencyName", "projectActivity", "startYear", "endYear", "fundingRequirementByYear", "actualFundingByYear", "custom_supporting_documents"]);
 
 const conditionOperators = (type: ContributorFormFieldType): Array<{ value: ContributorConditionOperator; label: string }> => {
   const empty: Array<{ value: ContributorConditionOperator; label: string }> = [
@@ -130,41 +133,25 @@ const nextOptionValue = (field: ContributorFormField) => {
 
 const normalizeContributorSchema = (schema: ContributorFormSchema) => {
   const next = cloneContributorFormSchema(schema);
-  next.sections = [
-    ...next.sections.filter((section) => !section.admin_only),
-    ...next.sections.filter((section) => section.admin_only),
-  ];
+  next.validator_fact_fields = next.validator_fact_fields || next.sections.find((section) => section.admin_only && section.key === "priority_analysis")?.fields || DEFAULT_CONTRIBUTOR_FORM_SCHEMA.validator_fact_fields;
+  next.sections = next.sections.filter((section) => !section.admin_only);
+  next.format_version = 3;
   return next;
 };
 
-const resetPreservedFieldKeys = new Set([
-  "agencyName", "projectActivity", "custom_supporting_documents",
-]);
+const protectedSectionKeys = new Set(["project_information", "implementation_and_funding", "supporting_documents"]);
 
 const cleanSlateSchema = (source: ContributorFormSchema): ContributorFormSchema => ({
   ...source,
+  format_version: 3,
   reset_from_scratch: true,
-  sections: source.sections.map((section) => {
-    if (section.admin_only) return { ...section, fields: section.fields.map((field) => ({ ...field })) };
-    const hasProtectedField = section.fields.some((field) => resetPreservedFieldKeys.has(field.key));
-    return {
+  scoring_mappings: {},
+  sections: DEFAULT_CONTRIBUTOR_FORM_SCHEMA.sections
+    .filter((section) => protectedSectionKeys.has(section.key))
+    .map((section) => ({
       ...section,
-      visible: hasProtectedField,
-      fields: section.fields.map((field) => {
-        if (resetPreservedFieldKeys.has(field.key)) {
-          return { ...field, visible: true };
-        }
-        const retired = { ...field };
-        delete retired.condition_required;
-        delete retired.ai_scoring_enabled;
-        return {
-          ...retired,
-          visible: false,
-          required: false,
-        };
-      }),
-    };
-  }),
+      fields: section.fields.filter((field) => protectedWorkflowKeys.has(field.key)),
+    })),
 });
 
 const moveContributorSection = (
@@ -376,7 +363,7 @@ const FormPreview = ({ schema }: { schema: ContributorFormSchema }) => {
                 ) : field.type === "document_upload" ? (
                   <div className="mt-1 rounded-lg border-2 border-dashed border-blue-200 bg-blue-50 p-4 text-center text-xs text-blue-800">
                     <strong>Choose supporting documents</strong>
-                    <span className="mt-1 block">Preview only · {field.min_files || (field.required ? 1 : 0)}–{field.max_files || 10} files · up to {Math.round((field.max_file_bytes || 20 * 1024 * 1024) / 1024 / 1024)} MB each</span>
+                    <span className="mt-1 block">Preview only · {field.min_files || (field.required ? 1 : 0)}–{field.max_files || 10} files · up to {Math.round((field.max_file_bytes || CONTRIBUTOR_DOCUMENT_MAX_BYTES) / 1024 / 1024)} MiB each · {Math.round(CONTRIBUTOR_DOCUMENT_MAX_TOTAL_BYTES / 1024 / 1024)} MiB per project</span>
                   </div>
                 ) : field.type === "currency_by_year" ? (
                   <div className="mt-1 rounded-lg border border-slate-300 bg-slate-50 p-3 text-xs text-slate-500">Funding inputs generated from the implementation period</div>
@@ -409,6 +396,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   const [compatibility, setCompatibility] = useState<CMSCompatibilityReport | null>(null);
   const [compatibilityLoading, setCompatibilityLoading] = useState(false);
   const [validationTarget, setValidationTarget] = useState("");
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(() => new Set());
   const [readOnly, setReadOnly] = useState(false);
   const selectedKeyRef = useRef("");
   const editModeRef = useRef<EditMode | null>(null);
@@ -590,7 +578,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
 
   const resetForm = async () => {
     if (!selected || !isAdmin) return;
-    if (!window.confirm("Start a clean contributor-form draft? Project Information will remain. Other fields will be hidden from new submissions after publication, while existing projects and published versions stay unchanged.")) return;
+    if (!window.confirm("Reset this draft to Project Information, Implementation Period and Funding, and Supporting Documents? Other sections and fields will be removed from the new form. Published versions and submitted projects stay unchanged.")) return;
     setLoading(true);
     setBusyAction("resetting-form");
     setNotice("");
@@ -657,6 +645,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   };
 
   const updateField = (sectionIndex: number, fieldIndex: number, updater: (field: ContributorFormField) => ContributorFormField) => {
+    if (schema?.sections[sectionIndex]?.fields[fieldIndex]?.key === validationTarget) setValidationTarget("");
     updateSection(sectionIndex, (section) => {
       const fields = [...section.fields];
       fields[fieldIndex] = updater({ ...fields[fieldIndex], options: fields[fieldIndex].options?.map((option) => ({ ...option })) });
@@ -689,28 +678,60 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
       candidate.condition_group?.conditions.some((condition) => condition.field === field.key)
       || candidate.condition?.field === field.key
     ));
-    if (dependents.length) {
-      setValidationTarget(field.key);
-      setNotice(`Before retiring ${field.label}, remove or reassign the conditional rules used by: ${dependents.map((candidate) => candidate.label).join(", ")}.`);
+    const affected = dependents.map((candidate) => candidate.label).join(", ");
+    const prompt = dependents.length
+      ? `"${field.label}" controls: ${affected}. Select OK to remove the field and clear those conditional rules. Select Cancel to edit their rules first.`
+      : `Remove "${field.label}" from the new form? Earlier published versions and submitted answers remain available.`;
+    if (!window.confirm(prompt)) {
+      if (dependents.length) setNotice(`"${field.label}" is still used by: ${affected}. Update the conditions or confirm their removal.`);
       return;
     }
-    if (!window.confirm(`Remove the field "${field.label}" from future form versions? Existing project records will keep their historical policy.`)) return;
-    if (publishedFieldKeys.has(field.key)) {
-      updateField(sectionIndex, fieldIndex, (value) => ({ ...value, visible: false }));
-      return;
-    }
-    updateSection(sectionIndex, (section) => ({
-      ...section,
-      fields: section.fields.filter((_, index) => index !== fieldIndex),
-    }));
+    setSchema({
+      ...schema,
+      sections: schema.sections.map((section) => ({
+        ...section,
+        fields: section.fields.filter((candidate) => candidate.key !== field.key).map((candidate) => {
+          const conditions = candidate.condition_group?.conditions.filter((condition) => condition.field !== field.key);
+          return {
+            ...candidate,
+            condition_group: conditions?.length ? { ...candidate.condition_group!, conditions } : undefined,
+            condition: candidate.condition?.field === field.key ? undefined : candidate.condition,
+          };
+        }),
+      })),
+    });
+    setValidationTarget("");
+    setNotice(dependents.length ? `Removed "${field.label}" and cleared ${dependents.length} dependent condition(s).` : `Removed "${field.label}" from this draft.`);
   };
 
   const removeSection = (sectionIndex: number) => {
     if (!schema) return;
     const section = schema.sections[sectionIndex];
-    if (!section || section.admin_only || publishedSectionKeys.has(section.key) && !section.fields.every((field) => field.type === "document_upload")) return;
-    if (!window.confirm(`Remove the section "${section.title}" from future form versions? Existing project records will keep their historical policy.`)) return;
-    setSchema({ ...schema, sections: schema.sections.filter((_, index) => index !== sectionIndex) });
+    if (!section || section.admin_only || protectedSectionKeys.has(section.key)) return;
+    const keys = new Set(section.fields.map((field) => field.key));
+    const dependents = schema.sections.flatMap((candidate) => candidate.key === section.key ? [] : candidate.fields.filter((field) => (
+      field.condition_group?.conditions.some((condition) => keys.has(condition.field))
+      || field.condition && keys.has(field.condition.field)
+    )));
+    const prompt = dependents.length
+      ? `"${section.title}" controls: ${dependents.map((field) => field.label).join(", ")}. Select OK to remove this section and clear those conditional rules. Select Cancel to edit the rules first.`
+      : `Remove the section "${section.title}" from the new form? Earlier published versions and submitted answers remain available.`;
+    if (!window.confirm(prompt)) return;
+    setSchema({
+      ...schema,
+      sections: schema.sections.filter((_, index) => index !== sectionIndex).map((candidate) => ({
+        ...candidate,
+        fields: candidate.fields.map((field) => {
+          const conditions = field.condition_group?.conditions.filter((condition) => !keys.has(condition.field));
+          return {
+            ...field,
+            condition_group: conditions?.length ? { ...field.condition_group!, conditions } : undefined,
+            condition: field.condition && keys.has(field.condition.field) ? undefined : field.condition,
+          };
+        }),
+      })),
+    });
+    setValidationTarget("");
   };
 
   const addSection = () => {
@@ -855,6 +876,12 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
       const keys = schema.sections.flatMap((section) => section.fields.map((field) => field.key));
       const affected = keys.find((key) => message.toLowerCase().includes(key.toLowerCase()));
       if (affected) {
+        const affectedSection = schema.sections.find((section) => section.fields.some((field) => field.key === affected));
+        if (affectedSection) setCollapsedSections((current) => {
+          const next = new Set(current);
+          next.delete(affectedSection.key);
+          return next;
+        });
         setValidationTarget(affected);
         window.requestAnimationFrame(() => document.querySelector(`[data-form-field-key="${affected}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }));
       }
@@ -987,16 +1014,16 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
         </div>
       </div>
 
-      <section className={`portal-card overflow-hidden ${compatibility?.status === "incompatible" ? "border-rose-300" : compatibility?.status === "potential_issue" ? "border-amber-300" : "border-emerald-200"}`}>
-        <div className="portal-card-header flex flex-wrap items-center justify-between gap-2">
+      <details className={`portal-card group overflow-hidden ${compatibility?.status === "incompatible" ? "border-rose-300" : compatibility?.status === "potential_issue" ? "border-amber-300" : "border-emerald-200"}`}>
+        <summary className="portal-card-header flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 [&::-webkit-details-marker]:hidden">
           <div><h3 className="font-bold text-slate-900">Configuration Impact Review</h3><p className="text-xs text-slate-500">Structural rules and scoring-information effects are reviewed before publication. Ordinary content changes are warnings, not false incompatibilities.</p></div>
-          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${compatibility?.status === "incompatible" ? "bg-rose-100 text-rose-800" : compatibility?.status === "potential_issue" ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>{compatibilityLoading ? "Checking…" : compatibility?.status_label || "Checking"}</span>
-        </div>
+          <span className="flex items-center gap-2"><span className={`rounded-full px-3 py-1 text-xs font-semibold ${compatibility?.status === "incompatible" ? "bg-rose-100 text-rose-800" : compatibility?.status === "potential_issue" ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>{compatibilityLoading ? "Checking…" : compatibility?.status_label || "Checking"}</span><span className="text-slate-500 transition-transform group-open:rotate-180" aria-hidden="true">⌄</span></span>
+        </summary>
         {compatibility && <div className="portal-card-body space-y-2">
-          {compatibility.impact && <div className="flex flex-wrap gap-2 text-xs text-slate-700"><span className="rounded-full bg-blue-50 px-2 py-1">{compatibility.impact.added_fields.length} added</span><span className="rounded-full bg-slate-100 px-2 py-1">{compatibility.impact.retired_fields.length} retired</span><span className="rounded-full bg-violet-50 px-2 py-1">{compatibility.impact.modified_fields.length} modified</span></div>}
+          {compatibility.impact && <div className="flex flex-wrap gap-2 text-xs text-slate-700"><span className="rounded-full bg-blue-50 px-2 py-1">{compatibility.impact.added_fields.length} fields added</span><span className="rounded-full bg-slate-100 px-2 py-1">{compatibility.impact.retired_fields.length} fields removed</span><span className="rounded-full bg-amber-50 px-2 py-1">{compatibility.impact.hidden_fields?.length || 0} fields hidden</span><span className="rounded-full bg-violet-50 px-2 py-1">{compatibility.impact.modified_fields.length} fields modified</span><span className="rounded-full bg-blue-50 px-2 py-1">{compatibility.impact.added_sections?.length || 0} sections added</span><span className="rounded-full bg-slate-100 px-2 py-1">{compatibility.impact.removed_sections?.length || 0} sections removed</span></div>}
           {compatibility.issues.length === 0 ? <p className="text-sm text-emerald-800">Configuration is valid. All applicable published answers will be supplied to the scorer automatically.</p> : compatibility.issues.map((issue) => <div key={`${issue.status}-${issue.field_key}`} className={`rounded-lg border p-3 text-sm ${issue.status === "incompatible" ? "border-rose-200 bg-rose-50 text-rose-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}><p className="font-semibold">{issue.field_label}</p><p className="mt-1">{issue.message}</p><p className="mt-1 text-xs">Next step: {issue.recommendation}</p></div>)}
         </div>}
-      </section>
+      </details>
 
       {(selected.has_unpublished_changes || dirty) && (
         <details className="portal-card group overflow-hidden">
@@ -1012,7 +1039,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
         <div className="space-y-4">
           <aside className="portal-card p-4 text-sm text-slate-600" aria-label="Administrator editing guidance">
             <h3 className="font-bold text-slate-900">Administrator editing</h3>
-            <p className="mt-2">Change Form lets Administrators edit field labels, guidance, placeholders, order, choices, and field types. Agency Name keeps its Short text type because its value is supplied by the contributor&apos;s account. Update Form remains limited to wording and safe additions. Published fields are hidden instead of deleted for historical compatibility; new unpublished fields and sections can be removed permanently.</p>
+            <p className="mt-2">Change Form lets Administrators edit field labels, guidance, placeholders, order, choices, and field types. Core project identity, funding, and document fields remain available. Remove deletes an item from the next form; Hide keeps it in the draft. Earlier published versions remain intact.</p>
             <p className="mt-2">The validator AI analysis is system-managed and is intentionally excluded from this contributor-form editor.</p>
           </aside>
           <div className="portal-card min-w-0 overflow-hidden">
@@ -1028,22 +1055,27 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
               </div>
               {schema.sections.map((section, sectionIndex) => section.admin_only || (schema.reset_from_scratch && section.visible === false) ? null : (
                 <section key={section.key} data-form-section-key={section.key} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <button type="button" className="mb-3 flex w-full items-center justify-between rounded-lg px-1 py-2 text-left text-sm font-semibold text-slate-900 hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600" aria-expanded={!collapsedSections.has(section.key)} aria-controls={`form-section-${section.key}`} onClick={() => setCollapsedSections((current) => { const next = new Set(current); if (next.has(section.key)) next.delete(section.key); else next.add(section.key); return next; })}>
+                    <span>{section.title || "Untitled section"} <span className="ml-1 text-xs font-normal text-slate-500">({section.fields.length} fields)</span></span>
+                    <span aria-hidden="true">{collapsedSections.has(section.key) ? "▾" : "▴"}</span>
+                  </button>
+                  {editMode === "change" && (section.key === "retired_fields" ? (
+                    <span className="mb-3 inline-block rounded-full bg-slate-200 px-2 py-1 text-xs font-semibold text-slate-600">Hidden compatibility section</span>
+                  ) : (
+                    <div className="mb-3 flex flex-wrap items-center gap-2 text-xs"><button type="button" disabled={moveContributorSection(schema.sections, sectionIndex, -1) === schema.sections} className="disabled:cursor-not-allowed disabled:text-slate-300" onClick={() => setSchema({ ...schema, sections: moveContributorSection(schema.sections, sectionIndex, -1) })}>Up</button><button type="button" disabled={moveContributorSection(schema.sections, sectionIndex, 1) === schema.sections} className="disabled:cursor-not-allowed disabled:text-slate-300" onClick={() => setSchema({ ...schema, sections: moveContributorSection(schema.sections, sectionIndex, 1) })}>Down</button>{!protectedSectionKeys.has(section.key) && <label className="flex items-center gap-1"><input type="checkbox" checked={section.visible !== false} onChange={(event) => updateSection(sectionIndex, (current) => ({ ...current, visible: event.target.checked }))} />Visible</label>}{!protectedSectionKeys.has(section.key) && <button type="button" className="font-semibold text-rose-700" onClick={() => removeSection(sectionIndex)}>Remove section</button>}</div>
+                  ))}
+                  <div id={`form-section-${section.key}`} hidden={collapsedSections.has(section.key)}>
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="mb-2 flex flex-wrap items-center gap-2">
                         <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${publishedSectionKeys.has(section.key) ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}`}>{publishedSectionKeys.has(section.key) ? "Published section" : "Unpublished section"}</span>
-                        <span className="font-mono text-xs text-slate-500">{section.key}</span>
+                        {protectedSectionKeys.has(section.key) && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800">Core section</span>}
                       </div>
                       <div className="grid gap-2 md:grid-cols-2">
                         <input disabled={section.key === "retired_fields"} aria-label="Section title" className="rounded-lg border border-slate-300 px-3 py-2 font-semibold disabled:bg-slate-100 disabled:text-slate-500" value={section.title} onChange={(event) => updateSection(sectionIndex, (current) => ({ ...current, title: event.target.value }))} />
                         <input disabled={section.key === "retired_fields"} aria-label="Section description" className="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-500" value={section.description || ""} placeholder="Optional section guidance" onChange={(event) => updateSection(sectionIndex, (current) => ({ ...current, description: event.target.value }))} />
                       </div>
                     </div>
-                    {editMode === "change" && (section.key === "retired_fields" ? (
-                      <span className="rounded-full bg-slate-200 px-2 py-1 text-xs font-semibold text-slate-600">Hidden compatibility section</span>
-                    ) : (
-                      <div className="flex flex-wrap items-center gap-2 text-xs"><button type="button" disabled={moveContributorSection(schema.sections, sectionIndex, -1) === schema.sections} className="disabled:cursor-not-allowed disabled:text-slate-300" onClick={() => setSchema({ ...schema, sections: moveContributorSection(schema.sections, sectionIndex, -1) })}>Up</button><button type="button" disabled={moveContributorSection(schema.sections, sectionIndex, 1) === schema.sections} className="disabled:cursor-not-allowed disabled:text-slate-300" onClick={() => setSchema({ ...schema, sections: moveContributorSection(schema.sections, sectionIndex, 1) })}>Down</button>{!section.fields.some((field) => field.required || field.condition_required) && <label className="flex items-center gap-1"><input type="checkbox" checked={section.visible !== false} onChange={(event) => updateSection(sectionIndex, (current) => ({ ...current, visible: event.target.checked }))} />Visible</label>}{(!publishedSectionKeys.has(section.key) || section.fields.every((field) => field.type === "document_upload")) && <button type="button" className="font-semibold text-rose-700" onClick={() => removeSection(sectionIndex)}>Remove section</button>}</div>
-                    ))}
                   </div>
                   <div className="mt-3 space-y-3">
                     {section.fields.map((item, fieldIndex) => {
@@ -1064,7 +1096,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                             <label><span className="text-xs font-semibold text-slate-600">Label</span><input className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.label} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, label: event.target.value }))} /></label>
                             <label><span className="text-xs font-semibold text-slate-600">Help text</span><input className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.help_text || ""} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, help_text: event.target.value }))} /></label>
                             <label><span className="text-xs font-semibold text-slate-600">Placeholder</span><input className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.placeholder || ""} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, placeholder: event.target.value }))} /></label>
-                            <label><span className="text-xs font-semibold text-slate-600">Field type</span><select disabled={typeIsFixed || editMode === "update" && baselineFieldKeys.has(item.key)} title={typeIsFixed ? "Agency Name is supplied by the contributor's account, so its field type cannot be changed." : editMode === "update" && baselineFieldKeys.has(item.key) ? "Use Change Form to change an existing field type." : undefined} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500" value={item.type} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => { const nextType = event.target.value as ContributorFormFieldType; return { ...fieldValue, type: nextType, options: choiceFieldTypes.includes(nextType) ? fieldValue.options || [{ value: "option_1", label: "Option 1" }] : undefined, ...(nextType === "document_upload" ? { allowed_extensions: [...documentExtensions], min_files: 0, max_files: 10, max_file_bytes: 20 * 1024 * 1024, ai_sufficiency_instructions: "Documents should substantiate the project scope, objectives, budget, readiness, beneficiaries, or outcomes." } : {}) }; })}>{fieldTypeOptions.map((option) => <option key={option.value} value={option.value} disabled={(option.value === "document_upload" && (!isCustom || item.type !== "document_upload" && schema.sections.some((candidate) => candidate.visible !== false && candidate.fields.some((field) => field.visible !== false && field.type === "document_upload")))) || (option.value === "currency_by_year" && !["fundingRequirementByYear", "actualFundingByYear"].includes(item.key))}>{option.label}</option>)}</select></label>
+                            <label><span className="text-xs font-semibold text-slate-600">Field type</span><select disabled={typeIsFixed || editMode === "update" && baselineFieldKeys.has(item.key)} title={typeIsFixed ? "This core field type is required for project ownership, funding, or evidence linkage." : editMode === "update" && baselineFieldKeys.has(item.key) ? "Use Change Form to change an existing field type." : undefined} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500" value={item.type} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => { const nextType = event.target.value as ContributorFormFieldType; return { ...fieldValue, type: nextType, options: choiceFieldTypes.includes(nextType) ? fieldValue.options || [{ value: "option_1", label: "Option 1" }] : undefined, ...(nextType === "document_upload" ? { allowed_extensions: [...documentExtensions], min_files: 0, max_files: 10, max_file_bytes: CONTRIBUTOR_DOCUMENT_MAX_BYTES, ai_sufficiency_instructions: "Documents should substantiate the project scope, objectives, budget, readiness, beneficiaries, or outcomes." } : {}) }; })}>{fieldTypeOptions.map((option) => <option key={option.value} value={option.value} disabled={(option.value === "document_upload" && (!isCustom || item.type !== "document_upload" && schema.sections.some((candidate) => candidate.visible !== false && candidate.fields.some((field) => field.visible !== false && field.type === "document_upload")))) || (option.value === "currency_by_year" && !["fundingRequirementByYear", "actualFundingByYear"].includes(item.key))}>{option.label}</option>)}</select></label>
                           </div>
                           <h4 className="mb-1 mt-3 text-xs font-bold uppercase tracking-wide text-slate-600">Validation and Field Management</h4>
                           <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-600">
@@ -1081,7 +1113,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                               >
                                 {retiredOrigin ? `Reactivate in ${retiredOrigin.section_title}` : "Original location unavailable"}
                               </button>
-                            ) : <>{!isProtected && <label className="flex items-center gap-1"><input type="checkbox" checked={item.visible !== false} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, visible: event.target.checked }))} />{item.visible === false ? "Reactivate" : "Visible"}</label>}{!isProtected && <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(item.required)} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, required: event.target.checked }))} />Required when visible</label>}</>)}
+                            ) : <>{!isProtected && <label className="flex items-center gap-1"><input type="checkbox" checked={item.visible !== false} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, visible: event.target.checked }))} />{item.visible === false ? "Reactivate" : "Visible"}</label>}{!["agencyName", "projectActivity", "startYear", "endYear"].includes(item.key) && <label className="flex items-center gap-1"><input type="checkbox" checked={Boolean(item.required)} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, required: event.target.checked }))} />Required when visible</label>}</>)}
                             {canRemove && <button type="button" className="font-semibold text-rose-700" onClick={() => removeField(sectionIndex, fieldIndex)}>Remove field</button>}
                           </div>
                           {!isProtected && item.type !== "document_upload" && <ConditionalDisplayBuilder field={item} fields={allFields} onChange={(condition_group) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, condition_group, condition: undefined, condition_required: undefined }))} />}
@@ -1090,7 +1122,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                             <div className="grid gap-3 sm:grid-cols-3">
                               <label><span className="text-xs font-semibold text-slate-600">Minimum files</span><input type="number" min={item.required ? 1 : 0} max={item.max_files || 10} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.min_files ?? (item.required ? 1 : 0)} onChange={(event) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, min_files: Number(event.target.value) }))} /></label>
                               <label><span className="text-xs font-semibold text-slate-600">Maximum files</span><input type="number" min={1} max={10} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={item.max_files || 10} onChange={(event) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, max_files: Number(event.target.value) }))} /></label>
-                              <label><span className="text-xs font-semibold text-slate-600">Per-file limit (MB)</span><input type="number" min={1} max={20} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={Math.round((item.max_file_bytes || 20 * 1024 * 1024) / 1024 / 1024)} onChange={(event) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, max_file_bytes: Number(event.target.value) * 1024 * 1024 }))} /></label>
+                              <label><span className="text-xs font-semibold text-slate-600">Per-file limit (MiB, 1–50)</span><input type="number" min={1} max={50} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" value={Math.round((item.max_file_bytes || CONTRIBUTOR_DOCUMENT_MAX_BYTES) / 1024 / 1024)} onChange={(event) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, max_file_bytes: Number(event.target.value) * 1024 * 1024 }))} /></label>
                             </div>
                             <fieldset><legend className="text-xs font-semibold text-slate-600">Allowed formats</legend><div className="mt-1 flex flex-wrap gap-3">{documentExtensions.map((extension) => <label key={extension} className="flex items-center gap-1 text-xs uppercase"><input type="checkbox" checked={(item.allowed_extensions || []).includes(extension)} onChange={(event) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, allowed_extensions: event.target.checked ? [...(value.allowed_extensions || []), extension] : (value.allowed_extensions || []).filter((current) => current !== extension) }))} />{extension}</label>)}</div></fieldset>
                             <label className="block"><span className="text-xs font-semibold text-slate-600">AI sufficiency instructions</span><textarea rows={3} maxLength={4000} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm" value={item.ai_sufficiency_instructions || ""} onChange={(event) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, ai_sufficiency_instructions: event.target.value }))} /></label>
@@ -1108,6 +1140,7 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                   {section.key === "retired_fields" ? (
                     <p className="mt-3 text-xs text-slate-500">These published fields are retained for historical compatibility. Reactivating a field returns it to its former section and order.</p>
                   ) : <><button type="button" className="portal-btn portal-btn-ghost mt-3" onClick={() => addField(sectionIndex)}>Add Optional Field</button><p className="mt-2 text-xs text-slate-500">New fields start as optional. Use their Move up and Move down controls to set the order shown to contributors.</p></>}
+                  </div>
                 </section>
               ))}
               {editMode === "change" && <button type="button" className="portal-btn portal-btn-ghost" onClick={addSection}>Add Section</button>}

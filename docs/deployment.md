@@ -209,6 +209,15 @@ Required Vercel environment variable:
 
 ```text
 VITE_API_BASE_URL=https://your-render-service.onrender.com/api
+
+Contributor supporting-document uploads use this URL directly from the browser.
+Keep it pointed at the Render Django API; do not proxy uploads through a
+Vercel Function. The application accepts at most 50 MiB per file (or the
+smaller limit in the published form version), 200 MiB per project, and the
+published form's file-count limit. Before advertising 25 or 50 MiB uploads as
+available in a deployment, upload real files of both sizes against the Render
+API and verify the stored document can be downloaded. Existing published form
+versions keep their original upload policy until a new version is published.
 VITE_TURNSTILE_SITE_KEY=your-cloudflare-turnstile-site-key
 ```
 

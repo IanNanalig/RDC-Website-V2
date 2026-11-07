@@ -209,6 +209,31 @@ def contract_for_form_schema(
     return {**deepcopy(current), "dependencies": dependencies}
 
 
+def apply_scoring_mappings(
+    form: dict[str, Any], schema: dict[str, Any], applicable_keys: set[str],
+    contract: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve canonical facts from stable keys in the published form version."""
+    result = deepcopy(form)
+    mappings = schema.get("scoring_mappings") if isinstance(schema.get("scoring_mappings"), dict) else {}
+    allowed = {
+        item["key"] for item in normalize_scoring_input_contract(contract)["dependencies"]
+        if item.get("source") == "contributor"
+    }
+    for canonical_key, source_key in mappings.items():
+        if canonical_key not in allowed or not isinstance(source_key, str):
+            continue
+        if source_key not in applicable_keys:
+            result.pop(canonical_key, None)
+            continue
+        answer = (result.get("custom_fields") or {}).get(source_key) if source_key.startswith("custom_") else result.get(source_key)
+        if answer in (None, "", [], {}):
+            result.pop(canonical_key, None)
+        else:
+            result[canonical_key] = deepcopy(answer)
+    return result
+
+
 def contract_for_project_snapshot(
     snapshot: dict[str, Any] | None,
     contract: dict[str, Any] | None = None,
@@ -279,6 +304,8 @@ def form_compatibility_report(
 ) -> dict[str, Any]:
     """Check a candidate contributor schema without saving it."""
     fields = _schema_fields(schema)
+    mappings = schema.get("scoring_mappings") if isinstance(schema, dict) else None
+    mappings = mappings if isinstance(mappings, dict) else {}
     issues: list[dict[str, Any]] = []
     dependencies = criterion_dependencies(config, contract)
     dependency_keys = {dependency["key"] for dependency in dependencies}
@@ -288,8 +315,12 @@ def form_compatibility_report(
         if dependency["key"] not in dependency_keys
     )
     for dependency in dependencies:
-        field = fields.get(dependency["key"])
+        mapped_key = str(mappings.get(dependency["key"]) or dependency["key"])
+        field = fields.get(mapped_key)
+        dependency["mapped_field_key"] = mapped_key
         dependency["enabled"] = True
+        if dependency.get("source") != "contributor":
+            continue
         if not dependency.get("required_in_schema"):
             continue
         blocking = bool(dependency.get("required_for_input"))
@@ -297,8 +328,8 @@ def form_compatibility_report(
         if field is None:
             issues.append(_issue(
                 severity, dependency,
-                f"{dependency['label']} is not present in the candidate form.",
-                "Restore the stable field key or update the affected scoring configuration before publishing.",
+                f"{dependency['label']} has no available form answer ({mapped_key}).",
+                "Choose another form field for this scoring fact, or accept an incomplete criterion until it is supplied.",
             ))
             continue
         if field.get("visible") is False or not field.get("_section_visible"):
@@ -348,6 +379,9 @@ def form_compatibility_report(
         changes = [name for name in review_keys if fields[key].get(name) != baseline_fields[key].get(name)]
         if changes:
             modified.append({"field_key": key, "field_label": fields[key].get("label") or key, "changes": changes})
+    baseline_sections = {str(section.get("key")): section for section in (baseline_schema or {}).get("sections", []) if isinstance(section, dict)}
+    current_sections = {str(section.get("key")): section for section in (schema or {}).get("sections", []) if isinstance(section, dict)}
+    hidden = sorted(key for key, field in fields.items() if field.get("visible") is False and baseline_fields.get(key, {}).get("visible") is not False)
     return {
         "status": status,
         "status_label": {
@@ -361,6 +395,9 @@ def form_compatibility_report(
             "structurally_valid": status != "incompatible",
             "added_fields": added,
             "retired_fields": retired,
+            "hidden_fields": hidden,
+            "added_sections": sorted(set(current_sections) - set(baseline_sections)),
+            "removed_sections": sorted(set(baseline_sections) - set(current_sections)),
             "modified_fields": modified,
             "dependency_conflicts": [issue for issue in issues if issue["status"] == "incompatible"],
             "ai_review_warnings": [issue for issue in issues if issue["status"] == "potential_issue"],

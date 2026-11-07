@@ -124,31 +124,24 @@ class FormAIScoringCompatibilityTests(TestCase):
         self.assertEqual(dependency["criterion_categories"], ["outcome_rules"])
         self.assertIn("custom_local_context", {item["key"] for item in effective["dependencies"]})
 
-    def test_clean_slate_draft_keeps_project_information_and_retires_other_inputs(self):
+    def test_clean_slate_draft_keeps_three_core_sections(self):
         schema = deepcopy(default_simplified_form_schema())
         schema["reset_from_scratch"] = True
         preserved = {
-            "agencyName", "projectActivity", "custom_supporting_documents",
+            "agencyName", "projectActivity", "startYear", "endYear",
+            "fundingRequirementByYear", "actualFundingByYear", "custom_supporting_documents",
         }
-        for section in schema["sections"]:
-            if section.get("admin_only"):
-                continue
-            keep_section = any(field["key"] in preserved for field in section["fields"])
-            section["visible"] = keep_section
-            for field in section["fields"]:
-                if keep_section and field["key"] in preserved:
-                    continue
-                field.update({
-                    "visible": False,
-                    "required": False,
-                    "condition_required": False,
-                    "ai_scoring_enabled": False,
-                })
+        schema["sections"] = [
+            {**section, "fields": [field for field in section["fields"] if field["key"] in preserved]}
+            for section in schema["sections"]
+            if section["key"] in {"project_information", "implementation_and_funding", "supporting_documents"}
+        ]
 
         validated = validate_form_schema(schema, published_schema=default_simplified_form_schema())
         report = self.report(validated)
 
         self.assertTrue(validated["reset_from_scratch"])
+        self.assertEqual(len(validated["sections"]), 3)
         self.assertNotEqual(report["status"], "incompatible")
 
     def test_project_snapshot_uses_top_level_immutable_form_version_marker(self):

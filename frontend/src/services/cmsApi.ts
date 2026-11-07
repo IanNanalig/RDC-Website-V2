@@ -177,6 +177,9 @@ export type CMSCompatibilityReport = {
     structurally_valid: boolean;
     added_fields: string[];
     retired_fields: string[];
+    hidden_fields?: string[];
+    added_sections?: string[];
+    removed_sections?: string[];
     modified_fields: Array<{ field_key: string; field_label: string; changes: string[] }>;
     dependency_conflicts: unknown[];
     ai_review_warnings: unknown[];

@@ -4,7 +4,7 @@ import re
 
 
 SIMPLIFIED_FORM_KEY = "simplified-rdip"
-FORM_SCHEMA_FORMAT_VERSION = 2
+FORM_SCHEMA_FORMAT_VERSION = 3
 ALLOWED_FIELD_TYPES = {
     "text",
     "textarea",
@@ -20,7 +20,7 @@ ALLOWED_FIELD_TYPES = {
 
 DOCUMENT_UPLOAD_EXTENSIONS = {"pdf", "docx", "xlsx", "csv", "png", "jpg", "jpeg"}
 DOCUMENT_UPLOAD_MAX_FILES = 10
-DOCUMENT_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
+DOCUMENT_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
 
 
 def _options(values):
@@ -256,13 +256,8 @@ DEFAULT_SIMPLIFIED_FORM_SCHEMA = {
                 ),
             ],
         },
-        {
-            "key": "priority_analysis",
-            "title": "Priority Analysis Facts",
-            "description": "Optional factual inputs for the AI-assisted priority recommendation.",
-            "visible": True,
-            "admin_only": True,
-            "fields": [
+    ],
+    "validator_fact_fields": [
                 _field("priorityAnalysisFacts.readinessLevel", "Readiness Level", "select", options=_options([
                     "With completed documents such as pre-FS/FS/POW and detailed design, where applicable",
                     "Ongoing pre-FS/FS/POW and detailed design, where applicable",
@@ -276,8 +271,6 @@ DEFAULT_SIMPLIFIED_FORM_SCHEMA = {
                 ])),
                 _field("priorityAnalysisFacts.beneficiaryCount", "Estimated Beneficiary Count", "number"),
                 _field("priorityAnalysisFacts.readinessNotes", "Readiness Evidence Notes", "textarea"),
-            ],
-        },
     ],
 }
 
@@ -293,17 +286,51 @@ CONDITION_REQUIRED_CORE_FIELDS = set()
 FIXED_FIELD_TYPES = {
     "agencyName": "text",
     "projectActivity": "text",
+    "startYear": "year",
+    "endYear": "year",
+    "fundingRequirementByYear": "currency_by_year",
+    "actualFundingByYear": "currency_by_year",
     "custom_supporting_documents": "document_upload",
 }
 PROTECTED_OPTION_FIELDS = {"collaboratingAgencies"}
-RESET_PRESERVED_FIELD_KEYS = {
-    "agencyName", "projectActivity", "custom_supporting_documents",
+PROTECTED_SECTION_KEYS = {
+    "project_information", "implementation_and_funding", "supporting_documents",
 }
-PROTECTED_WORKFLOW_FIELD_KEYS = {"agencyName", "projectActivity", "custom_supporting_documents"}
+PROTECTED_WORKFLOW_FIELD_KEYS = {
+    "agencyName", "projectActivity", "startYear", "endYear",
+    "fundingRequirementByYear", "actualFundingByYear", "custom_supporting_documents",
+}
+PROTECTED_FIELD_SECTIONS = {
+    "agencyName": "project_information", "projectActivity": "project_information",
+    "startYear": "implementation_and_funding", "endYear": "implementation_and_funding",
+    "fundingRequirementByYear": "implementation_and_funding",
+    "actualFundingByYear": "implementation_and_funding",
+    "custom_supporting_documents": "supporting_documents",
+}
 
 
 class FormSchemaError(ValueError):
     pass
+
+
+def describe_form_error(error, schema):
+    """Show configured labels to editors while retaining stable keys in logs."""
+    message = str(error)
+    if not isinstance(schema, dict):
+        return message
+    labels = {
+        str(field.get("key")): str(field.get("label") or field.get("key"))
+        for section in schema.get("sections", []) if isinstance(section, dict)
+        for field in section.get("fields", []) if isinstance(field, dict) and field.get("key")
+    }
+    labels.update({
+        str(section.get("key")): str(section.get("title") or section.get("key"))
+        for section in schema.get("sections", []) if isinstance(section, dict) and section.get("key")
+    })
+    for key in sorted(labels, key=len, reverse=True):
+        if labels[key] != key:
+            message = re.sub(r"(?<![A-Za-z0-9_])" + re.escape(key) + r"(?![A-Za-z0-9_])", labels[key], message)
+    return message
 
 
 def default_simplified_form_schema():
@@ -311,70 +338,37 @@ def default_simplified_form_schema():
 
 
 def normalize_system_managed_sections(schema, reference_schema=None):
-    """Keep contributor-editable sections first and authoritative system sections last."""
+    """Convert a legacy editor draft without changing its published source."""
     result = deepcopy(schema) if isinstance(schema, dict) else {}
     sections = result.get("sections", []) if isinstance(result.get("sections"), list) else []
-    editable_sections = [section for section in sections if not (isinstance(section, dict) and section.get("admin_only") is True)]
-    system_source = reference_schema if isinstance(reference_schema, dict) else result
-    system_sections = [
-        deepcopy(section)
-        for section in system_source.get("sections", [])
-        if isinstance(section, dict) and section.get("admin_only") is True
+    result["sections"] = [
+        section for section in sections
+        if not (isinstance(section, dict) and section.get("admin_only") is True)
     ]
-    result["sections"] = editable_sections + system_sections
-    # Older immutable versions may predate a minimum workflow field. Restoring
-    # them creates a new draft, so reintroduce only missing protected fields
-    # from the current published schema without rewriting the old version.
-    reference_fields = _field_map(reference_schema) if isinstance(reference_schema, dict) else {}
-    current_fields = _field_map(result)
-    reference_sections = {
-        str(field.get("key")): section
-        for section in (reference_schema or {}).get("sections", [])
-        if isinstance(section, dict)
-        for field in section.get("fields", [])
-        if isinstance(field, dict) and field.get("key")
-    } if isinstance(reference_schema, dict) else {}
-    for key in PROTECTED_WORKFLOW_FIELD_KEYS - set(current_fields):
-        field = reference_fields.get(key)
-        source_section = reference_sections.get(key)
-        if not field or not source_section:
-            continue
-        target = next((section for section in result["sections"] if section.get("key") == source_section.get("key")), None)
-        if target is None:
-            target = {name: deepcopy(value) for name, value in source_section.items() if name != "fields"}
-            target["fields"] = []
-            first_system = next(
-                (index for index, section in enumerate(result["sections"]) if section.get("admin_only") is True),
-                len(result["sections"]),
-            )
-            result["sections"].insert(first_system, target)
-        target.setdefault("fields", []).append(deepcopy(field))
+    legacy_facts = next((
+        section.get("fields") for section in sections
+        if isinstance(section, dict) and section.get("admin_only") is True
+        and section.get("key") == "priority_analysis"
+    ), None)
+    result["validator_fact_fields"] = deepcopy(
+        result.get("validator_fact_fields") or legacy_facts
+        or DEFAULT_SIMPLIFIED_FORM_SCHEMA["validator_fact_fields"]
+    )
+    result["format_version"] = FORM_SCHEMA_FORMAT_VERSION
     return result
 
 
 def validate_system_managed_sections(schema, reference_schema):
-    if not isinstance(reference_schema, dict):
-        return
-    expected = [
-        section
-        for section in reference_schema.get("sections", [])
+    reference = reference_schema if isinstance(reference_schema, dict) else {}
+    expected = reference.get("validator_fact_fields") or next((
+        section.get("fields") for section in reference.get("sections", [])
         if isinstance(section, dict) and section.get("admin_only") is True
-    ]
-    if not expected:
-        return
-    sections = schema.get("sections", []) if isinstance(schema, dict) else []
-    received = [
-        section
-        for section in sections
-        if isinstance(section, dict) and section.get("admin_only") is True
-    ]
-    expected_keys = [section.get("key") for section in expected]
-    received_keys = [section.get("key") for section in received]
-    trailing_keys = [section.get("key") for section in sections[-len(expected):]] if len(sections) >= len(expected) else []
-    if received_keys != expected_keys or received != expected or trailing_keys != expected_keys:
-        raise FormSchemaError(
-            "System-managed AI analysis sections cannot be changed, exposed, removed, or reordered."
-        )
+        and section.get("key") == "priority_analysis"
+    ), None) or DEFAULT_SIMPLIFIED_FORM_SCHEMA["validator_fact_fields"]
+    if schema.get("validator_fact_fields", expected) != expected:
+        raise FormSchemaError("Validator Facts configuration cannot be changed in the Contributor Form builder.")
+    if any(section.get("admin_only") for section in schema.get("sections", []) if isinstance(section, dict)):
+        raise FormSchemaError("Internal Validator Facts must stay outside Contributor Form sections.")
 
 
 def _field_map(schema):
@@ -645,13 +639,33 @@ def validate_form_schema(schema, published_schema=None):
 
     if field_count > 100:
         raise FormSchemaError("A form can contain at most 100 fields.")
+    missing_sections = PROTECTED_SECTION_KEYS - section_keys
+    if missing_sections:
+        titles = {
+            section["key"]: section["title"]
+            for section in DEFAULT_SIMPLIFIED_FORM_SCHEMA["sections"]
+        }
+        raise FormSchemaError("Essential sections cannot be removed: " + ", ".join(titles[key] for key in sorted(missing_sections)) + ".")
     if len(active_document_fields) > 1:
         raise FormSchemaError("A contributor form can contain only one active supporting-document field.")
     missing = PROTECTED_WORKFLOW_FIELD_KEYS - field_keys
     if missing:
-        raise FormSchemaError(f"Required workflow fields cannot be removed: {', '.join(sorted(missing))}.")
+        labels = {key: DEFAULT_SIMPLIFIED_FORM_SCHEMA["sections"][0]["title"] if key == "agencyName" else CORE_FIELDS.get(key, {}).get("label", key) for key in missing}
+        raise FormSchemaError("Essential project fields cannot be removed: " + ", ".join(sorted(labels.values())) + ".")
 
     current = _field_map(schema)
+    mappings = schema.get("scoring_mappings", {})
+    if not isinstance(mappings, dict):
+        raise FormSchemaError("AI scoring mappings must be an object.")
+    if mappings:
+        from projects.scoring_contract import default_scoring_input_contract
+
+        allowed_facts = {
+            item["key"] for item in default_scoring_input_contract()["dependencies"]
+            if item.get("source") == "contributor" and item["key"] != "custom_supporting_documents"
+        }
+        if any(key not in allowed_facts or not isinstance(value, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", value) for key, value in mappings.items()):
+            raise FormSchemaError("AI scoring mappings contain an unsupported fact or field identity.")
     published_fields = _field_map(published_schema) if isinstance(published_schema, dict) else {}
     reset_from_scratch = schema.get("reset_from_scratch") is True
     section_visible_for_field = {
@@ -660,26 +674,30 @@ def validate_form_schema(schema, published_schema=None):
         for field in section.get("fields", [])
         if isinstance(field, dict) and field.get("key")
     }
+    section_for_field = {
+        str(field.get("key")): str(section.get("key"))
+        for section in sections for field in section.get("fields", []) if isinstance(field, dict)
+    }
     for key in PROTECTED_WORKFLOW_FIELD_KEYS:
         candidate = current.get(key)
         if candidate is None:
             continue
         if (
-            not candidate.get("required")
+            (key in {"agencyName", "projectActivity", "startYear", "endYear"} and not candidate.get("required"))
             or candidate.get("visible") is False
             or not section_visible_for_field.get(key, False)
+            or section_for_field.get(key) != PROTECTED_FIELD_SECTIONS[key]
         ):
-            raise FormSchemaError(f"Required workflow field {key} must remain visible and required.")
+            raise FormSchemaError(f"The essential field '{candidate.get('label') or CORE_FIELDS.get(key, {}).get('label', key)}' must stay in its core section and remain available.")
     for key, original in CORE_FIELDS.items():
         candidate = current.get(key)
         if candidate is None:
             continue
-        reset_retired = reset_from_scratch and key not in RESET_PRESERVED_FIELD_KEYS
         if key in CONDITION_REQUIRED_CORE_FIELDS and (
             not candidate.get("condition_required")
             or candidate.get("visible") is False
             or not section_visible_for_field.get(key, False)
-        ) and not reset_retired:
+        ):
             raise FormSchemaError(f"Conditional validation for {key} must remain visible and cannot be removed.")
         original_values = [option["value"] for option in original.get("options", [])]
         if original_values:
@@ -781,35 +799,36 @@ def validate_form_schema(schema, published_schema=None):
     for field_key in dependency_graph:
         visit(field_key)
 
-    if isinstance(published_schema, dict):
-        validate_system_managed_sections(schema, published_schema)
-        published_sections = {
-            section.get("key"): section
-            for section in published_schema.get("sections", [])
-            if isinstance(section, dict) and section.get("key") and section.get("admin_only") is not True
-        }
-        current_section_keys = {
-            section.get("key")
-            for section in sections
-            if isinstance(section, dict) and section.get("admin_only") is not True
-        }
-        missing_sections = {
-            key for key in set(published_sections) - current_section_keys
-            if any(
-                isinstance(field, dict) and field.get("type") != "document_upload"
-                for field in published_sections[key].get("fields", [])
-            )
-        }
-        if missing_sections:
-            raise FormSchemaError(
-                "Published sections must be hidden instead of deleted: " + ", ".join(sorted(missing_sections)) + "."
-            )
-        for key, old_field in published_fields.items():
-            new_field = current.get(key)
-            if new_field is None:
-                if old_field.get("type") == "document_upload":
-                    continue
-                raise FormSchemaError(f"Published field {key} must be deactivated instead of deleted.")
+    validate_system_managed_sections(schema, published_schema)
+    return deepcopy(schema)
+
+
+def validate_draft_schema(schema):
+    """Allow unfinished definitions while rejecting unsafe or ambiguous JSON shapes."""
+    if not isinstance(schema, dict):
+        raise FormSchemaError("The form draft must be an object.")
+    sections = schema.get("sections")
+    if not isinstance(sections, list) or len(sections) > 20:
+        raise FormSchemaError("The form draft must contain a sections list of at most 20 items.")
+    section_keys, field_keys = set(), set()
+    for section in sections:
+        if not isinstance(section, dict) or not isinstance(section.get("fields"), list):
+            raise FormSchemaError("Each section needs a valid fields list.")
+        key = str(section.get("key") or "")
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", key) or key in section_keys:
+            raise FormSchemaError("Section identities must be unique and valid.")
+        if section.get("admin_only"):
+            raise FormSchemaError("Validator Facts are managed outside Contributor Form sections.")
+        section_keys.add(key)
+        for field in section["fields"]:
+            if not isinstance(field, dict):
+                raise FormSchemaError("Each field must be an object.")
+            field_key = str(field.get("key") or "")
+            if not re.fullmatch(r"(?:[A-Za-z][A-Za-z0-9_]*|priorityAnalysisFacts\.[A-Za-z][A-Za-z0-9_]*)", field_key) or field_key in field_keys:
+                raise FormSchemaError("Field identities must be unique and valid.")
+            field_keys.add(field_key)
+    if len(field_keys) > 100:
+        raise FormSchemaError("A form draft can contain at most 100 fields.")
     return deepcopy(schema)
 
 
@@ -903,8 +922,21 @@ def validate_simplified_answers(profile_data, require_complete=False, legacy_sta
     ):
         simplified["status"] = normalized_status
     custom = simplified.get("custom_fields") if isinstance(simplified.get("custom_fields"), dict) else {}
+    current_fields = _field_map(schema)
+    # Existing projects can carry answers from an earlier immutable form
+    # version. Keep those answers when a saved version marker is present.
+    if not marker.get("version"):
+        for key in list(custom):
+            if key not in current_fields:
+                custom.pop(key, None)
+    # A newly published form may retire a former built-in field entirely.
+    # Ignore values posted under those old keys for submissions using it.
+    if not marker.get("version"):
+        for key in CORE_FIELDS:
+            if key not in current_fields:
+                simplified.pop(key, None)
     applicable = applicable_field_keys(schema, simplified)
-    for key, field in _field_map(schema).items():
+    for key, field in current_fields.items():
         if key in applicable or field.get("type") == "document_upload" or key.startswith("priorityAnalysisFacts."):
             continue
         if key.startswith("custom_"):

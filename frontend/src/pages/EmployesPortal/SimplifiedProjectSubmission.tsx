@@ -17,6 +17,8 @@ import {
   cloneContributorFormSchema,
   contributorFieldApplies,
   DEFAULT_CONTRIBUTOR_FORM_SCHEMA,
+  CONTRIBUTOR_DOCUMENT_MAX_BYTES,
+  CONTRIBUTOR_DOCUMENT_MAX_TOTAL_BYTES,
   normalizeReadinessLevelValue,
   PROJECT_STATUS_OPTIONS,
   type ContributorFormField,
@@ -1452,13 +1454,15 @@ const SimplifiedProjectSubmission: React.FC = () => {
     if (!files || !documentField || !canChangeSupportingDocuments || documentBusy) return;
     const allowed = new Set((documentField.allowed_extensions || []).map((value) => value.toLowerCase()));
     const maxFiles = Math.min(documentField.max_files || 10, 10);
-    const maxBytes = Math.min(documentField.max_file_bytes || 20 * 1024 * 1024, 20 * 1024 * 1024);
+    const maxBytes = Math.min(documentField.max_file_bytes || CONTRIBUTOR_DOCUMENT_MAX_BYTES, CONTRIBUTOR_DOCUMENT_MAX_BYTES);
     const existingKeys = new Set([
       ...supportingDocuments.map((item) => `${item.original_filename.toLowerCase()}:${item.size_bytes}`),
       ...queuedDocuments.map((item) => `${item.name.toLowerCase()}:${item.size}`),
     ]);
     const accepted: File[] = [];
     const rejected: string[] = [];
+    let combinedBytes = supportingDocuments.reduce((total, item) => total + item.size_bytes, 0)
+      + queuedDocuments.reduce((total, item) => total + item.size, 0);
     for (const file of Array.from(files)) {
       const extension = file.name.split(".").pop()?.toLowerCase() || "";
       const key = `${file.name.toLowerCase()}:${file.size}`;
@@ -1466,9 +1470,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
       else if (file.size <= 0 || file.size > maxBytes) rejected.push(`${file.name} (over ${Math.round(maxBytes / 1024 / 1024)} MB)`);
       else if (existingKeys.has(key)) rejected.push(`${file.name} (already selected)`);
       else if (supportingDocuments.length + queuedDocuments.length + accepted.length >= maxFiles) rejected.push(`${file.name} (maximum ${maxFiles} files)`);
+      else if (combinedBytes + file.size > CONTRIBUTOR_DOCUMENT_MAX_TOTAL_BYTES) rejected.push(`${file.name} (${Math.round(CONTRIBUTOR_DOCUMENT_MAX_TOTAL_BYTES / 1024 / 1024)} MiB project total exceeded)`);
       else {
         existingKeys.add(key);
         accepted.push(file);
+        combinedBytes += file.size;
       }
     }
     if (accepted.length) setQueuedDocuments((current) => [...current, ...accepted]);
@@ -1814,7 +1820,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
     if (field.type === "document_upload") {
       const maximum = Math.min(field.max_files || 10, 10);
-      const maxMegabytes = Math.min(Math.round((field.max_file_bytes || 20 * 1024 * 1024) / 1024 / 1024), 20);
+      const maxMegabytes = Math.min(Math.round((field.max_file_bytes || CONTRIBUTOR_DOCUMENT_MAX_BYTES) / 1024 / 1024), CONTRIBUTOR_DOCUMENT_MAX_BYTES / 1024 / 1024);
       const accept = (field.allowed_extensions || []).map((extension) => `.${extension}`).join(",");
       return (
         <div className="space-y-3">
@@ -1826,7 +1832,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
           {canChangeSupportingDocuments && !isReadOnly && (
             <label className="block cursor-pointer rounded-xl border-2 border-dashed border-blue-200 bg-blue-50 p-4 text-center text-sm text-blue-800 focus-within:ring-2 focus-within:ring-blue-500">
               <span className="font-semibold">Choose supporting documents</span>
-              <span className="mt-1 block text-xs">Up to {maximum} files · {maxMegabytes} MB each · {accept.replaceAll(".", "").toUpperCase()}</span>
+              <span className="mt-1 block text-xs">Up to {maximum} files · {maxMegabytes} MiB per file · 200 MiB total per project · {accept.replaceAll(".", "").toUpperCase()}</span>
               <input type="file" multiple accept={accept} className="sr-only" disabled={documentBusy} onChange={(event) => { addQueuedSupportingDocuments(event.target.files); event.currentTarget.value = ""; }} />
             </label>
           )}

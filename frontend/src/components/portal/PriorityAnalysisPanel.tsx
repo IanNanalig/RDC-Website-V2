@@ -577,8 +577,8 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
               </section>
             )}
             {scoreReasoning && (
-              <section className="rounded-xl border border-blue-200 bg-blue-50/40 p-4">
-                <h3 className="font-semibold text-blue-950">Reasoning and Explanation</h3>
+              <details className="group rounded-xl border border-blue-200 bg-blue-50/40 p-4">
+                <summary className="flex cursor-pointer list-none items-center justify-between font-semibold text-blue-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 [&::-webkit-details-marker]:hidden">Reasoning and Explanation <span className="text-blue-700 transition-transform group-open:rotate-180" aria-hidden="true">⌄</span></summary>
                 <div className="mt-3 rounded-lg border border-blue-100 bg-white p-3 text-sm text-slate-700">
                   <p>The AI gave this project <strong>{Number(analysis.base_score).toFixed(2)} out of 100</strong> points and suggested <strong>{priorityLabel(analysis.suggested_priority)}</strong>.</p>
                   {missingFacts.length > 0 && <p className="mt-1">Some required information is missing, so the AI recommendation is incomplete.</p>}
@@ -612,11 +612,11 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
                     </div>
                   ))}
                 </div>
-              </section>
+              </details>
             )}
             {scoreRecommendations.length > 0 && (
-              <section className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-4">
-                <h3 className="font-semibold text-emerald-950">Recommendations to Improve the Score</h3>
+              <details className="group rounded-xl border border-emerald-200 bg-emerald-50/40 p-4">
+                <summary className="flex cursor-pointer list-none items-center justify-between font-semibold text-emerald-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-600 [&::-webkit-details-marker]:hidden">Recommendations to Improve the Score <span className="text-emerald-700 transition-transform group-open:rotate-180" aria-hidden="true">⌄</span></summary>
                 <p className="mt-1 text-xs text-emerald-800">Only update information that is accurate and supported by project evidence.</p>
                 <div className="mt-3 space-y-2">
                   {scoreRecommendations.map((item) => (
@@ -639,11 +639,11 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
                     </div>
                   ))}
                 </div>
-              </section>
+              </details>
             )}
             {revisionFields.length > 0 && (
-              <section className="rounded-xl border border-amber-200 bg-amber-50/50 p-4">
-                <h3 className="font-semibold text-amber-950">Fields Needing Review or Revision</h3>
+              <details className="group rounded-xl border border-amber-200 bg-amber-50/50 p-4">
+                <summary className="flex cursor-pointer list-none items-center justify-between font-semibold text-amber-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-600 [&::-webkit-details-marker]:hidden">Fields Needing Review or Revision <span className="text-amber-700 transition-transform group-open:rotate-180" aria-hidden="true">⌄</span></summary>
                 <p className="mt-1 text-xs text-amber-800">These fields support incomplete, low-scoring, or flagged criteria. Validator inputs are not contributor-editable fields.</p>
                 <div className="mt-3 grid gap-2 md:grid-cols-2">
                   {revisionFields.map((field) => (
@@ -658,7 +658,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
                     </div>
                   ))}
                 </div>
-              </section>
+              </details>
             )}
             {missingFacts.length > 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><p className="font-semibold">Missing facts</p><ul className="mt-1 list-disc pl-5">{missingFacts.map((item) => <li key={item}>{item}</li>)}</ul></div>}
             <CriteriaTable title="PAP Criteria" criteria={analysis.suggested_scores.pap} total={analysis.suggested_scores.pap_total} />

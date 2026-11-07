@@ -20,7 +20,7 @@ from ai_engine.models import AIModelVersion
 from ai_engine.serializers import AIModelVersionSerializer
 from ai_engine.services import get_active_model, sync_training_record, training_dataset_summary
 
-from cms.form_schema import FormSchemaError, SIMPLIFIED_FORM_KEY, default_simplified_form_schema, validate_form_schema
+from cms.form_schema import FormSchemaError, SIMPLIFIED_FORM_KEY, default_simplified_form_schema, describe_form_error, validate_form_schema
 from cms.models import (
     CMSArticle,
     CMSCarouselItem,
@@ -1139,7 +1139,7 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
                 status=status.HTTP_409_CONFLICT,
             )
         except FormSchemaError as exc:
-            return Response({"detail": str(exc)}, status=400)
+            return Response({"detail": describe_form_error(exc, target.draft_schema_json)}, status=400)
         _notify_form_users(
             editor_recipients,
             actor=request.user,
@@ -1162,20 +1162,6 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
         if not isinstance(schema, dict):
             return Response({"detail": "draft_schema_json must be an object."}, status=400)
         published_schema = form.current_published_version.schema_json if form.current_published_version_id else None
-        try:
-            validate_form_schema(schema, published_schema=published_schema)
-        except FormSchemaError as exc:
-            return Response({
-                "status": "incompatible",
-                "status_label": "Invalid configuration",
-                "issues": [{
-                    "status": "incompatible", "field_key": "form", "field_label": "Contributor form",
-                    "source": "configuration", "criteria": [], "message": str(exc),
-                    "recommendation": "Resolve this structural or conditional dependency error before publishing.",
-                }],
-                "dependencies": [],
-                "impact": {"structurally_valid": False, "added_fields": [], "retired_fields": [], "modified_fields": [], "dependency_conflicts": [str(exc)], "ai_review_warnings": []},
-            })
         active_rules = get_active_priority_rule_set()
         report = form_compatibility_report(
             schema,
@@ -1183,6 +1169,19 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
             contract_for_rule_set(active_rules),
             published_schema,
         )
+        try:
+            validate_form_schema(schema, published_schema=published_schema)
+        except FormSchemaError as exc:
+            issue = {
+                "status": "incompatible", "field_key": "form", "field_label": "Contributor form",
+                "source": "configuration", "criteria": [], "message": describe_form_error(exc, schema),
+                "recommendation": "Resolve this structural or conditional dependency error before publishing.",
+            }
+            report["status"] = "incompatible"
+            report["status_label"] = "Invalid configuration"
+            report["issues"].insert(0, issue)
+            report["impact"]["structurally_valid"] = False
+            report["impact"]["dependency_conflicts"].append(issue)
         return Response(report)
 
     @action(detail=True, methods=["get"])

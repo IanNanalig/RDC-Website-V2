@@ -15,6 +15,7 @@ from cms.form_schema import (
     FormSchemaError,
     build_form_migration_plan,
     normalize_system_managed_sections,
+    validate_draft_schema,
     validate_form_schema,
 )
 from cms.services.snapshots import (
@@ -257,7 +258,9 @@ def restore_contributor_form_version(form, version, user=None):
                     restored_sections.append(retired_section)
                 retired_section.setdefault("fields", []).extend(retired_fields)
             restored_schema = normalize_system_managed_sections(restored_schema, published_schema)
-        validate_form_schema(restored_schema, published_schema=published_schema)
+        # Restoring a historical version creates a draft. It may predate the
+        # current publication rules; let editors review and repair it first.
+        validate_draft_schema(restored_schema)
         locked_form.draft_schema_json = restored_schema
         locked_form.name = str(restored_schema.get("title") or locked_form.name)
         locked_form.description = str(restored_schema.get("description") or locked_form.description)
