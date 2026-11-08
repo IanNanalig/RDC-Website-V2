@@ -41,26 +41,13 @@ const protectedOptionKeys = new Set(["collaboratingAgencies"]);
 const protectedWorkflowKeys = new Set(["agencyName", "projectActivity", "startYear", "endYear", "fundingRequirementByYear", "actualFundingByYear", "custom_supporting_documents"]);
 
 const conditionOperators = (type: ContributorFormFieldType): Array<{ value: ContributorConditionOperator; label: string }> => {
-  const empty: Array<{ value: ContributorConditionOperator; label: string }> = [
-    { value: "is_empty", label: "Is empty" }, { value: "is_not_empty", label: "Is not empty" },
+  const choices: Array<{ value: ContributorConditionOperator; label: string }> = [
+    { value: "equals", label: "Equals" },
+    { value: "one_of", label: "Is one of" },
+    { value: "is_empty", label: "Is empty" },
   ];
-  if (type === "select") return [
-    { value: "equals", label: "Equals" }, { value: "not_equals", label: "Does not equal" },
-    { value: "one_of", label: "Is one of" }, { value: "not_one_of", label: "Is not one of" }, ...empty,
-  ];
-  if (type === "multiselect" || type === "multiselect_dropdown") return [
-    { value: "contains", label: "Contains" }, { value: "not_contains", label: "Does not contain" },
-    { value: "contains_any", label: "Contains any of" }, ...empty,
-  ];
-  if (type === "number" || type === "year") return [
-    { value: "equals", label: "Equals" }, { value: "not_equals", label: "Does not equal" },
-    { value: "greater_than", label: "Greater than" }, { value: "less_than", label: "Less than" },
-    { value: "at_least", label: "At least" }, { value: "at_most", label: "At most" }, ...empty,
-  ];
-  if (type === "date") return [
-    { value: "equals", label: "Equals" }, { value: "before", label: "Before" }, { value: "after", label: "After" }, ...empty,
-  ];
-  return [{ value: "equals", label: "Equals" }, { value: "not_equals", label: "Does not equal" }, ...empty];
+  if (type === "document_upload") return [{ value: "is_empty", label: "Is empty" }];
+  return choices;
 };
 
 const normalizedConditionGroup = (field: ContributorFormField): ContributorConditionGroup | undefined => {
@@ -268,13 +255,13 @@ const ConditionalDisplayBuilder = ({
         {group.conditions.map((rule, ruleIndex) => {
           const source = fields.find((candidate) => candidate.key === rule.field) || candidates[0];
           const operators = conditionOperators(source?.type || "text");
-          const operator = operators.some((item) => item.value === rule.operator) ? rule.operator : operators[0].value;
+          const operator = rule.operator;
           const noValue = operator === "is_empty" || operator === "is_not_empty";
           const manyValues = operator === "one_of" || operator === "not_one_of" || operator === "contains_any";
           const updateRule = (nextRule: typeof rule) => updateGroup({ ...group, conditions: group.conditions.map((item, index) => index === ruleIndex ? nextRule : item) });
           return <div key={`${rule.field}-${ruleIndex}`} className="grid gap-2 rounded-lg border border-violet-100 bg-white p-2 md:grid-cols-[1fr_180px_1fr_auto]">
             <select aria-label="Condition source question" className="rounded-lg border border-slate-300 px-2 py-2 text-sm" value={source?.key || ""} onChange={(event) => { const nextSource = fields.find((candidate) => candidate.key === event.target.value); const nextOperator = conditionOperators(nextSource?.type || "text")[0].value; updateRule({ field: event.target.value, operator: nextOperator, value: "", values: [] }); }}>{candidates.map((candidate) => <option key={candidate.key} value={candidate.key}>{candidate.label}</option>)}</select>
-            <select aria-label="Condition operator" className="rounded-lg border border-slate-300 px-2 py-2 text-sm" value={operator} onChange={(event) => updateRule({ ...rule, operator: event.target.value as ContributorConditionOperator, value: "", values: [] })}>{operators.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+            <select aria-label="Condition operator" className="rounded-lg border border-slate-300 px-2 py-2 text-sm" value={operator} onChange={(event) => updateRule({ ...rule, operator: event.target.value as ContributorConditionOperator, value: "", values: [] })}>{!operators.some((item) => item.value === operator) && <option value={operator}>{operator.replaceAll("_", " ")} (existing rule)</option>}{operators.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
             {noValue ? <span className="self-center text-xs text-slate-500">No comparison value needed</span> : source?.options?.length ? (
               manyValues ? <select multiple aria-label="Expected answers" className="min-h-20 rounded-lg border border-slate-300 px-2 py-1 text-sm" value={rule.values || []} onChange={(event) => updateRule({ ...rule, values: Array.from(event.target.selectedOptions, (option) => option.value), value: undefined })}>{source.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
                 : <select aria-label="Expected answer" className="rounded-lg border border-slate-300 px-2 py-2 text-sm" value={rule.value || ""} onChange={(event) => updateRule({ ...rule, value: event.target.value, values: undefined })}><option value="">Choose an answer</option>{source.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
@@ -430,21 +417,28 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     [publishedSchema],
   );
   const conditionalOptionValues = useMemo(() => {
-    const dependencies = new Map<string, Set<string>>();
+    const dependencies = new Map<string, Map<string, Set<string>>>();
     for (const section of schema?.sections || []) {
       for (const field of section.fields) {
         for (const condition of field.condition_group?.conditions || []) {
-          const values = dependencies.get(condition.field) || new Set<string>();
-          const expected = Array.isArray(condition.value) ? condition.value : [condition.value];
-          for (const value of expected) if (value !== undefined && value !== null) values.add(String(value));
+          const values = dependencies.get(condition.field) || new Map<string, Set<string>>();
+          const expected = condition.operator === "one_of" || condition.operator === "not_one_of" || condition.operator === "contains_any"
+            ? condition.values || [] : [condition.value];
+          for (const value of expected) if (value !== undefined && value !== null) {
+            const users = values.get(String(value)) || new Set<string>();
+            users.add(field.label);
+            values.set(String(value), users);
+          }
           dependencies.set(condition.field, values);
         }
         if (!field.condition?.field) continue;
-        const values = dependencies.get(field.condition.field) || new Set<string>();
-        if (field.condition.equals !== undefined) values.add(field.condition.equals);
-        if (field.condition.not_equals !== undefined) values.add(field.condition.not_equals);
-        for (const value of field.condition.one_of || []) values.add(value);
-        for (const value of field.condition.not_one_of || []) values.add(value);
+        const values = dependencies.get(field.condition.field) || new Map<string, Set<string>>();
+        const legacyValues = [field.condition.equals, field.condition.not_equals, ...(field.condition.one_of || []), ...(field.condition.not_one_of || [])];
+        for (const value of legacyValues) if (value !== undefined) {
+          const users = values.get(String(value)) || new Set<string>();
+          users.add(field.label);
+          values.set(String(value), users);
+        }
         dependencies.set(field.condition.field, values);
       }
     }
@@ -1129,9 +1123,10 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                           </div>}
                           {item.options && <div className="mt-3 space-y-2"><div className="grid gap-2 sm:grid-cols-2">{item.options.map((option, optionIndex) => {
                             const canChangeOptionOrder = !optionsAreProtected && (editMode === "change" || !baselineFieldKeys.has(item.key));
-                            const controlsCondition = conditionalOptionValues.get(item.key)?.has(option.value) === true;
+                            const dependentQuestions = [...(conditionalOptionValues.get(item.key)?.get(option.value) || [])];
+                            const controlsCondition = dependentQuestions.length > 0;
                             const canRemoveOption = canChangeOptionOrder && item.options!.length > 1 && !controlsCondition;
-                            return <label key={`${option.value}-${optionIndex}`} data-form-option-value={option.value}><span className="text-xs text-slate-500">Option label · Order {optionIndex + 1}</span><div className="flex gap-2"><input disabled={optionsAreProtected} title={optionsAreProtected ? "Agency choices are managed by the Agency catalog." : undefined} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500" value={option.label} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: (fieldValue.options || []).map((value, index) => index === optionIndex ? { ...value, label: event.target.value } : value) }))} />{canChangeOptionOrder && <div className="mt-1 flex items-center gap-1"><button type="button" disabled={optionIndex === 0} className="rounded px-1.5 py-1 text-xs font-semibold text-blue-700 disabled:text-slate-300" aria-label={`Move option ${option.label} up`} onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: move(fieldValue.options || [], optionIndex, -1) }))}>Up</button><button type="button" disabled={optionIndex === item.options!.length - 1} className="rounded px-1.5 py-1 text-xs font-semibold text-blue-700 disabled:text-slate-300" aria-label={`Move option ${option.label} down`} onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: move(fieldValue.options || [], optionIndex, 1) }))}>Down</button></div>}{canRemoveOption && <button type="button" className="text-xs font-semibold text-rose-700" aria-label={`Remove option ${option.label}`} onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: (fieldValue.options || []).filter((_, index) => index !== optionIndex) }))}>Remove</button>}</div>{controlsCondition && <span className="mt-1 block text-xs text-amber-700">Used by a conditional question and cannot be removed.</span>}{optionsAreProtected && <span className="mt-1 block text-xs text-slate-500">Managed by the Agency catalog.</span>}</label>;
+                            return <label key={`${option.value}-${optionIndex}`} data-form-option-value={option.value}><span className="text-xs text-slate-500">Option label · Order {optionIndex + 1}</span><div className="flex gap-2"><input disabled={optionsAreProtected} title={optionsAreProtected ? "Agency choices are managed by the Agency catalog." : undefined} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 disabled:bg-slate-100 disabled:text-slate-500" value={option.label} onChange={(event) => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: (fieldValue.options || []).map((value, index) => index === optionIndex ? { ...value, label: event.target.value } : value) }))} />{canChangeOptionOrder && <div className="mt-1 flex items-center gap-1"><button type="button" disabled={optionIndex === 0} className="rounded px-1.5 py-1 text-xs font-semibold text-blue-700 disabled:text-slate-300" aria-label={`Move option ${option.label} up`} onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: move(fieldValue.options || [], optionIndex, -1) }))}>Up</button><button type="button" disabled={optionIndex === item.options!.length - 1} className="rounded px-1.5 py-1 text-xs font-semibold text-blue-700 disabled:text-slate-300" aria-label={`Move option ${option.label} down`} onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: move(fieldValue.options || [], optionIndex, 1) }))}>Down</button></div>}{canRemoveOption && <button type="button" className="text-xs font-semibold text-rose-700" aria-label={`Remove option ${option.label}`} onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => ({ ...fieldValue, options: (fieldValue.options || []).filter((_, index) => index !== optionIndex) }))}>Remove</button>}</div>{controlsCondition && <span className="mt-1 block text-xs text-amber-700">Used by conditional questions: {dependentQuestions.join(", ")}. Remove or reassign those conditions first.</span>}{optionsAreProtected && <span className="mt-1 block text-xs text-slate-500">Managed by the Agency catalog.</span>}</label>;
                           })}</div>{!optionsAreProtected && (editMode === "change" || !baselineFieldKeys.has(item.key)) && <button type="button" className="text-xs font-semibold text-blue-700" onClick={() => updateField(sectionIndex, fieldIndex, (fieldValue) => { const current = fieldValue.options || []; const value = nextOptionValue(fieldValue); return { ...fieldValue, options: [...current, { value, label: `Option ${value.replace("option_", "")}` }] }; })}>Add option</button>}</div>}
                         </div>
                       );

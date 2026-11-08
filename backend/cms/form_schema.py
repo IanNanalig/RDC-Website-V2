@@ -419,10 +419,14 @@ def _compare_condition(current, rule):
     expected = rule.get("value")
     expected_values = rule.get("values") if isinstance(rule.get("values"), list) else []
     if operator == "equals":
+        if isinstance(current, list):
+            return any(str(value).strip().casefold() == str(expected or "").strip().casefold() for value in current)
         return str(current or "").strip().casefold() == str(expected or "").strip().casefold()
     if operator == "not_equals":
         return str(current or "").strip().casefold() != str(expected or "").strip().casefold()
     if operator == "one_of":
+        if isinstance(current, list):
+            return any(str(value) in {str(item) for item in expected_values} for value in current)
         return str(current or "") in {str(value) for value in expected_values}
     if operator == "not_one_of":
         return str(current or "") not in {str(value) for value in expected_values}
@@ -760,8 +764,13 @@ def validate_form_schema(schema, published_schema=None):
             if source_key not in active_fields:
                 raise FormSchemaError(f"Conditional field {field.get('key')} references an inaccessible field {source_key}.")
             operator = str(rule.get("operator") or "")
-            if operator not in operator_types.get(str(source.get("type") or ""), set()):
+            if operator not in (operator_types.get(str(source.get("type") or ""), set()) | {"equals", "one_of", "is_empty"}):
                 raise FormSchemaError(f"Operator {operator or '(missing)'} is not valid for {source.get('label') or source_key}.")
+            if operator not in {"equals", "one_of", "is_empty"}:
+                previous = published_fields.get(str(field.get("key")))
+                previous_group = field_condition_group(previous) if previous else None
+                if not previous_group or rule not in previous_group.get("conditions", []):
+                    raise FormSchemaError(f"New conditions may use only Equals, Is one of, or Is empty for {field.get('label') or field.get('key')}.")
             dependency_graph[str(field.get("key"))].add(source_key)
             expected = rule.get("values") if operator in {"one_of", "not_one_of", "contains_any"} else [rule.get("value")]
             if operator not in {"is_empty", "is_not_empty"} and (not isinstance(expected, list) or not expected):

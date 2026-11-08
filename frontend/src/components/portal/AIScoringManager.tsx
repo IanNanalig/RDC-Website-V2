@@ -444,13 +444,14 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
             <h4 className="font-semibold text-slate-800">Priority thresholds and PAP weights</h4>
             <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"><span className="block text-xs font-medium text-slate-600">Priority grade</span><span className="mt-1 block">Low: 0–{config.thresholds.high - 1} · High: {config.thresholds.high}–100</span></div>
+              <NumberInput label="High-priority score starts at" value={config.thresholds.high} min={1} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.high = value; })} />
               <NumberInput label="Regional eligibility and automatic-Low cutoff (PHP)" value={config.thresholds.regional_project_cost} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_project_cost = value; })} />
               <NumberInput label="Readiness weight" value={papWeights.readiness} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.readiness = value; })} />
               <NumberInput label="GAD responsiveness weight" value={papWeights.gad_responsiveness} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.gad_responsiveness = value; })} />
               <NumberInput label="Spatial coverage weight" value={papWeights.spatial_coverage} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.spatial_coverage = value; })} />
             </div>
             <p className="mt-2 text-xs text-slate-500">PAP weight total: {papTotal}. PAP + common outcomes ({commonTotal}) + the selected sector outcomes must total 100.</p>
-            <p className="mt-1 text-xs text-slate-500">A project below the regional cutoff skips the regional scorecard and receives an automatic Low recommendation, even with a grade of 70 or higher. Validators may still override it with a rationale. Exactly the cutoff amount qualifies for regional scoring.</p>
+            <p className="mt-1 text-xs text-slate-500">A project below the regional cutoff skips the regional scorecard and receives an automatic Low recommendation, even when its score reaches the configured High threshold. Validators may still override it with a rationale. Exactly the cutoff amount qualifies for regional scoring.</p>
           </div>
 
           <div className="space-y-3">

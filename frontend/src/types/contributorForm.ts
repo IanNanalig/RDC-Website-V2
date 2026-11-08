@@ -350,9 +350,13 @@ export const contributorFieldApplies = (
       const currentText = String(current ?? "").trim();
       const expected = String(condition.value ?? "").trim();
       switch (condition.operator) {
-        case "equals": return currentText.toLocaleLowerCase() === expected.toLocaleLowerCase();
+        case "equals": return Array.isArray(current)
+          ? current.some((value) => value.toLocaleLowerCase() === expected.toLocaleLowerCase())
+          : currentText.toLocaleLowerCase() === expected.toLocaleLowerCase();
         case "not_equals": return currentText.toLocaleLowerCase() !== expected.toLocaleLowerCase();
-        case "one_of": return (condition.values || []).includes(currentText);
+        case "one_of": return Array.isArray(current)
+          ? current.some((value) => (condition.values || []).includes(value))
+          : (condition.values || []).includes(currentText);
         case "not_one_of": return !(condition.values || []).includes(currentText);
         case "contains": return Array.isArray(current) && current.includes(condition.value);
         case "not_contains": return !Array.isArray(current) || !current.includes(condition.value);

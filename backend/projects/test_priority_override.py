@@ -1,9 +1,22 @@
-from django.test import override_settings
+from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APITestCase
 
 from ai_engine.models import AITrainingRecord
 from ai_engine.services import sync_all_training_records
-from .priority_scoring import confirm_analysis
+from .priority_scoring import confirm_analysis, default_priority_rule_config, validate_priority_rule_config, _sector_track
+
+
+class PriorityConfigurationTests(SimpleTestCase):
+    def test_configured_high_threshold_and_regional_cost_floor(self):
+        config = default_priority_rule_config()
+        config["thresholds"]["high"] = 82
+        self.assertEqual(validate_priority_rule_config(config, enforce_current_high=True)["thresholds"]["high"], 82)
+        config["thresholds"]["regional_criteria"]["cost"]["thresholds"]["over_500m"] = 1
+        with self.assertRaisesRegex(ValueError, "eligibility cutoff"):
+            validate_priority_rule_config(config)
+
+    def test_stale_sceeed_track_does_not_override_other_sector(self):
+        self.assertEqual(_sector_track({"developmentSector": "Infrastructure"}, {"sceeedTrack": "economic"}, ""), "infrastructure")
 from .models import (
     Notification, PriorityRuleSet, Project, ProjectPriorityAnalysis,
     ProjectPriorityConfirmation, User, UserActivity,

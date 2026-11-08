@@ -2515,6 +2515,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
             <PriorityAnalysisPanel
               projectId={id}
               role={isAdmin ? "admin" : "validator"}
+              developmentSector={form.developmentSector}
             />
           )}
 

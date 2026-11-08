@@ -14,7 +14,7 @@ from cms.form_schema import (
 from cms.models import CMSContributorForm
 from cms.services.locking import acquire_form_lock
 from cms.services.publishing import publish_contributor_form, restore_contributor_form_version
-from projects.models import Notification, Project, ProjectRevision, User, UserActivity
+from projects.models import Agency, Notification, Project, ProjectRevision, User, UserActivity
 from projects.serializers import ProjectSerializer
 
 
@@ -50,6 +50,25 @@ class ContributorFormWorkflowTests(APITestCase):
 
     def authenticate(self, user):
         self.client.force_authenticate(user=user)
+
+    def test_current_form_agency_options_follow_catalog_without_rewriting_version(self):
+        agency = Agency.objects.create(code="BETA", name="Beta Health Agency")
+        self.authenticate(self.contributor)
+        response = self.client.get("/api/contributor-forms/simplified-rdip/current/")
+        self.assertEqual(response.status_code, 200, response.data)
+        field = next(field for section in response.data["schema"]["sections"] for field in section["fields"] if field["key"] == "collaboratingAgencies")
+        self.assertIn({"value": "BETA", "label": "Beta Health Agency"}, field["options"])
+        agency.name = "Renamed Beta Agency"
+        agency.save(update_fields=["name"])
+        renamed = self.client.get("/api/contributor-forms/simplified-rdip/current/")
+        field = next(field for section in renamed.data["schema"]["sections"] for field in section["fields"] if field["key"] == "collaboratingAgencies")
+        self.assertIn({"value": "BETA", "label": "Renamed Beta Agency"}, field["options"])
+        agency.is_active = False
+        agency.save(update_fields=["is_active"])
+        archived = self.client.get("/api/contributor-forms/simplified-rdip/current/")
+        field = next(field for section in archived.data["schema"]["sections"] for field in section["fields"] if field["key"] == "collaboratingAgencies")
+        self.assertNotIn("BETA", {option["value"] for option in field["options"]})
+        self.assertNotEqual(self.form.current_published_version.schema_json, renamed.data["schema"])
 
     def _draft_with_custom_field(self, required=False):
         schema = deepcopy(self.form.draft_schema_json)
@@ -1108,9 +1127,9 @@ class ContributorFormWorkflowTests(APITestCase):
         fields = schema["sections"][0]["fields"]
         fields.extend([
             {"key": "custom_first", "label": "First", "type": "text", "visible": True, "required": False,
-             "condition_group": {"match": "all", "conditions": [{"field": "custom_second", "operator": "is_not_empty"}]}},
+             "condition_group": {"match": "all", "conditions": [{"field": "custom_second", "operator": "is_empty"}]}},
             {"key": "custom_second", "label": "Second", "type": "text", "visible": True, "required": False,
-             "condition_group": {"match": "all", "conditions": [{"field": "custom_first", "operator": "is_not_empty"}]}},
+             "condition_group": {"match": "all", "conditions": [{"field": "custom_first", "operator": "is_empty"}]}},
         ])
         rejected = self._save_draft(schema, edit_mode="change")
         self.assertEqual(rejected.status_code, status.HTTP_200_OK)
@@ -1118,6 +1137,24 @@ class ContributorFormWorkflowTests(APITestCase):
         published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
         self.assertEqual(published.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("circular", str(published.data).lower())
+
+    def test_all_one_of_choices_are_required_at_publish(self):
+        schema = deepcopy(self.form.draft_schema_json)
+        schema["sections"][0]["fields"].append({
+            "key": "custom_status_note", "label": "Status note", "type": "text",
+            "visible": True, "required": False,
+            "condition_group": {"match": "all", "conditions": [{
+                "field": "status", "operator": "one_of", "values": ["Ongoing", "Completed"],
+            }]},
+        })
+        status_field = next(field for section in schema["sections"] for field in section["fields"] if field["key"] == "status")
+        status_field["options"] = [option for option in status_field["options"] if option["value"] != "Completed"]
+        saved = self._save_draft(schema, edit_mode="change")
+        self.assertEqual(saved.status_code, status.HTTP_200_OK, saved.data)
+        self.authenticate(self.admin)
+        published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
+        self.assertEqual(published.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("unavailable choice", str(published.data).lower())
 
     def test_hidden_dependency_chain_clears_answers_even_when_fields_are_out_of_order(self):
         schema = deepcopy(self.form.draft_schema_json)

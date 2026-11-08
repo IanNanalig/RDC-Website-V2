@@ -1241,11 +1241,23 @@ class ContributorFormCurrentView(APIView):
             # appear to use an old form.
             raise Http404("Published contributor form not found.")
         version = form.current_published_version
+        from copy import deepcopy
+        from projects.models import Agency
+
+        schema = deepcopy(version.schema_json)
+        agency_options = [
+            {"value": agency.code, "label": agency.name}
+            for agency in Agency.objects.filter(is_active=True, system_key__isnull=True).order_by("name")
+        ]
+        for section in schema.get("sections", []):
+            for field in section.get("fields", []):
+                if field.get("key") == "collaboratingAgencies":
+                    field["options"] = agency_options
         payload = {
             "key": form.key,
             "name": form.name,
             "version": version.version_number,
-            "schema": version.schema_json,
+            "schema": schema,
             "published_at": version.published_at,
         }
         return _with_private_cache(request, payload)

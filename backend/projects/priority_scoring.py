@@ -480,8 +480,6 @@ def validate_priority_rule_config(config, *, enforce_current_high=False):
         raise ValueError("Thresholds, sector criteria, and keyword dictionaries are required.")
 
     high = _number(thresholds.get("high"), "High-priority threshold", 0, 100)
-    if enforce_current_high and high != 70:
-        raise ValueError("The high-priority threshold for new rule versions must be 70.")
     pap_weights_value = thresholds.get("pap_weights")
     if not isinstance(pap_weights_value, dict):
         raise ValueError("PAP criterion weights are required.")
@@ -558,14 +556,16 @@ def validate_priority_rule_config(config, *, enforce_current_high=False):
     if not guidelines:
         raise ValueError("Add at least one employee guideline.")
 
+    regional_cutoff = _number(thresholds.get("regional_project_cost"), "Regional-project cost threshold", 0)
+    regional_criteria = _validate_regional_criteria(thresholds.get("regional_criteria"))
+    if any(value < regional_cutoff for value in regional_criteria["cost"]["thresholds"].values()):
+        raise ValueError("Regional cost bands must meet or exceed the regional eligibility cutoff.")
     return {
         "thresholds": {
             "high": high,
-            "regional_project_cost": _number(
-                thresholds.get("regional_project_cost"), "Regional-project cost threshold", 0
-            ),
+            "regional_project_cost": regional_cutoff,
             "pap_weights": pap_weights,
-            "regional_criteria": _validate_regional_criteria(thresholds.get("regional_criteria")),
+            "regional_criteria": regional_criteria,
         },
         "sector_criteria": normalized_sectors,
         "keyword_dictionaries": {
@@ -892,10 +892,19 @@ def _outcome_explanation(item, form):
     return f"{rule_context.strip()} {basis}{source_text} {_weighted_calculation(raw, weight, score)}{limitation}".strip()
 
 
+def _is_sceeed_sector(form):
+    sector = str(form.get("developmentSector") or "").casefold()
+    return "sceeed" in sector or "economic and environment" in sector
+
+
 def _merge_facts(form, supplements):
     contributor = form.get("priorityAnalysisFacts")
     facts = dict(contributor) if isinstance(contributor, dict) else {}
+    if not _is_sceeed_sector(form):
+        facts.pop("sceeedTrack", None)
     for key, value in (supplements or {}).items():
+        if key == "sceeedTrack" and not _is_sceeed_sector(form):
+            continue
         if value not in (None, ""):
             facts[key] = value
     return facts
@@ -949,17 +958,18 @@ def _spatial_rating(scope, lgu_count):
 
 
 def _sector_track(form, facts, text):
-    selected = str(facts.get("sceeedTrack") or "").strip().lower()
-    if selected in ("economic", "environment"):
-        return selected
     sector = str(form.get("developmentSector") or "")
+    if _is_sceeed_sector(form):
+        selected = str(facts.get("sceeedTrack") or "").strip().lower()
+        if selected in ("economic", "environment"):
+            return selected
     if "Infrastructure" in sector:
         return "infrastructure"
     if "Social" in sector:
         return "social"
     if "Finance" in sector:
         return "financial_admin"
-    if "Economic and Environment" in sector:
+    if _is_sceeed_sector(form):
         environment_hits = sum(text.count(token) for token in ["climate", "environment", "flood", "river", "waste", "green"])
         economic_hits = sum(text.count(token) for token in ["trade", "industry", "business", "tourism", "agriculture", "investment"])
         return "environment" if environment_hits > economic_hits else "economic"
@@ -1096,7 +1106,7 @@ def _criterion_recommendation(item):
     return f"If supported by project evidence, clarify the measurable connection to “{label}” in the objective, description, planning alignment, and expected-output fields. Do not add unsupported claims merely to raise the score."
 
 
-def _build_analysis_guidance(snapshot, scores, regional, flags, suggested_priority, base_score, supplements=None):
+def _build_analysis_guidance(snapshot, scores, regional, flags, suggested_priority, base_score, supplements=None, high_threshold=70):
     scores = scores if isinstance(scores, dict) else {}
     regional = regional if isinstance(regional, dict) else {}
     flags = flags if isinstance(flags, dict) else {}
@@ -1285,13 +1295,13 @@ def _build_analysis_guidance(snapshot, scores, regional, flags, suggested_priori
     overall = (
         f"The {float(base_score):.2f}/100 base score is the sum of {pap_total:.2f} PAP points "
         f"and {rdp_total:.2f} RDP-alignment points. Each weighted score equals the raw rating divided by 10, "
-        f"multiplied by the criterion weight. The current high-priority threshold is 81/100. "
+        f"multiplied by the criterion weight. The high-priority threshold for this analysis is {high_threshold:g}/100. "
         f"This results in a {status_text.lower()} recommendation."
     )
     if suggested_priority == "high":
-        overall += f" The score is {max(0.0, float(base_score) - 81):.2f} points above the high-priority threshold."
+        overall += f" The score is {max(0.0, float(base_score) - high_threshold):.2f} points above the high-priority threshold."
     elif suggested_priority == "low":
-        overall += f" The score is {max(0.0, 81 - float(base_score)):.2f} points below the high-priority threshold."
+        overall += f" The score is {max(0.0, high_threshold - float(base_score)):.2f} points below the high-priority threshold."
     if regional.get("applicable"):
         overall += " The regional prioritization scorecard is shown separately and does not change the base score."
     if missing:
@@ -1320,6 +1330,7 @@ def ensure_analysis_guidance(analysis):
         analysis.suggested_priority,
         analysis.base_score,
         supplements=analysis.supplements,
+        high_threshold=priority_rule_config(analysis.rule_set)["thresholds"]["high"],
     )
     scores.update(guidance)
     analysis.suggested_scores = scores
@@ -1433,7 +1444,9 @@ class PriorityInputError(ValueError):
 
 
 def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=None, persist=True, enforce_input_contract=False):
-    supplements = supplements if isinstance(supplements, dict) else {}
+    supplements = dict(supplements) if isinstance(supplements, dict) else {}
+    if not _is_sceeed_sector(_scoring_form(snapshot)):
+        supplements.pop("sceeedTrack", None)
     rules = rule_set or _active_ruleset()
     rule_config = priority_rule_config(rules)
     thresholds = rule_config["thresholds"]
@@ -1499,9 +1512,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         form,
         facts,
         regional_project=funding_total >= thresholds["regional_project_cost"],
-        economic_environment_sector=(
-            "Economic and Environment" in str(form.get("developmentSector") or "")
-        ),
+        economic_environment_sector=_is_sceeed_sector(form),
         legacy_form=is_legacy_form,
         contract=effective_contract,
     )
@@ -1546,7 +1557,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     pap_total = sum(item["score"] for item in pap)
 
     track = _sector_track(form, facts, text)
-    if "Economic and Environment" in str(form.get("developmentSector") or "") and not facts.get("sceeedTrack"):
+    if _is_sceeed_sector(form) and not facts.get("sceeedTrack"):
         missing.append("SCEED Economic or Environment track confirmation")
     chapter = str(form.get("rdpMainChapter") or "").lower()
     outcomes = []
@@ -1796,6 +1807,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
             suggested_priority,
             base_score,
             supplements=supplements,
+            high_threshold=thresholds["high"],
         )
     )
     if groq_analysis:

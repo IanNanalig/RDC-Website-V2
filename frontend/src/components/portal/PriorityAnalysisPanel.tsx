@@ -163,6 +163,7 @@ type Analysis = {
 type Props = {
   projectId: string;
   role: "validator" | "admin";
+  developmentSector?: string;
 };
 
 type ProcessingProgress = {
@@ -281,7 +282,8 @@ const CriteriaTable: React.FC<{ title: string; criteria?: Criterion[]; total?: n
   </div>
 );
 
-const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
+const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSector = "" }) => {
+  const isSceeed = /sceeed|economic and environment/i.test(developmentSector);
   const [eligible, setEligible] = useState(true);
   const [analyses, setAnalyses] = useState<Analysis[]>([]);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
@@ -373,7 +375,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
         detail: "The server is applying the approved scoring rules to this project.",
       });
       const response = await api.post(`validator/projects/${projectId}/priority-analysis/run/`, {
-        supplements,
+        supplements: isSceeed ? supplements : { ...supplements, sceeedTrack: "" },
       });
       if (response?.processing) {
         throw new Error("The server is still configured for background document processing. Set DOCUMENT_AI_PROCESSING_MODE=inline and redeploy the API.");
@@ -491,7 +493,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role }) => {
                 ["interregional", "Interregional"],
                 ["none", "None"],
               ]} />
-              <Select label="SCEED Track (if applicable)" value={supplements.sceeedTrack || ""} onChange={(value) => setSupplements((prev) => ({ ...prev, sceeedTrack: value }))} options={[["economic", "Economic"], ["environment", "Environment"]]} />
+              {isSceeed && <Select label="SCEED Track" value={supplements.sceeedTrack || ""} onChange={(value) => setSupplements((prev) => ({ ...prev, sceeedTrack: value }))} options={[["economic", "Economic"], ["environment", "Environment"]]} />}
               <label className="block"><span className="text-xs font-medium text-slate-600">Estimated Beneficiaries</span><input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" inputMode="numeric" value={supplements.beneficiaryCount || ""} onChange={(e) => setSupplements((prev) => ({ ...prev, beneficiaryCount: e.target.value }))} /></label>
               <label className="block"><span className="text-xs font-medium text-slate-600">Contributed RDP Outcomes</span><input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" type="number" min="0" value={supplements.contributedOutcomeCount || ""} onChange={(e) => setSupplements((prev) => ({ ...prev, contributedOutcomeCount: e.target.value }))} /></label>
               <Select label="Regional Spatial Category" value={supplements.regionalSpatialCategory || ""} onChange={(value) => setSupplements((prev) => ({ ...prev, regionalSpatialCategory: value }))} options={[
