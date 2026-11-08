@@ -312,11 +312,15 @@ class AuditCoverageTests(APITestCase):
                 )
                 self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN)
 
-        # Content Editors must own and maintain a lock while preparing a draft.
+        # Contributor Form configuration is Administrator-only.
         self.as_user(self.editor)
         editor_lock = self.client.post(f"/api/admin/cms/forms/{form.id}/lock/", {}, format="json")
-        self.assertEqual(editor_lock.status_code, status.HTTP_200_OK)
-        self.assertTrue(UserActivity.objects.filter(user=self.editor, event="cms_form_lock_acquired").exists())
+        self.assertEqual(editor_lock.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.as_user(self.admin)
+        admin_lock = self.client.post(f"/api/admin/cms/forms/{form.id}/lock/", {}, format="json")
+        self.assertEqual(admin_lock.status_code, status.HTTP_200_OK)
+        self.assertTrue(UserActivity.objects.filter(user=self.admin, event="cms_form_lock_acquired").exists())
         self.assertEqual(
             self.client.post(f"/api/admin/cms/forms/{form.id}/heartbeat/", {}, format="json").status_code,
             status.HTTP_200_OK,
@@ -325,7 +329,7 @@ class AuditCoverageTests(APITestCase):
             self.client.post(f"/api/admin/cms/forms/{form.id}/unlock/", {}, format="json").status_code,
             status.HTTP_200_OK,
         )
-        self.assertTrue(UserActivity.objects.filter(user=self.editor, event="cms_form_lock_released").exists())
+        self.assertTrue(UserActivity.objects.filter(user=self.admin, event="cms_form_lock_released").exists())
 
         self.as_user(self.admin)
         locked = self.client.post(f"/api/admin/cms/forms/{form.id}/lock/", {}, format="json")

@@ -58,6 +58,16 @@ export default function BatchRegistrationPanel({ onComplete }: { onComplete?: ()
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
+  const downloadTemplate = () => {
+    const sample = "email,role,agency\ncontributor@example.com,contributor,DENR\nvalidator@example.com,validator,\n";
+    const url = URL.createObjectURL(new Blob(["\uFEFF", sample], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "rdc-account-invitations-template.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   useEffect(() => {
     void api.get("admin/users/batch-invitations/options/").then((data) => {
       setRoles(Array.isArray(data?.roles) ? data.roles : []);
@@ -127,6 +137,7 @@ export default function BatchRegistrationPanel({ onComplete }: { onComplete?: ()
       <div className="mb-4">
         <h3 className="font-semibold text-slate-900">Batch Registration</h3>
         <p className="mt-1 text-sm text-slate-600">Enter one row per user as <code>email, role, agency</code>, or upload a UTF-8 CSV with those headers. Up to 100 rows are accepted.</p>
+        <button type="button" className="mt-2 text-sm font-medium text-blue-700 underline" onClick={downloadTemplate}>Download CSV Template</button>
       </div>
       <div className="grid gap-3 lg:grid-cols-2">
         <label className="block lg:col-span-2">
@@ -149,9 +160,9 @@ export default function BatchRegistrationPanel({ onComplete }: { onComplete?: ()
           )}
         </label>
         <label className="block">
-          <span className="text-sm text-slate-700">Default contributor agency (optional)</span>
+          <span className="text-sm text-slate-700">Default contributor agency (required unless each Contributor row has an agency)</span>
           <select value={defaultAgency} onChange={(event) => setDefaultAgency(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2">
-            <option value="">Contributor selects during registration</option>
+            <option value="">Select an agency or specify one in each Contributor row</option>
             {agencies.map((agency) => {
               const available = Number(agency.contributor_capacity?.available ?? 0);
               return (
@@ -177,7 +188,7 @@ export default function BatchRegistrationPanel({ onComplete }: { onComplete?: ()
         <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
           <table className="portal-table min-w-[760px]">
             <thead><tr><th>Row</th><th>Email</th><th>Role</th><th>Agency</th><th>Result</th><th>Details</th></tr></thead>
-            <tbody>{preview.map((row) => <tr key={`${row.row}-${row.email}`}><td>{row.row}</td><td>{row.email || "—"}</td><td>{row.role}</td><td>{row.agency || "User selects"}</td><td><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusStyle[row.status] || "bg-slate-100 text-slate-700"}`}>{row.status.replaceAll("_", " ")}</span></td><td>{row.reason || "Ready to send"}</td></tr>)}</tbody>
+            <tbody>{preview.map((row) => <tr key={`${row.row}-${row.email}`}><td>{row.row}</td><td>{row.email || "—"}</td><td>{row.role}</td><td>{row.agency || "Not assigned"}</td><td><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusStyle[row.status] || "bg-slate-100 text-slate-700"}`}>{row.status.replaceAll("_", " ")}</span></td><td>{row.reason || "Ready to send"}</td></tr>)}</tbody>
           </table>
         </div>
       )}

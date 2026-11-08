@@ -70,7 +70,7 @@ class AccountSetupAgencyTests(APITestCase):
             email = f"new-{role}@example.com"
             response = self.client.post(
                 "/api/admin/users/",
-                {"email": email, "role": role},
+                {"email": email, "role": role, **({"agency": "DENR"} if role == "contributor" else {})},
                 format="json",
             )
             self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED, response.data)
@@ -291,7 +291,7 @@ class AccountSetupAgencyTests(APITestCase):
         self.assertEqual(response.data["code"], "agency_not_eligible_for_contributor")
         self.assertFalse(User.objects.filter(email=user.email, must_change_password=False).exists())
 
-    def test_legacy_rdc_contributor_invitation_must_choose_an_eligible_agency(self):
+    def test_legacy_rdc_contributor_invitation_requires_resend_with_eligible_agency(self):
         self.client.force_authenticate(user=None)
         rdc = Agency.objects.get(system_key="rdc-ncr-primary")
         payload = {
@@ -314,22 +314,18 @@ class AccountSetupAgencyTests(APITestCase):
         )
 
         prefill = self.client.get(f"/api/auth/setup-password/?token={token}")
-        self.assertEqual(prefill.status_code, 200, prefill.data)
-        self.assertFalse(prefill.data["agency_locked"])
-        self.assertEqual(prefill.data["profile"]["agency"], "")
-        self.assertNotIn(rdc.code, [row["code"] for row in prefill.data["agencies"]])
+        self.assertEqual(prefill.status_code, 400, prefill.data)
 
         completed = self.client.post(
             "/api/auth/setup-password/",
             self.setup_payload(token, "DENR"),
             format="json",
         )
-        self.assertEqual(completed.status_code, 200, completed.data)
-        user = User.objects.get(email=payload["email"])
+        self.assertEqual(completed.status_code, 400, completed.data)
+        self.assertFalse(User.objects.filter(email=payload["email"]).exists())
         invitation.refresh_from_db()
-        self.assertEqual(user.agency_record.code, "DENR")
-        self.assertEqual(invitation.agency_record.code, "DENR")
-        self.assertEqual(invitation.status, UserInvitation.STATUS_COMPLETED)
+        self.assertEqual(invitation.agency_record_id, rdc.pk)
+        self.assertEqual(invitation.status, UserInvitation.STATUS_SENT)
 
     def test_setup_accepts_keyboard_symbols_and_rejects_non_symbols(self):
         self.client.force_authenticate(user=None)

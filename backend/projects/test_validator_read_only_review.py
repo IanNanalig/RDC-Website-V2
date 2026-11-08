@@ -3,7 +3,8 @@ from copy import deepcopy
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
-from .models import Project, ProjectRevision, User
+from .models import PriorityRuleSet, Project, ProjectPriorityAnalysis, ProjectPriorityConfirmation, ProjectRevision, ProjectSupportingDocument, User
+from .priority_scoring import confirmation_eligibility, get_active_priority_rule_set
 
 
 class ValidatorReadOnlyReviewTests(APITestCase):
@@ -37,6 +38,58 @@ class ValidatorReadOnlyReviewTests(APITestCase):
         profile = deepcopy(self.profile)
         profile["simplified_form"]["description"] = "Validator changed this answer"
         return profile
+
+    def test_confirmation_eligibility_reports_missing_stale_and_ready_states(self):
+        rules = get_active_priority_rule_set()
+        snapshot = deepcopy(self.profile)
+        self.assertEqual(confirmation_eligibility(self.project, snapshot)["code"], "analysis_missing")
+        analysis = ProjectPriorityAnalysis.objects.create(
+            project=self.project, validator=self.validator, rule_set=rules,
+            source_hash="a" * 64, input_snapshot=snapshot,
+            suggested_scores={"missing_facts": []}, suggested_priority="low", base_score=30,
+        )
+        self.assertEqual(confirmation_eligibility(self.project, snapshot)["code"], "priority_unconfirmed")
+        ProjectPriorityConfirmation.objects.create(analysis=analysis, validator=self.validator, final_priority="low")
+        ready = confirmation_eligibility(self.project, snapshot)
+        self.assertTrue(ready["eligible"])
+        self.assertEqual(ready["analysis_id"], analysis.id)
+        self.assertEqual(confirmation_eligibility(self.project, self.modified_profile())["code"], "analysis_project_outdated")
+        rules.is_active = False
+        rules.save(update_fields=["is_active"])
+        PriorityRuleSet.objects.create(version="next-rule-version", is_active=True)
+        self.assertEqual(confirmation_eligibility(self.project, snapshot)["code"], "analysis_rule_outdated")
+
+    def test_reviewed_project_documents_remain_readable_to_its_validator(self):
+        document = ProjectSupportingDocument.objects.create(
+            project=self.project, original_filename="evidence.pdf", content_type="application/pdf",
+            extension="pdf", size_bytes=8, checksum_sha256="a" * 64,
+            content=b"%PDF-1.4", uploaded_by=self.contributor,
+        )
+        self.project.status = "completed"
+        self.project.profile_data = {
+            **self.profile,
+            "validator_review": {"review_status": "validated", "reviewed_by_id": self.validator.id},
+        }
+        self.project.save(update_fields=["status", "profile_data"])
+
+        listing = self.client.get(f"/api/project-supporting-documents/?project={self.project.id}")
+        self.assertEqual(listing.status_code, 200, listing.data)
+        self.assertEqual([row["id"] for row in listing.data], [document.id])
+        download = self.client.get(f"/api/project-supporting-documents/{document.id}/download/")
+        self.assertEqual(download.status_code, 200)
+        self.assertEqual(download.content, b"%PDF-1.4")
+        assessment = self.client.get(f"/api/project-supporting-documents/assessment-status/?project={self.project.id}")
+        self.assertEqual(assessment.status_code, 200, assessment.data)
+        self.assertEqual(self.client.delete(f"/api/project-supporting-documents/{document.id}/").status_code, 403)
+
+        other_validator = User.objects.create_user(
+            username="other-history-validator", password="TestPassword123!", role="validator",
+            email="other-history-validator@example.com",
+        )
+        self.client.force_authenticate(user=other_validator)
+        self.assertEqual(self.client.get(f"/api/project-supporting-documents/?project={self.project.id}").data, [])
+        self.assertEqual(self.client.get(f"/api/project-supporting-documents/{document.id}/download/").status_code, 404)
+        self.assertEqual(self.client.get(f"/api/project-supporting-documents/assessment-status/?project={self.project.id}").status_code, 403)
 
     def test_contributor_drafts_are_hidden_from_all_validator_project_scopes(self):
         draft = Project.objects.create(
@@ -149,7 +202,7 @@ class ValidatorReadOnlyReviewTests(APITestCase):
             "action": "save_reviewed", "notes": "Please revise the description.",
             "editable_fields": ["description"], "edited_profile_data": self.modified_profile(),
         }, format="json")
-        self.assertEqual(blocked.status_code, 400, blocked.data)
+        self.assertEqual(blocked.status_code, 403, blocked.data)
         self.assertIn("read-only", blocked.data["detail"])
 
         accepted = self.client.post(url, {
@@ -175,10 +228,24 @@ class ValidatorReadOnlyReviewTests(APITestCase):
         analysis = self.client.post(f"/api/validator/projects/{self.project.id}/priority-analysis/run/", {
             "edited_profile_data": changed, "supplements": {"readinessLevel": "completed_documents"},
         }, format="json")
-        self.assertEqual(analysis.status_code, 400, analysis.data)
+        self.assertEqual(analysis.status_code, 403, analysis.data)
         self.assertIn("read-only", analysis.data["detail"])
         self.project.refresh_from_db()
         self.assertEqual(self.project.profile_data, self.profile)
+
+        created = self.client.post("/api/validator/projects/", {
+            "name": "Unauthorized project", "profile_data": self.modified_profile(),
+        }, format="json")
+        self.assertEqual(created.status_code, 403, created.data)
+        generic_created = self.client.post("/api/projects/", {
+            "name": "Unauthorized project", "profile_data": self.modified_profile(),
+        }, format="json")
+        self.assertEqual(generic_created.status_code, 403, generic_created.data)
+
+        unchanged = self.client.post(f"/api/validator/projects/{self.project.id}/validate/", {
+            "action": "save_draft", "edited_profile_data": deepcopy(self.profile),
+        }, format="json")
+        self.assertEqual(unchanged.status_code, 403, unchanged.data)
 
     @override_settings(GROQ_ENABLED=False)
     def test_ai_scoring_still_accepts_validator_facts_without_form_edits(self):
@@ -202,7 +269,7 @@ class ValidatorReadOnlyReviewTests(APITestCase):
         blocked = self.client.post(f"/api/project-revisions/{revision.id}/review/", {
             "action": "save_draft", "edited_profile_data": self.modified_profile(),
         }, format="json")
-        self.assertEqual(blocked.status_code, 400, blocked.data)
+        self.assertEqual(blocked.status_code, 403, blocked.data)
         revision.refresh_from_db()
         self.assertEqual(revision.state, "submitted")
         self.assertEqual(revision.profile_data_snapshot, self.profile)

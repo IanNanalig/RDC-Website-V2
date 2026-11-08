@@ -100,7 +100,7 @@ from .project_status import (
     display_implementation_status,
     stored_status_values_for_label,
 )
-from .priority_scoring import PriorityInputError, analyze_project, confirm_analysis, ensure_analysis_guidance, has_matching_confirmation
+from .priority_scoring import PriorityInputError, analyze_project, confirm_analysis, confirmation_eligibility, ensure_analysis_guidance, get_active_priority_rule_set, has_matching_confirmation
 from .document_policy import (
     PROJECT_DOCUMENT_MAX_TOTAL_BYTES,
     active_project_documents,
@@ -1659,6 +1659,8 @@ def _issue_registration_invitation(
         agency_record = _contributor_agency_for_value(agency)
     else:
         agency_record = None
+    if role == "staff" and agency_record is None:
+        raise ValueError("Please assign an agency to this Contributor before sending the registration invitation.")
     normalized_agency = agency_record.code if agency_record else ""
     agency_locked = role in INTERNAL_ACCOUNT_ROLES or bool(agency_record)
     signed = signing.dumps(
@@ -2954,17 +2956,6 @@ def _validator_review_source(profile_data):
     return contributor_snapshot
 
 
-def _validator_answers_unchanged(incoming, saved):
-    if not isinstance(incoming, dict) or not isinstance(saved, dict):
-        return False
-    received_answers = _strip_validator_meta(incoming)
-    saved_answers = _strip_validator_meta(saved)
-    # A review draft can add this server-side marker to older submissions.
-    if "form_schema" not in received_answers and "form_schema" in saved_answers:
-        received_answers["form_schema"] = saved_answers["form_schema"]
-    return received_answers == saved_answers
-
-
 def _diff_string(value):
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
@@ -3173,7 +3164,7 @@ def _validate_contributor_simplified_write(user, incoming_profile, *, project=No
         return None
     simplified = incoming_profile.get("simplified_form")
     if isinstance(existing_simplified, dict) and not isinstance(simplified, dict):
-        return "The simplified form cannot be removed from an existing project."
+        return "The project form cannot be removed from an existing project."
     if not isinstance(simplified, dict):
         return None
 
@@ -3618,7 +3609,14 @@ def _can_access_project_documents(user, project):
     if project.archived:
         return False
     if role == "validator":
-        return project.status == "proposed"
+        if project.status == "proposed":
+            return True
+        profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+        review = profile.get("validator_review") if isinstance(profile.get("validator_review"), dict) else {}
+        return (
+            str(review.get("reviewed_by_id") or "") == str(user.id)
+            and str(review.get("review_status") or "").lower() in {"draft", "reviewed", "endorsed", "validated", "rejected"}
+        )
     if role in ("staff", "employee"):
         return _is_primary_agency_contributor(user, project) or _is_collaborating_agency_contributor(user, project)
     return False
@@ -3657,7 +3655,14 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
         if role == "admin":
             return queryset
         if role == "validator":
-            return queryset.filter(project__status="proposed", project__archived=False, project__is_active=True)
+            reviewed_by_user = (
+                Q(project__profile_data__validator_review__reviewed_by_id=self.request.user.id)
+                | Q(project__profile_data__validator_review__reviewed_by_id=str(self.request.user.id))
+            )
+            return queryset.filter(project__archived=False).filter(
+                Q(project__status="proposed")
+                | (reviewed_by_user & Q(project__profile_data__validator_review__review_status__in=("draft", "reviewed", "endorsed", "validated", "rejected")))
+            )
         if role in ("staff", "employee"):
             return queryset.filter(
                 _contributor_project_scope(self.request.user, prefix="project__"),
@@ -4021,7 +4026,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if request.user.role != "admin" and not _is_primary_agency_contributor(request.user, project):
             raise PermissionDenied("Only contributors from the primary agency or an administrator can submit this project.")
         if not _is_simplified_profile(project.profile_data):
-            return Response({"detail": "Only projects created with the simplified form can be submitted."}, status=400)
+            return Response({"detail": "Only projects created with the supported project form can be submitted."}, status=400)
         project_form_marker = project.profile_data.get("form_schema") if isinstance(project.profile_data, dict) else None
         versioned_form = isinstance(project_form_marker, dict) and project_form_marker.get("legacy") is not True
         if (
@@ -4110,7 +4115,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         action_value = (request.data.get("action") or "").lower()
         profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
         if not _is_simplified_profile(profile_data):
-            return Response({"detail": "This project does not use the supported simplified form and cannot be reviewed."}, status=400)
+            return Response({"detail": "This project does not use the supported project form and cannot be reviewed."}, status=400)
         existing_review = profile_data.get("validator_review")
         if isinstance(existing_review, dict):
             existing_status = str(existing_review.get("review_status") or "").lower()
@@ -4123,13 +4128,10 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             contributor_snapshot = _strip_validator_meta(profile_data)
             profile_data["contributor_snapshot"] = deepcopy(contributor_snapshot)
 
+        if role == "validator" and "edited_profile_data" in request.data:
+            return Response({"detail": "Contributor answers are read-only for validators. Request revisions instead."}, status=403)
         incoming_edited = request.data.get("edited_profile_data")
         review_baseline = _validator_review_source(profile_data)
-        if role == "validator" and incoming_edited is not None and not _validator_answers_unchanged(incoming_edited, review_baseline):
-            return Response(
-                {"detail": "Contributor answers are read-only for validators. Request revisions instead."},
-                status=400,
-            )
         if role == "validator" or incoming_edited is None:
             edited_profile = deepcopy(review_baseline)
         else:
@@ -4151,6 +4153,9 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             edited_profile["form_schema"] = deepcopy(marker) if isinstance(marker, dict) else {
                 "key": "simplified-rdip", "version": 1, "legacy": True,
             }
+        # Form validation normalizes answers in place. The scorer and confirmation
+        # used the saved validator copy, so compare that same copy before mutation.
+        confirmation_snapshot = deepcopy(edited_profile)
         try:
             validate_simplified_answers(
                 edited_profile,
@@ -4201,15 +4206,15 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             project.validated = False
             event = "validator_reviewed"
         elif action_value in ("endorse", "approve", "validate"):
-            if project.priority_analysis_eligible and not has_matching_confirmation(project, edited_profile):
+            eligibility = confirmation_eligibility(project, confirmation_snapshot) if project.priority_analysis_eligible else {"eligible": True}
+            if not eligibility["eligible"]:
                 return Response(
                     {
-                        "detail": (
-                            "Run and confirm the AI-assisted priority analysis for the current validator copy "
-                            "before endorsing this project."
-                        )
+                        "detail": eligibility["detail"],
+                        "code": eligibility["code"],
+                        "priority_eligibility": eligibility,
                     },
-                    status=400,
+                    status=409,
                 )
             review_state = "endorsed"
             project.status = "completed"
@@ -4358,9 +4363,12 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 from ai_engine.services import ensure_learning_assessment
                 analysis._current_learning_assessment = ensure_learning_assessment(analysis)
         serializer = ProjectPriorityAnalysisSerializer(analyses, many=True)
+        profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+        eligibility = confirmation_eligibility(project, _validator_review_source(profile)) if project.priority_analysis_eligible else {"eligible": True, "code": "not_required", "detail": "Priority analysis is not required for this project."}
         return Response(
             {
                 "eligible": bool(project.priority_analysis_eligible),
+                "validation_eligibility": eligibility,
                 "analyses": serializer.data,
             }
         )
@@ -4439,16 +4447,10 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 status=409,
             )
 
-        incoming_snapshot = request.data.get("edited_profile_data")
-        if incoming_snapshot is not None and not isinstance(incoming_snapshot, dict):
-            return Response({"detail": "edited_profile_data must be a JSON object."}, status=400)
+        if "edited_profile_data" in request.data:
+            return Response({"detail": "Contributor answers are read-only for validators. Request revisions instead."}, status=403)
         profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
         snapshot = _validator_review_source(profile_data)
-        if incoming_snapshot is not None and not _validator_answers_unchanged(incoming_snapshot, snapshot):
-            return Response(
-                {"detail": "Contributor answers are read-only for validators. Request revisions instead."},
-                status=400,
-            )
         snapshot = deepcopy(snapshot)
         supplements = request.data.get("supplements")
         if not isinstance(supplements, dict):
@@ -4530,6 +4532,11 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             analysis = project.priority_analyses.get(pk=analysis_id)
         except ProjectPriorityAnalysis.DoesNotExist:
             return Response({"detail": "Priority analysis not found."}, status=404)
+        if analysis.rule_set_id != get_active_priority_rule_set().id:
+            return Response({"detail": "This analysis uses an older scoring version. Run the AI scorer again.", "code": "analysis_rule_outdated"}, status=409)
+        from .priority_scoring import _confirmation_snapshot_hash
+        if _confirmation_snapshot_hash(analysis.input_snapshot) != _confirmation_snapshot_hash(_validator_review_source(profile)):
+            return Response({"detail": "This analysis no longer matches the current project information. Run the AI scorer again.", "code": "analysis_project_outdated"}, status=409)
         previous_confirmation = _latest_project_confirmation(project)
         previous_group = _priority_group(previous_confirmation.final_priority) if previous_confirmation else ""
         try:
@@ -4756,6 +4763,8 @@ class ProjectViewSet(BaseProjectViewSet):
         )
 
     def create(self, request, *args, **kwargs):
+        if getattr(request.user, "role", "") == "validator":
+            raise PermissionDenied("Validators cannot create contributor projects. Use review actions instead.")
         error = self._contributor_write_error(request)
         if error:
             return Response({"detail": error}, status=400)
@@ -5375,14 +5384,11 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
 
         saved_profile = revision.profile_data_snapshot if isinstance(revision.profile_data_snapshot, dict) else {}
         if not _is_simplified_profile(saved_profile):
-            return Response({"detail": "This revision does not use the supported simplified form and cannot be reviewed."}, status=400)
+            return Response({"detail": "This revision does not use the supported project form and cannot be reviewed."}, status=400)
+        if getattr(request.user, "role", "") == "validator" and "edited_profile_data" in request.data:
+            return Response({"detail": "Contributor answers are read-only for validators. Request revisions instead."}, status=403)
         edited_profile = request.data.get("edited_profile_data")
         validator_review = getattr(request.user, "role", "") == "validator"
-        if validator_review and edited_profile is not None and not _validator_answers_unchanged(edited_profile, saved_profile):
-            return Response(
-                {"detail": "Contributor answers are read-only for validators. Request revisions instead."},
-                status=400,
-            )
         if validator_review or edited_profile is None:
             edited_profile = deepcopy(saved_profile)
         if not isinstance(edited_profile, dict):
@@ -5587,6 +5593,9 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
 class ValidatorProjectViewSet(BaseProjectViewSet):
     queryset = Project.objects.all()
     permission_classes = [IsAuthenticated, ValidatorRolePermission, ProjectPermission]
+
+    def create(self, request, *args, **kwargs):
+        raise PermissionDenied("Validators cannot create contributor projects. Use review actions instead.")
 
     def get_queryset(self):
         user = self.request.user
@@ -5981,6 +5990,22 @@ class AdminUserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated, AdminOnlyPermission]
 
+    @action(detail=True, methods=["get"], url_path="status-emails")
+    def status_emails(self, request, pk=None):
+        from .models import AccountStatusEmail
+
+        user = self.get_object()
+        notices = AccountStatusEmail.objects.filter(user=user).order_by("-created_at")[:25]
+        return Response([{
+            "id": item.pk,
+            "kind": item.kind,
+            "status": item.status,
+            "attempts": item.attempts,
+            "last_error": item.last_error,
+            "created_at": item.created_at,
+            "sent_at": item.sent_at,
+        } for item in notices])
+
     def update(self, request, *args, **kwargs):
         forbidden = set(request.data) - {"role", "is_active", "agency", "agency_code"}
         if forbidden:
@@ -6264,6 +6289,8 @@ class BatchInvitationPreviewView(APIView):
                 row_status, reason = "invalid", "Select a valid user role."
             if row_status == "valid" and agency_resolution_error:
                 row_status, reason = "invalid", agency_resolution_error
+            if row_status == "valid" and role == "staff" and agency_record is None:
+                row_status, reason = "invalid", "Assign an eligible agency to this Contributor before sending the invitation."
             if row_status == "valid" and User.objects.filter(email__iexact=email).exists():
                 row_status, reason = "existing_account", "An account already uses this email."
             pending = row_status == "valid" and _has_pending_registration_invitation(email, now)
@@ -6400,9 +6427,11 @@ class AccessRequestViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Email already exists."}, status=400)
         role = "validator" if access_request.requested_role == "validator" else "staff"
         try:
-            _issue_registration_invitation(request, email, role)
+            _issue_registration_invitation(request, email, role, agency=request.data.get("agency", ""))
         except AccountCapacityError as exc:
             return Response(exc.payload, status=status.HTTP_409_CONFLICT)
+        except (ContributorAgencyError, ValueError) as exc:
+            return Response({"detail": str(exc)}, status=400)
         except Exception:
             return Response({"detail": "Failed to send or record the registration invitation."}, status=500)
 
@@ -7125,7 +7154,7 @@ def _validate_setup_profile(
         "first_name", "last_name", "division", "position",
         "contact_number", "phone_number",
     ]
-    agency_locked = role in INTERNAL_ACCOUNT_ROLES if agency_locked is None else bool(agency_locked)
+    agency_locked = role in INTERNAL_ACCOUNT_ROLES or bool(agency_locked) or (role == "staff" and bool(saved_agency))
     if not agency_locked:
         required_fields.append("agency")
     for field in ("first_name", "last_name"):
@@ -7193,13 +7222,15 @@ class SetupPasswordView(APIView):
             role = payload["role"]
             system_agency = primary_system_agency() if role in INTERNAL_ACCOUNT_ROLES else None
             assigned_agency = str(payload.get("agency") or (system_agency.code if system_agency else ""))
-            agency_locked = bool(payload.get("agency_locked", role in INTERNAL_ACCOUNT_ROLES))
+            agency_locked = role == "staff" or bool(payload.get("agency_locked", role in INTERNAL_ACCOUNT_ROLES))
             assigned_record = _agency_for_value(assigned_agency, active_only=True)
+            if role == "staff" and (assigned_record is None or is_protected_agency(assigned_record)):
+                return Response({"detail": "This Contributor invitation has no eligible assigned agency. Ask an Administrator to resend it with an agency."}, status=400)
             return Response({
                 "email": payload["email"],
                 "setup_type": "invitation",
                 "agency_locked": agency_locked,
-                "agencies": _active_agency_options(),
+                "agencies": [] if role == "staff" else _active_agency_options(),
                 "profile": {
                     "agency": assigned_agency,
                     "agency_head": assigned_record.head_name if assigned_record else "",
@@ -7215,7 +7246,7 @@ class SetupPasswordView(APIView):
             {
                 "email": user.email,
                 "setup_type": "existing_account",
-                "agency_locked": user.role in INTERNAL_ACCOUNT_ROLES,
+                "agency_locked": user.role in INTERNAL_ACCOUNT_ROLES or bool(user.agency_record_id or user.agency),
                 "agencies": _active_agency_options(),
                 "profile": {
                     "first_name": user.first_name,
@@ -7244,7 +7275,7 @@ class SetupPasswordView(APIView):
             role = payload["role"]
             system_agency = primary_system_agency() if role in INTERNAL_ACCOUNT_ROLES else None
             assigned_agency = str(payload.get("agency") or (system_agency.code if system_agency else ""))
-            agency_locked = bool(payload.get("agency_locked", role in INTERNAL_ACCOUNT_ROLES))
+            agency_locked = role == "staff" or bool(payload.get("agency_locked", role in INTERNAL_ACCOUNT_ROLES))
             profile, error = _validate_setup_profile(
                 request, role, assigned_agency, new_password, agency_locked=agency_locked,
             )

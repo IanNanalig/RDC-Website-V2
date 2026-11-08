@@ -197,6 +197,7 @@ class CMSArticle(models.Model):
     featured = models.BooleanField(default=False)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT)
     published_snapshot_json = models.JSONField(default=dict, blank=True)
+    submitted_snapshot_json = models.JSONField(default=dict, blank=True)
     has_unpublished_changes = models.BooleanField(default=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

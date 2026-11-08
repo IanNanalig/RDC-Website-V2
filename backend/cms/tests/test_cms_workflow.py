@@ -359,6 +359,59 @@ class CMSWorkflowTests(APITestCase):
         public_response = self.client.get("/api/public/cms/news/safe-news/")
         self.assertEqual(public_response.data["title"], "Safe News")
 
+    def test_submitted_article_publishes_frozen_review_revision_and_notifies(self):
+        from projects.models import Notification
+
+        self.authenticate(self.editor)
+        created = self.client.post("/api/admin/cms/articles/", {
+            "title": "Review this", "slug": "review-this", "category": "Updates",
+            "summary": "Original summary", "body": "<p>Original body</p>", "author": "RDC-NCR",
+        }, format="json")
+        self.assertEqual(created.status_code, 201, created.data)
+        article_id = created.data["id"]
+        submitted = self.client.post(f"/api/admin/cms/articles/{article_id}/submit/")
+        self.assertEqual(submitted.status_code, 200, submitted.data)
+        self.assertEqual(Notification.objects.filter(recipient=self.admin, event_type="cms_article_submitted").count(), 1)
+
+        CMSArticle.objects.filter(pk=article_id).update(title="Changed after submission", body="<p>Changed</p>")
+        self.authenticate(self.admin)
+        published = self.client.post(f"/api/admin/cms/articles/{article_id}/publish/")
+        self.assertEqual(published.status_code, 200, published.data)
+        article = CMSArticle.objects.get(pk=article_id)
+        self.assertEqual(article.published_snapshot_json["title"], "Review this")
+        self.assertIn("Original body", article.published_snapshot_json["body"])
+        self.assertEqual(Notification.objects.filter(recipient=self.editor, event_type="cms_article_published").count(), 1)
+
+    def test_article_changed_after_submission_requires_new_review(self):
+        self.authenticate(self.editor)
+        created = self.client.post("/api/admin/cms/articles/", {
+            "title": "First draft", "slug": "review-again", "category": "Updates",
+            "summary": "First", "body": "<p>First</p>", "author": "RDC-NCR",
+        }, format="json")
+        self.assertEqual(created.status_code, 201, created.data)
+        article_id = created.data["id"]
+        self.assertEqual(self.client.post(f"/api/admin/cms/articles/{article_id}/submit/").status_code, 200)
+        self.authenticate(self.admin)
+        changed = self.client.patch(f"/api/admin/cms/articles/{article_id}/", {"title": "Revised draft"}, format="json")
+        self.assertEqual(changed.status_code, 200, changed.data)
+        blocked = self.client.post(f"/api/admin/cms/articles/{article_id}/publish/")
+        self.assertEqual(blocked.status_code, 409, blocked.data)
+        self.assertEqual(self.client.post(f"/api/admin/cms/articles/{article_id}/submit/").status_code, 200)
+        self.assertEqual(self.client.post(f"/api/admin/cms/articles/{article_id}/publish/").status_code, 200)
+        self.assertEqual(CMSArticle.objects.get(pk=article_id).published_snapshot_json["title"], "Revised draft")
+
+    def test_page_module_submission_and_review_notify_the_right_roles_once(self):
+        from projects.models import Notification
+
+        self.authenticate(self.editor)
+        submitted = self.client.post("/api/admin/cms/modules/contact/submit/")
+        self.assertEqual(submitted.status_code, 200, submitted.data)
+        self.assertEqual(Notification.objects.filter(recipient=self.admin, event_type="cms_page_submitted").count(), 1)
+        self.authenticate(self.admin)
+        rejected = self.client.post("/api/admin/cms/modules/contact/reject/", {"review_notes": "Check the address."}, format="json")
+        self.assertEqual(rejected.status_code, 200, rejected.data)
+        self.assertEqual(Notification.objects.filter(recipient=self.editor, event_type="cms_page_rejected").count(), 1)
+
     def test_plain_section_fields_strip_markup_and_executable_links_on_publish(self):
         self.authenticate()
         page = CMSPage.objects.get(slug="contact")

@@ -82,8 +82,16 @@ def publish_article(article, user=None):
     article_id = article.pk if isinstance(article, CMSArticle) else article
     with transaction.atomic():
         locked_article = CMSArticle.objects.select_for_update().get(pk=article_id)
-        snapshot = build_article_snapshot(locked_article)
+        if locked_article.submitted_by_id and locked_article.status in {CMSArticle.STATUS_DRAFT, CMSArticle.STATUS_REJECTED} and locked_article.has_unpublished_changes:
+            raise ValueError("This news article changed after review. Submit the updated draft again before publishing.")
+        if locked_article.status == CMSArticle.STATUS_SUBMITTED:
+            if not locked_article.submitted_snapshot_json:
+                raise ValueError("This news submission has no frozen review snapshot. Return it for revision and submit it again.")
+            snapshot = dict(locked_article.submitted_snapshot_json)
+        else:
+            snapshot = build_article_snapshot(locked_article)
         published_at = timezone.now()
+        snapshot["publishedAt"] = published_at.isoformat()
         locked_article.status = CMSArticle.STATUS_PUBLISHED
         locked_article.published_snapshot_json = snapshot
         locked_article.has_unpublished_changes = False

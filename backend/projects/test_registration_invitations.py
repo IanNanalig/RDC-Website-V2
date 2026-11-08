@@ -21,7 +21,10 @@ class RegistrationInvitationTests(APITestCase):
 
     def invite(self, email="invited@example.com", role="contributor"):
         with patch("projects.views.send_mail") as send_mail:
-            response = self.client.post("/api/admin/users/", {"email": email, "role": role}, format="json")
+            payload = {"email": email, "role": role}
+            if role == "contributor":
+                payload["agency"] = "DENR"
+            response = self.client.post("/api/admin/users/", payload, format="json")
         if response.status_code != 202:
             return response, None
         match = re.search(r"token=([^\s]+)", send_mail.call_args.args[1])
@@ -62,7 +65,8 @@ class RegistrationInvitationTests(APITestCase):
         prefill = self.client.get(f"/api/auth/setup-password/?token={token}")
         self.assertEqual(prefill.status_code, 200, prefill.data)
         self.assertEqual(prefill.data["setup_type"], "invitation")
-        self.assertFalse(prefill.data["agency_locked"])
+        self.assertTrue(prefill.data["agency_locked"])
+        self.assertEqual(prefill.data["agencies"], [])
         completed = self.client.post("/api/auth/setup-password/", self.profile(token), format="json")
         self.assertEqual(completed.status_code, 200, completed.data)
         self.assertTrue(completed.data["requires_admin_activation"])

@@ -131,6 +131,25 @@ class AccountCapacityLock(models.Model):
         return self.key
 
 
+class AccountStatusEmail(models.Model):
+    """Durable delivery record for one successful account-state transition."""
+
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="status_emails")
+    recipient_email = models.EmailField()
+    recipient_name = models.CharField(max_length=200, blank=True)
+    kind = models.CharField(max_length=24, choices=[
+        ("activated", "First activation"),
+        ("deactivated", "Deactivation"),
+        ("reactivated", "Reactivation"),
+    ])
+    status = models.CharField(max_length=20, default="pending", db_index=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    last_error = models.CharField(max_length=300, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
 class UserInvitation(models.Model):
     STATUS_PENDING = "pending"
     STATUS_SENT = "sent"

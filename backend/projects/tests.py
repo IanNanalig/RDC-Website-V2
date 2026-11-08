@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -284,7 +285,7 @@ class PortalWorkflowTests(APITestCase):
         self._as(self.validator)
         draft = self.client.post(
             f"/api/validator/projects/{project.id}/validate/",
-            {"action": "save_draft", "edited_profile_data": self._simplified_profile("Validator Notification Project")},
+            {"action": "save_draft"},
             format="json",
         )
         self.assertEqual(draft.status_code, status.HTTP_200_OK)
@@ -384,7 +385,7 @@ class PortalWorkflowTests(APITestCase):
         self._as(self.validator)
         draft = self.client.post(
             f"/api/project-revisions/{progress.id}/review/",
-            {"action": "save_draft", "edited_profile_data": profile},
+            {"action": "save_draft"},
             format="json",
         )
         self.assertEqual(draft.status_code, status.HTTP_200_OK)
@@ -406,7 +407,7 @@ class PortalWorkflowTests(APITestCase):
 
         validated = self.client.post(
             f"/api/project-revisions/{progress.id}/review/",
-            {"action": "validate", "edited_profile_data": profile},
+            {"action": "validate"},
             format="json",
         )
         self.assertEqual(validated.status_code, status.HTTP_200_OK)
@@ -877,7 +878,7 @@ class PortalWorkflowTests(APITestCase):
             validator=self.validator,
             rule_set=rules,
             source_hash="abc",
-            input_snapshot={},
+            input_snapshot=deepcopy(project.profile_data),
             suggested_scores={"missing_facts": []},
             suggested_priority="low",
             base_score=10,
@@ -954,7 +955,6 @@ class PortalWorkflowTests(APITestCase):
         run = self.client.post(
             f"/api/validator/projects/{project.id}/priority-analysis/run/",
             {
-                "edited_profile_data": profile,
                 "supplements": {
                     "readinessLevel": "completed_documents",
                     "gadResponsiveness": "gender_responsive",
@@ -1000,7 +1000,7 @@ class PortalWorkflowTests(APITestCase):
 
         endorsed = self.client.post(
             f"/api/validator/projects/{project.id}/validate/",
-            {"action": "endorse", "edited_profile_data": profile, "editable_fields": []},
+            {"action": "endorse", "editable_fields": []},
             format="json",
         )
 
@@ -1039,7 +1039,6 @@ class PortalWorkflowTests(APITestCase):
         response = self.client.post(
             f"/api/validator/projects/{project.id}/priority-analysis/run/",
             {
-                "edited_profile_data": detailed_profile,
                 "supplements": {
                     "readinessLevel": "ongoing_documents",
                     "gadResponsiveness": "gender_sensitive",
@@ -1114,7 +1113,6 @@ class PortalWorkflowTests(APITestCase):
         response = self.client.post(
             f"/api/validator/projects/{project.id}/priority-analysis/run/",
             {
-                "edited_profile_data": profile,
                 "supplements": {
                     "readinessLevel": "completed_documents",
                     "gadResponsiveness": "gender_responsive",

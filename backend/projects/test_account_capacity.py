@@ -9,7 +9,7 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from .account_capacity import agency_capacity
-from .models import Agency, User, UserInvitation
+from .models import AccountStatusEmail, Agency, User, UserInvitation
 
 
 class AccountCapacityApiTests(APITestCase):
@@ -85,16 +85,19 @@ class AccountCapacityApiTests(APITestCase):
         self.assertEqual(sixth.data["agency"], "DENR")
         self.assertEqual(sixth.data["limit"], 5)
 
-    def test_open_invitation_reserves_chosen_agency_only_at_setup(self):
+    def test_contributor_invitation_requires_assigned_agency_and_rejects_setup_override(self):
         for index in range(5):
             self.create_staff(self.denr, index)
         invited, token = self.invite_with_token("open@example.test")
+        self.assertEqual(invited.status_code, 400, invited.data)
+        self.assertIsNone(token)
+        invited, token = self.invite_with_token("open@example.test", agency="DOH")
         self.assertEqual(invited.status_code, 202, invited.data)
         self.client.force_authenticate(None)
-        full = self.client.post(
+        override = self.client.post(
             "/api/auth/setup-password/", self.setup_payload(token, "DENR"), format="json"
         )
-        self.assertEqual(full.status_code, 409, full.data)
+        self.assertEqual(override.status_code, 400, override.data)
         self.assertFalse(User.objects.filter(email="open@example.test").exists())
         available = self.client.post(
             "/api/auth/setup-password/", self.setup_payload(token, "DOH"), format="json"
@@ -120,6 +123,52 @@ class AccountCapacityApiTests(APITestCase):
         pending.refresh_from_db()
         self.assertEqual(pending.account_state, User.ACCOUNT_ACTIVE)
         self.assertTrue(pending.is_active)
+
+    def test_account_state_notices_are_created_only_for_real_transitions(self):
+        pending = self.create_staff(self.denr, 80, active=False, state=User.ACCOUNT_PENDING_ACTIVATION)
+        with patch("projects.account_status_email.EmailMessage.send", return_value=1) as send:
+            with self.captureOnCommitCallbacks(execute=True):
+                activated = self.client.post(f"/api/admin/users/{pending.pk}/set_active/", {"active": True}, format="json")
+                self.assertEqual(activated.status_code, 200, activated.data)
+            send.assert_called_once()
+        self.assertEqual(AccountStatusEmail.objects.filter(user=pending, kind="activated").count(), 1)
+        repeated = self.client.post(f"/api/admin/users/{pending.pk}/set_active/", {"active": True}, format="json")
+        self.assertEqual(repeated.status_code, 200, repeated.data)
+        self.assertEqual(AccountStatusEmail.objects.filter(user=pending).count(), 1)
+        with patch("projects.account_status_email.EmailMessage.send", return_value=1):
+            with self.captureOnCommitCallbacks(execute=True):
+                disabled = self.client.post(f"/api/admin/users/{pending.pk}/set_active/", {"active": False}, format="json")
+                self.assertEqual(disabled.status_code, 200, disabled.data)
+            with self.captureOnCommitCallbacks(execute=True):
+                restored = self.client.post(f"/api/admin/users/{pending.pk}/set_active/", {"active": True}, format="json")
+                self.assertEqual(restored.status_code, 200, restored.data)
+        self.assertEqual(set(AccountStatusEmail.objects.filter(user=pending).values_list("kind", flat=True)), {"activated", "deactivated", "reactivated"})
+
+    def test_account_email_failure_keeps_activation_and_can_retry(self):
+        from .account_status_email import deliver_account_status_email
+
+        pending = self.create_staff(self.denr, 81, active=False, state=User.ACCOUNT_PENDING_ACTIVATION)
+        with patch("projects.account_status_email.EmailMessage.send", side_effect=RuntimeError("mail unavailable")):
+            with patch("projects.tasks.retry_account_status_email.delay"):
+                with self.captureOnCommitCallbacks(execute=True):
+                    response = self.client.post(f"/api/admin/users/{pending.pk}/set_active/", {"active": True}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        pending.refresh_from_db()
+        self.assertTrue(pending.is_active)
+        notice = AccountStatusEmail.objects.get(user=pending)
+        self.assertEqual(notice.status, "failed")
+        self.assertEqual(notice.attempts, 1)
+        self.assertNotIn("mail unavailable", notice.last_error)
+        with patch("projects.account_status_email.EmailMessage.send", return_value=1):
+            self.assertTrue(deliver_account_status_email(notice.pk))
+        notice.refresh_from_db()
+        self.assertEqual(notice.status, "sent")
+        self.assertEqual(notice.attempts, 2)
+        diagnostics = self.client.get(f"/api/admin/users/{pending.pk}/status-emails/")
+        self.assertEqual(diagnostics.status_code, 200, diagnostics.data)
+        self.assertEqual(diagnostics.data[0]["status"], "sent")
+        self.client.force_authenticate(pending)
+        self.assertEqual(self.client.get(f"/api/admin/users/{pending.pk}/status-emails/").status_code, 403)
 
     @skipUnless(connection.vendor == "postgresql", "requires PostgreSQL row locking")
     def test_activation_locks_only_user_when_agency_relation_is_nullable(self):

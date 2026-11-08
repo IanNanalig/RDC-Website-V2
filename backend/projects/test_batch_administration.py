@@ -107,6 +107,20 @@ class BatchAdministrationTests(APITestCase):
         self.assertEqual(response.data["rows"][0]["status"], "valid")
         self.assertEqual(response.data["rows"][0]["agency"], "DENR")
 
+    def test_csv_preview_reports_missing_contributor_agency_by_row(self):
+        self.authenticate(self.admin)
+        upload = SimpleUploadedFile(
+            "invitations.csv",
+            "\ufeffemail,role,agency\r\nmissing@example.com,contributor,\r\nvalid@example.com,contributor,DENR\r\n".encode("utf-8"),
+            content_type="text/csv",
+        )
+        response = self.client.post(
+            "/api/admin/users/batch-invitations/preview/", {"file": upload}, format="multipart"
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual([row["status"] for row in response.data["rows"]], ["invalid", "valid"])
+        self.assertIn("Assign an eligible agency", response.data["rows"][0]["reason"])
+
     def test_batch_archive_rechecks_and_partially_succeeds(self):
         stable = self.project("Stable Project")
         pending = self.project("Pending Project", status_value="proposed", validated=False)

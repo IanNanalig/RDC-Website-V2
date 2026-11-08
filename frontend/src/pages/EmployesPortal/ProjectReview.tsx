@@ -248,7 +248,7 @@ const ProjectReview: React.FC = () => {
           )}
           <div>
             <p className="text-xs text-gray-500">Form Type</p>
-            <p>Simplified (RDIP) · Version {formSchemaVersion}</p>
+            <p>Contributor Form · Version {formSchemaVersion}</p>
           </div>
           {(isAdmin || isValidator) && (
             <div className="md:col-span-2">
@@ -332,7 +332,7 @@ const ProjectReview: React.FC = () => {
           <div className="space-y-3 text-sm">
             {!simplified ? (
               <div className="border rounded p-3 text-slate-600">
-                No simplified form data found for this project.
+                No project form data found for this project.
               </div>
             ) : (
               <>

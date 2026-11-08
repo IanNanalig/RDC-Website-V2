@@ -34,6 +34,7 @@ export type CMSPage = {
   slug: string;
   status: CMSStatus;
   published_snapshot_json?: Record<string, unknown>;
+  submitted_snapshot_json?: Record<string, unknown>;
   published_slug?: string;
   section_count?: number;
   has_unpublished_changes: boolean;

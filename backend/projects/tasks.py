@@ -23,9 +23,23 @@ from .models import (
 )
 from .contact_delivery import deliver_public_contact_message
 from .concern_delivery import deliver_project_concern
+from .account_status_email import deliver_account_status_email
 
 
 logger = logging.getLogger(__name__)
+
+
+@shared_task(bind=True, autoretry_for=(), max_retries=3)
+def retry_account_status_email(self, notice_id):
+    from .models import AccountStatusEmail
+
+    if AccountStatusEmail.objects.filter(pk=notice_id, status="sent").exists():
+        return {"status": "sent"}
+    delivered = deliver_account_status_email(notice_id)
+    if not delivered and self.request.retries < self.max_retries:
+        delays = [60, 300, 900]
+        raise self.retry(countdown=delays[min(self.request.retries, len(delays) - 1)])
+    return {"status": "sent" if delivered else "failed"}
 
 
 def _processing_job(job_id):

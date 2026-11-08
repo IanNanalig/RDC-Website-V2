@@ -80,6 +80,7 @@ from cms.services.publishing import (
     reorder_page_sections,
     restore_contributor_form_version,
 )
+from cms.services.snapshots import build_article_snapshot
 from projects.models import (
     Notification,
     PriorityRuleSet,
@@ -184,9 +185,11 @@ def _log_cms_activity(request, event, details=None):
 
 def _notify_form_users(users, *, actor, form, event_type, title, message, dedupe_event):
     for recipient in users:
+        if getattr(recipient, "role", "") != "admin":
+            continue
         if actor and recipient.pk == actor.pk:
             continue
-        form_path = "/content/forms" if getattr(recipient, "role", "") == "content_editor" else "/admin/forms"
+        form_path = "/admin/forms"
         Notification.objects.update_or_create(
             dedupe_key=f"cms-form:{form.pk}:{dedupe_event}:user:{recipient.pk}",
             defaults={
@@ -200,13 +203,40 @@ def _notify_form_users(users, *, actor, form, event_type, title, message, dedupe
         )
 
 
+def _notify_cms_article(users, *, actor, article, event_type, title, message, transition):
+    for recipient in users:
+        if recipient.pk == getattr(actor, "pk", None):
+            continue
+        Notification.objects.get_or_create(
+            dedupe_key=f"cms-article:{article.pk}:{transition}:user:{recipient.pk}",
+            defaults={
+                "recipient": recipient, "actor": actor, "event_type": event_type,
+                "title": title, "message": message, "link_path": "/admin/content" if recipient.role == "admin" else "/content/dashboard",
+            },
+        )
+
+
+def _notify_cms_page(users, *, actor, page, event_type, title, message, transition):
+    for recipient in users:
+        if recipient.pk == getattr(actor, "pk", None):
+            continue
+        Notification.objects.get_or_create(
+            dedupe_key=f"cms-page:{page.pk}:{transition}:user:{recipient.pk}",
+            defaults={
+                "recipient": recipient, "actor": actor, "event_type": event_type,
+                "title": title, "message": message,
+                "link_path": "/admin/content" if recipient.role == "admin" else "/content/dashboard",
+            },
+        )
+
+
 def _form_editor_recipients(form):
     recipient_ids = {
         user_id
         for user_id in (form.submitted_by_id, form.updated_by_id)
         if user_id
     }
-    return User.objects.filter(pk__in=recipient_ids, is_active=True)
+    return User.objects.filter(pk__in=recipient_ids, role="admin", is_active=True)
 
 
 def _with_public_cache(request, payload):
@@ -261,11 +291,15 @@ class CMSWorkflowMixin:
                     status=423,
                 )
         obj.status = "submitted"
+        if isinstance(obj, CMSArticle):
+            obj.submitted_snapshot_json = build_article_snapshot(obj)
         if hasattr(obj, "submitted_by"):
             obj.submitted_by = request.user
         if hasattr(obj, "review_notes"):
             obj.review_notes = ""
         fields = ["status", "updated_at"]
+        if isinstance(obj, CMSArticle):
+            fields.append("submitted_snapshot_json")
         fields += [field for field in ("submitted_by", "review_notes") if hasattr(obj, field)]
         obj.save(update_fields=fields)
         if isinstance(obj, CMSPage):
@@ -288,7 +322,21 @@ class CMSWorkflowMixin:
                 message=f"{obj.name} was submitted for administrator review.",
                 dedupe_event=f"submitted:{obj.updated_at.isoformat()}",
             )
-        _log_cms_activity(request, "cms_content_submitted", {"content_type": self.content_type_key, "id": obj.pk})
+        elif isinstance(obj, CMSArticle):
+            _notify_cms_article(
+                User.objects.filter(role="admin", is_active=True), actor=request.user, article=obj,
+                event_type="cms_article_submitted", title="News article awaiting review",
+                message=f"{obj.title} was submitted for publication review.",
+                transition=f"submitted:{obj.updated_at.isoformat()}",
+            )
+        elif isinstance(obj, CMSPage):
+            _notify_cms_page(
+                User.objects.filter(role="admin", is_active=True), actor=request.user, page=obj,
+                event_type="cms_page_submitted", title="Website content awaiting review",
+                message=f"{obj.title} was submitted for publication review.",
+                transition=f"submitted:{obj.updated_at.isoformat()}",
+            )
+        _log_cms_activity(request, "cms_content_submitted", {"content_type": self.content_type_key, "id": obj.pk, "target_label": str(getattr(obj, "title", None) or getattr(obj, "name", None) or f"Content #{obj.pk}")})
         obj.refresh_from_db()
         return Response(self._serialize(obj))
 
@@ -321,7 +369,22 @@ class CMSWorkflowMixin:
                 message=f"{obj.name} was returned for revision. {obj.review_notes}",
                 dedupe_event=f"rejected:{obj.updated_at.isoformat()}",
             )
-        _log_cms_activity(request, "cms_content_rejected", {"content_type": self.content_type_key, "id": obj.pk})
+        elif isinstance(obj, CMSArticle):
+            _notify_cms_article(
+                User.objects.filter(pk=obj.submitted_by_id, role="content_editor", is_active=True),
+                actor=request.user, article=obj, event_type="cms_article_rejected",
+                title="News article returned for revision",
+                message=f"{obj.title} was returned for revision. {obj.review_notes}",
+                transition=f"rejected:{obj.updated_at.isoformat()}",
+            )
+        elif isinstance(obj, CMSPage) and obj.submitted_by_id:
+            _notify_cms_page(
+                User.objects.filter(pk=obj.submitted_by_id, is_active=True), actor=request.user, page=obj,
+                event_type="cms_page_rejected", title="Website content needs revision",
+                message=f"{obj.title} was returned for revision. {obj.review_notes}",
+                transition=f"rejected:{obj.updated_at.isoformat()}",
+            )
+        _log_cms_activity(request, "cms_content_rejected", {"content_type": self.content_type_key, "id": obj.pk, "target_label": str(getattr(obj, "title", None) or getattr(obj, "name", None) or f"Content #{obj.pk}")})
         obj.refresh_from_db()
         return Response(self._serialize(obj))
 
@@ -428,6 +491,13 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
         if page.status == "archived":
             return Response({"detail": "Archived pages cannot be published."}, status=400)
         page = publish_page(page, user=request.user)
+        if page.submitted_by_id:
+            _notify_cms_page(
+                User.objects.filter(pk=page.submitted_by_id, is_active=True), actor=request.user, page=page,
+                event_type="cms_page_published", title="Website content published",
+                message=f"{page.title} was published on the website.",
+                transition=f"published:{page.published_at.isoformat()}",
+            )
         _log_cms_activity(request, "cms_content_published", {"content_type": "page", "id": page.pk, "slug": page.slug})
         return Response(self._serialize(page))
 
@@ -637,7 +707,16 @@ class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.Mod
         article = self.get_object()
         if article.status == "archived":
             return Response({"detail": "Archived articles cannot be published."}, status=400)
-        article = publish_article(article, user=request.user)
+        try:
+            article = publish_article(article, user=request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=409)
+        _notify_cms_article(
+            User.objects.filter(pk=article.submitted_by_id, role="content_editor", is_active=True),
+            actor=request.user, article=article, event_type="cms_article_published",
+            title="News article published", message=f"{article.title} was published on the website.",
+            transition=f"published:{article.published_at.isoformat()}",
+        )
         _log_cms_activity(request, "cms_content_published", {"content_type": "article", "id": article.pk, "slug": article.slug})
         return Response(self._serialize(article))
 
@@ -985,16 +1064,29 @@ class AdminCMSModuleActionView(APIView):
             page.save(update_fields=["status", "reviewed_by", "review_notes", "updated_at"])
         else:
             raise Http404("Unsupported module action.")
-        _log_cms_activity(request, f"cms_content_{operation}", {"content_type": "module", "slug": slug})
+        if operation == "submit":
+            _notify_cms_page(
+                User.objects.filter(role="admin", is_active=True), actor=request.user, page=page,
+                event_type="cms_page_submitted", title="Website content awaiting review",
+                message=f"{page.title} was submitted for publication review.",
+                transition=f"submitted:{page.updated_at.isoformat()}",
+            )
+        elif operation in {"publish", "reject"} and page.submitted_by_id:
+            _notify_cms_page(
+                User.objects.filter(pk=page.submitted_by_id, is_active=True), actor=request.user, page=page,
+                event_type=f"cms_page_{operation}ed" if operation == "publish" else "cms_page_rejected",
+                title="Website content published" if operation == "publish" else "Website content needs revision",
+                message=f"{page.title} was {'published' if operation == 'publish' else 'returned for revision'}.",
+                transition=f"{operation}:{page.updated_at.isoformat()}",
+            )
+        _log_cms_activity(request, f"cms_content_{operation}", {"content_type": "module", "slug": slug, "target_label": page.title})
         return Response(CMSPageEditorSerializer(page, context={"request": request}).data)
 
 
 class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
     serializer_class = CMSContributorFormSerializer
-    # Content Editors prepare and submit drafts.  Publication, rejection,
-    # restoration, and every structural/system decision stay Administrator-only
-    # on their individual actions below.
-    permission_classes = [permissions.IsAuthenticated, IsCMSUser]
+    # Contributor-form configuration is an Administrator responsibility.
+    permission_classes = [permissions.IsAuthenticated, IsCMSAdmin]
     content_type_key = "form"
     http_method_names = ["get", "patch", "put", "post", "head", "options"]
 
@@ -1112,7 +1204,7 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
                 "event_type": "cms_form_access_requested",
                 "title": "Contributor form access requested",
                 "message": f"{request.user.get_full_name() or request.user.username} requested access to {form.name}.",
-                "link_path": "/content/forms" if getattr(form.lock_owner, "role", "") == "content_editor" else "/admin/forms",
+                "link_path": "/admin/forms",
             },
         )
         _log_cms_activity(

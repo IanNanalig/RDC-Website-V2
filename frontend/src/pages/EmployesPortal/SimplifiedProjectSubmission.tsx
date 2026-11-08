@@ -1738,12 +1738,12 @@ const SimplifiedProjectSubmission: React.FC = () => {
         localStorage.removeItem(draftStorageKey);
       }
       localStorage.setItem("projects_last_update", Date.now().toString());
-      alert(action === "save" ? "Simplified draft saved." : "Simplified submission sent for validation.");
+      alert(action === "save" ? "Project draft saved." : "Project submission sent for validation.");
       navigate(isAdmin ? "/admin/projects" : "/employee/projects");
     } catch (error) {
       console.error(error);
       const detail = error instanceof Error ? error.message : "";
-      alert(detail ? `Failed to save simplified form. ${detail}` : "Failed to save simplified form.");
+      alert(detail ? `Failed to save project form. ${detail}` : "Failed to save project form.");
     } finally {
       setLoading(false);
     }
@@ -2081,7 +2081,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   if (isEmployee && !isEditMode && !encodingWindow.loading && !canEncode) {
     return (
       <PortalLayout
-        title="New Simplified RDIP Submission"
+        title={formSchema.title || "New Project Submission"}
         subtitle="Contributor encoding is currently unavailable"
         role="employee"
         userName={displayName}
@@ -2119,22 +2119,22 @@ const SimplifiedProjectSubmission: React.FC = () => {
         isValidator
           ? isRevisionMode
             ? "Validator Progress Update Review"
-            : "Validator Simplified Review Form"
+            : "Validator Project Review"
           : isAdmin
           ? isRevisionMode
             ? "Admin Progress Update View"
-            : "Admin Simplified Form View"
+            : "Admin Project Form View"
           : isEditMode
           ? isRevisionMode
             ? "Project Progress Update Editor"
-            : "Simplified RDIP Submission Editor"
-          : "New Simplified RDIP Submission"
+            : "Project Submission Editor"
+          : formSchema.title || "New Project Submission"
       }
       subtitle={
         isValidator
           ? isRevisionMode
             ? "Review proposed progress changes before they affect the public dashboard"
-            : "Edit reviewer working copy without changing contributor original"
+            : "Review contributor information and record validation decisions"
           : isAdmin
           ? isDiffMode
             ? "Read-only validator diff view with original contributor values"
@@ -2143,7 +2143,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
             : "Read-only contributor submission view"
           : isRevisionMode
           ? "Update this endorsed project for validator review"
-          : "RDIP 2023-2028 list of projects format (data-type aligned)"
+          : formSchema.description || "Complete the published project submission form."
       }
       role={(user.role || "employee") as "admin" | "validator" | "employee"}
       userName={displayName}

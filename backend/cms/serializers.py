@@ -427,13 +427,13 @@ class CMSArticleSerializer(serializers.ModelSerializer):
         model = CMSArticle
         fields = [
             "id", "title", "slug", "category", "summary", "body", "thumbnail", "thumbnail_url", "author",
-            "publication_date", "featured", "status", "published_snapshot_json", "has_unpublished_changes", "created_by",
+            "publication_date", "featured", "status", "published_snapshot_json", "submitted_snapshot_json", "has_unpublished_changes", "created_by",
             "created_by_name", "updated_by", "updated_by_name", "submitted_by", "submitted_by_name",
             "reviewed_by", "reviewed_by_name", "review_notes", "published_at", "archived_at", "created_at",
             "updated_at",
         ]
         read_only_fields = [
-            "status", "published_snapshot_json", "has_unpublished_changes", "created_by", "created_by_name",
+            "status", "published_snapshot_json", "submitted_snapshot_json", "has_unpublished_changes", "created_by", "created_by_name",
             "updated_by", "updated_by_name", "submitted_by", "submitted_by_name", "reviewed_by",
             "reviewed_by_name", "review_notes", "published_at", "archived_at", "created_at", "updated_at",
         ]

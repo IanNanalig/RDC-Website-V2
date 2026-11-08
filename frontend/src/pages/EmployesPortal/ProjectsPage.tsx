@@ -562,7 +562,7 @@ const ProjectsPage: React.FC = () => {
   if (!user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   const displayName = userDisplayName(user);
 
-  const title = archivedView ? "Archived Projects" : role === "admin" ? "Projects Governance" : role === "validator" ? "Validation Queue" : "My Projects";
+  const title = archivedView ? "Archived Projects" : role === "admin" ? "Projects Governance" : role === "validator" ? "Validation Queue" : "Agency Projects";
   const subtitle =
     role === "admin"
       ? "Review all portal submissions, archive, and manage records"

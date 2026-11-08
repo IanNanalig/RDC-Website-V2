@@ -78,12 +78,11 @@ const navByRole: Record<Role, NavItem[]> = {
   ],
   employee: [
     { label: "Dashboard", to: "/employee/dashboard" },
-    { label: "My Projects", to: "/employee/projects" },
+    { label: "Agency Projects", to: "/employee/projects" },
     { label: "New Submission", to: "/employee/projects/new" },
   ],
   content_editor: [
     { label: "Content Management", to: "/content/dashboard" },
-    { label: "Contributor Forms", to: "/content/forms" },
   ],
 };
 

@@ -714,6 +714,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const [settingSourceDrafts, setSettingSourceDrafts] = useState<Record<number, string>>({});
   const [reviewQueue, setReviewQueue] = useState<CMSReviewQueue>({ pages: [], sections: [], news: [], forms: [], events: [] });
   const [pageReviewPreview, setPageReviewPreview] = useState<CMSPage | null>(null);
+  const [articleReviewPreview, setArticleReviewPreview] = useState<CMSArticle | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<number | null>(null);
   const [openingPageId, setOpeningPageId] = useState<number | null>(null);
   const [pageForm, setPageForm] = useState<PageForm>(emptyPageForm);
@@ -1305,6 +1306,22 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       setPageReviewPreview(await cmsApi.getPageReview(page.id));
     } catch (error) {
       setNotice(getErrorDetail(error, "Could not load the complete page draft for preview."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openArticleReviewPreview = async (article: CMSArticle) => {
+    try {
+      setLoading(true);
+      const full = await cmsApi.getArticle(article.id);
+      if (!full.submitted_snapshot_json || !Object.keys(full.submitted_snapshot_json).length) {
+        setNotice("This older submission has no saved review snapshot. Return it for revision and ask the editor to submit it again.");
+        return;
+      }
+      setArticleReviewPreview(full);
+    } catch (error) {
+      setNotice(getErrorDetail(error, "Could not load the submitted article preview."));
     } finally {
       setLoading(false);
     }
@@ -3497,7 +3514,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                         {article.published_at && <button type="button" className="text-slate-600" onClick={() => copyPublicUrl(articlePublicPath(publishedSlug(article)))}>
                           Copy URL
                         </button>}
-                        {isAdmin && article.status !== "archived" && (
+                        {isAdmin && article.status === "submitted" && <button type="button" className="text-blue-700" onClick={() => void openArticleReviewPreview(article)}>Preview Submitted</button>}
+                        {isAdmin && article.status !== "submitted" && article.status !== "archived" && (
                           <button type="button" className="text-emerald-700" onClick={() => publishArticle(article)}>
                             Publish
                           </button>
@@ -3777,7 +3795,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               {reviewQueue.news.map((article) => (
                 <div key={`article-${article.id}`} className="rounded-xl border border-slate-200 p-3">
                   <strong>{article.title}</strong><p className="text-xs text-slate-500">News article submitted for review</p>
-                  {isAdmin && <div className="mt-2 flex gap-3 text-sm"><button className="text-emerald-700" onClick={() => runWorkflowAction("article", article.id, "publish", article.title)}>Publish</button><button className="text-rose-700" onClick={() => runWorkflowAction("article", article.id, "reject", article.title)}>Reject</button></div>}
+                  {isAdmin && <div className="mt-2 flex gap-3 text-sm"><button className="text-blue-700" onClick={() => void openArticleReviewPreview(article)}>Preview Submitted</button><button className="text-rose-700" onClick={() => runWorkflowAction("article", article.id, "reject", article.title)}>Reject</button></div>}
                 </div>
               ))}
               {reviewQueue.events.map((event) => (
@@ -3790,6 +3808,22 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         </div>
       )}
 
+      {articleReviewPreview && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-3 sm:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setArticleReviewPreview(null); }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="cms-article-preview-title" className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl sm:p-8">
+            {(() => {
+              const snapshot = articleReviewPreview.submitted_snapshot_json || {};
+              return <>
+                <div className="flex items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase text-blue-700">Submitted news revision</p><h2 id="cms-article-preview-title" className="mt-1 text-2xl font-bold">{String(snapshot.title || articleReviewPreview.title)}</h2><p className="mt-2 text-sm text-slate-600">{String(snapshot.category || "Updates")} · {String(snapshot.author || "RDC-NCR")}</p></div><button type="button" className="portal-btn portal-btn-ghost" onClick={() => setArticleReviewPreview(null)}>Close</button></div>
+                {snapshot.thumbnailUrl && <img src={String(snapshot.thumbnailUrl)} alt={String(snapshot.title || "News image")} className="mt-5 max-h-80 w-full rounded-xl object-cover" />}
+                <p className="mt-5 text-lg text-slate-700">{String(snapshot.summary || "")}</p>
+                <article className="prose mt-5 max-w-none" dangerouslySetInnerHTML={{ __html: String(snapshot.body || "") }} />
+                <div className="mt-6 flex justify-end gap-2 border-t pt-4"><button type="button" className="portal-btn portal-btn-ghost" onClick={() => { const row = articleReviewPreview; setArticleReviewPreview(null); void runWorkflowAction("article", row.id, "reject", row.title); }}>Reject</button><button type="button" className="portal-btn portal-btn-primary" onClick={() => { const row = articleReviewPreview; setArticleReviewPreview(null); void publishArticle(row); }}>Publish This Revision</button></div>
+              </>;
+            })()}
+          </section>
+        </div>
+      )}
       {pageReviewPreview && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-3 sm:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPageReviewPreview(null); }}>
           <section role="dialog" aria-modal="true" aria-labelledby="cms-page-preview-title" className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-4 shadow-2xl sm:p-6">

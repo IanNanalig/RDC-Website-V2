@@ -166,6 +166,11 @@ type Props = {
   developmentSector?: string;
 };
 
+type ValidationEligibility = {
+  eligible: boolean;
+  detail: string;
+};
+
 type ProcessingProgress = {
   completedSteps: number;
   label: string;
@@ -287,6 +292,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
   const [eligible, setEligible] = useState(true);
   const [analyses, setAnalyses] = useState<Analysis[]>([]);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [validationEligibility, setValidationEligibility] = useState<ValidationEligibility | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [retryAvailable, setRetryAvailable] = useState(false);
@@ -308,6 +314,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
       setEligible(response?.eligible !== false);
       setAnalyses(list);
       setAnalysis(list[0] || null);
+      setValidationEligibility(response?.validation_eligibility || null);
     } catch (error) {
       console.error("Failed to load priority analysis:", error);
     }
@@ -390,6 +397,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
         detail: "The document assessment and priority recommendation have been saved.",
       });
       setNotice(response?.reused ? "Identical inputs detected. Reused the existing deterministic scorecard." : "Priority analysis completed.");
+      await load();
     } catch (error) {
       setRetryAvailable(true);
       const message = error instanceof Error ? error.message : "Failed to run priority analysis.";
@@ -423,7 +431,8 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
       }) as Analysis;
       setAnalysis(next);
       setAnalyses((prev) => [next, ...prev.filter((item) => item.id !== next.id)]);
-      setNotice("Priority analysis confirmed. The current validator copy is eligible for endorsement.");
+      await load();
+      setNotice("Priority analysis confirmed. Validation eligibility has been refreshed.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Failed to confirm priority analysis.");
     } finally {
@@ -471,6 +480,11 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
         {analysis && <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${priorityBadge(visiblePriority)}`}>{priorityLabel(visiblePriority)}</span>}
       </div>
       <div className="portal-card-body space-y-4">
+        {role === "validator" && validationEligibility && analysis && (
+          <p className={`rounded-lg border px-3 py-2 text-sm ${validationEligibility.eligible ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
+            {validationEligibility.eligible ? "Priority analysis and confirmation are ready for validation." : validationEligibility.detail}
+          </p>
+        )}
         {role === "validator" && (
           <div className="rounded-xl border border-slate-200 p-3">
             <p className="mb-3 text-sm font-semibold text-slate-800">Validator Facts Supplement</p>

@@ -500,7 +500,7 @@ class AIPriorityCMSTests(APITestCase):
         self.assertIn("must total 100", response.data["detail"])
         self.assertEqual(PriorityRuleSet.objects.count(), before)
 
-    def test_binary_priority_boundary_cannot_be_changed(self):
+    def test_binary_priority_boundary_can_be_changed(self):
         config = deepcopy(default_priority_rule_config())
         config["thresholds"]["high"] = 80
         before = PriorityRuleSet.objects.count()
@@ -512,6 +512,5 @@ class AIPriorityCMSTests(APITestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("must be 70", response.data["detail"])
-        self.assertEqual(PriorityRuleSet.objects.count(), before)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(PriorityRuleSet.objects.count(), before + 1)

@@ -21,7 +21,7 @@ class ContactNumberValidationTests(APITestCase):
         with patch("projects.views.send_mail") as send_mail:
             response = self.client.post(
                 "/api/admin/users/",
-                {"email": "contact-invite@example.com", "role": "contributor"},
+                {"email": "contact-invite@example.com", "role": "contributor", "agency": "DENR"},
                 format="json",
             )
         self.assertEqual(response.status_code, 202, response.data)

@@ -125,7 +125,7 @@ class ContributorFormWorkflowTests(APITestCase):
         self.assertEqual(published.status_code, status.HTTP_200_OK)
         self.assertEqual(published.data["current_published_version_number"], initial_version + 1)
         self.assertFalse(published.data["has_unpublished_changes"])
-        self.assertTrue(Notification.objects.filter(
+        self.assertFalse(Notification.objects.filter(
             recipient=self.editor, event_type="cms_form_published",
         ).exists())
 
@@ -225,52 +225,22 @@ class ContributorFormWorkflowTests(APITestCase):
         self.assertTrue(lock_queries)
         self.assertNotIn("JOIN", lock_queries[0].upper())
 
-    def test_content_editor_can_prepare_and_submit_form_but_only_admin_can_publish(self):
-        other_editor = User.objects.create_user(
-            username="other-form-editor",
-            email="other-form-editor@example.com",
-            password="StrongTestPassword123!",
-            role="content_editor",
-        )
+    def test_content_editor_cannot_access_form_management(self):
         self.authenticate(self.editor)
+        base = f"/api/admin/cms/forms/{self.form.id}/"
+        requests = [
+            self.client.get("/api/admin/cms/forms/"),
+            self.client.get(base),
+            self.client.patch(base, {"draft_schema_json": {}}, format="json"),
+        ]
+        for action in ("lock", "unlock", "heartbeat", "submit", "publish", "reject", "reset", "preview", "compatibility", "restore-version"):
+            requests.append(self.client.post(f"{base}{action}/", {}, format="json"))
+        for response in requests:
+            self.assertIn(response.status_code, (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+
+        self.authenticate(self.admin)
         self.assertEqual(self.client.get("/api/admin/cms/forms/").status_code, status.HTTP_200_OK)
-        self.assertEqual(self.client.get(f"/api/admin/cms/forms/{self.form.id}/").status_code, status.HTTP_200_OK)
-        locked = self.client.post(f"/api/admin/cms/forms/{self.form.id}/lock/", {}, format="json")
-        self.assertEqual(locked.status_code, status.HTTP_200_OK)
-        saved = self.client.patch(
-            f"/api/admin/cms/forms/{self.form.id}/",
-            {
-                "draft_schema_json": locked.data["draft_schema_json"],
-                "expected_updated_at": locked.data["updated_at"],
-                "edit_mode": "update",
-            },
-            format="json",
-        )
-        self.assertEqual(saved.status_code, status.HTTP_200_OK)
-
-        self.authenticate(self.admin)
-        acquired = self.client.post(f"/api/admin/cms/forms/{self.form.id}/lock/", {}, format="json")
-        self.assertEqual(acquired.status_code, status.HTTP_200_OK)
-
-        self.authenticate(other_editor)
-        blocked = self.client.post(f"/api/admin/cms/forms/{self.form.id}/lock/", {}, format="json")
-        self.assertEqual(blocked.status_code, status.HTTP_423_LOCKED)
-        save = self.client.patch(
-            f"/api/admin/cms/forms/{self.form.id}/",
-            {"draft_schema_json": acquired.data["draft_schema_json"], "edit_mode": "update"},
-            format="json",
-        )
-        self.assertEqual(save.status_code, status.HTTP_423_LOCKED)
-
-        self.authenticate(self.admin)
-        released = self.client.post(f"/api/admin/cms/forms/{self.form.id}/unlock/", {}, format="json")
-        self.assertEqual(released.status_code, status.HTTP_200_OK)
-
-        self.authenticate(self.editor)
-        submitted = self.client.post(f"/api/admin/cms/forms/{self.form.id}/submit/", {}, format="json")
-        self.assertEqual(submitted.status_code, status.HTTP_200_OK)
-        self.assertEqual(self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json").status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(self.client.post(f"/api/admin/cms/forms/{self.form.id}/restore-version/", {"version_id": self.form.current_published_version_id}, format="json").status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.get(base).status_code, status.HTTP_200_OK)
 
     def test_contributor_form_cannot_be_archived_by_any_administrator_action(self):
         self.authenticate(self.admin)
@@ -862,9 +832,7 @@ class ContributorFormWorkflowTests(APITestCase):
             format="json",
         )
         self.assertEqual(rejected.status_code, status.HTTP_200_OK)
-        notification = Notification.objects.get(recipient=self.editor, event_type="cms_form_rejected")
-        self.assertIn("Clarify the agency reference label", notification.message)
-        self.assertEqual(notification.link_path, "/content/forms")
+        self.assertFalse(Notification.objects.filter(recipient=self.editor, event_type="cms_form_rejected").exists())
 
     def test_current_form_uses_etag_revalidation(self):
         self.authenticate(self.contributor)

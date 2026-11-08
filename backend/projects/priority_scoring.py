@@ -1890,33 +1890,55 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     return analysis, False
 
 
-def has_matching_confirmation(project, snapshot):
+def confirmation_eligibility(project, snapshot):
+    """Explain whether a persisted confirmation can endorse this project copy."""
     from .document_assessments import current_document_assessment
     from .document_policy import resolve_project_document_policy
 
     active_rules = _active_ruleset()
     current_snapshot_hash = _confirmation_snapshot_hash(snapshot)
-    confirmed_analyses = project.priority_analyses.filter(
-        confirmations__isnull=False,
-        rule_set=active_rules,
-    ).distinct().prefetch_related("confirmations").only("input_snapshot")
+    analyses = list(project.priority_analyses.select_related("rule_set").prefetch_related("confirmations").order_by("-created_at"))
+    current_analyses = [item for item in analyses if item.rule_set_id == active_rules.id]
+    matching_analyses = [item for item in current_analyses if _confirmation_snapshot_hash(item.input_snapshot) == current_snapshot_hash]
+    completed_analyses = [
+        item for item in matching_analyses
+        if item.suggested_priority in {"high", "low"}
+        and isinstance(item.suggested_scores, dict)
+        and not item.suggested_scores.get("missing_facts")
+    ]
     policy = resolve_project_document_policy(project)
     has_documents = bool(policy and project.supporting_documents.filter(removed_at__isnull=True).exists())
     documents_need_assessment = bool(policy and (policy.get("required") or has_documents))
     assessment = current_document_assessment(project) if documents_need_assessment else None
-    for analysis in confirmed_analyses:
-        if _confirmation_snapshot_hash(analysis.input_snapshot) != current_snapshot_hash:
-            continue
-        for confirmation in analysis.confirmations.all():
+    for analysis in completed_analyses:
+        for confirmation in sorted(analysis.confirmations.all(), key=lambda item: item.created_at, reverse=True):
+            if confirmation.final_priority not in {"high", "low"}:
+                continue
             if not documents_need_assessment:
-                return True
+                return {"eligible": True, "code": "ready", "detail": "Priority confirmation is ready for validation.", "analysis_id": analysis.id, "confirmation_id": confirmation.id}
             if not assessment or confirmation.document_assessment_id != assessment.id:
                 continue
             if assessment.status == "pass":
-                return True
+                return {"eligible": True, "code": "ready", "detail": "Priority confirmation is ready for validation.", "analysis_id": analysis.id, "confirmation_id": confirmation.id}
             if confirmation.document_override and confirmation.document_override_rationale.strip():
-                return True
-    return False
+                return {"eligible": True, "code": "ready", "detail": "Priority confirmation is ready for validation.", "analysis_id": analysis.id, "confirmation_id": confirmation.id}
+    if not analyses:
+        code, detail = "analysis_missing", "AI analysis has not been completed for this project."
+    elif not current_analyses:
+        code, detail = "analysis_rule_outdated", "The confirmed analysis uses an older scoring version. Run and confirm an analysis with the active rules."
+    elif not matching_analyses:
+        code, detail = "analysis_project_outdated", "The analysis no longer matches the current project information. Run the AI scorer again."
+    elif not completed_analyses:
+        code, detail = "analysis_incomplete", "The AI analysis is incomplete. Supply the missing facts and rerun it."
+    elif not any(item.confirmations.all() for item in completed_analyses):
+        code, detail = "priority_unconfirmed", "Project priority has not yet been confirmed by a Validator."
+    else:
+        code, detail = "document_assessment_outdated", "The supporting-document assessment changed after priority confirmation. Review and confirm the current analysis."
+    return {"eligible": False, "code": code, "detail": detail, "analysis_id": matching_analyses[0].id if matching_analyses else None, "confirmation_id": None}
+
+
+def has_matching_confirmation(project, snapshot):
+    return confirmation_eligibility(project, snapshot)["eligible"]
 
 
 def confirm_analysis(

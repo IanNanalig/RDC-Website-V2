@@ -282,7 +282,7 @@ const ProjectsPageComponent = () => (
 );
 
 const SimplifiedProjectSubmissionPage = () => (
-  <PortalPageWrapper pageTitle="Simplified Project Submission">
+  <PortalPageWrapper pageTitle="Project Submission">
     <SimplifiedProjectSubmission />
   </PortalPageWrapper>
 );
@@ -329,21 +329,6 @@ const adminDisplayName = () => {
 const AdminContributorFormsPage = () => (
   <PortalLayout title="Contributor Forms" subtitle="Manage, review, and publish contributor submission forms" role="admin" userName={adminDisplayName()}>
     <ContributorFormsManager mode="admin" />
-  </PortalLayout>
-);
-
-const contentEditorDisplayName = () => {
-  try {
-    const user = JSON.parse(localStorage.getItem("user") || "{}") as User;
-    return userDisplayName(user, "Content Editor");
-  } catch {
-    return "Content Editor";
-  }
-};
-
-const ContentEditorContributorFormsPage = () => (
-  <PortalLayout title="Contributor Forms" subtitle="Prepare and submit contributor submission form drafts" role="content_editor" userName={contentEditorDisplayName()}>
-    <ContributorFormsManager mode="editor" />
   </PortalLayout>
 );
 
@@ -592,14 +577,6 @@ export default function App() {
           element={
             <ProtectedRoute roles={["content_editor"]}>
               <ContentManagementPage />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/content/forms"
-          element={
-            <ProtectedRoute roles={["content_editor"]}>
-              <ContentEditorContributorFormsPage />
             </ProtectedRoute>
           }
         />

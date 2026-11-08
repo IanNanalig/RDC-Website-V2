@@ -204,6 +204,7 @@ def update_user_account(*, user_id, role=None, agency=None, account_state=None):
         user = User.objects.select_for_update(of=("self",)).select_related(
             "agency_record"
         ).get(pk=user_id)
+        prior_state = user.account_state
         target_role = role or user.role
         target_state = account_state or user.account_state
         target_agency = agency if agency is not None else user.agency_record
@@ -272,6 +273,22 @@ def update_user_account(*, user_id, role=None, agency=None, account_state=None):
             "office",
             "agency_head",
         ])
+        transition_kind = {
+            (User.ACCOUNT_PENDING_ACTIVATION, User.ACCOUNT_ACTIVE): "activated",
+            (User.ACCOUNT_ACTIVE, User.ACCOUNT_DISABLED): "deactivated",
+            (User.ACCOUNT_DISABLED, User.ACCOUNT_ACTIVE): "reactivated",
+        }.get((prior_state, target_state))
+        if transition_kind and user.email:
+            from .models import AccountStatusEmail
+            from .account_status_email import dispatch_account_status_email
+
+            notice = AccountStatusEmail.objects.create(
+                user=user,
+                recipient_email=user.email,
+                recipient_name=user.get_full_name() or user.username,
+                kind=transition_kind,
+            )
+            transaction.on_commit(lambda notice_id=notice.pk: dispatch_account_status_email(notice_id))
         return user
 
 
