@@ -39,7 +39,7 @@ try {
         id: 2, username: "second", display_name: "Second", role: "staff", event: "login",
         category: "accounts_access", category_label: "Accounts & Access", action_label: "Signed in",
         description: "Second signed in — alpha@example.test.", result: "completed", result_label: "Completed",
-        target_label: "alpha@example.test", created_at: "2026-10-09T10:00:00Z",
+        target_label: "", created_at: "2026-10-09T10:00:00Z",
       },
     ];
     const sortedAuditRows = [...auditRows];
@@ -47,7 +47,10 @@ try {
       sortedAuditRows.reverse();
     }
     const detail = {
-      ...auditRows[0], ip_address: "127.0.0.1", location_hint: "Manila",
+      ...auditRows[0], changes: [{ field: "Project / Activity", before: "Old title", after: "New title" }],
+    };
+    const technicalDetail = {
+      ...detail, event: "project_update", ip_address: "127.0.0.1", location_hint: "Manila",
       technical_details: { method: "PATCH", route: "admin-projects-detail", status_code: 200,
         changes: [{ field: "projectActivity", before: "Old title", after: "New title" }] },
     };
@@ -59,7 +62,7 @@ try {
         { value: "projects", label: "Projects" },
       ],
       result_options: [{ value: "completed", label: "Completed" }],
-    } : path === "/api/admin/activity/1/" ? detail : path === "/api/admin/users/" ? [] : {};
+    } : path === "/api/admin/activity/1/" ? (url.searchParams.has("include_technical") ? technicalDetail : detail) : path === "/api/admin/users/" ? [] : {};
     await route.fulfill({ status: 200, contentType: "application/json", headers, body: JSON.stringify(body) });
   });
 
@@ -72,15 +75,16 @@ try {
   assert.doesNotMatch(await row.innerText(), /project_update|api_action|Before:|After:/);
   assert.equal(await target.isVisible(), true, "Audit target is accessible in the mobile table");
   await page.getByLabel("Sort by field").selectOption("target");
-  await page.getByText("alpha@example.test").waitFor();
-  assert.equal((await page.getByRole("row").nth(1).locator("td").nth(4).innerText()).trim(), "alpha@example.test",
-    "Mobile audit sorting requests and displays the full filtered dataset in ascending target order");
+  assert.equal((await page.getByRole("row").nth(1).locator("td").nth(4).innerText()).trim(), "—",
+    "Activities without a separate affected record omit a target");
   const detailButton = page.getByRole("row").filter({ hasText: "Contributor" }).getByRole("button", { name: "View details for Updated a project" });
   await detailButton.click();
   const dialog = page.getByRole("dialog", { name: "Audit record details" });
   await dialog.getByText("Contributor updated a project — zulu@example.test.").waitFor();
-  assert.match(await dialog.innerText(), /admin-projects-detail/);
+  assert.doesNotMatch(await dialog.innerText(), /admin-projects-detail|127\.0\.0\.1|Original event/);
   assert.match(await dialog.innerText(), /Old title/);
+  await dialog.getByRole("button", { name: "Show technical details" }).click();
+  await dialog.getByText("admin-projects-detail").waitFor();
   await page.keyboard.press("Escape");
   assert.equal(await dialog.count(), 0, "Escape closes the audit detail dialog");
   assert.equal(await detailButton.evaluate((element) => element === document.activeElement), true, "Focus returns to the details button");

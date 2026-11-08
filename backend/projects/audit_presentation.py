@@ -26,6 +26,18 @@ RESULT_LABELS = {
     "failed": "Failed",
 }
 
+SELF_ONLY_EVENTS = {"login", "logout"}
+ROUTINE_SESSION_ROUTE = "auth-activity"
+
+
+def is_routine_session_activity(activity: Any) -> bool:
+    details = activity.details if isinstance(getattr(activity, "details", None), dict) else {}
+    return (
+        getattr(activity, "event", "") == "api_action"
+        and details.get("route") == ROUTINE_SESSION_ROUTE
+        and details.get("status_code") == 200
+    )
+
 
 @dataclass(frozen=True)
 class AuditEventSpec:
@@ -255,6 +267,9 @@ def actor_label(activity: Any) -> str:
 
 
 def target_label(activity: Any) -> str:
+    details = activity.details if isinstance(getattr(activity, "details", None), dict) else {}
+    if getattr(activity, "event", "") in SELF_ONLY_EVENTS or is_routine_session_activity(activity):
+        return ""
     project_title = (getattr(activity, "project_title_snapshot", "") or "").strip()
     project = getattr(activity, "project", None)
     if not project_title and project is not None:
@@ -262,7 +277,6 @@ def target_label(activity: Any) -> str:
     if project_title:
         return project_title[:160]
 
-    details = activity.details if isinstance(getattr(activity, "details", None), dict) else {}
     for key in (
         "target_label", "title", "email", "attempted_email", "name", "agency_name", "agency_code",
         "slug", "key", "filename", "reference", "version",
@@ -295,6 +309,41 @@ def target_label(activity: Any) -> str:
     return "Target not recorded"
 
 
+CHANGE_LABELS = {
+    "title": "Project title", "name": "Name", "agency": "Agency",
+    "role": "Role", "is_active": "Account status", "account_state": "Account status",
+    "status": "Status", "description": "Description", "budget": "Budget",
+    "cost": "Cost", "projectActivity": "Project / Activity",
+}
+
+
+def readable_changes(activity: Any) -> list[dict[str, str]]:
+    """Expose only short, scalar, non-sensitive changes in ordinary audit details."""
+    details = activity.details if isinstance(getattr(activity, "details", None), dict) else {}
+    changes = details.get("changes")
+    if not isinstance(changes, list):
+        return []
+    result: list[dict[str, str]] = []
+    for change in changes[:20]:
+        if not isinstance(change, dict):
+            continue
+        field = str(change.get("field") or "").strip()
+        if not field or _is_sensitive_key(field):
+            continue
+        before, after = change.get("before"), change.get("after")
+        if any(isinstance(value, (dict, list, tuple)) for value in (before, after)):
+            continue
+        label = CHANGE_LABELS.get(field)
+        if not label:
+            continue
+        result.append({
+            "field": label,
+            "before": str(before if before is not None else "Not recorded")[:160],
+            "after": str(after if after is not None else "Not recorded")[:160],
+        })
+    return result
+
+
 def _generic_spec(activity: Any) -> AuditEventSpec | None:
     details = activity.details if isinstance(getattr(activity, "details", None), dict) else {}
     for key in ("action", "operation"):
@@ -308,9 +357,15 @@ def _generic_spec(activity: Any) -> AuditEventSpec | None:
 def presentation_for(activity: Any) -> dict[str, str]:
     event = str(getattr(activity, "event", "") or "")
     if event in {"api_action", "api_action_failed"}:
+        role = str(getattr(activity, "role", "") or "").lower()
+        fallback = {
+            "admin": ("administration_security", "Completed a system action"),
+            "content_editor": ("website_content", "Performed a content action"),
+            "validator": ("reviews_validation", "Performed a review action"),
+            "staff": ("projects", "Performed a project action"),
+        }.get(role, ("administration_security", "Performed a recorded action"))
         spec = _generic_spec(activity) or AuditEventSpec(
-            "administration_security",
-            "Performed an administrative action" if event == "api_action" else "Could not complete an administrative action",
+            fallback[0], fallback[1] if event == "api_action" else "Could not complete a recorded action",
             "completed" if event == "api_action" else "failed",
         )
         if event == "api_action_failed" and spec.result not in {"blocked", "rejected"}:
@@ -321,11 +376,13 @@ def presentation_for(activity: Any) -> dict[str, str]:
         spec = EVENT_SPECS.get(event) or AuditEventSpec(
             "administration_security", "Recorded a system activity",
         )
+    if not spec.action.strip() or len(spec.action.strip()) == 1:
+        spec = AuditEventSpec(spec.category, "Recorded an activity with incomplete details", spec.result)
 
     actor = actor_label(activity)
     target = target_label(activity)
     description = f"{actor} {spec.action[0].lower() + spec.action[1:]}"
-    if target != "Target not recorded":
+    if target and target != "Target not recorded":
         description += f" — {target}"
     description += "."
     return {

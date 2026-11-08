@@ -2,7 +2,7 @@ from rest_framework import serializers
 from datetime import datetime
 from copy import deepcopy
 from cms.form_schema import FormSchemaError, resolve_simplified_form_schema, schema_fields, validate_simplified_answers
-from .audit_presentation import actor_label, presentation_for, sanitize_audit_details
+from .audit_presentation import actor_label, presentation_for, readable_changes, sanitize_audit_details
 from .agency_catalog import is_protected_agency, update_agency_metadata
 from .project_status import display_implementation_status
 from .models import (
@@ -1682,14 +1682,20 @@ class AdminActivityListSerializer(UserActivitySerializer):
         data.pop("details", None)
         data.pop("ip_address", None)
         data.pop("location_hint", None)
+        for key in ("event", "project", "project_id_snapshot"):
+            data.pop(key, None)
         return data
 
 
 class AdminActivityDetailSerializer(UserActivitySerializer):
     technical_details = serializers.SerializerMethodField()
+    changes = serializers.SerializerMethodField()
 
     class Meta(UserActivitySerializer.Meta):
-        fields = [*UserActivitySerializer.Meta.fields, "technical_details"]
+        fields = [*UserActivitySerializer.Meta.fields, "technical_details", "changes"]
+
+    def get_changes(self, obj):
+        return readable_changes(obj)
 
     def get_technical_details(self, obj):
         return sanitize_audit_details(obj.details if isinstance(obj.details, dict) else {})
@@ -1697,6 +1703,9 @@ class AdminActivityDetailSerializer(UserActivitySerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data.pop("details", None)
+        if not self.context.get("include_technical"):
+            for key in ("event", "project", "project_id_snapshot", "ip_address", "location_hint", "technical_details"):
+                data.pop(key, None)
         return data
 
 

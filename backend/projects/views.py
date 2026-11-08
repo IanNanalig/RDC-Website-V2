@@ -7533,6 +7533,9 @@ class AdminActivityView(APIView):
 
     def get(self, request):
         qs = UserActivity.objects.select_related("user", "project").all()
+        if (request.query_params.get("include_routine") or "").lower() not in {"1", "true", "yes"}:
+            routine_ids = UserActivity.objects.filter(event="api_action", details__route="auth-activity", details__status_code=200).values("pk")
+            qs = qs.exclude(pk__in=routine_ids)
         role_filter = (request.query_params.get("role") or "").strip()
         event_filter = (request.query_params.get("event") or "").strip()
         user_filter = (request.query_params.get("user") or "").strip()
@@ -7703,7 +7706,8 @@ class AdminActivityDetailView(APIView):
         activity = UserActivity.objects.select_related("user", "project").filter(pk=activity_id).first()
         if activity is None:
             raise Http404("Audit record not found.")
-        return Response(AdminActivityDetailSerializer(activity).data)
+        include_technical = (request.query_params.get("include_technical") or "").lower() in {"1", "true", "yes"}
+        return Response(AdminActivityDetailSerializer(activity, context={"include_technical": include_technical}).data)
 
 
 class AgencyActivityView(APIView):

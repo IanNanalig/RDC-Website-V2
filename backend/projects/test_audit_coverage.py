@@ -113,6 +113,20 @@ class AuditCoverageTests(APITestCase):
         by_target = self.client.get("/api/admin/activity/?search=Readable%20Search%20Project&include_meta=1")
         self.assertEqual([item["id"] for item in by_target.data["results"]], [project.id])
 
+    def test_generic_fallback_uses_actor_role_and_never_shows_one_character_action(self):
+        from .audit_presentation import presentation_for
+
+        editor = UserActivity.objects.create(
+            role="content_editor", event="api_action", details={"route": "unknown-route", "target_label": "Homepage"},
+        )
+        contributor = UserActivity.objects.create(role="staff", event="api_action", details={"action": "x"})
+        editor_label = presentation_for(editor)
+        contributor_label = presentation_for(contributor)
+        self.assertEqual(editor_label["category"], "website_content")
+        self.assertEqual(editor_label["target_label"], "Homepage")
+        self.assertNotEqual(contributor_label["action_label"], "x")
+        self.assertEqual(contributor_label["category"], "projects")
+
     def test_activity_detail_is_admin_only_and_recursively_sanitized(self):
         activity = UserActivity.objects.create(
             user=self.admin, role="admin", event="project_update", project_title_snapshot="Safe Project",
@@ -133,6 +147,11 @@ class AuditCoverageTests(APITestCase):
         response = self.client.get(f"/api/admin/activity/{activity.id}/")
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
         self.assertNotIn("details", response.data)
+        self.assertNotIn("ip_address", response.data)
+        self.assertNotIn("technical_details", response.data)
+        self.assertNotIn("event", response.data)
+        self.assertEqual(response.data["changes"], [{"field": "Project title", "before": "Old", "after": "New"}])
+        response = self.client.get(f"/api/admin/activity/{activity.id}/?include_technical=1")
         self.assertEqual(response.data["ip_address"], "127.0.0.1")
         technical = response.data["technical_details"]
         self.assertEqual(technical["password"], "[redacted]")
@@ -141,6 +160,23 @@ class AuditCoverageTests(APITestCase):
         self.assertEqual(technical["changes"][1]["before"], "[redacted]")
         self.assertNotIn("old-secret", str(response.data))
         self.assertNotIn("new-secret", str(response.data))
+
+    def test_routine_session_activity_is_hidden_by_default_without_changing_history(self):
+        routine = UserActivity.objects.create(user=self.admin, role="admin", event="api_action", details={"route": "auth-activity", "status_code": 200})
+        failed = UserActivity.objects.create(user=self.admin, role="admin", event="api_action_failed", details={"route": "auth-activity", "status_code": 403})
+        login = UserActivity.objects.create(user=self.admin, role="admin", event="login")
+        logout = UserActivity.objects.create(user=self.admin, role="admin", event="logout")
+        self.as_user(self.admin)
+        default = self.client.get("/api/admin/activity/?include_meta=1")
+        ids = {row["id"] for row in default.data["results"]}
+        self.assertNotIn(routine.id, ids)
+        self.assertIn(failed.id, ids)
+        for activity in (login, logout):
+            self.assertEqual(self.client.get(f"/api/admin/activity/{activity.id}/").data["target_label"], "")
+        included = self.client.get("/api/admin/activity/?include_meta=1&include_routine=1")
+        self.assertIn(routine.id, {row["id"] for row in included.data["results"]})
+        self.assertEqual(included.data["count"], default.data["count"] + 1)
+        self.assertTrue(UserActivity.objects.filter(pk=routine.id).exists())
 
     def test_fallback_covers_all_four_roles_without_body_or_passive_gets(self):
         for user in (self.admin, self.validator, self.editor, self.contributor):

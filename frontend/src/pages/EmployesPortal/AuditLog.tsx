@@ -24,12 +24,15 @@ type Activity = {
   created_at: string;
 };
 type ActivityDetail = Activity & {
+  changes?: { field: string; before: string; after: string }[];
   ip_address?: string;
   location_hint?: string;
   technical_details?: Record<string, unknown>;
 };
 
 const PAGE_SIZE = 10;
+const phDate = (value: string) => new Intl.DateTimeFormat("en-PH", { timeZone: "Asia/Manila", dateStyle: "long" }).format(new Date(value));
+const phTime = (value: string) => new Intl.DateTimeFormat("en-PH", { timeZone: "Asia/Manila", timeStyle: "short" }).format(new Date(value));
 
 const resultClass = (result: string) => {
   if (result === "failed") return "bg-rose-100 text-rose-700";
@@ -60,6 +63,7 @@ export default function AuditLog() {
   const raw = localStorage.getItem("user");
   const user = raw ? JSON.parse(raw) as { first_name?: string; last_name?: string; username?: string } : {};
   const [filters, setFilters] = useState({ search: "", user: "", category: "", result: "", date_from: "", date_to: "" });
+  const [includeRoutine, setIncludeRoutine] = useState(false);
   const [page, setPage] = useState(1);
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
@@ -73,6 +77,9 @@ export default function AuditLog() {
   const [detail, setDetail] = useState<ActivityDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
+  const [technical, setTechnical] = useState<ActivityDetail | null>(null);
+  const [technicalLoading, setTechnicalLoading] = useState(false);
+  const [technicalError, setTechnicalError] = useState("");
   const detailRequest = useRef(0);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -83,6 +90,7 @@ export default function AuditLog() {
     setError("");
     try {
       const params = new URLSearchParams({ include_meta: "1", limit: String(PAGE_SIZE), offset: String((page - 1) * PAGE_SIZE) });
+      if (includeRoutine) params.set("include_routine", "1");
       if (sortKey) {
         params.set("sort_by", sortKey);
         params.set("sort_direction", sortDirection);
@@ -104,7 +112,7 @@ export default function AuditLog() {
     } finally {
       setLoading(false);
     }
-  }, [filters, page, sortKey, sortDirection]);
+  }, [filters, includeRoutine, page, sortKey, sortDirection]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -134,6 +142,8 @@ export default function AuditLog() {
     setDetailId(null);
     setDetail(null);
     setDetailError("");
+    setTechnical(null);
+    setTechnicalError("");
     window.setTimeout(() => returnFocusRef.current?.focus(), 0);
   }, []);
 
@@ -142,6 +152,8 @@ export default function AuditLog() {
     setDetailLoading(true);
     setDetailError("");
     setDetail(null);
+    setTechnical(null);
+    setTechnicalError("");
     try {
       const data = await api.get(`admin/activity/${id}/`) as ActivityDetail;
       if (generation === detailRequest.current) setDetail(data);
@@ -151,6 +163,20 @@ export default function AuditLog() {
       if (generation === detailRequest.current) setDetailLoading(false);
     }
   }, []);
+
+  const loadTechnical = async (id: number) => {
+    const generation = detailRequest.current;
+    setTechnicalLoading(true);
+    setTechnicalError("");
+    try {
+      const data = await api.get(`admin/activity/${id}/?include_technical=1`) as ActivityDetail;
+      if (generation === detailRequest.current) setTechnical(data);
+    } catch (caught) {
+      if (generation === detailRequest.current) setTechnicalError(caught instanceof Error ? caught.message : "Technical details could not be loaded.");
+    } finally {
+      if (generation === detailRequest.current) setTechnicalLoading(false);
+    }
+  };
 
   const openDetails = (item: Activity, trigger: HTMLElement) => {
     returnFocusRef.current = trigger;
@@ -181,6 +207,7 @@ export default function AuditLog() {
 
   const clearFilters = () => {
     setFilters({ search: "", user: "", category: "", result: "", date_from: "", date_to: "" });
+    setIncludeRoutine(false);
     setPage(1);
   };
 
@@ -197,6 +224,7 @@ export default function AuditLog() {
         <label className="text-xs font-semibold text-slate-600">Result<select value={filters.result} onChange={(event) => change("result", event.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"><option value="">All results</option>{resultOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
         <label className="text-xs font-semibold text-slate-600">From date<input type="date" value={filters.date_from} onChange={(event) => change("date_from", event.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" /></label>
         <label className="text-xs font-semibold text-slate-600">To date<input type="date" value={filters.date_to} onChange={(event) => change("date_to", event.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" /></label>
+        <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 sm:col-span-2 xl:col-span-3"><input type="checkbox" checked={includeRoutine} onChange={(event) => { setPage(1); setIncludeRoutine(event.target.checked); }} />Include routine session activity</label>
         <MobileSortControls className="sm:col-span-2 xl:col-span-3 xl:hidden" options={sortOptions} sortKey={sortKey} direction={sortDirection} onSortKeyChange={changeSort} onToggleDirection={toggleSortDirection} />
         <button type="button" onClick={clearFilters} className="portal-btn portal-btn-ghost sm:col-span-2 xl:col-span-3 xl:justify-self-end">Clear Filters</button>
       </div>
@@ -210,11 +238,11 @@ export default function AuditLog() {
         <th>Result</th>
         <th><span className="sr-only">Details</span></th>
       </tr></thead><tbody>{items.map((item) => <tr key={item.id}>
-        <td className="whitespace-nowrap text-sm">{new Date(item.created_at).toLocaleString()}</td>
+        <td className="whitespace-nowrap text-sm">{phDate(item.created_at)}, {phTime(item.created_at)}</td>
         <td><span className="font-medium text-slate-800">{item.display_name || item.username}</span><span className="block text-xs text-slate-500">{readableKey(item.role)}</span></td>
         <td><span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${categoryClass(item.category)}`}>{item.category_label}</span></td>
         <td className="max-w-[300px]"><span className="font-medium text-slate-800">{item.action_label}</span></td>
-        <td className="max-w-[240px] break-words">{item.target_label || item.project_title || "Target not recorded"}</td>
+        <td className="max-w-[240px] break-words">{item.target_label || "—"}</td>
         <td><span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${resultClass(item.result)}`}>{item.result_label}</span></td>
         <td><button type="button" onClick={(event) => openDetails(item, event.currentTarget)} className="portal-btn portal-btn-ghost whitespace-nowrap" aria-label={`View details for ${item.action_label}`}>View details</button></td>
       </tr>)}</tbody></table></div>}
@@ -224,7 +252,7 @@ export default function AuditLog() {
     {detailId !== null && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-3" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDetails(); }}>
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="audit-detail-title" className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
         <div className="sticky top-0 flex items-start justify-between gap-3 border-b border-slate-200 bg-white p-5">
-          <div><h2 id="audit-detail-title" className="text-lg font-semibold text-slate-900">Audit record details</h2><p className="mt-1 text-sm text-slate-500">Technical context is sanitized before display.</p></div>
+          <div><h2 id="audit-detail-title" className="text-lg font-semibold text-slate-900">Audit record details</h2><p className="mt-1 text-sm text-slate-500">A clear summary of the recorded activity.</p></div>
           <button ref={closeButtonRef} type="button" onClick={closeDetails} className="portal-btn portal-btn-ghost" aria-label="Close audit details">Close</button>
         </div>
         <div className="space-y-5 p-5">
@@ -233,14 +261,15 @@ export default function AuditLog() {
           {detail && <>
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4"><p className="font-medium text-slate-900">{detail.description}</p><div className="mt-3 flex flex-wrap gap-2"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${categoryClass(detail.category)}`}>{detail.category_label}</span><span className={`rounded-full px-2 py-1 text-xs font-semibold ${resultClass(detail.result)}`}>{detail.result_label}</span></div></div>
             <dl className="grid gap-3 text-sm sm:grid-cols-2">
-              <div><dt className="font-semibold text-slate-600">Timestamp</dt><dd className="mt-1 text-slate-800">{new Date(detail.created_at).toLocaleString()}</dd></div>
-              <div><dt className="font-semibold text-slate-600">Actor</dt><dd className="mt-1 text-slate-800">{detail.display_name || detail.username}</dd></div>
-              <div><dt className="font-semibold text-slate-600">Target</dt><dd className="mt-1 text-slate-800">{detail.target_label}</dd></div>
-              <div><dt className="font-semibold text-slate-600">Original event</dt><dd className="mt-1 font-mono text-xs text-slate-800">{detail.event}</dd></div>
-              <div><dt className="font-semibold text-slate-600">IP address</dt><dd className="mt-1 text-slate-800">{detail.ip_address || "Not recorded"}</dd></div>
-              <div><dt className="font-semibold text-slate-600">Location</dt><dd className="mt-1 text-slate-800">{detail.location_hint || "Not recorded"}</dd></div>
+              <div><dt className="font-semibold text-slate-600">Activity</dt><dd className="mt-1 text-slate-800">{detail.action_label}</dd></div>
+              <div><dt className="font-semibold text-slate-600">Performed by</dt><dd className="mt-1 text-slate-800">{detail.display_name || detail.username}</dd></div>
+              <div><dt className="font-semibold text-slate-600">Date</dt><dd className="mt-1 text-slate-800">{phDate(detail.created_at)}</dd></div>
+              <div><dt className="font-semibold text-slate-600">Time (Philippine time)</dt><dd className="mt-1 text-slate-800">{phTime(detail.created_at)}</dd></div>
+              {detail.target_label && <div><dt className="font-semibold text-slate-600">Affected record</dt><dd className="mt-1 text-slate-800">{detail.target_label}</dd></div>}
+              <div><dt className="font-semibold text-slate-600">Result</dt><dd className="mt-1 text-slate-800">{detail.result_label}</dd></div>
             </dl>
-            <div><h3 className="font-semibold text-slate-800">Technical context</h3>{detail.technical_details && Object.keys(detail.technical_details).length ? <dl className="mt-3 space-y-3">{Object.entries(detail.technical_details).map(([key, value]) => <div key={key} className="rounded-lg border border-slate-200 p-3"><dt className="text-xs font-semibold text-slate-500">{readableKey(key)}</dt><dd className="mt-1 text-sm text-slate-800"><TechnicalValue value={value} /></dd></div>)}</dl> : <p className="mt-2 text-sm text-slate-500">No additional technical context was recorded.</p>}</div>
+            {!!detail.changes?.length && <div><h3 className="font-semibold text-slate-800">Relevant changes</h3><ul className="mt-2 space-y-2">{detail.changes.map((change, index) => <li key={`${change.field}-${index}`} className="rounded-lg border border-slate-200 p-3 text-sm"><strong>{change.field}</strong>: {change.before} → {change.after}</li>)}</ul></div>}
+            <div className="border-t border-slate-200 pt-4"><button type="button" className="portal-btn portal-btn-ghost" onClick={() => technical ? setTechnical(null) : void loadTechnical(detailId)} disabled={technicalLoading}>{technical ? "Hide technical details" : technicalLoading ? "Loading technical details..." : "Show technical details"}</button>{technicalError && <p role="alert" className="mt-2 text-sm text-rose-700">{technicalError} <button type="button" onClick={() => void loadTechnical(detailId)} className="underline">Retry</button></p>}{technical && <div className="mt-3"><h3 className="font-semibold text-slate-800">Technical details</h3><dl className="mt-3 space-y-3"><div><dt>Original event</dt><dd>{technical.event}</dd></div><div><dt>IP address</dt><dd>{technical.ip_address || "Not recorded"}</dd></div><div><dt>Location</dt><dd>{technical.location_hint || "Not recorded"}</dd></div>{Object.entries(technical.technical_details || {}).map(([key, value]) => <div key={key} className="rounded-lg border border-slate-200 p-3"><dt className="text-xs font-semibold text-slate-500">{readableKey(key)}</dt><dd className="mt-1 text-sm text-slate-800"><TechnicalValue value={value} /></dd></div>)}</dl></div>}</div>
           </>}
         </div>
       </div>
