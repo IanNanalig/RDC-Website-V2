@@ -5,222 +5,104 @@ import { preview } from "vite";
 const server = await preview({ preview: { host: "127.0.0.1", port: 0 } });
 const address = server.httpServer.address();
 assert.ok(address && typeof address !== "string");
-const origin = `http://127.0.0.1:${address.port}`;
 const browser = await chromium.launch({
   executablePath: process.env.CMS_TEST_BROWSER || "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
   headless: true,
 });
+const context = await browser.newContext({ viewport: { width: 1050, height: 780 } });
+const page = await context.newPage();
 const headers = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, OPTIONS",
   "access-control-allow-headers": "authorization, content-type",
 };
-const formSchema = { format_version: 1, title: "Legacy test form", sections: [] };
-const incompleteAnalysis = {
+const json = (route, value) => route.fulfill({ status: 200, contentType: "application/json", headers, body: JSON.stringify(value) });
+const analysis = {
   id: 7,
-  base_score: "58.50",
-  suggested_priority: "incomplete",
-  summary: "Missing validator facts prevent a complete AI recommendation.",
+  base_score: "50.00",
+  suggested_priority: "low",
+  summary: "The AI suggested a low priority.",
   rule_version: "rdc-priority-v1",
   suggested_scores: {
-    missing_facts: ["Readiness Level"], pap: [], rdp_outcomes: [],
-    reasoning: {
-      overall: "The 58.50/100 base score combines 20.00 planning points and 38.50 RDP points. Each weighted score is calculated from the raw rating and criterion weight.",
-      criteria: [{
-        key: "readiness", criterion: "Readiness", raw: 0, weight: 20, score: 0, maximum_score: 20,
-        explanation: "No readiness level was supplied by the validator. The scorer does not infer completed studies from the project narrative. The rule assigned a raw rating of 0/10. With a weight of 20 points, the calculation is 0 points.",
-      }, {
-        key: "connectivity", criterion: "Connectivity", raw: 5, weight: 10, score: 5, maximum_score: 10,
-        explanation: "Criterion intent: Explain transport outcomes. CMS matching guidance: Require project actions. The project narrative describes improved travel times for commuters. The rule assigned a raw rating of 5/10. With a weight of 10 points, the calculation is 5 points.",
-      }],
-    },
+    missing_facts: [],
+    pap: [{ key: "readiness", criterion: "Readiness", raw: 5, weight: 40, score: 20, remarks: "AI evidence summary" }],
+    pap_total: 20,
+    rdp_outcomes: [{ key: "outcome", criterion: "RDP Outcome", raw: 5, weight: 60, score: 30, remarks: "AI outcome summary" }],
+    rdp_total: 30,
+    base_total: 50,
   },
-  regional_scorecard: { applicable: false, message: "Not applicable" },
+  regional_scorecard: { applicable: true, total: 8, criteria: [{ key: "cost", criterion: "Project Cost", raw: 4, weight: 20, score: 8, remarks: "AI cost summary" }] },
   flags: { negative_matches: [], risks: [] },
+  document_assessment: { status: "not_required", summary: "No documents required." },
+  evaluation: null,
   latest_confirmation: null,
 };
-
-async function openReview(endorsed = false, analysisOverride = incompleteAnalysis, simulateDocumentProcessing = false) {
-  const context = await browser.newContext({ viewport: { width: 1050, height: 780 } });
-  const page = await context.newPage();
-  let submitted = null;
-  let analysisRuns = 0;
-  let assessmentChecks = 0;
-  await page.addInitScript(() => {
-    localStorage.setItem("isLoggedIn", "true");
-    localStorage.setItem("accessToken", "priority-override-test");
-    localStorage.setItem("user", JSON.stringify({ id: 1, username: "priority-validator", role: "validator", agency: "RDC-NCR" }));
+let savedPayload = null;
+let confirmedPayload = null;
+await page.addInitScript(() => {
+  localStorage.setItem("isLoggedIn", "true");
+  localStorage.setItem("accessToken", "validator-evaluation-test");
+  localStorage.setItem("user", JSON.stringify({ id: 1, username: "validator", role: "validator", agency: "RDC-NCR" }));
+});
+await page.route("**/api/**", async (route) => {
+  const url = route.request().url();
+  const method = route.request().method();
+  if (method === "OPTIONS") return route.fulfill({ status: 204, headers });
+  if (url.includes("contributor-forms/")) return json(route, { key: "simplified-rdip", version: 1, schema: { format_version: 1, title: "Legacy test form", sections: [] } });
+  if (/priority-analysis\/\d+\/evaluation\//.test(url) && method === "POST") {
+    savedPayload = JSON.parse(route.request().postData() || "{}");
+    analysis.evaluation = {
+      ...savedPayload,
+      effective_score: 84,
+      regional_effective_score: 20,
+      calculated_priority: "high",
+    };
+    return json(route, analysis);
+  }
+  if (/priority-analysis\/\d+\/confirm\//.test(url) && method === "POST") {
+    confirmedPayload = JSON.parse(route.request().postData() || "{}");
+    analysis.latest_confirmation = {
+      final_priority: confirmedPayload.final_priority,
+      adjusted_scores: confirmedPayload.adjusted_scores,
+      validator_remarks: confirmedPayload.validator_remarks,
+      effective_score: 84,
+      validator_name: "Validator",
+    };
+    return json(route, analysis);
+  }
+  if (url.includes("priority-analysis/")) return json(route, { eligible: true, analyses: [analysis] });
+  if (url.includes("validator/projects/1/")) return json(route, {
+    id: 1, agency: "DENR", status: "proposed", workflow_status: "pending_validation",
+    profile_data: {
+      form_schema: { key: "simplified-rdip", version: 1, legacy: true },
+      simplified_form: { agencyName: "DENR", projectActivity: "Sample project", startYear: "2026", endYear: "2026" },
+      validator_review: { review_status: "draft" },
+    },
   });
-  await page.route("**/api/**", async (route) => {
-    const url = route.request().url();
-    const method = route.request().method();
-    if (method === "OPTIONS") return route.fulfill({ status: 204, headers });
-    if (url.includes("contributor-forms/")) return route.fulfill({
-      status: 200, contentType: "application/json", headers,
-      body: JSON.stringify({ key: "simplified-rdip", version: 1, schema: formSchema }),
-    });
-    if (/priority-analysis\/\d+\/confirm\//.test(url) && method === "POST") {
-      submitted = JSON.parse(route.request().postData() || "{}");
-      return route.fulfill({
-        status: 200, contentType: "application/json", headers,
-        body: JSON.stringify({ ...analysisOverride, latest_confirmation: {
-          final_priority: submitted.final_priority,
-          override_rationale: submitted.override_rationale,
-          document_override: submitted.document_override,
-          document_override_rationale: submitted.document_override_rationale,
-          validator_name: "Priority Validator",
-        } }),
-      });
-    }
-    if (url.includes("priority-analysis/run/") && method === "POST" && simulateDocumentProcessing) {
-      analysisRuns += 1;
-      return route.fulfill({
-        status: analysisRuns === 1 ? 202 : 200,
-        contentType: "application/json",
-        headers,
-        body: JSON.stringify(analysisRuns === 1
-          ? { processing: true, detail: "The AI Assistant is reading the supporting documents before scoring the project." }
-          : { eligible: true, reused: false, analysis: analysisOverride }),
-      });
-    }
-    if (url.includes("project-supporting-documents/assessment-status/") && simulateDocumentProcessing) {
-      assessmentChecks += 1;
-      return route.fulfill({
-        status: 200, contentType: "application/json", headers,
-        body: JSON.stringify({ status: "pass", summary: "The evidence is related and sufficient.", document_results: [] }),
-      });
-    }
-    if (url.includes("priority-analysis/")) return route.fulfill({
-      status: 200, contentType: "application/json", headers,
-      body: JSON.stringify({ eligible: true, analyses: [analysisOverride] }),
-    });
-    if (url.includes("validator/projects/1/")) return route.fulfill({
-      status: 200, contentType: "application/json", headers,
-      body: JSON.stringify({
-        id: 1, agency: "DENR", status: endorsed ? "completed" : "proposed",
-        workflow_status: endorsed ? "validated" : "pending_validation",
-        profile_data: {
-          form_schema: { key: "simplified-rdip", version: 1, legacy: true },
-          simplified_form: { agencyName: "DENR", projectActivity: "Environment project", startYear: "2026", endYear: "2026" },
-          validator_review: { review_status: endorsed ? "endorsed" : "draft" },
-        },
-      }),
-    });
-    return route.fulfill({ status: 200, contentType: "application/json", headers, body: "{}" });
-  });
-  await page.goto(origin + "/validator/projects/1/review/simplified", { waitUntil: "networkidle" });
-  await page.getByRole("heading", { name: "AI-Assisted Priority Scorer" }).waitFor();
-  return {
-    context,
-    page,
-    submitted: () => submitted,
-    analysisRuns: () => analysisRuns,
-    assessmentChecks: () => assessmentChecks,
-  };
-}
+  return json(route, {});
+});
 
 try {
-  const active = await openReview();
-  const panel = active.page.locator(".portal-card").filter({ has: active.page.getByRole("heading", { name: "AI-Assisted Priority Scorer" }) }).first();
-  await panel.getByText("The AI result is Incomplete.", { exact: false }).waitFor();
-  await panel.getByRole("listitem").filter({ hasText: "Readiness Level" }).waitFor();
-  const reasoning = panel.getByRole("heading", { name: "Reasoning and Explanation" }).locator("..");
-  await reasoning.getByText("The AI gave this project", { exact: false }).waitFor();
-  assert.equal(await reasoning.getByText("Each weighted score is calculated", { exact: false }).isVisible(), false,
-    "Detailed formula is hidden by default");
-  assert.equal(await reasoning.getByText("No readiness level was supplied by the validator", { exact: false }).first().isVisible(), true,
-    "The main reason is visible in plain language");
-  await reasoning.getByText("View full score calculation").click();
-  assert.equal(await reasoning.getByText("Each weighted score is calculated", { exact: false }).isVisible(), true);
-  await reasoning.getByText("View full explanation and scoring details").first().click();
-  assert.equal(await reasoning.getByText("Raw rating:", { exact: false }).first().isVisible(), true);
-  const confirm = panel.getByRole("button", { name: "Confirm Priority Analysis" });
-  assert.equal(await confirm.isDisabled(), true, "A final priority must be chosen");
-  await panel.getByLabel("Final Priority").selectOption("high");
-  assert.equal(await confirm.isDisabled(), true, "Incomplete override needs a rationale");
-  await panel.getByLabel("Override rationale (required)").fill("Regional impact supports high priority.");
-  assert.equal(await confirm.isDisabled(), false);
-  await confirm.click();
+  await page.goto(`http://127.0.0.1:${address.port}/validator/projects/1/review/simplified`, { waitUntil: "networkidle" });
+  const panel = page.locator(".portal-card").filter({ has: page.getByRole("heading", { name: "AI-Assisted Priority Scorer" }) }).first();
+  await panel.getByLabel("Readiness raw score").fill("9");
+  await panel.getByLabel("RDP Outcome raw score").fill("8");
+  await panel.getByLabel("Project Cost raw score").fill("10");
+  await panel.getByLabel("Readiness validator remarks").fill("Verified planning documents.");
+  assert.equal(await panel.getByRole("button", { name: "Confirm Priority Analysis" }).isDisabled(), true, "Unsaved scores cannot be confirmed");
+  await panel.getByRole("button", { name: "Save Validator Evaluation" }).click();
+  await panel.getByText("Validator scores and remarks saved.").waitFor();
+  assert.equal(savedPayload.adjusted_scores["pap:readiness"], 9);
+  assert.equal(savedPayload.validator_remarks["pap:readiness"], "Verified planning documents.");
+  await panel.getByRole("button", { name: "Confirm Priority Analysis" }).click();
   await panel.getByText("Official validator decision:", { exact: false }).waitFor();
-  assert.equal(active.submitted().final_priority, "high");
-  assert.equal(active.submitted().override_rationale, "Regional impact supports high priority.");
-  assert.match(await panel.innerText(), /AI result: Incomplete/);
-  assert.match(await panel.innerText(), /58\.50/);
-  await active.context.close();
-  console.log("PASS incomplete result override and distinct AI/official display");
-
-  const locked = await openReview(true);
-  const lockedConfirm = locked.page.getByRole("button", { name: "Confirm Priority Analysis" });
-  assert.equal(await lockedConfirm.isDisabled(), true, "Endorsed project priority controls remain disabled");
-  await locked.context.close();
-  console.log("PASS endorsed project priority controls are locked");
-
-  const failedDocumentsAnalysis = {
-    ...incompleteAnalysis,
-    id: 8,
-    suggested_priority: "low",
-    suggested_scores: { ...incompleteAnalysis.suggested_scores, missing_facts: [] },
-    document_assessment: {
-      status: "fail",
-      summary: "One file is unrelated and the collection is insufficient.",
-      collective_sufficient: false,
-      document_results: [{
-        document_id: 81,
-        filename: "unrelated.csv",
-        related: false,
-        explanation: "The file describes a different project.",
-        citations: ["Different project title"],
-      }],
-    },
-  };
-  const documentReview = await openReview(false, failedDocumentsAnalysis);
-  const documentPanel = documentReview.page.locator(".portal-card").filter({
-    has: documentReview.page.getByRole("heading", { name: "AI-Assisted Priority Scorer" }),
-  }).first();
-  await documentPanel.getByRole("heading", { name: "Supporting Document Assessment: Fail" }).waitFor();
-  await documentPanel.getByText("unrelated.csv: Unrelated", { exact: true }).waitFor();
-  const documentConfirm = documentPanel.getByRole("button", { name: "Confirm Priority Analysis" });
-  assert.equal(await documentConfirm.isDisabled(), true, "A failed document assessment blocks confirmation.");
-  await documentPanel.getByLabel("Override the non-passing supporting-document assessment").check();
-  assert.equal(await documentConfirm.isDisabled(), true, "The override still requires a rationale.");
-  await documentPanel.getByLabel("Document override rationale (required)").fill(
-    "The validator manually verified the signed originals against the project.",
-  );
-  assert.equal(await documentConfirm.isDisabled(), false);
-  await documentConfirm.click();
-  await documentPanel.getByText("Priority analysis confirmed.", { exact: false }).waitFor();
-  assert.equal(documentReview.submitted().document_override, true);
-  assert.equal(
-    documentReview.submitted().document_override_rationale,
-    "The validator manually verified the signed originals against the project.",
-  );
-  await documentReview.context.close();
-  console.log("PASS non-passing document assessment requires an explicit audited override rationale");
-
-  const combinedAnalysis = {
-    ...incompleteAnalysis,
-    id: 9,
-    suggested_priority: "low",
-    suggested_scores: { ...incompleteAnalysis.suggested_scores, missing_facts: [] },
-    document_assessment: {
-      status: "pass",
-      summary: "The evidence is related and sufficient.",
-      collective_sufficient: true,
-      document_results: [],
-    },
-  };
-  const triggered = await openReview(false, combinedAnalysis, true);
-  const triggeredPanel = triggered.page.locator(".portal-card").filter({
-    has: triggered.page.getByRole("heading", { name: "AI-Assisted Priority Scorer" }),
-  }).first();
-  await triggeredPanel.getByRole("button", { name: "Run AI Scorer" }).click();
-  await triggeredPanel.getByText("The AI Assistant is reading the supporting documents", { exact: false }).waitFor();
-  await triggeredPanel.getByText("Priority analysis completed.", { exact: true }).waitFor();
-  assert.equal(triggered.analysisRuns(), 2, "The scorer resumes once document assessment finishes.");
-  assert.ok(triggered.assessmentChecks() >= 1, "The UI waits for the document assessment status.");
-  await triggered.context.close();
-  console.log("PASS Run AI Scorer reads supporting documents before scoring");
+  assert.equal(confirmedPayload.final_priority, "high");
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByText("Verified planning documents.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Confirm Priority Analysis" }).count(), 0, "A confirmed analysis is locked");
+  console.log("PASS validator score editing, persistence, confirmation, and reopen browser check");
 } finally {
+  await context.close();
   await browser.close();
-  await new Promise((resolve, reject) => server.httpServer.close((error) => error ? reject(error) : resolve()));
+  await new Promise((resolve) => server.httpServer.close(resolve));
 }

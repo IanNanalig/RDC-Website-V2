@@ -106,6 +106,7 @@ EVENT_SPECS: dict[str, AuditEventSpec] = {
         "project_revision_endorsed": "Endorsed a project revision",
         "priority_analysis_run": "Ran a priority analysis",
         "priority_analysis_reused": "Reused a priority analysis",
+        "priority_evaluation_saved": "Saved Validator scores and remarks",
         "priority_analysis_confirmed": "Confirmed a priority analysis",
         "priority_analysis_overridden": "Overrode a priority analysis",
         "document_assessment_completed": "Completed a document assessment",

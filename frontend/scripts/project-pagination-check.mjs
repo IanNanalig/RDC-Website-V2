@@ -130,7 +130,7 @@ try {
   ]) {
     const { context, page, archived, setProjects, delayNextProjectFetch } = await openListing(role, pathname, width);
     try {
-      const total = role === "employee" ? 24 : 26;
+      const total = role === "validator" ? 26 : 24;
       const rowCount = () => page.locator("table.portal-table tbody tr").count();
       await expectFooter(page, 1, 10, total, "projects", 1, 3);
       assert.equal(await rowCount(), 10, `${role}: first page has 10 table rows`);
@@ -141,15 +141,15 @@ try {
       );
       if (role === "admin") {
         await page.locator("table.portal-table tbody tr").first().getByRole("button", { name: "View" }).click();
-        await page.waitForURL("**/admin/projects/1/view/simplified?revision=101");
+        await page.waitForURL("**/admin/projects/1/view/simplified");
         await page.goto(`${origin}${pathname}`);
         await expectFooter(page, 1, 10, total, "projects", 1, 3);
-        const revisionRow = page.locator("table.portal-table tbody tr").first();
-        await revisionRow.getByRole("button", { name: "Archive" }).click();
+        const projectRow = page.locator("table.portal-table tbody tr").first();
+        await projectRow.getByRole("button", { name: "Archive" }).click();
         await page.getByRole("heading", { name: "Archive Project 01?" }).waitFor();
-        assert.equal(archived.length, 0, "Opening archive from a progress-update row sends no request");
+        assert.equal(archived.length, 0, "Opening archive confirmation sends no request");
         await page.getByRole("button", { name: "Cancel" }).click();
-        assert.equal(archived.length, 0, "Canceling from a progress-update row does not archive its project");
+        assert.equal(archived.length, 0, "Canceling does not archive the project");
       }
       if (role === "validator") {
         assert.equal(await page.locator("article").count(), 10, "Mobile validator cards are paginated too");
@@ -190,7 +190,7 @@ try {
         await page.getByText(/This project is Completed.*Archived tab/).waitFor();
         assert.equal(archived.length, 0, "Opening the completed-project confirmation sends no request");
         await page.getByRole("button", { name: "Confirm Archive" }).click();
-        await expectFooter(page, 21, 25, 25, "projects", 3, 3);
+        await expectFooter(page, 21, 23, 23, "projects", 3, 3);
         assert.deepEqual(archived, [24], "Archive works on the last page and changes the count");
       }
       const search = page.getByPlaceholder(role === "employee" ? "Search by project title" : "Search by project title or agency");
@@ -200,13 +200,13 @@ try {
       await page.getByText("No projects found.").waitFor();
       assert.equal(await page.getByRole("button", { name: "Next" }).count(), 0);
       await search.fill("");
-      await expectFooter(page, 1, 10, role === "admin" ? 25 : total, "projects", 1, 3);
+      await expectFooter(page, 1, 10, role === "admin" ? 23 : total, "projects", 1, 3);
       await page.getByRole("button", { name: "Next" }).click();
       await page.getByRole("button", { name: "Next" }).click();
       await page.locator("select").filter({ has: page.locator('option[value="pending_validation"]') }).selectOption("pending_validation");
-      await expectFooter(page, 1, 10, role === "employee" ? 12 : 14, "projects", 1, 2);
+      await expectFooter(page, 1, 10, role === "validator" ? 14 : 12, "projects", 1, 2);
       await page.locator("select").filter({ has: page.locator('option[value="pending_validation"]') }).selectOption("all");
-      await expectFooter(page, 1, 10, role === "admin" ? 25 : total, "projects", 1, 3);
+      await expectFooter(page, 1, 10, role === "admin" ? 23 : total, "projects", 1, 3);
       await page.getByRole("button", { name: "Next" }).click();
       await page.getByRole("button", { name: "Next" }).click();
       if (role === "admin") {
@@ -220,11 +220,11 @@ try {
         await delayedRefreshStarted;
         await page.getByRole("button", { name: "Refreshing..." }).waitFor();
         await page.getByText("Loading projects...").waitFor();
-        await expectFooter(page, 11, 14, 14, "projects", 2, 2);
+        await expectFooter(page, 11, 12, 12, "projects", 2, 2);
         await page.getByRole("button", { name: "Refresh", exact: true }).waitFor();
         await new Promise((resolve) => setTimeout(resolve, 400));
-        await expectFooter(page, 11, 14, 14, "projects", 2, 2);
-        assert.equal(await rowCount(), 4, "A slow older response cannot overwrite a manual refresh");
+        await expectFooter(page, 11, 12, 12, "projects", 2, 2);
+        assert.equal(await rowCount(), 2, "A slow older response cannot overwrite a manual refresh");
       } else {
         setProjects(initialProjects.slice(0, 12));
         await page.getByRole("button", { name: "Refresh" }).click();
@@ -234,11 +234,11 @@ try {
       if (role === "admin") {
         const sortField = page.getByLabel("Sort by field");
         await sortField.selectOption("title");
-        await expectFooter(page, 1, 10, 14, "projects", 1, 2);
+        await expectFooter(page, 1, 10, 12, "projects", 1, 2);
         assert.match((await page.locator("table.portal-table tbody tr").first().innerText()), /Project 01/,
           "Changing sort resets pagination and sorts the full list ascending");
         await page.getByRole("button", { name: /Change sort direction/ }).click();
-        await expectFooter(page, 1, 10, 14, "projects", 1, 2);
+        await expectFooter(page, 1, 10, 12, "projects", 1, 2);
         assert.match((await page.locator("table.portal-table tbody tr").first().innerText()), /Project 12/,
           "Changing direction sorts the full list descending");
       }
@@ -257,8 +257,10 @@ try {
     await expectFooter(page, 11, 20, 24, "records", 2, 3);
     await page.getByRole("button", { name: "Next" }).click();
     await expectFooter(page, 21, 24, 24, "records", 3, 3);
-    await page.locator("table.portal-table tbody tr").last().getByRole("button", { name: "View Diffs" }).click();
-    await page.waitForURL("**/admin/projects/24/view?mode=diff");
+    await page.locator("table.portal-table tbody tr").last().getByRole("button", { name: "View Review Details" }).click();
+    await page.getByRole("dialog", { name: "Review Details" }).waitFor();
+    await page.getByRole("button", { name: "Open Project and History" }).click();
+    await page.waitForURL("**/admin/projects/24/view");
     await page.goto(`${origin}/admin/validator-diffs`);
     await expectFooter(page, 1, 10, 24, "records", 1, 3);
     await page.getByRole("button", { name: "Next" }).click();
@@ -272,9 +274,6 @@ try {
     await reviewFilter.selectOption("reviewed");
     await expectFooter(page, 1, 8, 8, "records", 1, 1);
     await reviewFilter.selectOption("all");
-    await page.getByLabel("Edited only").check();
-    await expectFooter(page, 1, 10, 12, "records", 1, 2);
-    await page.getByLabel("Edited only").uncheck();
     await page.getByRole("button", { name: "Next" }).click();
     await page.getByRole("button", { name: "Next" }).click();
     setProjects(initialProjects.slice(0, 11));

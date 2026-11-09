@@ -1950,6 +1950,10 @@ def confirm_analysis(
     confirmed_flags,
     document_override=False,
     document_override_rationale="",
+    validator_remarks=None,
+    effective_score=None,
+    regional_effective_score=None,
+    calculated_priority=None,
 ):
     project = Project.objects.only("status", "profile_data").get(pk=analysis.project_id)
     profile = project.profile_data if isinstance(project.profile_data, dict) else {}
@@ -1962,7 +1966,7 @@ def confirm_analysis(
         raise ValueError("Incomplete priority analyses cannot be confirmed. Supply the missing facts and rerun the analysis first.")
     if final_priority not in ("high", "low"):
         raise ValueError("Final priority must be high or low.")
-    if final_priority != analysis.suggested_priority and not str(override_rationale or "").strip():
+    if final_priority != (calculated_priority or analysis.suggested_priority) and not str(override_rationale or "").strip():
         raise ValueError("An override rationale is required for a changed priority.")
     from .document_assessments import current_document_assessment
     from .document_policy import resolve_project_document_policy
@@ -1986,6 +1990,9 @@ def confirm_analysis(
         analysis=analysis,
         validator=validator,
         adjusted_scores=adjusted_scores if isinstance(adjusted_scores, dict) else {},
+        validator_remarks=validator_remarks if isinstance(validator_remarks, dict) else {},
+        effective_score=effective_score,
+        regional_effective_score=regional_effective_score,
         final_priority=final_priority,
         override_rationale=str(override_rationale or "").strip(),
         confirmed_flags=confirmed_flags if isinstance(confirmed_flags, list) else [],

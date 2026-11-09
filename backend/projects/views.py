@@ -4123,6 +4123,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             existing_status = ""
         if existing_status in ("endorsed", "validated") and action_value not in ("endorse", "validate", "approve"):
             return Response({"detail": "Endorsed reviews are final and cannot be reverted."}, status=400)
+        if existing_status in ("endorsed", "validated") and action_value in ("endorse", "validate", "approve"):
+            return Response({"detail": "This project has already been endorsed.", "code": "already_endorsed"}, status=409)
         contributor_snapshot = profile_data.get("contributor_snapshot")
         if not isinstance(contributor_snapshot, dict):
             contributor_snapshot = _strip_validator_meta(profile_data)
@@ -4236,6 +4238,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             "review_status": review_state,
             "reviewed_by_id": request.user.id,
             "reviewed_by_username": request.user.username,
+            "reviewed_by_name": _user_display_name(request.user),
             "reviewed_at": reviewed_at,
             "review_notes": review_notes,
             "edited": len(edited_fields) > 0,
@@ -4372,6 +4375,36 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 "analyses": serializer.data,
             }
         )
+
+    @action(detail=True, methods=["post"], url_path=r"priority-analysis/(?P<analysis_id>\d+)/evaluation")
+    def priority_analysis_evaluation(self, request, pk=None, analysis_id=None):
+        project = self.get_object()
+        if getattr(request.user, "role", "") != "validator":
+            raise PermissionDenied("Only validators can save priority evaluations.")
+        profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+        review = profile.get("validator_review") if isinstance(profile.get("validator_review"), dict) else {}
+        if project.status not in ("proposed", "planning") or str(review.get("review_status") or "").lower() in ("endorsed", "validated"):
+            return Response({"detail": "Priority decisions are locked after endorsement."}, status=409)
+        analysis = project.priority_analyses.filter(pk=analysis_id).first()
+        if analysis is None:
+            return Response({"detail": "Priority analysis not found."}, status=404)
+        if analysis.confirmations.exists():
+            return Response({"detail": "This priority analysis is already confirmed. Run a new analysis before changing its evaluation."}, status=409)
+        if analysis.rule_set_id != get_active_priority_rule_set().id:
+            return Response({"detail": "This analysis uses an older scoring version."}, status=409)
+        from .priority_scoring import _confirmation_snapshot_hash
+        if _confirmation_snapshot_hash(analysis.input_snapshot) != _confirmation_snapshot_hash(_validator_review_source(profile)):
+            return Response({"detail": "Project information changed. Run the AI scorer again."}, status=409)
+        from .priority_evaluation import save_evaluation
+        try:
+            evaluation = save_evaluation(
+                analysis, request.user, request.data.get("adjusted_scores", {}),
+                request.data.get("validator_remarks", {}),
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        _log_activity(request, "priority_evaluation_saved", project, {"analysis_id": analysis.id, "effective_score": float(evaluation.effective_score)})
+        return Response(ProjectPriorityAnalysisSerializer(analysis).data)
 
     @action(detail=True, methods=["post"], url_path="priority-analysis/run")
     def priority_analysis_run(self, request, pk=None):
@@ -4532,6 +4565,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             analysis = project.priority_analyses.get(pk=analysis_id)
         except ProjectPriorityAnalysis.DoesNotExist:
             return Response({"detail": "Priority analysis not found."}, status=404)
+        if analysis.confirmations.exists():
+            return Response({"detail": "This analysis is already confirmed. Run a new analysis if the project information has changed.", "code": "analysis_already_confirmed"}, status=409)
         if analysis.rule_set_id != get_active_priority_rule_set().id:
             return Response({"detail": "This analysis uses an older scoring version. Run the AI scorer again.", "code": "analysis_rule_outdated"}, status=409)
         from .priority_scoring import _confirmation_snapshot_hash
@@ -4539,16 +4574,49 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             return Response({"detail": "This analysis no longer matches the current project information. Run the AI scorer again.", "code": "analysis_project_outdated"}, status=409)
         previous_confirmation = _latest_project_confirmation(project)
         previous_group = _priority_group(previous_confirmation.final_priority) if previous_confirmation else ""
+        from .priority_evaluation import save_evaluation
         try:
+            if analysis.suggested_priority == "incomplete" or (isinstance(analysis.suggested_scores, dict) and analysis.suggested_scores.get("missing_facts")):
+                raise ValueError("Incomplete priority analyses cannot be confirmed. Supply the missing facts and rerun the analysis first.")
+            if request.data.get("final_priority") and request.data["final_priority"] not in {"high", "low"}:
+                raise ValueError("Final priority must be high or low.")
+            saved_evaluation = getattr(analysis, "evaluation", None)
+            if saved_evaluation is not None:
+                incoming_scores = request.data.get("adjusted_scores", saved_evaluation.adjusted_scores)
+                incoming_remarks = request.data.get("validator_remarks", saved_evaluation.validator_remarks)
+                if incoming_scores != saved_evaluation.adjusted_scores or incoming_remarks != saved_evaluation.validator_remarks:
+                    raise ValueError("Save Validator scores and remarks before confirming this analysis.")
+            evaluation = save_evaluation(
+                analysis, request.user,
+                request.data.get("adjusted_scores", getattr(getattr(analysis, "evaluation", None), "adjusted_scores", {})),
+                request.data.get("validator_remarks", getattr(getattr(analysis, "evaluation", None), "validator_remarks", {})),
+            )
+            suggested = analysis.suggested_scores if isinstance(analysis.suggested_scores, dict) else {}
+            source_items = [
+                *[("pap", item) for item in suggested.get("pap") or []],
+                *[("rdp", item) for item in suggested.get("rdp_outcomes") or []],
+                *[("regional", item) for item in (analysis.regional_scorecard or {}).get("criteria") or []],
+            ]
+            has_score_changes = any(
+                evaluation.adjusted_scores.get(f"{group}:{item['key']}") != item.get("raw")
+                for group, item in source_items
+            )
+            calculated_priority = evaluation.calculated_priority if has_score_changes else analysis.suggested_priority
+            if request.data.get("final_priority") and request.data["final_priority"] != calculated_priority and not str(request.data.get("override_rationale") or "").strip():
+                raise ValueError("An override rationale is required for a final priority different from the calculated Validator score.")
             confirmation = confirm_analysis(
                 analysis,
                 request.user,
-                request.data.get("adjusted_scores"),
-                str(request.data.get("final_priority") or analysis.suggested_priority),
+                evaluation.adjusted_scores,
+                str(request.data.get("final_priority") or evaluation.calculated_priority),
                 request.data.get("override_rationale"),
                 request.data.get("confirmed_flags"),
                 request.data.get("document_override") is True,
                 request.data.get("document_override_rationale"),
+                evaluation.validator_remarks,
+                evaluation.effective_score,
+                evaluation.regional_effective_score,
+                calculated_priority,
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
@@ -7636,6 +7704,8 @@ class AdminActivityView(APIView):
                 if matching_routes:
                     search_query |= Q(details__route__in=matching_routes)
                 qs = qs.filter(search_query)
+        date_from = None
+        date_to = None
         if date_from_raw:
             try:
                 date_from = datetime.strptime(date_from_raw, "%Y-%m-%d").date()
@@ -7648,6 +7718,8 @@ class AdminActivityView(APIView):
                 qs = qs.filter(created_at__date__lte=date_to)
             except ValueError:
                 return Response({"detail": "date_to must use YYYY-MM-DD format."}, status=400)
+        if date_from and date_to and date_from > date_to:
+            return Response({"detail": "From date cannot be later than To date."}, status=400)
 
         sort_fields = {
             "role": ("role",),

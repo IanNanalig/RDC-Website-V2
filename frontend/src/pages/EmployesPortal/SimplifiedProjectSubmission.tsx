@@ -1646,13 +1646,18 @@ const SimplifiedProjectSubmission: React.FC = () => {
             : action === "endorsed"
             ? "endorse"
             : "save_reviewed";
-        if (
-          validatorAction === "endorse" &&
-          normalizedReviewStatus !== "reviewed" &&
-          normalizedReviewStatus !== "endorsed"
-        ) {
+        if (validatorAction === "endorse") {
+          if (!isRevisionMode) {
+            const statusResponse = await api.get(`validator/projects/${id}/priority-analysis/`, true);
+            const eligibility = statusResponse?.validation_eligibility;
+            if (eligibility && eligibility.eligible === false) {
+              alert(eligibility.detail || "Complete the priority analysis and confirmation before endorsement.");
+              setLoading(false);
+              return;
+            }
+          }
           const ok = window.confirm(
-            "This will endorse the project without a prior Reviewed state. Continue?",
+            "This will endorse the project. Continue?",
           );
           if (!ok) {
             setLoading(false);

@@ -39,6 +39,30 @@ class ValidatorReadOnlyReviewTests(APITestCase):
         profile["simplified_form"]["description"] = "Validator changed this answer"
         return profile
 
+    def test_admin_validator_tracker_uses_current_reviewer_name(self):
+        self.validator.first_name = "Ray Gabriel"
+        self.validator.last_name = "Paras"
+        self.validator.save(update_fields=["first_name", "last_name"])
+        self.project.profile_data = {
+            **self.profile,
+            "validator_review": {
+                "review_status": "validated",
+                "reviewed_by_id": self.validator.id,
+                "reviewed_by_username": "old.email.name",
+            },
+        }
+        self.project.save(update_fields=["profile_data"])
+        admin = User.objects.create_user(
+            username="tracker-admin", password="TestPassword123!", role="admin",
+            email="tracker-admin@example.com",
+        )
+        self.client.force_authenticate(user=admin)
+        response = self.client.get("/api/admin/projects/")
+        self.assertEqual(response.status_code, 200, response.data)
+        item = next(row for row in response.data if row["id"] == self.project.id)
+        self.assertEqual(item["reviewed_by_name"], "Ray Gabriel Paras")
+        self.assertEqual(item["profile_data"]["validator_review"]["reviewed_by_username"], "old.email.name")
+
     def test_confirmation_eligibility_reports_missing_stale_and_ready_states(self):
         rules = get_active_priority_rule_set()
         snapshot = deepcopy(self.profile)

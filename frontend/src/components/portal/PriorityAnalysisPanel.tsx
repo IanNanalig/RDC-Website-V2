@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../services/api";
 
 type Criterion = {
@@ -20,6 +20,9 @@ type Confirmation = {
   created_at?: string;
   document_override?: boolean;
   document_override_rationale?: string;
+  adjusted_scores?: Record<string, number>;
+  validator_remarks?: Record<string, string>;
+  effective_score?: number | string | null;
 };
 
 type DocumentAssessment = {
@@ -154,6 +157,13 @@ type Analysis = {
     risks?: string[];
   };
   latest_confirmation?: Confirmation | null;
+  evaluation?: {
+    adjusted_scores: Record<string, number>;
+    validator_remarks: Record<string, string>;
+    effective_score: number | string;
+    regional_effective_score: number | string;
+    calculated_priority: string;
+  } | null;
   confirmations?: Confirmation[];
   learning_result?: LearningResult | null;
   document_assessment?: DocumentAssessment;
@@ -249,16 +259,19 @@ const conciseCriterionExplanation = (value?: string) => {
   return summary ? `${summary.replace(/[.!?]+$/, "")}.` : "See the full explanation for the evidence behind this score.";
 };
 
-const CriteriaTable: React.FC<{ title: string; criteria?: Criterion[]; total?: number; adjustable?: boolean; adjusted?: Record<string, number>; onAdjust?: (key: string, value: number) => void }> = ({
+const CriteriaTable: React.FC<{ title: string; group: string; criteria?: Criterion[]; total?: number; adjustable?: boolean; adjusted?: Record<string, number>; remarks?: Record<string, string>; onAdjust?: (key: string, value: number) => void; onRemark?: (key: string, value: string) => void }> = ({
   title,
+  group,
   criteria = [],
   total = 0,
   adjustable,
   adjusted = {},
+  remarks = {},
   onAdjust,
+  onRemark,
 }) => (
   <div className="overflow-x-auto rounded-xl border border-slate-200">
-    <div className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-800">{title}: {Number(total || 0).toFixed(2)}</div>
+    <div className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-800">{title}: {Number(criteria.length ? criteria.reduce((sum, item) => sum + (adjusted[`${group}:${item.key}`] ?? item.raw) * item.weight / 10, 0) : total || 0).toFixed(2)}</div>
     <table className="w-full min-w-[720px] text-xs">
       <thead className="bg-emerald-50 text-left text-emerald-900">
         <tr><th className="px-3 py-2">Criterion</th><th className="px-3 py-2">Raw</th><th className="px-3 py-2">Weight</th><th className="px-3 py-2">Score</th><th className="px-3 py-2">Remarks</th></tr>
@@ -269,16 +282,16 @@ const CriteriaTable: React.FC<{ title: string; criteria?: Criterion[]; total?: n
             <td className="px-3 py-2 font-medium text-slate-800">{item.criterion}</td>
             <td className="px-3 py-2">
               {adjustable ? (
-                <select className="rounded border border-slate-200 px-2 py-1" value={adjusted[item.key] ?? item.raw} onChange={(e) => onAdjust?.(item.key, Number(e.target.value))}>
-                  {[0, 3, 5, 8, 10].map((score) => <option key={score} value={score}>{score}</option>)}
-                </select>
-              ) : item.raw}
+                <div><input type="number" min={0} max={10} step={1} aria-label={`${item.criterion} raw score`} className="w-20 rounded border border-slate-200 px-2 py-1" value={adjusted[`${group}:${item.key}`] ?? item.raw} onChange={(e) => onAdjust?.(`${group}:${item.key}`, Number(e.target.value))} /><p className="mt-1 text-slate-500">AI: {item.raw}</p></div>
+              ) : <span>{adjusted[`${group}:${item.key}`] ?? item.raw}{adjusted[`${group}:${item.key}`] !== undefined && adjusted[`${group}:${item.key}`] !== item.raw && <span className="block text-slate-500">AI: {item.raw}</span>}</span>}
             </td>
             <td className="px-3 py-2">{item.weight}%</td>
-            <td className="px-3 py-2">{Number(item.score || 0).toFixed(2)}</td>
+            <td className="px-3 py-2">{Number((adjusted[`${group}:${item.key}`] ?? item.raw) * item.weight / 10).toFixed(2)}</td>
             <td className="px-3 py-2 text-slate-600">
               {plainLanguageExplanation(item.remarks)}
               {item.evidence?.length ? ` Matching words: ${item.evidence.join(", ")}` : ""}
+              {adjustable && <textarea aria-label={`${item.criterion} validator remarks`} value={remarks[`${group}:${item.key}`] || ""} onChange={(event) => onRemark?.(`${group}:${item.key}`, event.target.value)} maxLength={2000} rows={2} placeholder="Validator remarks" className="mt-2 w-full rounded border border-slate-200 p-2" />}
+              {!adjustable && remarks[`${group}:${item.key}`] && <p className="mt-2 font-medium text-slate-800">Validator: {remarks[`${group}:${item.key}`]}</p>}
             </td>
           </tr>
         ))}
@@ -292,6 +305,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
   const [eligible, setEligible] = useState(true);
   const [analyses, setAnalyses] = useState<Analysis[]>([]);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const initializedAnalysisId = useRef<number | null>(null);
   const [validationEligibility, setValidationEligibility] = useState<ValidationEligibility | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -299,6 +313,8 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
   const [processingProgress, setProcessingProgress] = useState<ProcessingProgress | null>(null);
   const [supplements, setSupplements] = useState<Record<string, string>>({});
   const [adjustedScores, setAdjustedScores] = useState<Record<string, number>>({});
+  const [validatorRemarks, setValidatorRemarks] = useState<Record<string, string>>({});
+  const [evaluationDirty, setEvaluationDirty] = useState(false);
   const [finalPriority, setFinalPriority] = useState("");
   const [overrideRationale, setOverrideRationale] = useState("");
   const [confirmedFlags, setConfirmedFlags] = useState<string[]>([]);
@@ -326,9 +342,13 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
 
   useEffect(() => {
     if (!analysis) return;
+    if (initializedAnalysisId.current === analysis.id) return;
+    initializedAnalysisId.current = analysis.id;
     setSupplements(Object.fromEntries(Object.entries(analysis.supplements || {}).map(([key, value]) => [key, String(value ?? "")])));
-    setAdjustedScores({});
-    setFinalPriority(normalizePriority(analysis.latest_confirmation?.final_priority || analysis.suggested_priority));
+    setAdjustedScores(analysis.evaluation?.adjusted_scores || analysis.latest_confirmation?.adjusted_scores || {});
+    setValidatorRemarks(analysis.evaluation?.validator_remarks || analysis.latest_confirmation?.validator_remarks || {});
+    setEvaluationDirty(false);
+    setFinalPriority(normalizePriority(analysis.latest_confirmation?.final_priority || analysis.evaluation?.calculated_priority || analysis.suggested_priority));
     setOverrideRationale(analysis.latest_confirmation?.override_rationale || "");
     setConfirmedFlags([]);
     setDocumentOverride(Boolean(analysis.latest_confirmation?.document_override));
@@ -423,6 +443,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
     try {
       const next = await api.post(`validator/projects/${projectId}/priority-analysis/${analysis.id}/confirm/`, {
         adjusted_scores: adjustedScores,
+        validator_remarks: validatorRemarks,
         final_priority: finalPriority,
         override_rationale: overrideRationale,
         confirmed_flags: confirmedFlags,
@@ -440,6 +461,27 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
     }
   };
 
+  const saveEvaluation = async () => {
+    if (!analysis) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      const next = await api.post(`validator/projects/${projectId}/priority-analysis/${analysis.id}/evaluation/`, {
+        adjusted_scores: adjustedScores,
+        validator_remarks: validatorRemarks,
+      }) as Analysis;
+      setAnalysis(next);
+      setAnalyses((previous) => [next, ...previous.filter((item) => item.id !== next.id)]);
+      setFinalPriority(normalizePriority(next.evaluation?.calculated_priority));
+      setEvaluationDirty(false);
+      setNotice("Validator scores and remarks saved.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not save the evaluation.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const negativeMatches = analysis?.flags?.negative_matches || [];
   const missingFacts = analysis?.suggested_scores?.missing_facts || [];
   const scoreReasoning = analysis?.suggested_scores?.reasoning;
@@ -448,7 +490,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
   const confirmed = analysis?.latest_confirmation;
   const visiblePriority = confirmed?.final_priority || analysis?.suggested_priority;
   const incompleteResult = analysis?.suggested_priority === "incomplete" || missingFacts.length > 0;
-  const rationaleRequired = incompleteResult || Boolean(finalPriority && finalPriority !== analysis?.suggested_priority);
+  const rationaleRequired = incompleteResult || Boolean(finalPriority && finalPriority !== (analysis?.evaluation?.calculated_priority || analysis?.suggested_priority));
   const documentOverrideRequired = Boolean(
     analysis?.document_assessment
     && !["pass", "not_required"].includes(analysis.document_assessment.status),
@@ -460,6 +502,8 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
   );
   const history = useMemo(() => analyses.slice(0, 5), [analyses]);
   const learning = analysis?.learning_result;
+  const liveBaseScore = [...(analysis?.suggested_scores.pap || []).map((item) => ({ ...item, group: "pap" })), ...(analysis?.suggested_scores.rdp_outcomes || []).map((item) => ({ ...item, group: "rdp" }))]
+    .reduce((total, item) => total + (adjustedScores[`${item.group}:${item.key}`] ?? item.raw) * item.weight / 10, 0);
 
   if (!eligible) {
     return (
@@ -677,12 +721,15 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
               </details>
             )}
             {missingFacts.length > 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><p className="font-semibold">Missing facts</p><ul className="mt-1 list-disc pl-5">{missingFacts.map((item) => <li key={item}>{item}</li>)}</ul></div>}
-            <CriteriaTable title="PAP Criteria" criteria={analysis.suggested_scores.pap} total={analysis.suggested_scores.pap_total} />
-            <CriteriaTable title={`RDP Outcomes (${analysis.suggested_scores.rdp_track || "Sector"})`} criteria={analysis.suggested_scores.rdp_outcomes} total={analysis.suggested_scores.rdp_total} adjustable={role === "validator"} adjusted={adjustedScores} onAdjust={(key, value) => setAdjustedScores((prev) => ({ ...prev, [key]: value }))} />
-            {analysis.regional_scorecard?.applicable ? <CriteriaTable title="Regional Prioritization" criteria={analysis.regional_scorecard.criteria} total={analysis.regional_scorecard.total} /> : <p className="text-sm text-slate-600">{analysis.regional_scorecard?.message}</p>}
+            <CriteriaTable title="PAP Criteria" group="pap" criteria={analysis.suggested_scores.pap} total={analysis.suggested_scores.pap_total} adjustable={role === "validator" && !confirmed} adjusted={adjustedScores} remarks={validatorRemarks} onAdjust={(key, value) => { setAdjustedScores((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} onRemark={(key, value) => { setValidatorRemarks((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} />
+            <CriteriaTable title={`RDP Outcomes (${analysis.suggested_scores.rdp_track || "Sector"})`} group="rdp" criteria={analysis.suggested_scores.rdp_outcomes} total={analysis.suggested_scores.rdp_total} adjustable={role === "validator" && !confirmed} adjusted={adjustedScores} remarks={validatorRemarks} onAdjust={(key, value) => { setAdjustedScores((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} onRemark={(key, value) => { setValidatorRemarks((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} />
+            {analysis.regional_scorecard?.applicable ? <CriteriaTable title="Regional Prioritization" group="regional" criteria={analysis.regional_scorecard.criteria} total={analysis.regional_scorecard.total} adjustable={role === "validator" && !confirmed} adjusted={adjustedScores} remarks={validatorRemarks} onAdjust={(key, value) => { setAdjustedScores((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} onRemark={(key, value) => { setValidatorRemarks((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} /> : <p className="text-sm text-slate-600">{analysis.regional_scorecard?.message}</p>}
+            <p className="text-sm font-semibold text-slate-800">Validator base score: {liveBaseScore.toFixed(2)}/100 <span className="font-normal text-slate-500">(AI suggestion: {Number(analysis.base_score).toFixed(2)}/100)</span></p>
+            {analysis.evaluation && <p className="text-sm text-slate-700">Saved Validator score: {Number(analysis.evaluation.effective_score).toFixed(2)}/100 · Calculated priority: {priorityLabel(analysis.evaluation.calculated_priority)}</p>}
+            {role === "validator" && !confirmed && <div className="flex justify-end"><button type="button" onClick={saveEvaluation} disabled={busy} className="portal-btn portal-btn-ghost">{evaluationDirty ? "Save Validator Evaluation" : "Save Evaluation"}</button></div>}
             {negativeMatches.length > 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm"><p className="font-semibold text-amber-900">Possible negative-list matches</p>{negativeMatches.map((item) => <label key={item.key} className="mt-2 flex gap-2"><input type="checkbox" disabled={role === "admin"} checked={confirmedFlags.includes(item.key)} onChange={(e) => setConfirmedFlags((prev) => e.target.checked ? [...prev, item.key] : prev.filter((key) => key !== item.key))} /><span>{item.label} {item.evidence?.length ? `(${item.evidence.join(", ")})` : ""}</span></label>)}</div>}
             {(analysis.flags?.risks || []).length > 0 && <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900"><p className="font-semibold">Risk flags</p><ul className="mt-1 list-disc pl-5">{analysis.flags?.risks?.map((item) => <li key={item}>{item}</li>)}</ul></div>}
-            {role === "validator" && (
+            {role === "validator" && !confirmed && (
               <div className="rounded-xl border border-slate-200 p-3 space-y-3">
                 <p className="text-sm font-semibold">Validator Confirmation</p>
                 {incompleteResult && (
@@ -693,7 +740,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
                 <Select label="Final Priority" value={finalPriority} onChange={setFinalPriority} options={[["high", "High Priority"], ["low", "Low Priority"]]} />
                 <label className="block"><span className="text-xs font-medium text-slate-600">Override rationale {rationaleRequired ? "(required)" : "(required if final priority differs)"}</span><textarea className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" rows={2} value={overrideRationale} onChange={(e) => setOverrideRationale(e.target.value)} /></label>
                 {documentOverrideRequired && <div className="rounded-lg border border-rose-200 bg-rose-50 p-3"><label className="flex items-start gap-2 text-sm font-semibold text-rose-900"><input type="checkbox" checked={documentOverride} onChange={(event) => setDocumentOverride(event.target.checked)} /><span>Override the non-passing supporting-document assessment</span></label><label className="mt-2 block"><span className="text-xs font-medium text-rose-800">Document override rationale (required)</span><textarea className="mt-1 w-full rounded-lg border border-rose-200 px-3 py-2 text-sm" rows={3} value={documentOverrideRationale} onChange={(event) => setDocumentOverrideRationale(event.target.value)} /></label></div>}
-                <div className="flex justify-end"><button type="button" onClick={confirm} disabled={busy || incompleteResult || !finalPriority || (rationaleRequired && !overrideRationale.trim()) || (documentOverrideRequired && (!documentOverride || !documentOverrideRationale.trim()))} className="portal-btn portal-btn-primary">{busy ? "Saving..." : "Confirm Priority Analysis"}</button></div>
+                <div className="flex justify-end"><button type="button" onClick={confirm} disabled={busy || evaluationDirty || !analysis.evaluation || incompleteResult || !finalPriority || (rationaleRequired && !overrideRationale.trim()) || (documentOverrideRequired && (!documentOverride || !documentOverrideRationale.trim()))} className="portal-btn portal-btn-primary">{busy ? "Saving..." : "Confirm Priority Analysis"}</button></div>
               </div>
             )}
             {confirmed && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">Official validator decision: <strong>{priorityLabel(confirmed.final_priority)}</strong> (AI result: {priorityLabel(analysis.suggested_priority)}){confirmed.validator_name ? ` by ${confirmed.validator_name}` : ""}{confirmed.created_at ? ` on ${new Date(confirmed.created_at).toLocaleString()}` : ""}.</div>}

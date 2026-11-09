@@ -181,7 +181,7 @@ const AdminDashboard: React.FC = () => {
             </Link>
             <Link to="/admin/validator-diffs" className="portal-card p-4 hover:shadow-md transition-shadow">
               <p className="font-semibold">Validator Tracker</p>
-              <p className="text-sm text-slate-500 mt-1">Review edited fields, reviewed copies, and validator decisions.</p>
+              <p className="text-sm text-slate-500 mt-1">Track project reviews, AI-assisted priority evaluations, and Validator decisions.</p>
             </Link>
             <Link to="/admin/exports" className="portal-card p-4 hover:shadow-md transition-shadow">
               <p className="font-semibold">Data Exports</p>

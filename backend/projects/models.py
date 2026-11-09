@@ -662,6 +662,9 @@ class ProjectPriorityConfirmation(models.Model):
     analysis = models.ForeignKey(ProjectPriorityAnalysis, on_delete=models.CASCADE, related_name="confirmations")
     validator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="priority_confirmations")
     adjusted_scores = models.JSONField(default=dict, blank=True)
+    validator_remarks = models.JSONField(default=dict, blank=True)
+    effective_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    regional_effective_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     final_priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES)
     override_rationale = models.TextField(blank=True)
     confirmed_flags = models.JSONField(default=list, blank=True)
@@ -681,6 +684,19 @@ class ProjectPriorityConfirmation(models.Model):
 
     def __str__(self):
         return f"{self.analysis_id} {self.final_priority}"
+
+
+class ProjectPriorityEvaluation(models.Model):
+    """Validator-owned draft, kept separate from the immutable AI suggestion."""
+
+    analysis = models.OneToOneField(ProjectPriorityAnalysis, on_delete=models.CASCADE, related_name="evaluation")
+    validator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="priority_evaluations")
+    adjusted_scores = models.JSONField(default=dict, blank=True)
+    validator_remarks = models.JSONField(default=dict, blank=True)
+    effective_score = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    regional_effective_score = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    calculated_priority = models.CharField(max_length=20, choices=ProjectPriorityAnalysis.PRIORITY_CHOICES)
+    updated_at = models.DateTimeField(auto_now=True)
 
 
 class ProjectSupportingDocument(models.Model):

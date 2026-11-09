@@ -2274,7 +2274,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
 
     if (sectionForm.section_type === "publication_catalog") {
       const rawCategories = Array.isArray(sectionContent.categories) ? sectionContent.categories : [];
-      const categories = rawCategories
+      const categories: Record<string, unknown>[] = rawCategories
         .map((entry, index) => {
           const category = parseRecord(entry);
           const savedNumber = Number(category.categoryNumber);

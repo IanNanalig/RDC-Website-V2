@@ -59,6 +59,7 @@ export type CMSArticle = {
   featured: boolean;
   status: CMSStatus;
   published_snapshot_json?: Record<string, unknown>;
+  submitted_snapshot_json?: Record<string, unknown>;
   published_slug?: string;
   has_unpublished_changes: boolean;
   published_at?: string | null;

@@ -100,6 +100,15 @@ const AdminDataExports: React.FC = () => {
   const [error, setError] = useState("");
   const optionsRequest = useRef(0);
   const countRequest = useRef(0);
+  const yearError = useMemo(() => {
+    if (category !== "projects") return "";
+    for (const [key, label] of [["start_year", "Start year"], ["end_year", "End year"]]) {
+      const value = filters[key]?.trim();
+      if (value && (!/^\d+$/.test(value) || Number(value) < 1900 || Number(value) > 2200)) return `${label} must be a whole year from 1900 to 2200.`;
+    }
+    if (filters.start_year && filters.end_year && Number(filters.start_year) > Number(filters.end_year)) return "Start year cannot be greater than end year.";
+    return "";
+  }, [category, filters]);
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams({ category });
@@ -134,6 +143,10 @@ const AdminDataExports: React.FC = () => {
     setCountLoading(true);
     setCount(null);
     setNotice("");
+    if (yearError) {
+      setCountLoading(false);
+      return;
+    }
     const timer = window.setTimeout(() => {
       void api.get(`admin/exports/count/?${queryString}`, true)
         .then((data) => {
@@ -153,7 +166,7 @@ const AdminDataExports: React.FC = () => {
         });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [queryString]);
+  }, [queryString, yearError]);
 
   const setFilter = (key: string, value: string) => {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -187,7 +200,7 @@ const AdminDataExports: React.FC = () => {
   [filters, options]);
 
   const generateExport = async () => {
-    if (!count || exporting) return;
+    if (!count || exporting || yearError) return;
     setExporting(true);
     setError("");
     setNotice("");
@@ -276,11 +289,11 @@ const AdminDataExports: React.FC = () => {
                 </label>
                 <label className="block min-w-0">
                   <span className="text-xs font-semibold text-slate-600">Start Year</span>
-                  <input type="number" min="1900" max="2200" step="1" aria-label="Start Year" value={filters.start_year} onChange={(event) => setFilter("start_year", event.target.value)} className={inputClass} placeholder="Any year" />
+                  <input type="number" min="1900" max={filters.end_year || "2200"} step="1" aria-label="Start Year" value={filters.start_year} onChange={(event) => setFilter("start_year", event.target.value)} className={inputClass} placeholder="Any year" />
                 </label>
                 <label className="block min-w-0">
                   <span className="text-xs font-semibold text-slate-600">End Year</span>
-                  <input type="number" min="1900" max="2200" step="1" aria-label="End Year" value={filters.end_year} onChange={(event) => setFilter("end_year", event.target.value)} className={inputClass} placeholder="Any year" />
+                  <input type="number" min={filters.start_year || "1900"} max="2200" step="1" aria-label="End Year" value={filters.end_year} onChange={(event) => setFilter("end_year", event.target.value)} className={inputClass} placeholder="Any year" />
                 </label>
                 <SelectFilter label="Workflow Status" value={filters.workflow_status} options={selectOptions("workflow_statuses")} onChange={(value) => setFilter("workflow_status", value)} allLabel="All workflow statuses" />
                 <SelectFilter label="Implementation Status" value={filters.implementation_status} options={selectOptions("implementation_statuses")} onChange={(value) => setFilter("implementation_status", value)} allLabel="All implementation statuses" />
@@ -302,6 +315,7 @@ const AdminDataExports: React.FC = () => {
           <h2 className="text-lg font-semibold text-slate-900">Review and download</h2>
         </div>
         <div className="portal-card-body space-y-4">
+          {yearError && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">{yearError}</p>}
           {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">{error}</p>}
           {notice && <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{notice}</p>}
           <div>

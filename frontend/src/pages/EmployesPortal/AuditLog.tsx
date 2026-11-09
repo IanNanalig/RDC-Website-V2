@@ -63,6 +63,8 @@ export default function AuditLog() {
   const raw = localStorage.getItem("user");
   const user = raw ? JSON.parse(raw) as { first_name?: string; last_name?: string; username?: string } : {};
   const [filters, setFilters] = useState({ search: "", user: "", category: "", result: "", date_from: "", date_to: "" });
+  const dateError = filters.date_from && filters.date_to && filters.date_from > filters.date_to
+    ? "From date cannot be later than To date." : "";
   const [includeRoutine, setIncludeRoutine] = useState(false);
   const [page, setPage] = useState(1);
   const [sortKey, setSortKey] = useState<string | null>(null);
@@ -81,11 +83,20 @@ export default function AuditLog() {
   const [technicalLoading, setTechnicalLoading] = useState(false);
   const [technicalError, setTechnicalError] = useState("");
   const detailRequest = useRef(0);
+  const listRequest = useRef(0);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
 
   const load = useCallback(async () => {
+    const requestId = ++listRequest.current;
+    if (dateError) {
+      setLoading(false);
+      setError(dateError);
+      setItems([]);
+      setCount(0);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
@@ -102,17 +113,19 @@ export default function AuditLog() {
         category_options?: Option[];
         result_options?: Option[];
       };
+      if (requestId !== listRequest.current) return;
       setItems(data.results);
       setCount(data.count);
       setCategoryOptions(data.category_options || []);
       setResultOptions(data.result_options || []);
       if (page > Math.max(1, Math.ceil(data.count / PAGE_SIZE))) setPage(Math.max(1, Math.ceil(data.count / PAGE_SIZE)));
     } catch (caught) {
+      if (requestId !== listRequest.current) return;
       setError(caught instanceof Error ? caught.message : "Audit log could not be loaded.");
     } finally {
-      setLoading(false);
+      if (requestId === listRequest.current) setLoading(false);
     }
-  }, [filters, includeRoutine, page, sortKey, sortDirection]);
+  }, [filters, dateError, includeRoutine, page, sortKey, sortDirection]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -222,8 +235,8 @@ export default function AuditLog() {
         <label className="text-xs font-semibold text-slate-600">Actor<input value={filters.user} onChange={(event) => change("user", event.target.value)} placeholder="Name, username, or email" className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" /></label>
         <label className="text-xs font-semibold text-slate-600">Category<select value={filters.category} onChange={(event) => change("category", event.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"><option value="">All categories</option>{categoryOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
         <label className="text-xs font-semibold text-slate-600">Result<select value={filters.result} onChange={(event) => change("result", event.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"><option value="">All results</option>{resultOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-        <label className="text-xs font-semibold text-slate-600">From date<input type="date" value={filters.date_from} onChange={(event) => change("date_from", event.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" /></label>
-        <label className="text-xs font-semibold text-slate-600">To date<input type="date" value={filters.date_to} onChange={(event) => change("date_to", event.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" /></label>
+        <label className="text-xs font-semibold text-slate-600">From date<input type="date" max={filters.date_to || undefined} value={filters.date_from} onChange={(event) => change("date_from", event.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" /></label>
+        <label className="text-xs font-semibold text-slate-600">To date<input type="date" min={filters.date_from || undefined} value={filters.date_to} onChange={(event) => change("date_to", event.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" /></label>
         <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 sm:col-span-2 xl:col-span-3"><input type="checkbox" checked={includeRoutine} onChange={(event) => { setPage(1); setIncludeRoutine(event.target.checked); }} />Include routine session activity</label>
         <MobileSortControls className="sm:col-span-2 xl:col-span-3 xl:hidden" options={sortOptions} sortKey={sortKey} direction={sortDirection} onSortKeyChange={changeSort} onToggleDirection={toggleSortDirection} />
         <button type="button" onClick={clearFilters} className="portal-btn portal-btn-ghost sm:col-span-2 xl:col-span-3 xl:justify-self-end">Clear Filters</button>

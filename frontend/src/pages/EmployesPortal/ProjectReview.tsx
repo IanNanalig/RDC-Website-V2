@@ -272,8 +272,6 @@ const ProjectReview: React.FC = () => {
                 {formatReviewStatus(String(validatorReview?.review_status || ""))}
               </span>
             </p>
-            <p>Edited by validator: {validatorReview?.edited ? "Yes" : "No"}</p>
-            <p>Edited fields count: {Number(validatorReview?.edited_fields_count || 0)}</p>
             <p>
               Reviewed by: {validatorReview?.reviewed_by_username || "-"} |{" "}
               {validatorReview?.reviewed_at ? new Date(validatorReview.reviewed_at).toLocaleString() : "-"}

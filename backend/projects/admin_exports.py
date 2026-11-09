@@ -116,6 +116,9 @@ def _validate_request(query, *, include_format=False):
         for key, label in (("start_year", "Start year"), ("end_year", "End year")):
             if key in cleaned:
                 cleaned[key] = _whole_number(cleaned[key], label, minimum=1900, maximum=2200)
+        if cleaned.get("start_year") is not None and cleaned.get("end_year") is not None:
+            if cleaned["start_year"] > cleaned["end_year"]:
+                raise ExportValidationError("Start year cannot be greater than end year.")
         if cleaned.get("budget_min") is not None and cleaned.get("budget_max") is not None:
             if cleaned["budget_min"] > cleaned["budget_max"]:
                 raise ExportValidationError("Minimum budget cannot be greater than maximum budget.")

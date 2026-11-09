@@ -34,6 +34,14 @@ class AuditCoverageTests(APITestCase):
     def as_user(self, user):
         self.client.force_authenticate(user=user)
 
+    def test_audit_date_range_rejects_reverse_and_accepts_equal_or_open_end(self):
+        self.as_user(self.admin)
+        reverse = self.client.get("/api/admin/activity/?date_from=2026-11-10&date_to=2026-11-09")
+        self.assertEqual(reverse.status_code, 400)
+        self.assertIn("From date", reverse.data["detail"])
+        for query in ("date_from=2026-11-09&date_to=2026-11-09", "date_from=2026-11-09", "date_to=2026-11-09"):
+            self.assertEqual(self.client.get(f"/api/admin/activity/?{query}").status_code, 200)
+
     def test_declared_events_have_central_human_readable_mappings(self):
         declared = {value for value, _label in UserActivity.EVENT_CHOICES}
         self.assertEqual(declared - {"api_action", "api_action_failed"} - set(EVENT_SPECS), set())

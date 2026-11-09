@@ -106,6 +106,18 @@ class AdminExportTests(TestCase):
         self.assertIn({"value": "validator", "label": "Validator"}, users.data["options"]["roles"])
         self.assertIn({"value": "staff", "label": "Contributor"}, users.data["options"]["roles"])
 
+    def test_reversed_project_year_range_is_rejected_for_count_and_download(self):
+        self.authenticate()
+        for path in (
+            "/api/admin/exports/count/?category=projects&start_year=2030&end_year=2025",
+            "/api/admin/exports/download/?category=projects&start_year=2030&end_year=2025&file_format=csv",
+        ):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 400, path)
+            self.assertIn("Start year", str(response.data))
+        self.assertEqual(self.client.get("/api/admin/exports/count/?category=projects&start_year=2025&end_year=2025").status_code, 200)
+        self.assertEqual(self.client.get("/api/admin/exports/count/?category=projects&start_year=2025").status_code, 200)
+
     def test_project_filters_are_combined_and_not_limited_to_one_page(self):
         matching = [self.project(f"DENR matching {index:02d}") for index in range(12)]
         matching[0].agency = "STALE-NATIVE-AGENCY"

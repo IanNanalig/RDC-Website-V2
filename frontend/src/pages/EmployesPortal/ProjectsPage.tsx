@@ -243,7 +243,7 @@ const ProjectsPage: React.FC = () => {
     let request = force ? undefined : projectListRequests.get(projectCacheKey);
     if (!request) {
       request = (async () => {
-        const shouldLoadRevisions = role === "validator" || (role === "admin" && !archivedView);
+        const shouldLoadRevisions = role === "validator";
         const revisionParams = new URLSearchParams({ view: "summary" });
         if (role === "validator") revisionParams.set("scope", "queue");
         const [data, revisions] = await Promise.all([
@@ -306,7 +306,7 @@ const ProjectsPage: React.FC = () => {
         setRefreshing(false);
       }
     }
-  }, [endpoint, role, archivedView, projectCacheKey]);
+  }, [endpoint, role, projectCacheKey]);
 
   useEffect(() => {
     if (!user) {

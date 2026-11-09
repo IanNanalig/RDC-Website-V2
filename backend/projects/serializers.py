@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from datetime import datetime
 from copy import deepcopy
+from django.core.exceptions import ObjectDoesNotExist
 from cms.form_schema import FormSchemaError, resolve_simplified_form_schema, schema_fields, validate_simplified_answers
 from .audit_presentation import actor_label, presentation_for, readable_changes, sanitize_audit_details
 from .agency_catalog import is_protected_agency, update_agency_metadata
@@ -35,6 +36,18 @@ SYSTEM_MANAGED_DIFF_ROOTS = {
 
 def _user_display_name(user):
     return (user.get_full_name() or user.get_username() or "").strip()
+
+
+def _project_reviewer_name(project):
+    profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+    review = profile.get("validator_review")
+    review = review if isinstance(review, dict) else {}
+    reviewer_id = review.get("reviewed_by_id")
+    if str(reviewer_id or "").isdigit():
+        reviewer = User.objects.filter(pk=int(reviewer_id)).first()
+        if reviewer:
+            return _user_display_name(reviewer)
+    return str(review.get("reviewed_by_name") or review.get("reviewed_by_username") or "").strip()
 
 
 class ContributorFormVersionStatusMixin:
@@ -341,6 +354,7 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
     status = serializers.CharField(required=False)
     submitted_by = UserSerializer(source="created_by", read_only=True)
     submitted_by_name = serializers.SerializerMethodField()
+    reviewed_by_name = serializers.SerializerMethodField()
     validated_by = serializers.SerializerMethodField()
     priority_analysis = serializers.SerializerMethodField()
     workflow_status = serializers.SerializerMethodField()
@@ -381,6 +395,7 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
             "updated_at",
             "submitted_by",
             "submitted_by_name",
+            "reviewed_by_name",
             "validated_by",
             "archived",
             "validated",
@@ -410,6 +425,7 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
             "updated_at",
             "submitted_by",
             "submitted_by_name",
+            "reviewed_by_name",
             "validated_by",
             "workflow_status",
             "workflow_status_label",
@@ -498,6 +514,9 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
             return ""
         return _user_display_name(obj.created_by) or obj.created_by.username
 
+    def get_reviewed_by_name(self, obj):
+        return _project_reviewer_name(obj)
+
     def get_priority_analysis(self, obj):
         analysis = self._latest_analysis(obj)
         if not analysis:
@@ -506,7 +525,8 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
         confirmation = confirmations[0] if confirmations else None
         return {
             "analysis_id": analysis.id,
-            "score": float(analysis.base_score),
+            "score": float(confirmation.effective_score) if confirmation and confirmation.effective_score is not None else float(analysis.base_score),
+            "ai_score": float(analysis.base_score),
             "suggested_priority": analysis.suggested_priority,
             "final_priority": confirmation.final_priority if confirmation else "",
             "confirmed": bool(confirmation),
@@ -742,7 +762,7 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
     def _parse_year(self, value):
         try:
             n = int(str(value or "").strip())
-        except Exception:
+        except ObjectDoesNotExist:
             return None
         if n < 1900 or n > 2200:
             return None
@@ -858,6 +878,7 @@ class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.Mo
     rdip_status = serializers.SerializerMethodField()
     review_status = serializers.SerializerMethodField()
     reviewed_by_username = serializers.SerializerMethodField()
+    reviewed_by_name = serializers.SerializerMethodField()
     validator_edited = serializers.SerializerMethodField()
     validator_edited_fields_count = serializers.SerializerMethodField()
     form_version = serializers.SerializerMethodField()
@@ -896,6 +917,7 @@ class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.Mo
             "rdip_status",
             "review_status",
             "reviewed_by_username",
+            "reviewed_by_name",
             "validator_edited",
             "validator_edited_fields_count",
             "form_version",
@@ -966,6 +988,9 @@ class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.Mo
     def get_reviewed_by_username(self, obj):
         return str(self._review(obj).get("reviewed_by_username") or "").strip()
 
+    def get_reviewed_by_name(self, obj):
+        return _project_reviewer_name(obj)
+
     def _edited_fields(self, obj):
         raw = self._review(obj).get("edited_fields")
         if not isinstance(raw, list):
@@ -994,6 +1019,9 @@ class ProjectPriorityConfirmationSerializer(serializers.ModelSerializer):
             "validator",
             "validator_name",
             "adjusted_scores",
+            "validator_remarks",
+            "effective_score",
+            "regional_effective_score",
             "final_priority",
             "override_rationale",
             "confirmed_flags",
@@ -1018,6 +1046,7 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
     latest_confirmation = serializers.SerializerMethodField()
     learning_result = serializers.SerializerMethodField()
     document_assessment = serializers.SerializerMethodField()
+    evaluation = serializers.SerializerMethodField()
 
     class Meta:
         model = ProjectPriorityAnalysis
@@ -1041,6 +1070,7 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
             "latest_confirmation",
             "learning_result",
             "document_assessment",
+            "evaluation",
             "created_at",
         ]
         read_only_fields = fields
@@ -1071,6 +1101,20 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
         from .document_assessments import serialize_document_assessment
 
         return serialize_document_assessment(obj.project)
+
+    def get_evaluation(self, obj):
+        try:
+            evaluation = obj.evaluation
+        except Exception:
+            return None
+        return {
+            "adjusted_scores": evaluation.adjusted_scores,
+            "validator_remarks": evaluation.validator_remarks,
+            "effective_score": evaluation.effective_score,
+            "regional_effective_score": evaluation.regional_effective_score,
+            "calculated_priority": evaluation.calculated_priority,
+            "updated_at": evaluation.updated_at,
+        }
 
 
 class ProjectSupportingDocumentSerializer(serializers.ModelSerializer):
