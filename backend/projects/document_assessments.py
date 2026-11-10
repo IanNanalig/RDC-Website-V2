@@ -471,12 +471,13 @@ def dispatch_project_document_processing(project, *, retry_failed=False, request
         )
         if not existing_job:
             record_processing_event(processing_job, "requested", stage=ProjectAIProcessingJob.STAGE_DISPATCH)
+        eligible_ids = (documents_for_revision(revision) if revision else active_project_documents(locked_project)).values("pk")
+        # Keep revision filtering in a subquery. The outer locking query must
+        # contain neither DISTINCT nor a nullable revision join on PostgreSQL.
         documents = list(
-            (documents_for_revision(revision) if revision else active_project_documents(locked_project))
-            # The active-document filter joins the nullable revision FK.
-            # PostgreSQL cannot lock the nullable side of that outer join.
+            ProjectSupportingDocument.objects.filter(pk__in=eligible_ids)
             .select_for_update(of=("self",))
-            .order_by("id")
+            .order_by("pk")
         )
         candidates = [
             document

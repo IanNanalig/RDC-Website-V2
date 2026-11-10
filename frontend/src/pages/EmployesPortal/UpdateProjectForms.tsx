@@ -113,6 +113,7 @@ export default function UpdateProjectForms() {
       setNotice(`${Number(data?.migrated || 0)} planning draft(s) migrated, ${Number(data?.correction_migrated || 0)} returned correction(s) migrated for Contributor resubmission, and ${Number(data?.prepared || 0)} validated project update draft(s) prepared. ${Number(data?.blocked || 0) + Number(data?.skipped || 0)} skipped or blocked.`);
       setConfirmOpen(false);
       await load();
+      localStorage.setItem("projects_last_update", Date.now().toString());
     } catch (err) { setError(err instanceof Error ? err.message : "The migration could not be completed."); }
     finally { setBusy(""); }
   };

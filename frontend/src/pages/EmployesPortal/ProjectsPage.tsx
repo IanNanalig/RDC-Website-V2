@@ -282,9 +282,12 @@ const ProjectsPage: React.FC = () => {
     };
     window.addEventListener("storage", onStorage);
     window.addEventListener("portal:data-changed", onDataChanged);
+    const onFocus = () => { void loadProjects(true, true); };
+    window.addEventListener("focus", onFocus);
     return () => {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("portal:data-changed", onDataChanged);
+      window.removeEventListener("focus", onFocus);
     };
   }, [loadProjects, navigate, user, projectCacheKey]);
 

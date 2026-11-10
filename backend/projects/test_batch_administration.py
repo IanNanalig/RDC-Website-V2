@@ -403,6 +403,13 @@ class BatchAdministrationTests(APITestCase):
         project.save(update_fields=["profile_data", "updated_at"])
         original_profile = deepcopy(project.profile_data)
 
+        self.authenticate(self.contributor)
+        before_list = self.client.get("/api/employee/projects/?view=summary")
+        self.assertEqual(before_list.status_code, 200, before_list.data)
+        before_row = next(row for row in before_list.data if row["id"] == project.id)
+        self.assertTrue(before_row["uses_outdated_form"])
+        self.assertEqual(before_row["form_version"], source.version_number)
+
         self.authenticate(self.admin)
         preview = self.client.post(
             "/api/admin/projects/form-migration-preview/", {"project_ids": [project.id]}, format="json"
@@ -421,6 +428,18 @@ class BatchAdministrationTests(APITestCase):
         revision = ProjectRevision.objects.get(project=project, revision_type="progress_update", state="draft")
         self.assertEqual(revision.profile_data_snapshot["form_schema"]["version"], target.version_number)
         self.assertIn("custom_batch_required", revision.form_migration["attention_fields"])
+        self.authenticate(self.contributor)
+        after_list = self.client.get("/api/employee/projects/?view=summary")
+        self.assertEqual(after_list.status_code, 200, after_list.data)
+        after_row = next(row for row in after_list.data if row["id"] == project.id)
+        self.assertEqual(after_row["form_version"], target.version_number)
+        self.assertFalse(after_row["uses_outdated_form"])
+        after_detail = self.client.get(f"/api/employee/projects/{project.id}/")
+        self.assertEqual(after_detail.status_code, 200, after_detail.data)
+        self.assertEqual(after_detail.data["form_version"], target.version_number)
+        self.assertFalse(after_detail.data["uses_outdated_form"])
+        self.assertEqual(after_detail.data["profile_data"], original_profile)
+        self.authenticate(self.admin)
         outdated = self.client.get("/api/admin/projects/?view=summary&scope=update_forms")
         self.assertEqual(outdated.status_code, 200, outdated.data)
         self.assertNotIn(project.id, [row["id"] for row in outdated.data])
@@ -430,6 +449,25 @@ class BatchAdministrationTests(APITestCase):
         )
         self.assertEqual(again.data["eligible"], 0)
         self.assertEqual(ProjectRevision.objects.filter(project=project, revision_type="progress_update").count(), 1)
+
+        newer = CMSContributorFormVersion.objects.create(
+            form=form, version_number=target.version_number + 1,
+            schema_json=deepcopy(target_schema), based_on_version=target,
+            published_by=self.admin,
+        )
+        form.current_published_version = newer
+        form.save(update_fields=["current_published_version", "updated_at"])
+        self.authenticate(self.contributor)
+        outdated_again = self.client.get("/api/employee/projects/?view=summary")
+        row = next(item for item in outdated_again.data if item["id"] == project.id)
+        self.assertTrue(row["uses_outdated_form"])
+        self.assertEqual(row["form_version"], target.version_number)
+        self.assertEqual(row["current_form_version"], newer.version_number)
+        revision.delete()
+        reverted = self.client.get("/api/employee/projects/?view=summary")
+        reverted_row = next(item for item in reverted.data if item["id"] == project.id)
+        self.assertTrue(reverted_row["uses_outdated_form"])
+        self.assertEqual(reverted_row["form_version"], source.version_number)
 
     def test_update_period_manual_open_close_preserves_schedule(self):
         start = timezone.now() + timedelta(days=1)

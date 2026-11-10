@@ -4948,6 +4948,15 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
         # The scope is an OR over plain columns, so it cannot create duplicate rows;
         # avoid DISTINCT's extra sort/hash step on large contributor lists.
         qs = Project.objects.filter(_contributor_project_scope(self.request.user), archived=False).distinct().order_by("-created_at")
+        if self.action == "list":
+            qs = qs.prefetch_related(Prefetch(
+                "revisions",
+                queryset=ProjectRevision.objects.filter(
+                    revision_type="progress_update",
+                    state__in=["draft", "reviewed", "submitted", "validator_draft"],
+                ).order_by("-updated_at"),
+                to_attr="_active_progress_revisions",
+            ))
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
         qs = _filter_projects_for_workflow(qs, workflow).order_by("-created_at")
         return _project_list_queryset(

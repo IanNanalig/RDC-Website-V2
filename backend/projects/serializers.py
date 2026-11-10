@@ -57,8 +57,24 @@ class ContributorFormVersionStatusMixin:
     def _form_profile(self, obj):
         return obj.profile_data if isinstance(obj.profile_data, dict) else {}
 
-    def _saved_form_marker(self, obj):
+    def _form_version_profile(self, obj):
         profile = self._form_profile(obj)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if isinstance(obj, Project) and getattr(user, "role", "") in {"staff", "employee"}:
+            active = getattr(obj, "_active_progress_revisions", None)
+            if active is None:
+                active = list(obj.revisions.filter(
+                    revision_type="progress_update",
+                    state__in=["draft", "reviewed", "submitted", "validator_draft"],
+                ).order_by("-updated_at")[:1])
+            if active:
+                candidate = active[0].profile_data_snapshot
+                return candidate if isinstance(candidate, dict) else {}
+        return profile
+
+    def _saved_form_marker(self, obj):
+        profile = self._form_version_profile(obj)
         simplified = isinstance(profile.get("simplified_form"), dict)
         submission_type = str(profile.get("submission_type") or "").strip().lower()
         if not simplified and submission_type != "simplified":
