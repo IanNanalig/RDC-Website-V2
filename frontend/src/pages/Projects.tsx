@@ -266,12 +266,19 @@ const Projects: React.FC = () => {
     [projects],
   );
 
-  const agencyOptions = useMemo(() =>
-    Array.from(new Set(projects.flatMap((p) => [p.agency || "Other", ...(p.collaborating_agencies || []).flatMap((agency) => [agency.name, agency.code])]))).sort(),
-  [projects]);
+  const agencyOptions = useMemo(() => {
+    const choices = new Map<string, string>();
+    projects.forEach((project) => {
+      const primary = project.primary_agency;
+      if (primary) choices.set(`id:${primary.id}`, primary.name);
+      else if (project.agency.trim()) choices.set(`legacy:${project.agency.trim().toLocaleLowerCase()}`, project.agency.trim());
+      (project.collaborating_agencies || []).forEach((agency) => choices.set(`id:${agency.id}`, agency.name));
+    });
+    return Array.from(choices, ([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label));
+  }, [projects]);
 
   const municipalityOptions = useMemo(() => {
-    return [...Object.keys(ncrCityCenters).sort(), "Unspecified"];
+    return Object.keys(ncrCityCenters).sort();
   }, []);
 
   const resetFilters = () => {
@@ -288,15 +295,19 @@ const Projects: React.FC = () => {
   // Municipality filter is the single source of truth. Keeping a second
   // selected-city state caused the two values to overwrite one another.
   const selectedCity =
-    municipalityFilter === "all" || municipalityFilter === "Unspecified"
+    municipalityFilter === "all"
       ? undefined
       : municipalityFilter;
 
   const filtered = useMemo(() => projects.filter((project) => {
     if (yearFilter !== "all" && project.year !== yearFilter) return false;
     if (statusFilter !== "all" && project.implementation_status !== statusFilter) return false;
-    if (agencyFilter !== "all" && project.agency !== agencyFilter &&
-      !(project.collaborating_agencies || []).some((agency) => agency.name === agencyFilter || agency.code === agencyFilter)) return false;
+    if (agencyFilter !== "all") {
+      const matchesPrimary = project.primary_agency && agencyFilter === `id:${project.primary_agency.id}`;
+      const matchesLegacy = !project.primary_agency && agencyFilter === `legacy:${project.agency.trim().toLocaleLowerCase()}`;
+      const matchesCollaborator = (project.collaborating_agencies || []).some((agency) => agencyFilter === `id:${agency.id}`);
+      if (!matchesPrimary && !matchesLegacy && !matchesCollaborator) return false;
+    }
     if (debouncedSearch && (searchMatches?.query !== debouncedSearch || !searchMatches.ids.has(project.id))) return false;
     return true;
   }), [projects, yearFilter, statusFilter, agencyFilter, debouncedSearch, searchMatches]);
@@ -305,8 +316,6 @@ const Projects: React.FC = () => {
     let rows = filtered;
     if (selectedCity) {
       rows = rows.filter((p) => projectMatchesLgu(p, selectedCity));
-    } else if (municipalityFilter === "Unspecified") {
-      rows = rows.filter((p) => getProjectLgus(p).length === 0);
     } else if (municipalityFilter !== "all") {
       rows = rows.filter((p) => projectMatchesLgu(p, municipalityFilter));
     }
@@ -730,7 +739,6 @@ const Projects: React.FC = () => {
                     <option value="all">All Status</option>
                     <option value="Completed">Completed</option>
                     <option value="New">New</option>
-                    <option value="Not Implemented">Not Implemented</option>
                     <option value="Ongoing">Ongoing</option>
                     <option value="On Hold">On Hold</option>
                     <option value="Cancelled">Cancelled</option>
@@ -765,9 +773,9 @@ const Projects: React.FC = () => {
                     }
                   >
                     <option value="all">All Agencies</option>
-                    {agencyOptions.map((a) => (
-                      <option key={a} value={a}>
-                        {a}
+                    {agencyOptions.map((agency) => (
+                      <option key={agency.value} value={agency.value}>
+                        {agency.label}
                       </option>
                     ))}
                   </select>

@@ -100,6 +100,7 @@ from .project_status import (
     display_implementation_status,
     stored_status_values_for_label,
 )
+from .public_agencies import agency_lookup
 from .priority_scoring import PriorityInputError, analyze_project, confirm_analysis, confirmation_eligibility, ensure_analysis_guidance, get_active_priority_rule_set, has_matching_confirmation
 from .document_policy import (
     PROJECT_DOCUMENT_MAX_TOTAL_BYTES,
@@ -357,7 +358,7 @@ PUBLIC_CHAT_DIRECT_CONFIDENCE = 0.62
 PUBLIC_CHAT_RELATED_CONFIDENCE = 0.60
 PUBLIC_PROJECTS_CACHE_TTL_SECONDS = 3600
 PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL = "public, no-cache, must-revalidate"
-PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 5
+PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 6
 PUBLIC_PROJECTS_CACHE_VERSION_KEY = "public_projects:version"
 
 
@@ -8011,7 +8012,7 @@ def _filter_public_project_queryset(qs, params):
             | Q(collaborating_agency_links__agency__name__icontains=q)
         ).distinct()
     agency = (params.get("agency") or "").strip()
-    if agency and agency.lower() != "all":
+    if agency and agency.lower() != "all" and _public_agency_filter_id(params) is None:
         qs = qs.filter(
             Q(agency__iexact=agency) | Q(profile_data__simplified_form__agencyName__iexact=agency)
             | Q(collaborating_agency_links__agency__code__iexact=agency)
@@ -8028,6 +8029,25 @@ def _filter_public_project_queryset(qs, params):
     if status_raw and status_raw.lower() != "all":
         qs = _filter_public_project_status(qs, status_raw)
     return qs
+
+
+def _public_agency_filter_id(params):
+    raw_id = (params.get("agency_id") or "").strip()
+    if raw_id:
+        return int(raw_id) if raw_id.isdecimal() and int(raw_id) > 0 else -1
+    raw = " ".join(str(params.get("agency") or "").split()).casefold()
+    if not raw or raw == "all":
+        return None
+    matched = agency_lookup().get(raw)
+    return matched.pk if matched else None
+
+
+def _filter_public_payload_agency(payload, agency_id):
+    if agency_id is None:
+        return payload
+    return [item for item in payload if
+            (item.get("primary_agency") or {}).get("id") == agency_id or
+            any(agency.get("id") == agency_id for agency in item.get("collaborating_agencies") or [])]
 
 
 def _filter_public_payload_location(payload, raw):
@@ -8077,7 +8097,12 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
         return PublicProjectSerializer
 
     def _project_to_public_payload(self, project: Project) -> dict:
-        return self.get_serializer(project).data
+        if not hasattr(self, "_public_agency_lookup"):
+            self._public_agency_lookup = agency_lookup()
+        return self.get_serializer(
+            project,
+            context={**self.get_serializer_context(), "public_agency_lookup": self._public_agency_lookup},
+        ).data
 
     def list(self, request, *args, **kwargs):
         version = _get_public_projects_cache_version()
@@ -8096,6 +8121,7 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
 
         # LGU filter is computed (from location text), so filter in Python after serialization.
         lgu_filter = (request.query_params.get("lgu") or "").strip()
+        agency_id = _public_agency_filter_id(request.query_params)
 
         limit = 200
         offset = 0
@@ -8109,9 +8135,11 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
             offset = 0
 
         # If we filter by computed LGU, do it before applying offset/limit so results are correct.
-        if lgu_filter and lgu_filter.lower() != "all":
+        if (lgu_filter and lgu_filter.lower() != "all") or agency_id is not None:
             all_payload = [self._project_to_public_payload(p) for p in qs]
-            filtered_payload = _filter_public_payload_location(all_payload, lgu_filter)
+            filtered_payload = _filter_public_payload_location(
+                _filter_public_payload_agency(all_payload, agency_id), lgu_filter
+            )
             payload = filtered_payload[offset : offset + limit]
         else:
             qs = qs[offset : offset + limit]
@@ -8153,7 +8181,10 @@ class PublicProjectsStatsView(APIView):
         qs = _filter_public_project_queryset(qs, request.query_params)
         projects = list(qs)
         payload_rows = _filter_public_payload_location(
-            PublicProjectSummarySerializer(projects, many=True).data,
+            _filter_public_payload_agency(
+                PublicProjectSummarySerializer(projects, many=True).data,
+                _public_agency_filter_id(request.query_params),
+            ),
             request.query_params.get("lgu"),
         )
         projects_by_id = {project.id: project for project in projects}

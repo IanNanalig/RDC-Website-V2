@@ -15,9 +15,11 @@ from cms.models import CMSContributorForm
 from .priority_scoring import _priority_for, _priority_with_regional_budget, confirm_analysis
 from .document_policy import current_document_policy
 from .models import (
+    Agency,
     Notification,
     PriorityRuleSet,
     Project,
+    ProjectCollaboratingAgency,
     ProjectSupportingDocument,
     ProjectPriorityAnalysis,
     ProjectRevision,
@@ -1879,9 +1881,70 @@ class PerformanceApiTests(APITestCase):
         self.assertEqual(stats.data["total_projects"], 1)
         self.assertEqual(stats.data["total_budget"], listed.data[0]["budget"])
         self.assertEqual(stats.data["by_status"], {"Completed": 1})
-        self.assertEqual(stats.data["by_agency"], {"DPWH": 1})
+        self.assertEqual(stats.data["by_agency"], {"Department of Public Works and Highways": 1})
         self.assertEqual(stats.data["by_lgu"], {"Pasig": 1})
         self.assertNotEqual(manila.id, pasig.id)
+
+    def test_public_agency_identity_matches_codes_names_and_collaborators(self):
+        dpwh = Agency.objects.get(code="DPWH")
+        dotr = Agency.objects.get(code="DOTr")
+        dswd = Agency.objects.get(code="DSWD")
+        new_agency = Agency.objects.create(code="TESTNCR", name="New NCR Test Agency")
+        code_project = self._project(index=11, validated=True)
+        code_project.agency = "dswd"
+        code_project.profile_data["simplified_form"].update({"agencyName": "dswd", "location": "Pasig"})
+        code_project.save(update_fields=["agency", "profile_data"])
+        name_project = self._project(index=12, validated=True)
+        name_project.agency = dswd.name.upper()
+        name_project.profile_data["simplified_form"].update({"agencyName": dswd.name.upper(), "location": "Manila"})
+        name_project.save(update_fields=["agency", "profile_data"])
+        joint = self._project(index=13, validated=True)
+        joint.primary_agency = dpwh
+        joint.agency = "Old DPWH label"
+        joint.save(update_fields=["primary_agency", "agency"])
+        ProjectCollaboratingAgency.objects.create(project=joint, agency=dotr)
+        legacy = self._project(index=14, validated=True)
+        legacy.agency = "Unmatched Legacy Office"
+        legacy.profile_data["simplified_form"].update({"agencyName": "Unmatched Legacy Office", "location": "Unknown location", "status": "Not Implemented"})
+        legacy.save(update_fields=["agency", "profile_data"])
+        new_project = self._project(index=15, validated=True)
+        new_project.primary_agency = new_agency
+        new_project.save(update_fields=["primary_agency"])
+
+        rows = self.client.get("/api/public/projects/?view=summary&limit=500")
+        self.assertEqual(rows.status_code, 200)
+        by_id = {row["id"]: row for row in rows.data}
+        self.assertEqual(by_id[code_project.id]["primary_agency"]["id"], dswd.id)
+        self.assertEqual(by_id[name_project.id]["agency"], dswd.name)
+        self.assertEqual(by_id[joint.id]["primary_agency"]["id"], dpwh.id)
+        self.assertEqual(by_id[legacy.id]["agency"], "Unmatched Legacy Office")
+        self.assertIsNone(by_id[legacy.id]["primary_agency"])
+        self.assertEqual(by_id[legacy.id]["implementation_status"], "Not Implemented")
+        self.assertEqual(by_id[legacy.id]["lgus"], [])
+        self.assertEqual(by_id[new_project.id]["agency"], new_agency.name)
+
+        for query, expected in (
+            (f"agency_id={dswd.id}", {code_project.id, name_project.id}),
+            ("agency=DSWD", {code_project.id, name_project.id}),
+            (f"agency={dswd.name.replace(' ', '%20')}", {code_project.id, name_project.id}),
+            (f"agency_id={dotr.id}", {joint.id}),
+            ("agency=dotr", {joint.id}),
+            (f"agency_id={dpwh.id}", {joint.id}),
+            (f"agency_id={new_agency.id}", {new_project.id}),
+        ):
+            listed = self.client.get(f"/api/public/projects/?view=summary&{query}")
+            stats = self.client.get(f"/api/public/projects/stats/?{query}")
+            self.assertEqual({row["id"] for row in listed.data}, expected)
+            self.assertEqual(stats.data["total_projects"], len(expected))
+
+        self.assertEqual(
+            [row["id"] for row in self.client.get("/api/public/projects/?agency=Unmatched%20Legacy%20Office").data],
+            [legacy.id],
+        )
+        self.assertEqual(
+            [row["id"] for row in self.client.get("/api/public/projects/?status=Not%20Implemented").data],
+            [legacy.id],
+        )
 
     def test_public_summary_pages_can_cover_more_than_five_hundred_projects(self):
         template = self._project(validated=True)

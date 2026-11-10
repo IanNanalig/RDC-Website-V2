@@ -7,6 +7,7 @@ from cms.form_schema import FormSchemaError, resolve_simplified_form_schema, sch
 from .audit_presentation import actor_label, presentation_for, readable_changes, sanitize_audit_details
 from .agency_catalog import is_protected_agency, update_agency_metadata
 from .project_status import display_implementation_status
+from .public_agencies import agency_lookup, public_agency, resolve_project_agency
 from .models import (
     AccessRequest,
     Agency,
@@ -1314,6 +1315,7 @@ class PublicProjectSerializer(serializers.ModelSerializer):
     # Public-safe projection for the public website dashboard.
     title = serializers.CharField(source="name", read_only=True)
     agency = serializers.SerializerMethodField()
+    primary_agency = serializers.SerializerMethodField()
     collaborating_agencies = serializers.SerializerMethodField()
     implementation_status = serializers.SerializerMethodField()
     year = serializers.SerializerMethodField()
@@ -1339,6 +1341,7 @@ class PublicProjectSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "agency",
+            "primary_agency",
             "collaborating_agencies",
             "implementation_status",
             "budget",
@@ -1371,15 +1374,30 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         return {}
 
     def get_agency(self, obj):
+        record = self._agency_record(obj)
+        if record:
+            return record.name
         sf = self._simplified(obj)
         value = str(sf.get("agencyName") or "").strip()
         if value:
             return value
         return str(getattr(obj, "agency", "") or "").strip()
 
+    def _agency_record(self, obj):
+        root = self.root
+        lookup = self.context.get("public_agency_lookup")
+        if lookup is None:
+            if not hasattr(root, "_public_agency_lookup"):
+                root._public_agency_lookup = agency_lookup()
+            lookup = root._public_agency_lookup
+        return resolve_project_agency(obj, lookup)
+
+    def get_primary_agency(self, obj):
+        return public_agency(self._agency_record(obj))
+
     def get_collaborating_agencies(self, obj):
         return [
-            {"code": link.agency.code, "name": link.agency.name}
+            public_agency(link.agency)
             for link in obj.collaborating_agency_links.all()
             if getattr(link, "agency", None)
         ]
@@ -1652,6 +1670,7 @@ class PublicProjectSummarySerializer(PublicProjectSerializer):
             "id",
             "title",
             "agency",
+            "primary_agency",
             "collaborating_agencies",
             "implementation_status",
             "budget",

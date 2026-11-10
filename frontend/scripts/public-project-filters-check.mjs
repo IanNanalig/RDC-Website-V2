@@ -10,9 +10,16 @@ const browser = await chromium.launch({
   headless: true,
 });
 const headers = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, OPTIONS", "access-control-allow-headers": "authorization, content-type" };
+const agencyRecords = {
+  MMDA: { id: 1, code: "MMDA", name: "Metropolitan Manila Development Authority" },
+  DPWH: { id: 2, code: "DPWH", name: "Department of Public Works and Highways" },
+  DOH: { id: 3, code: "DOH", name: "Department of Health" },
+  DSWD: { id: 10, code: "DSWD", name: "Department of Social Welfare and Development" },
+  "Department of Social Welfare and Development": { id: 10, code: "DSWD", name: "Department of Social Welfare and Development" },
+};
 const project = (id, agency, city, status, year, updated = false) => ({
-  id, title: `Public project ${id}`, agency, collaborating_agencies: [], implementation_status: status,
-  budget: 1000, year, lgu: city, lgus: [city], location_raw: city,
+  id, title: `Public project ${id}`, agency, primary_agency: agencyRecords[agency], collaborating_agencies: [], implementation_status: status,
+  budget: 1000, year, lgu: city || null, lgus: city ? [city] : [], location_raw: city,
   updated_at: "2026-11-01T00:00:00Z", has_public_updates: updated,
   latest_update_date: updated ? "2026-11-01T00:00:00Z" : null,
 });
@@ -20,6 +27,10 @@ const records = Array.from({ length: 501 }, (_, index) => project(index + 1, "MM
 records.push(project(502, "DPWH", "Pasig", "Ongoing", 2028));
 records.push(project(503, "DOH", "Pasig", "Ongoing", 2028, true));
 records.push(project(504, "DOH", "Manila", "Completed", 2029));
+records.push(project(505, "DSWD", "Manila", "New", 2027));
+records.push(project(506, "Department of Social Welfare and Development", "Pasig", "Ongoing", 2028));
+records.push(project(507, "DPWH", "Manila", "Not Implemented", 2027));
+records.push(project(508, "DPWH", "", "New", 2027));
 
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
@@ -41,13 +52,16 @@ try {
   });
 
   await page.goto(`http://127.0.0.1:${address.port}/projects`);
-  await page.getByText("504", { exact: true }).first().waitFor();
+  await page.getByText("508", { exact: true }).first().waitFor();
   const filters = page.locator("select");
+  assert.equal(await filters.nth(1).locator('option:has-text("Not Implemented")').count(), 0);
+  assert.equal(await filters.nth(4).locator('option:has-text("Unspecified")').count(), 0);
+  assert.equal(await filters.nth(3).locator('option:has-text("Department of Social Welfare and Development")').count(), 1);
   await filters.nth(0).selectOption("2028");
   await filters.nth(1).selectOption("Ongoing");
-  await filters.nth(3).selectOption("DOH");
+  await filters.nth(3).selectOption("id:3");
   await filters.nth(4).selectOption("Pasig");
-  assert.deepEqual(await Promise.all([0, 1, 3, 4].map((index) => filters.nth(index).inputValue())), ["2028", "Ongoing", "DOH", "Pasig"]);
+  assert.deepEqual(await Promise.all([0, 1, 3, 4].map((index) => filters.nth(index).inputValue())), ["2028", "Ongoing", "id:3", "Pasig"]);
   await page.getByRole("button", { name: /Table/ }).click();
   assert.equal(await page.locator("tbody tr").count(), 1);
   await page.locator("tbody").getByText("Public project 503").waitFor();
@@ -58,7 +72,7 @@ try {
   await page.locator(".leaflet-interactive").last().click();
   await page.locator('.leaflet-popup-content a[href="/projects/503"]').waitFor();
   const viewportBefore = await page.locator(".leaflet-map-pane").getAttribute("style");
-  await filters.nth(3).selectOption("DPWH");
+  await filters.nth(3).selectOption("id:2");
   assert.equal(await filters.nth(4).inputValue(), "Pasig");
   await page.getByText("No projects match the selected filters on the map.").waitFor();
   assert.equal(await page.locator(".leaflet-map-pane").getAttribute("style"), viewportBefore, "filter changes should preserve the map viewport");
@@ -66,17 +80,23 @@ try {
   assert.equal(await filters.nth(4).inputValue(), "Pasig");
   await page.getByRole("button", { name: "Reset all filters" }).click();
   assert.deepEqual(await Promise.all([0, 1, 2, 3, 4].map((index) => filters.nth(index).inputValue())), ["all", "all", "all", "all", "all"]);
-  await page.getByText("504", { exact: true }).first().waitFor();
+  await page.getByText("508", { exact: true }).first().waitFor();
   await page.setViewportSize({ width: 390, height: 780 });
   await page.getByRole("button", { name: "Toggle filters" }).click();
   await filters.nth(4).selectOption("Pasig");
   assert.equal(await filters.nth(4).inputValue(), "Pasig");
+  await page.getByRole("button", { name: "Reset all filters" }).click();
+  await filters.nth(3).selectOption("id:10");
+  await page.getByText("2", { exact: true }).first().waitFor();
+  await page.getByRole("button", { name: /Table/ }).click();
+  assert.equal(await page.locator("tbody tr").count(), 2);
+  await page.getByRole("button", { name: "Reset all filters" }).click();
   await page.getByPlaceholder("Search projects...").fill("Public project 503");
   await page.getByRole("button", { name: /Table/ }).click();
   await page.locator("tbody").getByText("Public project 503").waitFor();
   await page.waitForFunction(() => document.querySelectorAll("tbody tr").length === 1);
   assert.equal(await page.locator("tbody tr").count(), 1);
-  assert.equal(await filters.nth(4).inputValue(), "Pasig");
+  assert.equal(await filters.nth(4).inputValue(), "all");
   console.log("Public dashboard filter and map browser check passed.");
 } finally {
   await browser.close();
