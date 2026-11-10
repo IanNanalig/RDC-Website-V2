@@ -848,10 +848,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
           const state = String(data?.state || "").toLowerCase();
           setRevisionState(state);
           setFormMigration(data?.form_migration && typeof data.form_migration === "object" ? data.form_migration : null);
-          setProjectStatus(state === "draft" ? "planning" : state === "endorsed" ? "completed" : "proposed");
-          const revisionWorkflow = String(data?.workflow_status || (state === "endorsed" ? "validated" : state === "reviewed" ? "needs_revision" : state === "draft" ? "draft" : "pending_validation"));
+          setProjectStatus(String(data?.profile_data_snapshot?.simplified_form?.status || ""));
+          const revisionWorkflow = String(data?.workflow_status || "");
           setWorkflowStatus(revisionWorkflow);
-          setWorkflowStatusLabel(revisionWorkflow.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase()));
+          setWorkflowStatusLabel(String(data?.workflow_status_label || ""));
           setOfficialPriorityLabel("");
           setValidationComment(String(data?.public_note || ""));
           if (data?.updated_at) {
@@ -2524,6 +2524,8 @@ const SimplifiedProjectSubmission: React.FC = () => {
           {id && (isValidator || isAdmin) && (
             <PriorityAnalysisPanel
               projectId={id}
+              revisionId={isRevisionMode ? revisionId : undefined}
+              locked={workflowStatus === "validated"}
               role={isAdmin ? "admin" : "validator"}
               developmentSector={form.developmentSector}
             />

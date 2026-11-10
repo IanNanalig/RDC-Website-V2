@@ -172,6 +172,8 @@ type Analysis = {
 
 type Props = {
   projectId: string;
+  revisionId?: string;
+  locked?: boolean;
   role: "validator" | "admin";
   developmentSector?: string;
 };
@@ -300,7 +302,7 @@ const CriteriaTable: React.FC<{ title: string; group: string; criteria?: Criteri
   </div>
 );
 
-const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSector = "" }) => {
+const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked = false, role, developmentSector = "" }) => {
   const isSceeed = /sceeed|economic and environment/i.test(developmentSector);
   const [eligible, setEligible] = useState(true);
   const [analyses, setAnalyses] = useState<Analysis[]>([]);
@@ -325,7 +327,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
 
   const load = useCallback(async () => {
     try {
-      const response = await api.get(`${endpointBase}/${projectId}/priority-analysis/`);
+      const response = await api.get(`${endpointBase}/${projectId}/priority-analysis/${revisionId ? `?revision=${revisionId}` : ""}`);
       const list = Array.isArray(response?.analyses) ? response.analyses as Analysis[] : [];
       setEligible(response?.eligible !== false);
       setAnalyses(list);
@@ -334,7 +336,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
     } catch (error) {
       console.error("Failed to load priority analysis:", error);
     }
-  }, [endpointBase, projectId]);
+  }, [endpointBase, projectId, revisionId]);
 
   useEffect(() => {
     load();
@@ -362,7 +364,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
     setProcessingProgress(null);
     try {
       let documentAssessment = await api.get(
-        `project-supporting-documents/assessment-status/?project=${projectId}`,
+        `project-supporting-documents/assessment-status/?project=${projectId}${revisionId ? `&revision=${revisionId}` : ""}`,
         true,
       ) as DocumentAssessment;
 
@@ -378,6 +380,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
         });
         documentAssessment = await api.post("project-supporting-documents/process-inline/", {
           project: projectId,
+          ...(revisionId ? { revision: revisionId } : {}),
         }) as DocumentAssessment;
         if (["failed", "stalled"].includes(documentAssessment.status)) {
           throw new Error(documentAssessment.job?.error_message || documentAssessment.error_message || documentAssessment.summary || "The uploaded document could not be read for AI analysis.");
@@ -390,6 +393,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
         });
         documentAssessment = await api.post("project-supporting-documents/assess-inline/", {
           project: projectId,
+          ...(revisionId ? { revision: revisionId } : {}),
         }) as DocumentAssessment;
         if (!["pass", "fail"].includes(documentAssessment.status)) {
           throw new Error(documentAssessment.job?.error_message || documentAssessment.error_message || documentAssessment.summary || "The document assessment did not complete. You can retry it.");
@@ -402,6 +406,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
         detail: "The server is applying the approved scoring rules to this project.",
       });
       const response = await api.post(`validator/projects/${projectId}/priority-analysis/run/`, {
+        ...(revisionId ? { revision: revisionId } : {}),
         supplements: isSceeed ? supplements : { ...supplements, sceeedTrack: "" },
       });
       if (response?.processing) {
@@ -442,6 +447,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
     setNotice("");
     try {
       const next = await api.post(`validator/projects/${projectId}/priority-analysis/${analysis.id}/confirm/`, {
+        ...(revisionId ? { revision: revisionId } : {}),
         adjusted_scores: adjustedScores,
         validator_remarks: validatorRemarks,
         final_priority: finalPriority,
@@ -467,6 +473,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
     setNotice("");
     try {
       const next = await api.post(`validator/projects/${projectId}/priority-analysis/${analysis.id}/evaluation/`, {
+        ...(revisionId ? { revision: revisionId } : {}),
         adjusted_scores: adjustedScores,
         validator_remarks: validatorRemarks,
       }) as Analysis;
@@ -531,7 +538,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
             {validationEligibility.eligible ? "Priority analysis and confirmation are ready for validation." : validationEligibility.detail}
           </p>
         )}
-        {role === "validator" && (
+        {role === "validator" && !locked && (
           <div className="rounded-xl border border-slate-200 p-3">
             <p className="mb-3 text-sm font-semibold text-slate-800">Validator Facts Supplement</p>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -723,15 +730,15 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
               </details>
             )}
             {missingFacts.length > 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><p className="font-semibold">Missing facts</p><ul className="mt-1 list-disc pl-5">{missingFacts.map((item) => <li key={item}>{item}</li>)}</ul></div>}
-            <CriteriaTable title="PAP Criteria" group="pap" criteria={analysis.suggested_scores.pap} total={analysis.suggested_scores.pap_total} adjustable={role === "validator" && !confirmed} adjusted={adjustedScores} remarks={validatorRemarks} onAdjust={(key, value) => { setAdjustedScores((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} onRemark={(key, value) => { setValidatorRemarks((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} />
-            <CriteriaTable title={`RDP Outcomes (${analysis.suggested_scores.rdp_track || "Sector"})`} group="rdp" criteria={analysis.suggested_scores.rdp_outcomes} total={analysis.suggested_scores.rdp_total} adjustable={role === "validator" && !confirmed} adjusted={adjustedScores} remarks={validatorRemarks} onAdjust={(key, value) => { setAdjustedScores((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} onRemark={(key, value) => { setValidatorRemarks((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} />
-            {analysis.regional_scorecard?.applicable ? <CriteriaTable title="Regional Prioritization" group="regional" criteria={analysis.regional_scorecard.criteria} total={analysis.regional_scorecard.total} adjustable={role === "validator" && !confirmed} adjusted={adjustedScores} remarks={validatorRemarks} onAdjust={(key, value) => { setAdjustedScores((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} onRemark={(key, value) => { setValidatorRemarks((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} /> : <p className="text-sm text-slate-600">{analysis.regional_scorecard?.message}</p>}
+            <CriteriaTable title="PAP Criteria" group="pap" criteria={analysis.suggested_scores.pap} total={analysis.suggested_scores.pap_total} adjustable={role === "validator" && !locked && !confirmed} adjusted={adjustedScores} remarks={validatorRemarks} onAdjust={(key, value) => { setAdjustedScores((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} onRemark={(key, value) => { setValidatorRemarks((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} />
+            <CriteriaTable title={`RDP Outcomes (${analysis.suggested_scores.rdp_track || "Sector"})`} group="rdp" criteria={analysis.suggested_scores.rdp_outcomes} total={analysis.suggested_scores.rdp_total} adjustable={role === "validator" && !locked && !confirmed} adjusted={adjustedScores} remarks={validatorRemarks} onAdjust={(key, value) => { setAdjustedScores((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} onRemark={(key, value) => { setValidatorRemarks((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} />
+            {analysis.regional_scorecard?.applicable ? <CriteriaTable title="Regional Prioritization" group="regional" criteria={analysis.regional_scorecard.criteria} total={analysis.regional_scorecard.total} adjustable={role === "validator" && !locked && !confirmed} adjusted={adjustedScores} remarks={validatorRemarks} onAdjust={(key, value) => { setAdjustedScores((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} onRemark={(key, value) => { setValidatorRemarks((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} /> : <p className="text-sm text-slate-600">{analysis.regional_scorecard?.message}</p>}
             <p className="text-sm font-semibold text-slate-800">Validator base score: {liveBaseScore.toFixed(2)}/100 <span className="font-normal text-slate-500">(AI suggestion: {Number(analysis.base_score).toFixed(2)}/100)</span></p>
             {analysis.evaluation && <p className="text-sm text-slate-700">Saved Validator score: {Number(analysis.evaluation.effective_score).toFixed(2)}/100 · Calculated priority: {priorityLabel(analysis.evaluation.calculated_priority)}</p>}
-            {role === "validator" && !confirmed && <div className="flex justify-end"><button type="button" onClick={saveEvaluation} disabled={busy} className="portal-btn portal-btn-ghost">{evaluationDirty ? "Save Validator Evaluation" : "Save Evaluation"}</button></div>}
-            {negativeMatches.length > 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm"><p className="font-semibold text-amber-900">Possible negative-list matches</p>{negativeMatches.map((item) => <label key={item.key} className="mt-2 flex gap-2"><input type="checkbox" disabled={role === "admin"} checked={confirmedFlags.includes(item.key)} onChange={(e) => setConfirmedFlags((prev) => e.target.checked ? [...prev, item.key] : prev.filter((key) => key !== item.key))} /><span>{item.label} {item.evidence?.length ? `(${item.evidence.join(", ")})` : ""}</span></label>)}</div>}
+            {role === "validator" && !locked && !confirmed && <div className="flex justify-end"><button type="button" onClick={saveEvaluation} disabled={busy} className="portal-btn portal-btn-ghost">{evaluationDirty ? "Save Validator Evaluation" : "Save Evaluation"}</button></div>}
+            {negativeMatches.length > 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm"><p className="font-semibold text-amber-900">Possible negative-list matches</p>{negativeMatches.map((item) => <label key={item.key} className="mt-2 flex gap-2"><input type="checkbox" disabled={role === "admin" || locked} checked={confirmedFlags.includes(item.key)} onChange={(e) => setConfirmedFlags((prev) => e.target.checked ? [...prev, item.key] : prev.filter((key) => key !== item.key))} /><span>{item.label} {item.evidence?.length ? `(${item.evidence.join(", ")})` : ""}</span></label>)}</div>}
             {(analysis.flags?.risks || []).length > 0 && <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900"><p className="font-semibold">Risk flags</p><ul className="mt-1 list-disc pl-5">{analysis.flags?.risks?.map((item) => <li key={item}>{item}</li>)}</ul></div>}
-            {role === "validator" && !confirmed && (
+            {role === "validator" && !locked && !confirmed && (
               <div className="rounded-xl border border-slate-200 p-3 space-y-3">
                 <p className="text-sm font-semibold">Validator Confirmation</p>
                 {incompleteResult && (

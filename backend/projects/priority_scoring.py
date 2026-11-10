@@ -6,7 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
 
-from .document_policy import active_project_documents
+from .document_policy import active_project_documents, documents_for_revision
 from .models import PriorityRuleSet, Project, ProjectPriorityAnalysis, ProjectPriorityConfirmation
 from .scoring_contract import (
     apply_scoring_mappings,
@@ -1370,6 +1370,7 @@ def source_hash(
     supplements,
     rule_set=None,
     project=None,
+    revision=None,
 ):
     rules = rule_set or _active_ruleset()
     historical_dataset_version = ""
@@ -1386,10 +1387,10 @@ def source_hash(
     if project is not None:
         try:
             from .document_assessments import current_document_source_hash
-            from .document_policy import resolve_project_document_policy
+            from .document_policy import resolve_project_document_policy, revision_document_policy
 
-            policy = resolve_project_document_policy(project)
-            document_source_hash = current_document_source_hash(project, policy) if policy else ""
+            policy = revision_document_policy(revision) if revision else resolve_project_document_policy(project)
+            document_source_hash = current_document_source_hash(project, policy, revision=revision) if policy else ""
         except Exception:
             document_source_hash = "unavailable"
     payload = {
@@ -1405,6 +1406,8 @@ def source_hash(
         "historical_dataset_version": historical_dataset_version,
         "document_source_hash": document_source_hash,
     }
+    if revision is not None:
+        payload["revision_id"] = revision.pk
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -1417,7 +1420,10 @@ def _confirmation_snapshot_hash(snapshot):
     already confirmed, unchanged validator copy impossible to endorse.
     """
     normalized = deepcopy(snapshot) if isinstance(snapshot, dict) else {}
-    for key in ("validator_review", "contributor_snapshot", "public_summary"):
+    for key in (
+        "validator_review", "validator_revision_access", "contributor_snapshot",
+        "public_summary", "public_summary_override", "simplified_form_meta",
+    ):
         normalized.pop(key, None)
     if isinstance(normalized.get("simplified_form"), dict):
         marker = normalized.get("form_schema")
@@ -1444,7 +1450,7 @@ class PriorityInputError(ValueError):
         self.report = report
 
 
-def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=None, persist=True, enforce_input_contract=False):
+def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=None, persist=True, enforce_input_contract=False, revision=None):
     supplements = dict(supplements) if isinstance(supplements, dict) else {}
     if not _is_sceeed_sector(_scoring_form(snapshot)):
         supplements.pop("sceeedTrack", None)
@@ -1452,8 +1458,8 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     rule_config = priority_rule_config(rules)
     thresholds = rule_config["thresholds"]
     dictionaries = rule_config["keyword_dictionaries"]
-    digest = source_hash(snapshot, supplements, rules, project=project)
-    existing = ProjectPriorityAnalysis.objects.filter(project=project, rule_set=rules, source_hash=digest).first() if persist else None
+    digest = source_hash(snapshot, supplements, rules, project=project, revision=revision)
+    existing = ProjectPriorityAnalysis.objects.filter(project=project, revision=revision, rule_set=rules, source_hash=digest).first() if persist else None
     if existing:
         existing = ensure_analysis_guidance(existing)
         from ai_engine.services import ensure_learning_assessment
@@ -1504,7 +1510,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     # Resolve this gate from the authoritative active-document relation so a
     # preview cannot treat an absent upload as a scored zero or a valid input.
     facts["_supporting_documents_ready"] = bool(
-        active_project_documents(project).exists()
+        (documents_for_revision(revision) if revision else active_project_documents(project)).exists()
     )
     funding_total = _money_total(form.get("fundingRequirementByYear"))
     form_marker = snapshot.get("form_schema") if isinstance(snapshot, dict) else {}
@@ -1873,6 +1879,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
 
     analysis = ProjectPriorityAnalysis.objects.create(
         project=project,
+        revision=revision,
         validator=validator,
         rule_set=rules,
         form_version=form_version_for_project_snapshot(snapshot),
@@ -1891,14 +1898,14 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     return analysis, False
 
 
-def confirmation_eligibility(project, snapshot):
+def confirmation_eligibility(project, snapshot, *, revision=None):
     """Explain whether a persisted confirmation can endorse this project copy."""
     from .document_assessments import current_document_assessment
-    from .document_policy import resolve_project_document_policy
+    from .document_policy import resolve_project_document_policy, revision_document_policy
 
     active_rules = _active_ruleset()
     current_snapshot_hash = _confirmation_snapshot_hash(snapshot)
-    analyses = list(project.priority_analyses.select_related("rule_set").prefetch_related("confirmations").order_by("-created_at"))
+    analyses = list(project.priority_analyses.filter(revision=revision).select_related("rule_set").prefetch_related("confirmations").order_by("-created_at"))
     current_analyses = [item for item in analyses if item.rule_set_id == active_rules.id]
     matching_analyses = [item for item in current_analyses if _confirmation_snapshot_hash(item.input_snapshot) == current_snapshot_hash]
     completed_analyses = [
@@ -1907,10 +1914,10 @@ def confirmation_eligibility(project, snapshot):
         and isinstance(item.suggested_scores, dict)
         and not item.suggested_scores.get("missing_facts")
     ]
-    policy = resolve_project_document_policy(project)
-    has_documents = bool(policy and active_project_documents(project).exists())
+    policy = revision_document_policy(revision) if revision else resolve_project_document_policy(project)
+    has_documents = bool(policy and (documents_for_revision(revision) if revision else active_project_documents(project)).exists())
     documents_need_assessment = bool(policy and (policy.get("required") or has_documents))
-    assessment = current_document_assessment(project) if documents_need_assessment else None
+    assessment = current_document_assessment(project, revision=revision) if documents_need_assessment else None
     for analysis in completed_analyses:
         for confirmation in sorted(analysis.confirmations.all(), key=lambda item: item.created_at, reverse=True):
             if confirmation.final_priority not in {"high", "low"}:
@@ -1957,9 +1964,12 @@ def confirm_analysis(
     calculated_priority=None,
 ):
     project = Project.objects.only("workflow_status", "profile_data").get(pk=analysis.project_id)
+    revision = analysis.revision
     profile = project.profile_data if isinstance(project.profile_data, dict) else {}
-    if project.workflow_status != Project.WORKFLOW_PENDING:
+    if (revision.workflow_status if revision else project.workflow_status) != Project.WORKFLOW_PENDING:
         raise ValueError("Priority decisions are locked after endorsement.")
+    if revision and _confirmation_snapshot_hash(analysis.input_snapshot) != _confirmation_snapshot_hash(revision.profile_data_snapshot):
+        raise ValueError("The analysis no longer matches this progress update. Run the AI scorer again.")
     scores = analysis.suggested_scores if isinstance(analysis.suggested_scores, dict) else {}
     missing = scores.get("missing_facts") or []
     if analysis.suggested_priority == "incomplete" or missing:
@@ -1971,15 +1981,16 @@ def confirm_analysis(
     from .document_assessments import current_document_assessment
     from .document_policy import resolve_project_document_policy
 
-    document_policy = resolve_project_document_policy(project)
+    from .document_policy import revision_document_policy
+    document_policy = revision_document_policy(revision) if revision else resolve_project_document_policy(project)
     has_documents = bool(
         document_policy
-        and active_project_documents(project).exists()
+        and (documents_for_revision(revision) if revision else active_project_documents(project)).exists()
     )
     documents_need_assessment = bool(
         document_policy and (document_policy.get("required") or has_documents)
     )
-    document_assessment = current_document_assessment(project) if documents_need_assessment else None
+    document_assessment = current_document_assessment(project, revision=revision) if documents_need_assessment else None
     document_rationale = str(document_override_rationale or "").strip()
     if documents_need_assessment and (not document_assessment or document_assessment.status != "pass"):
         if not document_override or not document_rationale:
@@ -2001,5 +2012,6 @@ def confirm_analysis(
         document_override_rationale=document_rationale if document_override else "",
     )
     from ai_engine.services import sync_training_record
-    sync_training_record(confirmation)
+    if revision is None:
+        sync_training_record(confirmation)
     return confirmation

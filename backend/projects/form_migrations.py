@@ -209,7 +209,7 @@ def migration_eligibility(project):
     if str(simplified.get("status") or "").strip().casefold() == "completed":
         return False, "Implementation-completed projects are read-only."
     active = project.revisions.filter(revision_type="progress_update", state__in=ACTIVE_REVISION_STATES).first()
-    if active and active.state != "draft":
+    if active and active.state not in {"draft", "reviewed"}:
         return False, "A progress update is already in review."
     if project.workflow_status == Project.WORKFLOW_PENDING:
         return False, "The Validator must return this project as Needs Revision before its form can be migrated, or finish the active review."
@@ -231,7 +231,7 @@ def prepare_project_migration(project, *, user, trigger):
             return {"status": "skipped", "project": project, "reason": reason}
         active = (
             ProjectRevision.objects.select_for_update()
-            .filter(project=project, revision_type="progress_update", state="draft")
+            .filter(project=project, revision_type="progress_update", state__in=["draft", "reviewed"])
             .order_by("-updated_at")
             .first()
         )
@@ -298,6 +298,27 @@ def prepare_project_migration(project, *, user, trigger):
             project.profile_data = result["profile_data"]
             project.save(update_fields=["profile_data", "updated_at"])
             return {"status": "migrated", "project": project, "revision": None, "form_migration": metadata, **result}
+        if active is not None and active.state == "reviewed":
+            migrated = result["profile_data"]
+            source, target, error = _target_version(source_profile)
+            if error:
+                return {"status": "blocked", "project": project, "issues": [error]}
+            access = migrated.get("validator_revision_access")
+            if not isinstance(access, dict):
+                access = {}
+            old_fields = {str(field.get("key")) for field in schema_fields(source.schema_json) if field.get("visible") is not False}
+            new_fields = {str(field.get("key")) for field in schema_fields(target.schema_json) if field.get("visible") is not False}
+            access["editable_fields"] = list(dict.fromkeys(
+                [str(key) for key in access.get("editable_fields", []) if str(key) in new_fields]
+                + sorted(new_fields - old_fields)
+                + [str(key) for key in result.get("attention_fields", []) if str(key) in new_fields]
+            ))
+            migrated["validator_revision_access"] = access
+            active.profile_data_snapshot = migrated
+            active.public_summary_snapshot = build_public_summary(migrated.get("simplified_form", {}))
+            active.form_migration = metadata
+            active.save(update_fields=["profile_data_snapshot", "public_summary_snapshot", "form_migration", "updated_at"])
+            return {"status": "prepared", "project": project, "revision": active, "form_migration": metadata, **result}
         if active is None:
             last_number = project.revisions.order_by("-revision_number").values_list("revision_number", flat=True).first() or 0
             active = ProjectRevision.objects.create(

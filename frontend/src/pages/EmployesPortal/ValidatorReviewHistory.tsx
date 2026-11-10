@@ -24,10 +24,11 @@ type ApiProject = {
   };
   submission_type?: string;
   profile_data?: Record<string, unknown>;
+  revision_id?: number;
 };
 const PAGE_SIZE = 10;
 
-const reviewPath = (project: ApiProject) => `/validator/projects/${project.id}/review/simplified`;
+const reviewPath = (project: ApiProject) => `/validator/projects/${project.id}/review/simplified${project.revision_id ? `?revision=${project.revision_id}` : ""}`;
 
 const statusLabel = (status?: string) => {
   switch (status) {
@@ -76,8 +77,27 @@ const ValidatorReviewHistory: React.FC = () => {
   const loadProjects = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await api.get("validator/projects/?scope=history");
-      setProjects(Array.isArray(data) ? data : []);
+      const [data, revisions] = await Promise.all([
+        api.get("validator/projects/?scope=history"),
+        api.get("project-revisions/?scope=history&view=summary"),
+      ]);
+      const base: ApiProject[] = Array.isArray(data) ? data : [];
+      const updates = Array.isArray(revisions) ? revisions : [];
+      const updatedIds = new Set(updates.map((item: { project: number }) => item.project));
+      setProjects([
+        ...updates.map((item: { id: number; project: number; project_title?: string; project_agency?: string; budget?: number; workflow_status?: string; workflow_status_label?: string; updated_at?: string; submitted_by_name?: string }) => ({
+          id: item.project,
+          revision_id: item.id,
+          title: item.project_title,
+          agency: item.project_agency,
+          budget: item.budget,
+          workflow_status: item.workflow_status,
+          workflow_status_label: item.workflow_status_label,
+          updated_at: item.updated_at,
+          submitted_by_name: item.submitted_by_name,
+        })),
+        ...base.filter((project) => !updatedIds.has(project.id)),
+      ]);
     } catch (error) {
       console.error("Failed to load validator history:", error);
       setProjects([]);
@@ -184,7 +204,7 @@ const ValidatorReviewHistory: React.FC = () => {
           <>
           <div className="space-y-3 p-3 lg:hidden">
             {visibleProjects.map((p) => (
-              <article key={`mobile-history-${p.id}`} className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+              <article key={`mobile-history-${p.id}-${p.revision_id || "base"}`} className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                 <h2 className="break-words font-semibold text-slate-900">{p.title || p.name || "Untitled"}</h2>
                 <div className="mt-3 grid gap-2 text-sm text-slate-600 sm:grid-cols-2">
                   <p><span className="font-medium text-slate-800">Contributor:</span> {p.submitted_by_name || p.submitted_by?.username || "Unknown"}</p>
@@ -218,7 +238,7 @@ const ValidatorReviewHistory: React.FC = () => {
             </thead>
             <tbody>
               {visibleProjects.map((p) => (
-                <tr key={p.id}>
+                <tr key={`${p.id}-${p.revision_id || "base"}`}>
                   <td className="max-w-[220px] truncate" title={p.title || p.name || "Untitled"}>{p.title || p.name || "Untitled"}</td>
                   <td className="max-w-[180px] truncate" title={p.submitted_by_name || p.submitted_by?.username || "Unknown"}>
                     {p.submitted_by_name || p.submitted_by?.username || "Unknown"}

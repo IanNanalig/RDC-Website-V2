@@ -421,6 +421,9 @@ class BatchAdministrationTests(APITestCase):
         revision = ProjectRevision.objects.get(project=project, revision_type="progress_update", state="draft")
         self.assertEqual(revision.profile_data_snapshot["form_schema"]["version"], target.version_number)
         self.assertIn("custom_batch_required", revision.form_migration["attention_fields"])
+        outdated = self.client.get("/api/admin/projects/?view=summary&scope=update_forms")
+        self.assertEqual(outdated.status_code, 200, outdated.data)
+        self.assertNotIn(project.id, [row["id"] for row in outdated.data])
 
         again = self.client.post(
             "/api/admin/projects/form-migration-preview/", {"project_ids": [project.id]}, format="json"

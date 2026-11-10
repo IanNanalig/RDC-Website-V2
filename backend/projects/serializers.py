@@ -2,6 +2,7 @@ from rest_framework import serializers
 from datetime import datetime
 from copy import deepcopy
 from django.core.exceptions import ObjectDoesNotExist
+from django.db.models import Q
 from cms.form_schema import FormSchemaError, resolve_simplified_form_schema, schema_fields, validate_simplified_answers
 from .audit_presentation import actor_label, presentation_for, readable_changes, sanitize_audit_details
 from .agency_catalog import is_protected_agency, update_agency_metadata
@@ -564,7 +565,9 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
         if prefetched is not None:
             analysis = prefetched[0] if prefetched else None
         else:
-            analysis = obj.priority_analyses.prefetch_related("confirmations").order_by("-created_at").first()
+            analysis = obj.priority_analyses.filter(
+                Q(revision__isnull=True) | Q(revision__is_public_current=True)
+            ).prefetch_related("confirmations").order_by("-created_at").first()
         obj._serializer_latest_analysis = analysis
         return analysis
 
@@ -868,7 +871,7 @@ class ProjectFormMigrationSummarySerializer(ContributorFormVersionStatusMixin, s
         cache = self.context.setdefault("_migration_draft_cache", {})
         if obj.pk not in cache:
             cache[obj.pk] = obj.revisions.filter(
-                revision_type="progress_update", state="draft"
+                revision_type="progress_update", state__in=["draft", "reviewed", "submitted", "validator_draft"]
             ).order_by("-updated_at").first()
         return cache[obj.pk]
 
@@ -889,6 +892,17 @@ class ProjectFormMigrationSummarySerializer(ContributorFormVersionStatusMixin, s
 
 class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.ModelSerializer):
     """Compact, additive projection used only when list callers request view=summary."""
+
+    def _form_profile(self, obj):
+        request = self.context.get("request")
+        if request and request.query_params.get("scope") == "update_forms":
+            revision = obj.revisions.filter(
+                revision_type="progress_update",
+                state__in=["draft", "reviewed", "submitted", "validator_draft"],
+            ).order_by("-updated_at").first()
+            if revision:
+                return revision.profile_data_snapshot if isinstance(revision.profile_data_snapshot, dict) else {}
+        return super()._form_profile(obj)
 
     title = serializers.CharField(source="name", read_only=True)
     submitted_by_name = serializers.SerializerMethodField()
@@ -1071,6 +1085,7 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "project",
+            "revision",
             "validator",
             "validator_name",
             "rule_version",
@@ -1118,7 +1133,7 @@ class ProjectPriorityAnalysisSerializer(serializers.ModelSerializer):
     def get_document_assessment(self, obj):
         from .document_assessments import serialize_document_assessment
 
-        return serialize_document_assessment(obj.project)
+        return serialize_document_assessment(obj.project, revision=obj.revision)
 
     def get_evaluation(self, obj):
         try:
@@ -1169,6 +1184,10 @@ class ProjectRevisionSerializer(ContributorFormVersionStatusMixin, serializers.M
     current_form_version = serializers.SerializerMethodField()
     uses_outdated_form = serializers.SerializerMethodField()
     submission_type = serializers.SerializerMethodField()
+    workflow_status_label = serializers.SerializerMethodField()
+
+    def get_workflow_status_label(self, obj):
+        return dict(Project.WORKFLOW_CHOICES).get(obj.workflow_status, "")
 
     class Meta:
         model = ProjectRevision
@@ -1181,6 +1200,7 @@ class ProjectRevisionSerializer(ContributorFormVersionStatusMixin, serializers.M
             "revision_type",
             "state",
             "workflow_status",
+            "workflow_status_label",
             "profile_data_snapshot",
             "public_summary_snapshot",
             "changed_fields",
@@ -1243,6 +1263,7 @@ class ProjectRevisionSummarySerializer(ProjectRevisionSerializer):
             "revision_type",
             "state",
             "workflow_status",
+            "workflow_status_label",
             "budget",
             "submission_type",
             "created_by_name",

@@ -7,7 +7,7 @@ from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from .document_policy import active_project_documents, resolve_project_document_policy
+from .document_policy import active_project_documents, documents_for_revision, resolve_project_document_policy, revision_document_policy
 from .models import (
     Project,
     ProjectAIProcessingEvent,
@@ -129,8 +129,8 @@ def fail_processing_job(job, *, error_code, error_message, document=None, assess
     return job
 
 
-def active_processing_job(project):
-    job = project.ai_processing_jobs.filter(status__in=ACTIVE_JOB_STATUSES).order_by("-requested_at", "-id").first()
+def active_processing_job(project, revision=None):
+    job = project.ai_processing_jobs.filter(revision=revision, status__in=ACTIVE_JOB_STATUSES).order_by("-requested_at", "-id").first()
     job = mark_stale_processing_job(job)
     return job if job and job.status in ACTIVE_JOB_STATUSES else None
 
@@ -186,9 +186,9 @@ def mark_stale_processing_job(job):
         return locked
 
 
-def latest_processing_job(project):
-    active_processing_job(project)
-    return project.ai_processing_jobs.order_by("-requested_at", "-id").first()
+def latest_processing_job(project, revision=None):
+    active_processing_job(project, revision=revision)
+    return project.ai_processing_jobs.filter(revision=revision).order_by("-requested_at", "-id").first()
 
 
 def _serialize_job(job):
@@ -218,10 +218,11 @@ def serialize_processing_job(job):
     return _serialize_job(job)
 
 
-def current_document_source_hash(project, policy=None, documents=None):
-    policy = policy if isinstance(policy, dict) else resolve_project_document_policy(project)
-    documents = list(documents) if documents is not None else list(active_project_documents(project))
-    profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+def current_document_source_hash(project, policy=None, documents=None, *, revision=None):
+    policy = policy if isinstance(policy, dict) else (revision_document_policy(revision) if revision else resolve_project_document_policy(project))
+    documents = list(documents) if documents is not None else list(documents_for_revision(revision) if revision else active_project_documents(project))
+    profile = revision.profile_data_snapshot if revision else project.profile_data
+    profile = profile if isinstance(profile, dict) else {}
     form = profile.get("simplified_form") if isinstance(profile.get("simplified_form"), dict) else {}
     project_context = {
         key: form.get(key)
@@ -231,13 +232,14 @@ def current_document_source_hash(project, policy=None, documents=None):
             "targetBeneficiaries", "beneficiaries", "expectedOutputIndicator",
         )
     }
-    project_context.update({
-        "stored_name": project.name,
-        "stored_description": project.description,
-        "stored_agency": project.agency,
-        "stored_implementing_agency": project.implementing_agency,
-        "stored_budget": project.budget,
-    })
+    if revision is None:
+        project_context.update({
+            "stored_name": project.name,
+            "stored_description": project.description,
+            "stored_agency": project.agency,
+            "stored_implementing_agency": project.implementing_agency,
+            "stored_budget": project.budget,
+        })
     payload = {
         "project": project_context,
         "policy": policy or {},
@@ -246,40 +248,44 @@ def current_document_source_hash(project, policy=None, documents=None):
             for item in sorted(documents, key=lambda value: value.id)
         ],
     }
+    if revision is not None:
+        payload["revision_id"] = revision.pk
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str).encode("utf-8")
     ).hexdigest()
 
 
-def current_document_assessment(project):
-    documents = list(active_project_documents(project))
-    policy = resolve_project_document_policy(project)
+def current_document_assessment(project, *, revision=None):
+    documents = list(documents_for_revision(revision) if revision else active_project_documents(project))
+    policy = revision_document_policy(revision) if revision else resolve_project_document_policy(project)
     if not policy:
         return None
-    source_hash = current_document_source_hash(project, policy, documents)
-    return project.document_assessments.filter(source_hash=source_hash).order_by("-created_at").first()
+    source_hash = current_document_source_hash(project, policy, documents, revision=revision)
+    return project.document_assessments.filter(revision=revision, source_hash=source_hash).order_by("-created_at").first()
 
 
-def ensure_queued_assessment(project, *, processing_job=None, requested_by=None):
-    policy = resolve_project_document_policy(project, persist=True)
-    documents = list(active_project_documents(project))
+def ensure_queued_assessment(project, *, processing_job=None, requested_by=None, revision=None):
+    policy = revision_document_policy(revision) if revision else resolve_project_document_policy(project, persist=True)
+    documents = list(documents_for_revision(revision) if revision else active_project_documents(project))
     if not policy or not documents:
         return None, False
-    processing_job = processing_job or active_processing_job(project)
+    processing_job = processing_job or active_processing_job(project, revision=revision)
     if processing_job is None:
         processing_job = ProjectAIProcessingJob.objects.create(
             project=project,
+            revision=revision,
             requested_by=requested_by,
-            source_hash=current_document_source_hash(project, policy, documents),
+            source_hash=current_document_source_hash(project, policy, documents, revision=revision),
             status=ProjectAIProcessingJob.STATUS_QUEUED,
             stage=ProjectAIProcessingJob.STAGE_ASSESSMENT,
             heartbeat_at=timezone.now(),
         )
         record_processing_event(processing_job, "requested", stage=ProjectAIProcessingJob.STAGE_ASSESSMENT)
-    source_hash = current_document_source_hash(project, policy, documents)
+    source_hash = current_document_source_hash(project, policy, documents, revision=revision)
     try:
         assessment, created = ProjectDocumentAssessment.objects.get_or_create(
             project=project,
+            revision=revision,
             source_hash=source_hash,
             defaults={
                 "status": ProjectDocumentAssessment.STATUS_QUEUED,
@@ -288,7 +294,7 @@ def ensure_queued_assessment(project, *, processing_job=None, requested_by=None)
             },
         )
     except IntegrityError:
-        assessment = ProjectDocumentAssessment.objects.get(project=project, source_hash=source_hash)
+        assessment = ProjectDocumentAssessment.objects.get(project=project, revision=revision, source_hash=source_hash)
         created = False
     if processing_job and assessment.processing_job_id != processing_job.id:
         assessment.processing_job = processing_job
@@ -296,9 +302,9 @@ def ensure_queued_assessment(project, *, processing_job=None, requested_by=None)
     return assessment, created
 
 
-def serialize_document_assessment(project):
-    policy = resolve_project_document_policy(project)
-    documents = list(active_project_documents(project))
+def serialize_document_assessment(project, *, revision=None):
+    policy = revision_document_policy(revision) if revision else resolve_project_document_policy(project)
+    documents = list(documents_for_revision(revision) if revision else active_project_documents(project))
     if not policy:
         return {"status": "not_required", "required": False, "document_results": []}
     if not documents:
@@ -308,8 +314,8 @@ def serialize_document_assessment(project):
             "document_results": [],
             "summary": "Supporting documents have not been uploaded.",
         }
-    assessment = current_document_assessment(project)
-    job = latest_processing_job(project)
+    assessment = current_document_assessment(project, revision=revision)
+    job = latest_processing_job(project, revision=revision)
     if not assessment:
         upload_failed = any(
             item.upload_status != ProjectSupportingDocument.UPLOAD_UPLOADED or not item.content
@@ -443,7 +449,7 @@ def dispatch_document_processing(document_id, *, processing_job=None):
         return {"ok": False, "task_id": ""}
 
 
-def dispatch_project_document_processing(project, *, retry_failed=False, requested_by=None):
+def dispatch_project_document_processing(project, *, retry_failed=False, requested_by=None, revision=None):
     """Claim eligible documents and start extraction after Validator action.
 
     Contributors never call this helper. The project and document locks make
@@ -452,10 +458,11 @@ def dispatch_project_document_processing(project, *, retry_failed=False, request
     """
     with transaction.atomic():
         locked_project = Project.objects.select_for_update().get(pk=project.pk)
-        existing_job = active_processing_job(locked_project)
-        source_hash = current_document_source_hash(locked_project)
+        existing_job = active_processing_job(locked_project, revision=revision)
+        source_hash = current_document_source_hash(locked_project, revision=revision)
         processing_job = existing_job or ProjectAIProcessingJob.objects.create(
             project=locked_project,
+            revision=revision,
             requested_by=requested_by,
             source_hash=source_hash,
             status=ProjectAIProcessingJob.STATUS_QUEUED,
@@ -465,7 +472,7 @@ def dispatch_project_document_processing(project, *, retry_failed=False, request
         if not existing_job:
             record_processing_event(processing_job, "requested", stage=ProjectAIProcessingJob.STAGE_DISPATCH)
         documents = list(
-            active_project_documents(locked_project)
+            (documents_for_revision(revision) if revision else active_project_documents(locked_project))
             # The active-document filter joins the nullable revision FK.
             # PostgreSQL cannot lock the nullable side of that outer join.
             .select_for_update(of=("self",))

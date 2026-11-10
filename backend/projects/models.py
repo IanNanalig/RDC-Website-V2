@@ -655,6 +655,10 @@ class ProjectPriorityAnalysis(models.Model):
     ]
 
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="priority_analyses")
+    revision = models.ForeignKey(
+        "ProjectRevision", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="priority_analyses",
+    )
     validator = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="priority_analyses")
     rule_set = models.ForeignKey(PriorityRuleSet, on_delete=models.PROTECT, related_name="analyses")
     form_version = models.ForeignKey(
@@ -842,6 +846,10 @@ class ProjectDocumentAssessment(models.Model):
     ]
 
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="document_assessments")
+    revision = models.ForeignKey(
+        "ProjectRevision", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="document_assessments",
+    )
     source_hash = models.CharField(max_length=64, db_index=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_QUEUED, db_index=True)
     document_results = models.JSONField(default=list, blank=True)
@@ -917,6 +925,10 @@ class ProjectAIProcessingJob(models.Model):
 
     correlation_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False, db_index=True)
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="ai_processing_jobs")
+    revision = models.ForeignKey(
+        "ProjectRevision", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="ai_processing_jobs",
+    )
     requested_by = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name="requested_ai_processing_jobs"
     )

@@ -104,6 +104,7 @@ from .priority_scoring import PriorityInputError, analyze_project, confirm_analy
 from .document_policy import (
     PROJECT_DOCUMENT_MAX_TOTAL_BYTES,
     active_project_documents,
+    documents_for_revision,
     resolve_project_document_policy,
     revision_document_policy,
     validate_project_documents_for_submit,
@@ -1176,7 +1177,9 @@ def _priority_label(value):
 
 
 def _latest_project_confirmation(project):
-    return ProjectPriorityConfirmation.objects.filter(analysis__project=project).order_by("-created_at").first()
+    return ProjectPriorityConfirmation.objects.filter(analysis__project=project).filter(
+        Q(analysis__revision__isnull=True) | Q(analysis__revision__is_public_current=True)
+    ).order_by("-created_at").first()
 
 
 def _workflow_status_for_project(project):
@@ -1315,7 +1318,7 @@ def _migration_preview_row(project, *, version_cache=None):
     eligible, reason = migration_eligibility(project)
     source_profile = project.profile_data
     draft = project.revisions.filter(
-        revision_type="progress_update", state="draft"
+        revision_type="progress_update", state__in=["draft", "reviewed", "submitted", "validator_draft"]
     ).order_by("-updated_at").first()
     if draft is not None:
         source_profile = draft.profile_data_snapshot
@@ -3563,7 +3566,9 @@ def _project_queryset_with_related(qs, *, prefetch_priority=True):
     if not prefetch_priority:
         return qs
     latest_confirmations = ProjectPriorityConfirmation.objects.order_by("-created_at")
-    latest_analyses = ProjectPriorityAnalysis.objects.prefetch_related(
+    latest_analyses = ProjectPriorityAnalysis.objects.filter(
+        Q(revision__isnull=True) | Q(revision__is_public_current=True)
+    ).prefetch_related(
         Prefetch("confirmations", queryset=latest_confirmations)
     ).order_by("-created_at")[:1]
     return qs.prefetch_related(
@@ -3854,21 +3859,40 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Project not found."}, status=404)
         if not _can_access_project_documents(request.user, project):
             raise PermissionDenied("You cannot access this project's supporting documents.")
-        return Response(serialize_document_assessment(project))
+        revision, error = self._assessment_revision(request.query_params, project)
+        if error:
+            return error
+        return Response(serialize_document_assessment(project, revision=revision))
+
+    @staticmethod
+    def _assessment_revision(params, project):
+        raw_id = params.get("revision")
+        if not raw_id:
+            return None, None
+        try:
+            revision = ProjectRevision.objects.get(pk=int(raw_id), project=project)
+        except (ProjectRevision.DoesNotExist, TypeError, ValueError):
+            return None, Response({"detail": "Progress update not found."}, status=404)
+        if revision.revision_type != "progress_update" or revision.state not in {"submitted", "validator_draft"} or revision.workflow_status != Project.WORKFLOW_PENDING:
+            return None, Response({"detail": "Only a pending progress update can be analyzed."}, status=409)
+        return revision, None
 
     def _inline_processing_project(self, request):
         try:
             project = Project.objects.get(pk=int(request.data.get("project") or 0))
         except (Project.DoesNotExist, TypeError, ValueError):
-            return None, Response({"detail": "Project not found."}, status=404)
+            return None, None, Response({"detail": "Project not found."}, status=404)
         if getattr(request.user, "role", "") not in {"validator", "admin"} or not _can_access_project_documents(request.user, project):
             raise PermissionDenied("Only an assigned validator or administrator can run AI document processing.")
         if not document_processing_runs_inline():
-            return None, Response(
+            return None, None, Response(
                 {"detail": "This installation is configured to process documents through its worker service."},
                 status=status.HTTP_409_CONFLICT,
             )
-        return project, None
+        revision, error = self._assessment_revision(request.data, project)
+        if error:
+            return None, None, error
+        return project, revision, None
 
     @action(detail=False, methods=["post"], url_path="process-inline")
     def process_inline(self, request):
@@ -3877,16 +3901,17 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
         This is intentionally separate from assessment so the portal can show
         truthful progress after the extraction stage completes.
         """
-        project, error = self._inline_processing_project(request)
+        project, revision, error = self._inline_processing_project(request)
         if error:
             return error
-        documents = list(active_project_documents(project))
+        documents = list(documents_for_revision(revision) if revision else active_project_documents(project))
         if not documents:
             return Response({"detail": "Upload supporting documents before running AI analysis."}, status=400)
         result = dispatch_project_document_processing(
             project,
             retry_failed=True,
             requested_by=request.user,
+            revision=revision,
         )
         if result["queued_ids"]:
             _log_activity(
@@ -3895,20 +3920,20 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
                 project,
                 {"document_ids": result["queued_ids"], "mode": "inline"},
             )
-        return Response(serialize_document_assessment(project))
+        return Response(serialize_document_assessment(project, revision=revision))
 
     @action(detail=False, methods=["post"], url_path="assess-inline")
     def assess_inline(self, request):
         """Run the Groq document assessment after all active files are ready."""
-        project, error = self._inline_processing_project(request)
+        project, revision, error = self._inline_processing_project(request)
         if error:
             return error
-        documents = list(active_project_documents(project))
+        documents = list(documents_for_revision(revision) if revision else active_project_documents(project))
         if not documents:
             return Response({"detail": "Upload supporting documents before running AI analysis."}, status=400)
         if any(item.extraction_status != ProjectSupportingDocument.EXTRACTION_READY for item in documents):
-            return Response(serialize_document_assessment(project), status=status.HTTP_409_CONFLICT)
-        assessment, _created = ensure_queued_assessment(project, requested_by=request.user)
+            return Response(serialize_document_assessment(project, revision=revision), status=status.HTTP_409_CONFLICT)
+        assessment, _created = ensure_queued_assessment(project, requested_by=request.user, revision=revision)
         if assessment is None:
             return Response({"detail": "This project has no supporting-document policy."}, status=400)
         if not _created:
@@ -3920,7 +3945,7 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
             assessment.status = "unavailable"
             assessment.error_message = "The document assessment could not start. Retry AI processing."
             assessment.save(update_fields=["status", "error_message", "updated_at"])
-        return Response(serialize_document_assessment(project))
+        return Response(serialize_document_assessment(project, revision=revision))
 
     @action(detail=False, methods=["get"], url_path=r"processing-jobs/(?P<job_id>[^/.]+)")
     def processing_job(self, request, job_id=None):
@@ -4001,6 +4026,18 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
 class BaseProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated, ProjectPermission]
+
+    def _priority_revision(self, request, project):
+        raw_id = request.query_params.get("revision") if request.method == "GET" else request.data.get("revision")
+        if raw_id in (None, ""):
+            return None
+        try:
+            revision = ProjectRevision.objects.get(pk=int(raw_id), project=project)
+        except (ProjectRevision.DoesNotExist, TypeError, ValueError):
+            raise Http404("Progress update not found.")
+        if revision.revision_type != "progress_update" or revision.state == "draft" or revision.workflow_status not in {Project.WORKFLOW_PENDING, Project.WORKFLOW_VALIDATED}:
+            raise PermissionDenied("This progress update is not available for priority analysis.")
+        return revision
 
     def perform_create(self, serializer):
         super().perform_create(serializer)
@@ -4380,11 +4417,12 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="priority-analysis")
     def priority_analysis(self, request, pk=None):
         project = self.get_object()
+        revision = self._priority_revision(request, project)
         role = getattr(request.user, "role", "")
         if role not in ("validator", "admin"):
             raise PermissionDenied("Only validator/admin can view priority analysis.")
         analyses = list(
-            project.priority_analyses.select_related("validator", "rule_set").prefetch_related(
+            project.priority_analyses.filter(revision=revision).select_related("validator", "rule_set").prefetch_related(
                 "confirmations__validator"
             )
         )
@@ -4394,8 +4432,9 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 from ai_engine.services import ensure_learning_assessment
                 analysis._current_learning_assessment = ensure_learning_assessment(analysis)
         serializer = ProjectPriorityAnalysisSerializer(analyses, many=True)
-        profile = project.profile_data if isinstance(project.profile_data, dict) else {}
-        eligibility = confirmation_eligibility(project, _validator_review_source(profile)) if project.priority_analysis_eligible else {"eligible": True, "code": "not_required", "detail": "Priority analysis is not required for this project."}
+        profile = revision.profile_data_snapshot if revision else project.profile_data
+        profile = profile if isinstance(profile, dict) else {}
+        eligibility = confirmation_eligibility(project, _validator_review_source(profile), revision=revision) if project.priority_analysis_eligible else {"eligible": True, "code": "not_required", "detail": "Priority analysis is not required for this project."}
         return Response(
             {
                 "eligible": bool(project.priority_analysis_eligible),
@@ -4407,12 +4446,14 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path=r"priority-analysis/(?P<analysis_id>\d+)/evaluation")
     def priority_analysis_evaluation(self, request, pk=None, analysis_id=None):
         project = self.get_object()
+        revision = self._priority_revision(request, project)
         if getattr(request.user, "role", "") != "validator":
             raise PermissionDenied("Only validators can save priority evaluations.")
-        profile = project.profile_data if isinstance(project.profile_data, dict) else {}
-        if project.workflow_status != Project.WORKFLOW_PENDING:
+        profile = revision.profile_data_snapshot if revision else project.profile_data
+        profile = profile if isinstance(profile, dict) else {}
+        if (revision.workflow_status if revision else project.workflow_status) != Project.WORKFLOW_PENDING:
             return Response({"detail": "Priority decisions are locked after endorsement."}, status=409)
-        analysis = project.priority_analyses.filter(pk=analysis_id).first()
+        analysis = project.priority_analyses.filter(pk=analysis_id, revision=revision).first()
         if analysis is None:
             return Response({"detail": "Priority analysis not found."}, status=404)
         if analysis.confirmations.exists():
@@ -4436,15 +4477,17 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="priority-analysis/run")
     def priority_analysis_run(self, request, pk=None):
         project = self.get_object()
+        revision = self._priority_revision(request, project)
         if getattr(request.user, "role", "") != "validator":
             raise PermissionDenied("Only validators can run priority analysis.")
         if not project.priority_analysis_eligible:
             return Response({"detail": "Legacy projects are excluded from priority analysis enforcement."}, status=400)
-        if not _is_simplified_profile(project.profile_data):
+        profile_data = revision.profile_data_snapshot if revision else project.profile_data
+        if not _is_simplified_profile(profile_data):
             return Response({"detail": "Priority analysis is available only for simplified-form projects."}, status=400)
-        if project.workflow_status != Project.WORKFLOW_PENDING:
+        if (revision.workflow_status if revision else project.workflow_status) != Project.WORKFLOW_PENDING:
             return Response({"detail": "Priority analysis is available before endorsement only."}, status=400)
-        document_assessment = serialize_document_assessment(project)
+        document_assessment = serialize_document_assessment(project, revision=revision)
         if document_assessment.get("status") == "missing":
             return Response(
                 {"detail": "Upload the required supporting documents before running AI Assistant analysis.", "document_assessment": document_assessment},
@@ -4455,7 +4498,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             # former worker deployment. In worker mode, preserve the existing
             # asynchronous response so an active task is never duplicated.
             if document_assessment.get("status") == "not_processed" or document_processing_runs_inline():
-                dispatch_result = dispatch_project_document_processing(project, requested_by=request.user)
+                dispatch_result = dispatch_project_document_processing(project, requested_by=request.user, revision=revision)
             else:
                 dispatch_result = {"queued_ids": [], "job": None}
             if dispatch_result["queued_ids"]:
@@ -4465,17 +4508,18 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                     project,
                     {"document_ids": dispatch_result["queued_ids"]},
                 )
-            document_assessment = serialize_document_assessment(project)
+            document_assessment = serialize_document_assessment(project, revision=revision)
         if document_assessment.get("status") == "pending":
             job = dispatch_result.get("job") if "dispatch_result" in locals() else None
-            documents = list(active_project_documents(project))
+            documents = list(documents_for_revision(revision) if revision else active_project_documents(project))
             if any(item.extraction_status != ProjectSupportingDocument.EXTRACTION_READY for item in documents):
-                document_assessment = serialize_document_assessment(project)
+                document_assessment = serialize_document_assessment(project, revision=revision)
             else:
                 assessment, _created = ensure_queued_assessment(
                     project,
                     processing_job=job,
                     requested_by=request.user,
+                    revision=revision,
                 )
                 if assessment and document_processing_runs_inline() and not _created:
                     assessment.status = "queued"
@@ -4486,7 +4530,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                     assessment.status = "unavailable"
                     assessment.error_message = "The document assessment could not start. Retry AI processing."
                     assessment.save(update_fields=["status", "error_message", "updated_at"])
-                document_assessment = serialize_document_assessment(project)
+                document_assessment = serialize_document_assessment(project, revision=revision)
         if document_assessment.get("status") in {"queued", "processing"}:
             return Response(
                 {
@@ -4509,7 +4553,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
 
         if "edited_profile_data" in request.data:
             return Response({"detail": "Contributor answers are read-only for validators. Request revisions instead."}, status=403)
-        profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
+        profile_data = profile_data if isinstance(profile_data, dict) else {}
         snapshot = _validator_review_source(profile_data)
         snapshot = deepcopy(snapshot)
         supplements = request.data.get("supplements")
@@ -4526,7 +4570,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             }
         try:
             analysis, reused = analyze_project(
-                project, request.user, snapshot, supplements, enforce_input_contract=True,
+                project, request.user, snapshot, supplements, enforce_input_contract=True, revision=revision,
             )
         except PriorityInputError as exc:
             missing_labels = [
@@ -4582,13 +4626,15 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
     )
     def priority_analysis_confirm(self, request, pk=None, analysis_id=None):
         project = self.get_object()
+        revision = self._priority_revision(request, project)
         if getattr(request.user, "role", "") != "validator":
             raise PermissionDenied("Only validators can confirm priority analysis.")
-        profile = project.profile_data if isinstance(project.profile_data, dict) else {}
-        if project.workflow_status != Project.WORKFLOW_PENDING:
+        profile = revision.profile_data_snapshot if revision else project.profile_data
+        profile = profile if isinstance(profile, dict) else {}
+        if (revision.workflow_status if revision else project.workflow_status) != Project.WORKFLOW_PENDING:
             return Response({"detail": "Priority decisions are locked after endorsement."}, status=400)
         try:
-            analysis = project.priority_analyses.get(pk=analysis_id)
+            analysis = project.priority_analyses.get(pk=analysis_id, revision=revision)
         except ProjectPriorityAnalysis.DoesNotExist:
             return Response({"detail": "Priority analysis not found."}, status=404)
         if analysis.confirmations.exists():
@@ -4677,7 +4723,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 },
             )
         next_group = _priority_group(confirmation.final_priority)
-        if next_group and next_group != previous_group:
+        if revision is None and next_group and next_group != previous_group:
             label = _priority_label(confirmation.final_priority)
             _notify_many(
                 _project_employee_recipients(project),
@@ -5133,9 +5179,10 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
         return super().submit(request, pk=pk)
 
     @action(detail=True, methods=["post"], url_path="start-update")
+    @transaction.atomic
     def start_update(self, request, pk=None):
         self._ensure_progress_update_open()
-        project = self.get_object()
+        project = Project.objects.select_for_update().get(pk=self.get_object().pk)
         if not _is_simplified_profile(project.profile_data):
             return Response({"detail": "Progress updates are available only for simplified-form projects."}, status=400)
         if not project.validated:
@@ -5147,7 +5194,12 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             revision_type="progress_update",
             state__in=["draft", "submitted", "validator_draft", "reviewed"],
         ).order_by("-updated_at").first()
-        source_profile = active.profile_data_snapshot if active and active.state == "draft" else project.profile_data
+        if active and active.state in {"submitted", "validator_draft"}:
+            return Response({
+                "detail": "This progress update is already awaiting Validator review.",
+                "code": "update_already_pending",
+            }, status=409)
+        source_profile = active.profile_data_snapshot if active and active.state in {"draft", "reviewed"} else project.profile_data
         migration = analyze_profile_migration(source_profile)
         if not migration.get("compatible"):
             issues = migration.get("issues") or ["The saved form cannot be migrated safely."]
@@ -5167,55 +5219,15 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
                 "code": "form_migration_required",
                 "issues": issues,
             }, status=409)
-        if migration.get("already_current"):
-            if active:
-                return Response(ProjectRevisionSerializer(active).data)
-        else:
-            prepared = prepare_project_migration(project, user=request.user, trigger="contributor_update")
-            if prepared.get("status") == "prepared" and prepared.get("revision") is not None:
-                revision = prepared["revision"]
-                existing_draft_reused = active is not None and active.id == revision.id
-                _log_activity(request, "project_revision_updated" if existing_draft_reused else "project_revision_created", project, {
-                    "operation": "automatic_form_migration",
-                    "revision_id": revision.id,
-                    "revision_number": revision.revision_number,
-                    "source_version": prepared.get("source_version"),
-                    "target_version": prepared.get("target_version"),
-                    "attention_fields": prepared.get("attention_fields") or [],
-                })
-                if not existing_draft_reused:
-                    _notify_many(
-                        _admins(),
-                        event_type="contributor_progress_draft_created",
-                        title="Contributor progress draft created",
-                        message=(
-                            f"{_user_display_name(request.user)} created progress update "
-                            f"v{revision.revision_number} for {_project_title(project)}."
-                        ),
-                        project=project,
-                        actor=request.user,
-                        dedupe_key=f"project:{project.id}:revision:{revision.id}:contributor-draft:admins",
-                        link_path=_revision_review_link(revision, "admin"),
-                    )
-                return Response(ProjectRevisionSerializer(revision).data, status=200 if existing_draft_reused else 201)
-            if prepared.get("status") not in {"current", "migrated"}:
-                issues = prepared.get("issues") or [prepared.get("reason") or "The form cannot be migrated safely."]
-                issue_key = hashlib.sha256("|".join(issues).encode("utf-8")).hexdigest()[:16]
-                _notify_many(
-                    _admins(),
-                    event_type="project_form_migration_blocked",
-                    title="Project form needs manual migration review",
-                    message=f"{_project_title(project)} could not be prepared for updating: {'; '.join(issues)}",
-                    project=project,
-                    actor=request.user,
-                    dedupe_key=f"project:{project.id}:form-migration-blocked:{issue_key}",
-                    link_path="/admin/projects/update-forms",
-                )
-                return Response({
-                    "detail": "This project cannot be opened for updating until an administrator resolves its form migration.",
-                    "code": "form_migration_required",
-                    "issues": issues,
-                }, status=409)
+        if not migration.get("already_current"):
+            return Response({
+                "detail": "An Administrator must update this project's form before a Contributor can start an update.",
+                "code": "form_migration_required",
+                "source_version": migration.get("source_version"),
+                "target_version": migration.get("target_version"),
+            }, status=409)
+        if active:
+            return Response(ProjectRevisionSerializer(active).data)
 
         current = _ensure_public_revision(project, request.user)
         base_profile = deepcopy(current.profile_data_snapshot if current else project.profile_data)
@@ -5291,10 +5303,18 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
             # object lookups too, not only the queue list, so guessing a revision
             # URL cannot expose an unsubmitted snapshot.
             qs = qs.exclude(state="draft")
+            if self.action != "list":
+                return qs
             scope = (self.request.query_params.get("scope") or "queue").strip().lower()
             if scope == "history":
-                return qs.filter(state__in=["reviewed", "endorsed", "rejected", "superseded"])
-            return qs.filter(state__in=["submitted", "validator_draft", "reviewed"])
+                return qs.filter(
+                    revision_type="progress_update", workflow_status=Project.WORKFLOW_VALIDATED, state="endorsed"
+                ).filter(
+                    Q(reviewed_by=self.request.user) | Q(endorsed_by=self.request.user)
+                )
+            if scope == "corrections":
+                return qs.filter(workflow_status=Project.WORKFLOW_NEEDS_REVISION, state__in=["reviewed", "rejected"])
+            return qs.filter(workflow_status=Project.WORKFLOW_PENDING, state__in=["submitted", "validator_draft"])
         if role in ("staff", "employee"):
             agency = _normalize_account_agency(self.request.user.agency)
             if not agency:
@@ -5386,6 +5406,9 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
         )
         if isinstance(access, dict):
             updated_profile["validator_revision_access"] = deepcopy(access)
+        # The approved project's snapshot may be copied into a new progress draft.
+        # Scoring must read this revision's latest contributor answers instead.
+        updated_profile["contributor_snapshot"] = _strip_validator_meta(updated_profile)
         current = _ensure_public_revision(revision.project, request.user)
         base_profile = current.profile_data_snapshot if current else revision.project.profile_data
         revision.profile_data_snapshot = updated_profile
@@ -5416,9 +5439,19 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
         return Response({"detail": "Revision deletion is disabled for audit safety."}, status=405)
 
     @action(detail=True, methods=["post"])
+    @transaction.atomic
     def submit(self, request, pk=None):
-        revision = self.get_object()
+        visible = self.get_object()
+        Project.objects.select_for_update().get(pk=visible.project_id)
+        revision = ProjectRevision.objects.select_for_update().get(pk=visible.pk)
         self._ensure_contributor_editable(revision)
+        migration = analyze_profile_migration(revision.profile_data_snapshot)
+        if not migration.get("compatible") or not migration.get("already_current"):
+            return Response({
+                "detail": "An Administrator must update this progress update to the current Contributor Form before submission.",
+                "code": "form_migration_required",
+                "issues": migration.get("issues") or [],
+            }, status=409)
         if not _is_simplified_profile(revision.profile_data_snapshot):
             return Response({"detail": "Only simplified-form progress updates can be submitted."}, status=400)
         revision_form_marker = (
@@ -5439,6 +5472,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
             validate_simplified_answers(revision.profile_data_snapshot, require_complete=versioned_form)
         except FormSchemaError as exc:
             return Response({"detail": str(exc)}, status=400)
+        revision.profile_data_snapshot["contributor_snapshot"] = _strip_validator_meta(revision.profile_data_snapshot)
         if not revision.changed_fields:
             current = _ensure_public_revision(revision.project, request.user)
             base_profile = current.profile_data_snapshot if current else revision.project.profile_data
@@ -5447,7 +5481,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
         revision.workflow_status = Project.WORKFLOW_PENDING
         revision.submitted_by = request.user
         revision.submitted_at = timezone.now()
-        revision.save(update_fields=["state", "workflow_status", "submitted_by", "submitted_at", "changed_fields", "updated_at"])
+        revision.save(update_fields=["profile_data_snapshot", "state", "workflow_status", "submitted_by", "submitted_at", "changed_fields", "updated_at"])
         _log_activity(
             request,
             "project_revision_submitted",
@@ -5470,10 +5504,13 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
         return Response(ProjectRevisionSerializer(revision).data)
 
     @action(detail=True, methods=["post"])
+    @transaction.atomic
     def review(self, request, pk=None):
         if getattr(request.user, "role", "") not in ("validator", "admin"):
             raise PermissionDenied("Only validator/admin can review progress updates.")
-        revision = self.get_object()
+        visible = self.get_object()
+        Project.objects.select_for_update().get(pk=visible.project_id)
+        revision = ProjectRevision.objects.select_for_update().select_related("project").get(pk=visible.pk)
         action_value = (request.data.get("action") or "").strip().lower()
         if revision.state == "endorsed" and action_value not in ("endorse", "validate", "approve"):
             return Response({"detail": "Endorsed revisions are final and cannot be reverted."}, status=400)
@@ -5569,7 +5606,20 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
             revision.workflow_status = Project.WORKFLOW_NEEDS_REVISION
             event = "project_revision_reviewed"
         elif action_value in ("endorse", "validate", "approve"):
+            if revision.revision_type == "progress_update" and revision.project.priority_analysis_eligible:
+                eligibility = confirmation_eligibility(
+                    revision.project, _validator_review_source(edited_profile), revision=revision,
+                )
+                if not eligibility["eligible"]:
+                    return Response({"detail": eligibility["detail"], "code": eligibility["code"], "validation_eligibility": eligibility}, status=409)
             _apply_revision_to_project(revision, request.user)
+            if revision.revision_type == "progress_update":
+                confirmed = ProjectPriorityConfirmation.objects.filter(
+                    analysis__revision=revision,
+                ).order_by("-created_at").first()
+                if confirmed:
+                    from ai_engine.services import sync_training_record
+                    sync_training_record(confirmed)
             event = "project_revision_endorsed"
         elif action_value == "reject":
             return Response({"detail": "Request Revision instead of rejecting a project update."}, status=400)
@@ -5735,7 +5785,11 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
         qs = Project.objects.filter(archived=False).exclude(workflow_status=Project.WORKFLOW_DRAFT).filter(
             Q(workflow_status=Project.WORKFLOW_PENDING)
             | (reviewed_by_user & Q(workflow_status__in=(Project.WORKFLOW_NEEDS_REVISION, Project.WORKFLOW_VALIDATED)))
-        ).order_by("-created_at")
+            | Q(revisions__revision_type="progress_update", revisions__workflow_status=Project.WORKFLOW_PENDING,
+                revisions__state__in=["submitted", "validator_draft"])
+            | Q(revisions__revision_type="progress_update", revisions__state="endorsed",
+                revisions__reviewed_by=user)
+        ).distinct().order_by("-created_at")
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
         return _project_list_queryset(
             _filter_projects_for_workflow(qs, workflow).order_by("-created_at"),
@@ -5780,7 +5834,7 @@ class AdminProjectViewSet(BaseProjectViewSet):
                 for project_id, profile in ProjectRevision.objects.filter(
                     project_id__in=qs.values("id"),
                     revision_type="progress_update",
-                    state="draft",
+                    state__in=["draft", "reviewed", "submitted", "validator_draft"],
                 ).order_by("project_id", "-updated_at").values_list("project_id", "profile_data_snapshot"):
                     draft_profiles.setdefault(project_id, profile)
                 for project in qs.only("id", "profile_data"):
@@ -5790,7 +5844,7 @@ class AdminProjectViewSet(BaseProjectViewSet):
                         continue
                     analysis = analyze_profile_migration(source_profile, version_cache=version_cache)
                     target_version = analysis.get("target_version")
-                    if target_version is None or marker[1] < target_version:
+                    if not analysis.get("compatible") or target_version is None or marker[1] < target_version:
                         outdated_ids.append(project.id)
                 qs = Project.objects.filter(id__in=outdated_ids)
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")

@@ -64,6 +64,8 @@ type ProjectRevisionRow = {
   revision_number?: number;
   revision_type?: string;
   state?: string;
+  workflow_status?: string;
+  workflow_status_label?: string;
   profile_data_snapshot?: Record<string, unknown>;
   budget?: number;
   submission_type?: string;
@@ -93,7 +95,7 @@ const statusLabel = (status?: string, workflowLabel?: string) => {
     case "planning":
       return "Draft";
     case "proposed":
-      return "Submitted";
+      return "Pending Validation";
     case "completed":
       return "Validated";
     case "ongoing":
@@ -211,6 +213,8 @@ const ProjectsPage: React.FC = () => {
               revision_id: r.id,
               revision_number: r.revision_number,
               revision_state: r.state,
+              workflow_status: r.workflow_status,
+              workflow_status_label: r.workflow_status_label,
               revision_type: r.revision_type,
               is_revision: true,
               archive_title: projectTitle,
@@ -218,7 +222,7 @@ const ProjectsPage: React.FC = () => {
               name: `${r.project_title || "Project"} - Progress Update v${r.revision_number || ""}`,
               agency: r.project_agency || "",
               budget: Number(r.budget ?? ((r.profile_data_snapshot as any)?.public_summary?.key_facts?.funding_requirement_total || 0)),
-              status: r.state === "endorsed" ? "completed" : "proposed",
+              status: project?.status,
               rdip_status: project?.rdip_status,
               updated_at: r.updated_at,
               submitted_by_name: r.submitted_by_name || r.created_by_name || "Unknown",
@@ -286,9 +290,9 @@ const ProjectsPage: React.FC = () => {
 
   const filtered = useMemo(() => {
     let list = projects;
-    if (selectedWorkflow === "pending_validation") list = list.filter((p) => p.workflow_status === "pending_validation" || p.status === "proposed");
+    if (selectedWorkflow === "pending_validation") list = list.filter((p) => p.workflow_status === "pending_validation");
     else if (selectedWorkflow === "needs_revision") list = list.filter((p) => p.workflow_status === "needs_revision");
-    else if (selectedWorkflow === "validated") list = list.filter((p) => p.workflow_status === "validated" || p.status === "completed");
+    else if (selectedWorkflow === "validated") list = list.filter((p) => p.workflow_status === "validated");
     else if (selectedWorkflow === "priority") list = list.filter((p) => p.official_priority_label === "Priority");
     else if (selectedWorkflow === "non_priority") list = list.filter((p) => p.official_priority_label === "Non-Priority");
 

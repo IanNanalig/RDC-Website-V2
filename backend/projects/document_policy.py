@@ -108,6 +108,13 @@ def active_project_documents(project):
     )
 
 
+def documents_for_revision(revision):
+    """Approved evidence plus files submitted with this particular update."""
+    return revision.project.supporting_documents.filter(removed_at__isnull=True).filter(
+        Q(revision__isnull=True) | Q(revision__state="endorsed") | Q(revision_id=revision.pk)
+    ).distinct()
+
+
 def revision_document_policy(revision):
     """Use the revision's pinned form version for its upload rules."""
     from cms.models import CMSContributorFormVersion

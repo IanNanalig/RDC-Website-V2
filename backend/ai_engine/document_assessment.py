@@ -21,22 +21,34 @@ def _verified_citations(values, source_text):
     return verified[:5]
 
 
-def _project_context(project):
-    profile = project.profile_data if isinstance(project.profile_data, dict) else {}
+def _form_budget(form, fallback):
+    values = form.get("fundingRequirementByYear")
+    if not isinstance(values, dict):
+        return fallback
+    try:
+        return sum(float(str(value or 0).replace(",", "")) for value in values.values())
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _project_context(project, profile=None):
+    scoped = isinstance(profile, dict)
+    profile = profile if isinstance(profile, dict) else project.profile_data
+    profile = profile if isinstance(profile, dict) else {}
     form = profile.get("simplified_form") if isinstance(profile.get("simplified_form"), dict) else {}
     return {
-        "title": _clean(form.get("projectActivity") or form.get("projectTitle") or project.name, 500),
-        "description": _clean(form.get("description") or project.description, 8000),
+        "title": _clean(form.get("projectActivity") or form.get("projectTitle") or ("" if scoped else project.name), 500),
+        "description": _clean(form.get("description") or ("" if scoped else project.description), 8000),
         "objectives": _clean(form.get("objective"), 5000),
-        "agency": _clean(form.get("agencyName") or project.agency or project.implementing_agency, 500),
+        "agency": _clean(form.get("agencyName") or ("" if scoped else project.agency or project.implementing_agency), 500),
         "sector": _clean(form.get("developmentSector") or form.get("mainInfrastructureSector"), 500),
-        "budget": project.budget,
+        "budget": _form_budget(form, None if scoped else project.budget),
         "expected_output": _clean(form.get("expectedOutputIndicator"), 3000),
         "beneficiaries": _clean(form.get("targetBeneficiaries") or form.get("beneficiaries"), 3000),
     }
 
 
-def assess_project_documents(project, documents, policy):
+def assess_project_documents(project, documents, policy, *, profile=None):
     payload_documents = []
     remaining = MAX_DOCUMENT_TEXT_TOTAL
     for document in documents:
@@ -60,7 +72,7 @@ def assess_project_documents(project, documents, policy):
         "phrases from that file. A file belonging to another project or containing random/unreadable material is unrelated."
     )
     user_payload = {
-        "project": _project_context(project),
+        "project": _project_context(project, profile),
         "administrator_sufficiency_criteria": str(policy.get("ai_sufficiency_instructions") or "")[:4000],
         "documents": payload_documents,
     }

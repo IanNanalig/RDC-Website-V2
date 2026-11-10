@@ -354,6 +354,7 @@ class PortalWorkflowTests(APITestCase):
         }
         project = Project.objects.create(
             name="Validator Progress Notification",
+            priority_analysis_eligible=False,
             implementing_agency="MMDA",
             municipality="NCR",
             status="ongoing",
@@ -500,6 +501,7 @@ class PortalWorkflowTests(APITestCase):
             created_by=self.employee,
             profile_data={
                 "submission_type": "simplified",
+                "form_schema": {"key": "simplified-rdip", "version": CMSContributorForm.objects.get(key="simplified-rdip").current_published_version.version_number, "legacy": True},
                 "simplified_form": {
                     "projectActivity": "Original activity",
                     "startYear": "2026",
@@ -536,6 +538,7 @@ class PortalWorkflowTests(APITestCase):
             {
                 "profile_data": {
                     "submission_type": "simplified",
+                    "form_schema": project.profile_data["form_schema"],
                     "simplified_form": {
                         "projectActivity": "Allowed activity",
                         "startYear": "2025",
@@ -553,6 +556,7 @@ class PortalWorkflowTests(APITestCase):
             {
                 "profile_data": {
                     "submission_type": "simplified",
+                    "form_schema": project.profile_data["form_schema"],
                     "simplified_form": {
                         "projectActivity": "Allowed activity",
                         "startYear": "2026",
@@ -651,6 +655,7 @@ class PortalWorkflowTests(APITestCase):
         version = CMSContributorForm.objects.get(key="simplified-rdip").current_published_version.version_number
         project = Project.objects.create(
             name="Progress Evidence", implementing_agency="MMDA", municipality="NCR",
+            priority_analysis_eligible=False,
             status="ongoing", validated=True, cost=100000, latitude=14.5,
             agency="MMDA", budget=100000, created_by=self.employee,
             profile_data={
@@ -714,8 +719,132 @@ class PortalWorkflowTests(APITestCase):
         self.assertEqual(len(self.client.get(f"/api/project-supporting-documents/?project={project.id}").data), 0)
         endorsed = self.client.post(f"/api/project-revisions/{revision_id}/review/", {"action": "endorse"}, format="json")
         self.assertEqual(endorsed.status_code, 200, endorsed.data)
+        history = self.client.get("/api/project-revisions/?view=summary&scope=history")
+        self.assertIn(revision_id, [row["id"] for row in history.data])
+        self.assertNotIn(revision_id, [row["id"] for row in self.client.get("/api/project-revisions/?view=summary&scope=queue").data])
         self.assertEqual(len(self.client.get(f"/api/project-supporting-documents/?project={project.id}").data), 1)
         self.assertEqual(self.client.get(f"/api/project-supporting-documents/{document_id}/download/").status_code, 200)
+
+    @override_settings(GROQ_ENABLED=False, DOCUMENT_AI_PROCESSING_MODE="inline")
+    @patch("projects.tasks.assess_project_documents")
+    def test_progress_update_is_regraded_before_approval_without_changing_public_copy(self, assess_documents):
+        self._set_progress_window(timezone.now() - timedelta(hours=1), timezone.now() + timedelta(hours=1))
+        self.employee.agency = "DPWH"
+        self.employee.save(update_fields=["agency"])
+        version = CMSContributorForm.objects.get(key="simplified-rdip").current_published_version.version_number
+        profile = {
+            "submission_type": "simplified",
+            "form_schema": {"key": "simplified-rdip", "version": version, "legacy": True},
+            "simplified_form": {
+                "agencyName": "DPWH", "projectActivity": "Original drainage project",
+                "program": "Metro Manila drainage improvement", "location": ["Quezon City"],
+                "description": "Rehabilitate local drains and protect homes from flooding.",
+                "objective": "Reduce flooding and improve climate resilience.",
+                "developmentSector": "Sectoral Committee on Infrastructure Development (SCID)",
+                "rdpMainChapter": "13 Expand and Upgrade Infrastructure Infrastructure",
+                "status": "New", "startYear": "2026", "endYear": "2026",
+                "fundingRequirementByYear": {"2026": "150000000"},
+            },
+        }
+        profile["contributor_snapshot"] = {
+            "submission_type": profile["submission_type"],
+            "form_schema": deepcopy(profile["form_schema"]),
+            "simplified_form": deepcopy(profile["simplified_form"]),
+        }
+        project = Project.objects.create(
+            name="Original drainage project", implementing_agency="DPWH", municipality="NCR",
+            status="ongoing", validated=True, cost=150000000, latitude=14.5,
+            agency="DPWH", budget=150000000, created_by=self.employee, profile_data=profile,
+        )
+        self._as(self.employee)
+        started = self.client.post(f"/api/employee/projects/{project.id}/start-update/", {}, format="json")
+        self.assertEqual(started.status_code, 201, started.data)
+        revision_id = started.data["id"]
+        changed = deepcopy(started.data["profile_data_snapshot"])
+        changed["simplified_form"]["projectActivity"] = "Updated drainage project"
+        changed["simplified_form"]["description"] = "Expand the drainage works and protect more homes from flooding."
+        saved = self.client.put(f"/api/project-revisions/{revision_id}/", {"profile_data": changed}, format="json")
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual(
+            saved.data["profile_data_snapshot"]["contributor_snapshot"]["simplified_form"]["projectActivity"],
+            "Updated drainage project",
+        )
+        uploaded = self.client.post(
+            "/api/project-supporting-documents/",
+            {"project": project.id, "revision": revision_id,
+             "field_key": current_document_policy("simplified-rdip")["field_key"],
+             "file": SimpleUploadedFile("drainage.csv", b"item,value\ndrainage works,150000000\n", content_type="text/csv")},
+            format="multipart",
+        )
+        self.assertEqual(uploaded.status_code, 201, uploaded.data)
+        submitted = self.client.post(f"/api/project-revisions/{revision_id}/submit/", {}, format="json")
+        self.assertEqual(submitted.status_code, 200, submitted.data)
+        self._as(self.validator)
+        blocked = self.client.post(f"/api/project-revisions/{revision_id}/review/", {"action": "endorse"}, format="json")
+        self.assertEqual(blocked.status_code, 409, blocked.data)
+        self.assertEqual(blocked.data["code"], "analysis_missing")
+        self.assertEqual(project.priority_analyses.count(), 0)
+        processed = self.client.post(
+            "/api/project-supporting-documents/process-inline/",
+            {"project": project.id, "revision": revision_id}, format="json",
+        )
+        self.assertEqual(processed.status_code, 200, processed.data)
+        assess_documents.return_value = {
+            "status": "pass", "document_results": [{"document_id": uploaded.data["id"], "related": True}],
+            "collective_sufficient": True, "summary": "Relevant drainage evidence.",
+            "provider": "test", "model": "test", "used_backup_model": False,
+        }
+        assessed = self.client.post(
+            "/api/project-supporting-documents/assess-inline/",
+            {"project": project.id, "revision": revision_id}, format="json",
+        )
+        self.assertEqual(assessed.status_code, 200, assessed.data)
+        self.assertEqual(assessed.data["status"], "pass")
+        run = self.client.post(
+            f"/api/validator/projects/{project.id}/priority-analysis/run/",
+            {"revision": revision_id, "supplements": {
+                "readinessLevel": "completed_documents", "gadResponsiveness": "gender_responsive",
+                "spatialCoverageScope": "specific_lgus",
+            }}, format="json",
+        )
+        self.assertEqual(run.status_code, 200, run.data)
+        analysis = run.data["analysis"]
+        self.assertEqual(analysis["revision"], revision_id)
+        self.assertEqual(
+            project.priority_analyses.get(pk=analysis["id"]).input_snapshot["simplified_form"]["projectActivity"],
+            "Updated drainage project",
+        )
+        self.assertIn(analysis["suggested_priority"], {"high", "low"})
+        self.assertEqual(project.priority_analyses.filter(revision__isnull=True).count(), 0)
+        project.refresh_from_db()
+        self.assertEqual(project.name, "Original drainage project")
+        before_approval = self.client.get(f"/api/validator/projects/{project.id}/")
+        self.assertEqual(before_approval.status_code, 200, before_approval.data)
+        self.assertEqual(before_approval.data["official_priority"], "")
+        evaluation = self.client.post(
+            f"/api/validator/projects/{project.id}/priority-analysis/{analysis['id']}/evaluation/",
+            {"revision": revision_id, "adjusted_scores": {}, "validator_remarks": {}}, format="json",
+        )
+        self.assertEqual(evaluation.status_code, 200, evaluation.data)
+        confirmed = self.client.post(
+            f"/api/validator/projects/{project.id}/priority-analysis/{analysis['id']}/confirm/",
+            {"revision": revision_id, "final_priority": analysis["suggested_priority"]}, format="json",
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.data)
+        endorsed = self.client.post(f"/api/project-revisions/{revision_id}/review/", {"action": "endorse"}, format="json")
+        self.assertEqual(endorsed.status_code, 200, endorsed.data)
+        project.refresh_from_db()
+        self.assertEqual(project.name, "Updated drainage project")
+        self.assertEqual(project.workflow_status, Project.WORKFLOW_VALIDATED)
+        self.assertTrue(project.revisions.get(pk=revision_id).is_public_current)
+        after_approval = self.client.get(f"/api/validator/projects/{project.id}/")
+        self.assertEqual(after_approval.data["official_priority"], analysis["suggested_priority"])
+        saved_analysis = self.client.get(
+            f"/api/validator/projects/{project.id}/priority-analysis/?revision={revision_id}"
+        )
+        self.assertEqual(saved_analysis.status_code, 200, saved_analysis.data)
+        self.assertEqual(saved_analysis.data["validation_eligibility"]["code"], "ready")
+        self.assertEqual(saved_analysis.data["analyses"][0]["document_assessment"]["status"], "pass")
 
     def test_returned_progress_evidence_never_becomes_current(self):
         self._set_progress_window(timezone.now() - timedelta(hours=1), timezone.now() + timedelta(hours=1))
@@ -748,12 +877,14 @@ class PortalWorkflowTests(APITestCase):
         returned = self.client.post(f"/api/project-revisions/{revision_id}/review/", {"action": "save_reviewed", "notes": "Revise evidence."}, format="json")
         self.assertEqual(returned.status_code, 200, returned.data)
         self.assertEqual(returned.data["workflow_status"], "needs_revision")
+        self.assertNotIn(revision_id, [row["id"] for row in self.client.get("/api/project-revisions/?view=summary&scope=queue").data])
+        self.assertIn(revision_id, [row["id"] for row in self.client.get("/api/project-revisions/?view=summary&scope=corrections").data])
         project.refresh_from_db()
         self.assertEqual(project.name, "Rejected evidence")
         self.assertEqual(len(self.client.get(f"/api/project-supporting-documents/?project={project.id}").data), 0)
         self.assertEqual(ProjectSupportingDocument.objects.get(pk=uploaded.data["id"]).revision_id, revision_id)
 
-    def test_opening_an_editable_progress_draft_syncs_the_project_form_version(self):
+    def test_opening_an_old_progress_draft_requires_administrator_migration(self):
         self._set_progress_window(timezone.now() - timedelta(hours=1), timezone.now() + timedelta(hours=1))
         self.employee.agency = "DENR"
         self.employee.save(update_fields=["agency"])
@@ -789,16 +920,15 @@ class PortalWorkflowTests(APITestCase):
 
         self._as(self.employee)
         opened = self.client.post(f"/api/employee/projects/{project.id}/start-update/", {}, format="json")
-        self.assertEqual(opened.status_code, status.HTTP_200_OK, opened.data)
-        live_version = opened.data["current_form_version"]
-        self.assertEqual(opened.data["profile_data_snapshot"]["form_schema"]["version"], live_version)
+        self.assertEqual(opened.status_code, status.HTTP_409_CONFLICT, opened.data)
+        self.assertEqual(opened.data["code"], "form_migration_required")
         draft.refresh_from_db()
-        self.assertEqual(draft.profile_data_snapshot["form_schema"]["version"], live_version)
+        self.assertEqual(draft.profile_data_snapshot["form_schema"]["version"], 1)
         self.assertEqual(
             draft.profile_data_snapshot["simplified_form"]["projectActivity"],
             "Preserved draft response",
         )
-        self.assertTrue(UserActivity.objects.filter(
+        self.assertFalse(UserActivity.objects.filter(
             user=self.employee,
             project=project,
             event="project_revision_updated",
