@@ -39,7 +39,6 @@ type ApiProject = {
   submitted_by_name?: string;
   submission_type?: string;
   rdip_status?: string;
-  review_status?: string;
   reviewed_by_username?: string;
   validator_edited?: boolean;
   validator_edited_fields_count?: number;
@@ -54,7 +53,7 @@ type ApiProject = {
   profile_data?: Record<string, unknown>;
 };
 
-type WorkflowFilter = "all" | "pending_validation" | "needs_revision" | "validated" | "priority" | "non_priority" | "rejected";
+type WorkflowFilter = "all" | "pending_validation" | "needs_revision" | "validated" | "priority" | "non_priority";
 const PAGE_SIZE = 10;
 
 type ProjectRevisionRow = {
@@ -119,57 +118,6 @@ const statusBadge = (status?: string) => {
     default:
       return "bg-slate-100 text-slate-700";
   }
-};
-
-const getValidatorReview = (p: ApiProject) => {
-  const pd = p.profile_data as Record<string, unknown> | undefined;
-  const vr = pd?.validator_review;
-  if (!vr || typeof vr !== "object") {
-    if (!p.review_status && !p.reviewed_by_username && !p.validator_edited) return null;
-    return {
-      review_status: p.review_status,
-      reviewed_by_username: p.reviewed_by_username,
-      edited: p.validator_edited,
-      edited_fields_count: p.validator_edited_fields_count,
-    };
-  }
-  return vr as Record<string, unknown>;
-};
-
-const reviewStateLabel = (p: ApiProject) => {
-  if (p.is_revision) {
-    const state = String(p.revision_state || "").toLowerCase();
-    if (state === "draft") return "Draft";
-    if (state === "submitted") return "Submitted";
-    if (state === "validator_draft") return "Validator Draft";
-    if (state === "reviewed") return "Needs Revision";
-    if (state === "endorsed") return "Endorsed";
-    if (state === "rejected") return "Rejected";
-  }
-  const vr = getValidatorReview(p);
-  const status = String(vr?.review_status || "").toLowerCase();
-  if (status === "draft") return "Draft";
-  if (status === "reviewed") return "Needs Revision";
-  if (status === "endorsed" || status === "validated") return "Endorsed";
-  if (status === "rejected") return "Rejected";
-  return "Not Reviewed";
-};
-
-const reviewStateBadge = (p: ApiProject) => {
-  if (p.is_revision) {
-    const state = String(p.revision_state || "").toLowerCase();
-    if (state === "draft" || state === "submitted" || state === "validator_draft") return "bg-slate-100 text-slate-700";
-    if (state === "reviewed") return "bg-violet-100 text-violet-700";
-    if (state === "endorsed") return "bg-emerald-100 text-emerald-700";
-    if (state === "rejected") return "bg-rose-100 text-rose-700";
-  }
-  const vr = getValidatorReview(p);
-  const status = String(vr?.review_status || "").toLowerCase();
-  if (status === "draft") return "bg-slate-100 text-slate-700";
-  if (status === "reviewed") return "bg-violet-100 text-violet-700";
-  if (status === "endorsed" || status === "validated") return "bg-emerald-100 text-emerald-700";
-  if (status === "rejected") return "bg-rose-100 text-rose-700";
-  return "bg-slate-100 text-slate-700";
 };
 
 const ProjectsPage: React.FC = () => {
@@ -341,7 +289,6 @@ const ProjectsPage: React.FC = () => {
     if (selectedWorkflow === "pending_validation") list = list.filter((p) => p.workflow_status === "pending_validation" || p.status === "proposed");
     else if (selectedWorkflow === "needs_revision") list = list.filter((p) => p.workflow_status === "needs_revision");
     else if (selectedWorkflow === "validated") list = list.filter((p) => p.workflow_status === "validated" || p.status === "completed");
-    else if (selectedWorkflow === "rejected") list = list.filter((p) => p.workflow_status === "rejected");
     else if (selectedWorkflow === "priority") list = list.filter((p) => p.official_priority_label === "Priority");
     else if (selectedWorkflow === "non_priority") list = list.filter((p) => p.official_priority_label === "Non-Priority");
 
@@ -356,10 +303,8 @@ const ProjectsPage: React.FC = () => {
     { key: "budget", label: "Budget" },
     { key: "status", label: "Status" },
     { key: "priority", label: "Priority" },
-    { key: "review", label: "Review State" },
     { key: "updated", label: "Updated" },
   ].filter((option) => {
-    if (option.key === "review") return role === "admin" || role === "validator";
     return option.key !== "contributor" || role === "admin" || role === "validator" || role === "employee";
   }), [role]);
   const changeSort = (key: string) => {
@@ -379,7 +324,6 @@ const ProjectsPage: React.FC = () => {
       case "budget": return Number(project.budget || 0);
       case "status": return statusLabel(project.status, project.workflow_status_label);
       case "priority": return project.official_priority_label || "";
-      case "review": return reviewStateLabel(project);
       case "updated": return project.updated_at ? new Date(project.updated_at).getTime() : null;
       default: return "";
     }
@@ -618,7 +562,6 @@ const ProjectsPage: React.FC = () => {
             <option value="validated">Validated</option>
             <option value="priority">Priority</option>
             <option value="non_priority">Non-Priority</option>
-            <option value="rejected">Rejected</option>
           </select>
           <MobileSortControls
             className="lg:col-span-2 2xl:hidden"
@@ -678,9 +621,6 @@ const ProjectsPage: React.FC = () => {
                     <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusBadge(p.workflow_status || p.status)}`}>
                       {statusLabel(p.status, p.workflow_status_label)}
                     </span>
-                    <span className={`rounded-full px-2 py-1 text-xs font-semibold ${reviewStateBadge(p)}`}>
-                      {reviewStateLabel(p)}
-                    </span>
                     {p.official_priority_label && (
                       <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">{p.official_priority_label}</span>
                     )}
@@ -709,7 +649,6 @@ const ProjectsPage: React.FC = () => {
                 <SortableTableHeader label="Budget" sortKey="budget" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden xl:table-cell" />
                 <SortableTableHeader label="Status" sortKey="status" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
                 <SortableTableHeader label="Priority" sortKey="priority" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden xl:table-cell" />
-                {(role === "admin" || role === "validator") && <SortableTableHeader label="Review State" sortKey="review" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden xl:table-cell" />}
                 <SortableTableHeader label="Updated" sortKey="updated" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden 2xl:table-cell" />
                 <th>Actions</th>
               </tr>
@@ -752,13 +691,6 @@ const ProjectsPage: React.FC = () => {
                     <span className={`px-2 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${statusBadge(p.workflow_status || p.status)}`}>{statusLabel(p.status, p.workflow_status_label)}</span>
                   </td>
                   <td className="hidden xl:table-cell">{p.official_priority_label || "-"}</td>
-                  {(role === "admin" || role === "validator") && (
-                    <td className="hidden xl:table-cell">
-                      <span className={`px-2 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${reviewStateBadge(p)}`}>
-                        {reviewStateLabel(p)}
-                      </span>
-                    </td>
-                  )}
                   <td className="hidden 2xl:table-cell">{p.updated_at ? new Date(p.updated_at).toLocaleString() : "-"}</td>
                   <td className="min-w-[150px]">
                     <div className="flex flex-wrap gap-x-2 gap-y-1 text-[13px]">

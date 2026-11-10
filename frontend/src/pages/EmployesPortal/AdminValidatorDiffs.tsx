@@ -14,6 +14,9 @@ type ApiProject = {
   name?: string;
   agency?: string;
   status?: string;
+  workflow_status?: string;
+  workflow_status_label?: string;
+  validated?: boolean;
   updated_at?: string;
   submitted_by_name?: string;
   reviewed_by_name?: string;
@@ -29,14 +32,13 @@ type ApiProject = {
   } | null;
 };
 
-type ReviewState = "all" | "draft" | "reviewed" | "endorsed" | "rejected" | "not_reviewed";
+type ReviewState = "all" | "draft" | "pending_validation" | "needs_revision" | "validated";
 const PAGE_SIZE = 10;
 
 const getValidatorReview = (p: ApiProject): Record<string, unknown> | null => {
   const pd = p.profile_data as Record<string, unknown> | undefined;
   const vr = pd?.validator_review;
-  if (!vr || typeof vr !== "object") return null;
-  return vr as Record<string, unknown>;
+  return vr && typeof vr === "object" ? vr as Record<string, unknown> : null;
 };
 
 const validatorName = (project: ApiProject) =>
@@ -44,20 +46,20 @@ const validatorName = (project: ApiProject) =>
 
 const stateLabel = (value: string) => {
   const normalized = String(value || "").toLowerCase();
-  if (!normalized) return "Not Reviewed";
+  if (!normalized) return "Unknown";
   if (normalized === "draft") return "Draft";
-  if (normalized === "reviewed") return "Needs Revision";
-  if (normalized === "endorsed" || normalized === "validated") return "Validated";
-  if (normalized === "rejected") return "Rejected";
+  if (normalized === "pending_validation") return "Pending Validation";
+  if (normalized === "needs_revision") return "Needs Revision";
+  if (normalized === "validated") return "Validated";
   return normalized;
 };
 
 const stateBadge = (value: string) => {
   const normalized = String(value || "").toLowerCase();
   if (normalized === "draft") return "bg-slate-100 text-slate-700";
-  if (normalized === "reviewed") return "bg-violet-100 text-violet-700";
-  if (normalized === "endorsed" || normalized === "validated") return "bg-emerald-100 text-emerald-700";
-  if (normalized === "rejected") return "bg-rose-100 text-rose-700";
+  if (normalized === "pending_validation") return "bg-blue-100 text-blue-700";
+  if (normalized === "needs_revision") return "bg-violet-100 text-violet-700";
+  if (normalized === "validated") return "bg-emerald-100 text-emerald-700";
   return "bg-slate-100 text-slate-700";
 };
 
@@ -96,13 +98,7 @@ const AdminValidatorDiffs: React.FC = () => {
   const filtered = useMemo(() => {
     let list = items;
     if (reviewState !== "all") {
-      list = list.filter((p) => {
-        const vr = getValidatorReview(p);
-        let status = String(vr?.review_status || "").toLowerCase();
-        if (status === "validated") status = "endorsed";
-        if (reviewState === "not_reviewed") return !status;
-        return status === reviewState;
-      });
+      list = list.filter((p) => p.workflow_status === reviewState);
     }
     const q = query.trim().toLowerCase();
     if (!q) return list;
@@ -123,7 +119,7 @@ const AdminValidatorDiffs: React.FC = () => {
   const sortOptions = [
     { key: "title", label: "Title" },
     { key: "contributor", label: "Contributor" },
-    { key: "review", label: "Review State" },
+    { key: "review", label: "Workflow Status" },
     { key: "priority", label: "AI Priority" },
     { key: "validator", label: "Validator" },
     { key: "reviewed", label: "Reviewed At" },
@@ -142,7 +138,7 @@ const AdminValidatorDiffs: React.FC = () => {
     switch (key) {
       case "title": return project.title || project.name || "Untitled";
       case "contributor": return project.submitted_by_name || project.submitted_by?.username || "";
-      case "review": return stateLabel(String(review?.review_status || ""));
+      case "review": return stateLabel(String(project.workflow_status || ""));
       case "priority": return Number(project.priority_analysis?.score || 0);
       case "validator": return validatorName(project);
       case "reviewed": return review?.reviewed_at ? new Date(String(review.reviewed_at)).getTime() : null;
@@ -180,12 +176,11 @@ const AdminValidatorDiffs: React.FC = () => {
             onChange={(e) => { setReviewState(e.target.value as ReviewState); setPage(1); }}
             className="border border-slate-200 rounded-xl px-3 py-2"
           >
-            <option value="all">All states</option>
+            <option value="all">All statuses</option>
             <option value="draft">Draft</option>
-            <option value="reviewed">Reviewed</option>
-            <option value="endorsed">Endorsed</option>
-            <option value="rejected">Rejected</option>
-            <option value="not_reviewed">Not Reviewed</option>
+            <option value="pending_validation">Pending Validation</option>
+            <option value="needs_revision">Needs Revision</option>
+            <option value="validated">Validated</option>
           </select>
           <MobileSortControls
           className="lg:col-span-3 2xl:hidden"
@@ -211,7 +206,7 @@ const AdminValidatorDiffs: React.FC = () => {
               <tr>
                 <SortableTableHeader label="Title" sortKey="title" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
                 <SortableTableHeader label="Contributor" sortKey="contributor" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden md:table-cell" />
-                <SortableTableHeader label="Review State" sortKey="review" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
+                <SortableTableHeader label="Workflow Status" sortKey="review" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
                 <SortableTableHeader label="AI Priority" sortKey="priority" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden lg:table-cell" />
                 <SortableTableHeader label="Validator" sortKey="validator" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden xl:table-cell" />
                 <SortableTableHeader label="Reviewed At" sortKey="reviewed" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden 2xl:table-cell" />
@@ -221,7 +216,7 @@ const AdminValidatorDiffs: React.FC = () => {
             <tbody>
               {visibleItems.map((p) => {
                 const vr = getValidatorReview(p);
-                const reviewStatus = String(vr?.review_status || "");
+                const reviewStatus = String(p.workflow_status || "");
                 return (
                   <tr key={p.id}>
                     <td className="max-w-[250px] truncate" title={p.title || p.name || "Untitled"}>
@@ -288,7 +283,7 @@ const AdminValidatorDiffs: React.FC = () => {
               <div><dt className="text-slate-500">Agency</dt><dd>{selected.agency || "Not recorded"}</dd></div>
               <div><dt className="text-slate-500">Contributor</dt><dd>{selected.submitted_by_name || selected.submitted_by?.username || "Not recorded"}</dd></div>
               <div><dt className="text-slate-500">Validator</dt><dd>{validatorName(selected) || "Not recorded"}</dd></div>
-              <div><dt className="text-slate-500">Review state</dt><dd>{stateLabel(String(getValidatorReview(selected)?.review_status || ""))}</dd></div>
+              <div><dt className="text-slate-500">Workflow status</dt><dd>{selected.workflow_status_label || stateLabel(String(selected.workflow_status || ""))}</dd></div>
               <div><dt className="text-slate-500">AI recommendation</dt><dd>{selected.priority_analysis?.suggested_priority || "Not available"}</dd></div>
               <div><dt className="text-slate-500">Confirmed priority</dt><dd>{selected.priority_analysis?.confirmed ? selected.priority_analysis.final_priority : "Not confirmed"}</dd></div>
               <div><dt className="text-slate-500">Reviewed at</dt><dd>{getValidatorReview(selected)?.reviewed_at ? new Date(String(getValidatorReview(selected)?.reviewed_at)).toLocaleString("en-PH", { timeZone: "Asia/Manila" }) : "Not recorded"}</dd></div>

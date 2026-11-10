@@ -11,6 +11,7 @@ from cms.form_schema import (
 from cms.models import CMSContributorForm, CMSContributorFormVersion
 from projects.models import Project, ProjectRevision
 from projects.public_summary import build_public_summary
+from projects.document_policy import document_policy_from_schema
 from projects.utils import derive_ncr_lgus
 
 
@@ -65,7 +66,7 @@ def _target_version(profile_data, version_cache=None):
         result = (
             (source, form.current_published_version, "")
             if source is not None
-            else (None, None, f"Contributor form version {source_number} is unavailable.")
+            else (None, form.current_published_version, f"Contributor form version {source_number} is unavailable.")
         )
     if version_cache is not None:
         version_cache[cache_key] = result
@@ -112,7 +113,13 @@ def _normalize_location(profile_data, target_schema):
 def analyze_profile_migration(profile_data, *, version_cache=None):
     source, target, error = _target_version(profile_data, version_cache=version_cache)
     if error:
-        return {"compatible": False, "issues": [error]}
+        marker = saved_form_marker(profile_data)
+        return {
+            "compatible": False,
+            "source_version": marker[1] if marker else None,
+            "target_version": target.version_number if target else None,
+            "issues": [error],
+        }
     if source.version_number >= target.version_number:
         return {
             "compatible": True,
@@ -201,18 +208,22 @@ def migration_eligibility(project):
     simplified = profile.get("simplified_form") if isinstance(profile.get("simplified_form"), dict) else {}
     if str(simplified.get("status") or "").strip().casefold() == "completed":
         return False, "Implementation-completed projects are read-only."
-    if project.status == "proposed":
-        return False, "Projects in validation or correction cannot be migrated."
     active = project.revisions.filter(revision_type="progress_update", state__in=ACTIVE_REVISION_STATES).first()
     if active and active.state != "draft":
         return False, "A progress update is already in review."
-    if project.status != "planning" and not project.validated:
+    if project.workflow_status == Project.WORKFLOW_PENDING:
+        return False, "The Validator must return this project as Needs Revision before its form can be migrated, or finish the active review."
+    if project.workflow_status == Project.WORKFLOW_NEEDS_REVISION:
+        if not project.validated:
+            return True, ""
+        return False, "A validated project has an active correction; finish that submission before migration."
+    if project.workflow_status not in {Project.WORKFLOW_DRAFT, Project.WORKFLOW_VALIDATED}:
         return False, "The project has not passed validation."
     return True, ""
 
 
 def prepare_project_migration(project, *, user, trigger):
-    """Migrate a draft in place or prepare a non-public revision for a validated project."""
+    """Migrate a draft/correction in place or prepare a validated update draft."""
     with transaction.atomic():
         project = Project.objects.select_for_update().get(pk=project.pk)
         eligible, reason = migration_eligibility(project)
@@ -237,7 +248,53 @@ def prepare_project_migration(project, *, user, trigger):
             "warnings": result.get("issues", []),
             "attention_fields": result.get("attention_fields", []),
         }
-        if project.status == "planning":
+        if project.workflow_status == Project.WORKFLOW_NEEDS_REVISION:
+            # A returned correction is the contributor's editable copy. Keep the
+            # original answers and Validator review in private revision history.
+            source, target, error = _target_version(source_profile)
+            if error:
+                return {"status": "blocked", "project": project, "issues": [error]}
+            old_fields = {str(field.get("key")) for field in schema_fields(source.schema_json) if field.get("visible") is not False}
+            new_fields = {
+                str(field.get("key")) for field in schema_fields(target.schema_json)
+                if field.get("visible") is not False and field.get("key")
+            }
+            migrated = result["profile_data"]
+            review = migrated.get("validator_review")
+            if not isinstance(review, dict):
+                return {"status": "blocked", "project": project, "issues": ["The returned review is missing."]}
+            editable = review.get("editable_fields")
+            if not isinstance(editable, list):
+                editable = []
+            review["editable_fields"] = list(dict.fromkeys(
+                [str(key) for key in editable if str(key) in new_fields]
+                + sorted(new_fields - old_fields)
+                + [str(key) for key in result.get("attention_fields", []) if str(key) in new_fields]
+            ))
+            review.pop("working_copy", None)
+            migrated["contributor_snapshot"] = {
+                key: deepcopy(value) for key, value in migrated.items()
+                if key not in {"validator_review", "validator_revision_access", "contributor_snapshot", "public_summary", "public_summary_override", "simplified_form_meta"}
+            }
+            migrated["public_summary"] = build_public_summary(migrated.get("simplified_form", {}))
+            last_number = project.revisions.order_by("-revision_number").values_list("revision_number", flat=True).first() or 0
+            history = ProjectRevision.objects.create(
+                project=project,
+                revision_number=last_number + 1,
+                revision_type="initial_submission",
+                state="superseded",
+                profile_data_snapshot=deepcopy(source_profile),
+                public_summary_snapshot=build_public_summary(source_profile.get("simplified_form", {})),
+                form_migration=metadata,
+                created_by=user,
+            )
+            project.profile_data = migrated
+            project.supporting_document_policy = document_policy_from_schema(
+                target.schema_json, form_key=target.form.key, form_version=target.version_number,
+            )
+            project.save(update_fields=["profile_data", "supporting_document_policy", "updated_at"])
+            return {"status": "correction_migrated", "project": project, "revision": history, "form_migration": metadata, **result}
+        if project.workflow_status == Project.WORKFLOW_DRAFT:
             project.profile_data = result["profile_data"]
             project.save(update_fields=["profile_data", "updated_at"])
             return {"status": "migrated", "project": project, "revision": None, "form_migration": metadata, **result}

@@ -12,15 +12,12 @@ interface DashboardStats {
   pending_projects?: number;
   approved_projects?: number;
   archived_projects?: number;
-  reviewed_projects?: number;
+  needs_revision_projects?: number;
   validator_edited_projects?: number;
   users?: number;
   admin_users?: number;
   validator_users?: number;
   contributor_users?: number;
-  review_draft?: number;
-  review_reviewed?: number;
-  review_endorsed?: number;
 }
 
 const AdminDashboard: React.FC = () => {
@@ -75,9 +72,9 @@ const AdminDashboard: React.FC = () => {
 
   const projectStatusData = [
     { label: "Draft", count: stats.draft_projects || 0 },
-    { label: "Submitted", count: stats.pending_projects || 0 },
-    { label: "Reviewed", count: stats.review_reviewed || 0 },
-    { label: "Endorsed", count: stats.review_endorsed || 0 },
+    { label: "Pending Validation", count: stats.pending_projects || 0 },
+    { label: "Needs Revision", count: stats.needs_revision_projects || 0 },
+    { label: "Validated", count: stats.approved_projects || 0 },
   ];
 
   return (
@@ -107,7 +104,7 @@ const AdminDashboard: React.FC = () => {
         <div className="portal-stat"><p className="portal-stat-title">Pending</p><p className="portal-stat-value text-blue-600">{loading ? "..." : stats.pending_projects || 0}</p></div>
         <div className="portal-stat"><p className="portal-stat-title">Approved</p><p className="portal-stat-value text-emerald-600">{loading ? "..." : stats.approved_projects || 0}</p></div>
         <div className="portal-stat"><p className="portal-stat-title">Archived</p><p className="portal-stat-value text-slate-600">{loading ? "..." : stats.archived_projects || 0}</p></div>
-        <div className="portal-stat"><p className="portal-stat-title">Reviewed</p><p className="portal-stat-value text-violet-600">{loading ? "..." : stats.reviewed_projects || 0}</p></div>
+        <div className="portal-stat"><p className="portal-stat-title">Needs Revision</p><p className="portal-stat-value text-violet-600">{loading ? "..." : stats.needs_revision_projects || 0}</p></div>
         <div className="portal-stat"><p className="portal-stat-title">Validator Edited</p><p className="portal-stat-value text-indigo-600">{loading ? "..." : stats.validator_edited_projects || 0}</p></div>
         <div className="portal-stat"><p className="portal-stat-title">Users</p><p className="portal-stat-value">{loading ? "..." : stats.users || 0}</p></div>
       </div>

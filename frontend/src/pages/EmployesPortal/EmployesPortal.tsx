@@ -718,30 +718,6 @@ const PIPManagementSystem: React.FC = () => {
                                 >
                                   Approve
                                 </button>
-                                <button
-                                  onClick={() => {
-                                    (async () => {
-                                      try {
-                                        await api.post(
-                                          `validator/projects/${project.id}/validate/`,
-                                          { action: "reject" }
-                                        );
-                                        showNotification(
-                                          "Project rejected",
-                                          "success"
-                                        );
-                                      } catch {
-                                        showNotification(
-                                          "Failed to validate project",
-                                          "error"
-                                        );
-                                      }
-                                    })();
-                                  }}
-                                  className="text-red-600 hover:text-red-900"
-                                >
-                                  Reject
-                                </button>
                               </>
                             )}
 

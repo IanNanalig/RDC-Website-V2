@@ -6,6 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
 
+from .document_policy import active_project_documents
 from .models import PriorityRuleSet, Project, ProjectPriorityAnalysis, ProjectPriorityConfirmation
 from .scoring_contract import (
     apply_scoring_mappings,
@@ -1503,7 +1504,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     # Resolve this gate from the authoritative active-document relation so a
     # preview cannot treat an absent upload as a scored zero or a valid input.
     facts["_supporting_documents_ready"] = bool(
-        project.supporting_documents.filter(removed_at__isnull=True).exists()
+        active_project_documents(project).exists()
     )
     funding_total = _money_total(form.get("fundingRequirementByYear"))
     form_marker = snapshot.get("form_schema") if isinstance(snapshot, dict) else {}
@@ -1907,7 +1908,7 @@ def confirmation_eligibility(project, snapshot):
         and not item.suggested_scores.get("missing_facts")
     ]
     policy = resolve_project_document_policy(project)
-    has_documents = bool(policy and project.supporting_documents.filter(removed_at__isnull=True).exists())
+    has_documents = bool(policy and active_project_documents(project).exists())
     documents_need_assessment = bool(policy and (policy.get("required") or has_documents))
     assessment = current_document_assessment(project) if documents_need_assessment else None
     for analysis in completed_analyses:
@@ -1955,10 +1956,9 @@ def confirm_analysis(
     regional_effective_score=None,
     calculated_priority=None,
 ):
-    project = Project.objects.only("status", "profile_data").get(pk=analysis.project_id)
+    project = Project.objects.only("workflow_status", "profile_data").get(pk=analysis.project_id)
     profile = project.profile_data if isinstance(project.profile_data, dict) else {}
-    review = profile.get("validator_review") if isinstance(profile.get("validator_review"), dict) else {}
-    if project.status not in ("proposed", "planning") or str(review.get("review_status") or "").lower() in ("endorsed", "validated"):
+    if project.workflow_status != Project.WORKFLOW_PENDING:
         raise ValueError("Priority decisions are locked after endorsement.")
     scores = analysis.suggested_scores if isinstance(analysis.suggested_scores, dict) else {}
     missing = scores.get("missing_facts") or []
@@ -1974,7 +1974,7 @@ def confirm_analysis(
     document_policy = resolve_project_document_policy(project)
     has_documents = bool(
         document_policy
-        and project.supporting_documents.filter(removed_at__isnull=True).exists()
+        and active_project_documents(project).exists()
     )
     documents_need_assessment = bool(
         document_policy and (document_policy.get("required") or has_documents)

@@ -677,7 +677,6 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const [lastLocalSaveAt, setLastLocalSaveAt] = useState("");
   const [serverUpdatedAt, setServerUpdatedAt] = useState<string | null>(null);
   const [validatorNotes, setValidatorNotes] = useState("");
-  const [validatorReviewStatus, setValidatorReviewStatus] = useState("");
   const [editableFields, setEditableFields] = useState<string[]>([]);
   const [diffMap, setDiffMap] = useState<Record<string, DiffField>>({});
   const [fieldEditMeta, setFieldEditMeta] = useState<Record<string, EditMeta>>({});
@@ -712,7 +711,6 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const canWriteCurrentForm = isRevisionMode ? progressWindow.can_encode : canEncode;
   const currentWindowMessage = isRevisionMode ? progressWindow.message : encodeMessage;
   const isDiffMode = isAdmin && searchParams.get("mode") === "diff";
-  const normalizedReviewStatus = validatorReviewStatus === "validated" ? "endorsed" : validatorReviewStatus;
   const canReviseSubmitted = isEmployee && isEditMode && !isRevisionMode && workflowStatus === "needs_revision";
   const canReviseProgress = isEmployee && isRevisionMode && revisionState === "reviewed" && editableFields.length > 0;
   const formRef = useRef(form);
@@ -748,8 +746,10 @@ const SimplifiedProjectSubmission: React.FC = () => {
     [statusOptions],
   );
   const canChangeSupportingDocuments = Boolean(
-    isEmployee && projectAccessLevel !== "collaborator" && !isRevisionMode && (
-      !isEditMode || projectStatus === "planning" || canReviseSubmitted && documentField && editableFields.includes(documentField.key)
+    isEmployee && projectAccessLevel !== "collaborator" && (
+      isRevisionMode
+        ? (revisionState === "draft" || canReviseProgress && documentField && editableFields.includes(documentField.key)) && canWriteCurrentForm
+        : !isEditMode || projectStatus === "planning" || canReviseSubmitted && documentField && editableFields.includes(documentField.key)
     ),
   );
   const draftStorageKey = useMemo(() => {
@@ -849,8 +849,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
           setRevisionState(state);
           setFormMigration(data?.form_migration && typeof data.form_migration === "object" ? data.form_migration : null);
           setProjectStatus(state === "draft" ? "planning" : state === "endorsed" ? "completed" : "proposed");
-          setWorkflowStatus(state === "endorsed" ? "validated" : state === "rejected" ? "rejected" : "pending_validation");
-          setWorkflowStatusLabel(state === "endorsed" ? "Validated" : state === "rejected" ? "Rejected" : "Pending Validation");
+          const revisionWorkflow = String(data?.workflow_status || (state === "endorsed" ? "validated" : state === "reviewed" ? "needs_revision" : state === "draft" ? "draft" : "pending_validation"));
+          setWorkflowStatus(revisionWorkflow);
+          setWorkflowStatusLabel(revisionWorkflow.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase()));
           setOfficialPriorityLabel("");
           setValidationComment(String(data?.public_note || ""));
           if (data?.updated_at) {
@@ -889,7 +890,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
           const hasDocumentField = pinnedSchema.sections.some((section) =>
             section.fields.some((field) => field.type === "document_upload"),
           );
-          if (!hasDocumentField && !isRevisionMode) {
+          if (!hasDocumentField) {
             try {
               const current = await cmsApi.getContributorForm(pinnedKey);
               const currentDocumentSection = current.schema.sections.find((section) =>
@@ -945,7 +946,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
           validatorReview && typeof validatorReview.working_copy === "object"
             ? (validatorReview.working_copy as Record<string, unknown>)
             : contributorSnapshot;
-        const resubmittedForReview = String(validatorReview?.review_status || "").toLowerCase() === "draft" && Boolean(validatorReview?.resubmitted_at);
+        const resubmittedForReview = Boolean(validatorReview?.resubmitted_at);
         const sourceData = isValidator
           ? resubmittedForReview ? contributorSnapshot : workingCopy
           : isAdmin
@@ -1028,15 +1029,9 @@ const SimplifiedProjectSubmission: React.FC = () => {
           setDiffMap({});
         }
         if (isRevisionMode && isValidator) {
-          const status = String(data?.state || "").toLowerCase();
-          setValidatorReviewStatus(status === "validator_draft" ? "draft" : status);
           setValidatorNotes(String(data?.public_note || ""));
         } else if (isValidator && validatorReview) {
           setValidatorNotes(String(validatorReview.review_notes || ""));
-          const status = String(validatorReview.review_status || "").toLowerCase();
-          setValidatorReviewStatus(status === "validated" ? "endorsed" : status);
-        } else if (isValidator) {
-          setValidatorReviewStatus("");
         }
       } catch (error) {
         console.error("Failed to load simplified project:", error);
@@ -1085,16 +1080,22 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const loadSupportingDocuments = useCallback(async () => {
     if (!id || !documentField) return;
     try {
-      const [documents, assessment] = await Promise.all([
-        projectDocumentsApi.list(id),
-        projectDocumentsApi.assessment(id),
-      ]);
+      const documents = await projectDocumentsApi.list(id, isRevisionMode ? revisionId : undefined);
       setSupportingDocuments(documents);
-      setDocumentAssessment(assessment);
+      if (!isRevisionMode) {
+        try {
+          setDocumentAssessment(await projectDocumentsApi.assessment(id));
+        } catch {
+          setDocumentAssessment(null);
+        }
+      } else {
+        setDocumentAssessment(null);
+      }
+      setDocumentNotice("");
     } catch (error) {
       setDocumentNotice(error instanceof Error ? error.message : "Failed to load supporting documents.");
     }
-  }, [documentField, id]);
+  }, [documentField, id, isRevisionMode, revisionId]);
 
   useEffect(() => { void loadSupportingDocuments(); }, [loadSupportingDocuments]);
 
@@ -1390,7 +1391,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
     (isEmployee && !canWriteCurrentForm && !canReviseSubmitted && !canReviseProgress) ||
     (isEmployee && isRevisionMode && revisionState !== "draft" && !canReviseProgress) ||
     (isEmployee && isEditMode && !isRevisionMode && projectStatus !== "planning" && !canReviseSubmitted) ||
-    (isValidator && normalizedReviewStatus === "endorsed");
+    (isValidator && workflowStatus === "validated");
   // AI processing is a validator/admin review operation, not a contributor
   // edit. Keep it available to an Administrator even though the form itself
   // is otherwise read-only in the Administrator view.
@@ -1489,7 +1490,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
     setDocumentBusy(true);
     for (const file of queuedDocuments) {
       try {
-        await projectDocumentsApi.upload(projectId, documentField.key, file);
+        await projectDocumentsApi.upload(projectId, documentField.key, file, isRevisionMode ? revisionId : undefined);
         uploaded += 1;
       } catch (error) {
         failed += 1;
@@ -1679,8 +1680,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
         if (response?.warning) {
           alert(response.warning);
         }
-        const nextStatus = String(response?.review_status || response?.state || "");
-        if (nextStatus) setValidatorReviewStatus(nextStatus);
+        if (response?.workflow_status) setWorkflowStatus(String(response.workflow_status));
         alert(
           action === "draft"
             ? "Saved as draft."
@@ -1696,6 +1696,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
         await api.put(`project-revisions/${revisionId}/`, {
           profile_data: normalizedProfileData,
         });
+        const uploadResult = await uploadQueuedSupportingDocuments(String(id));
+        if (uploadResult.failed > 0) {
+          alert("The progress draft was saved, but one or more supporting documents failed to upload. Retry the upload before submitting.");
+          return;
+        }
         if (action === "submit") {
           await api.post(`project-revisions/${revisionId}/submit/`, {});
         }
@@ -1878,7 +1883,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                   <div className="flex flex-wrap items-center gap-2">
                     <a href={document.download_url} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2" onClick={(event) => { event.preventDefault(); void projectDocumentsApi.download(document).catch((error) => setDocumentNotice(error instanceof Error ? error.message : "Download failed.")); }}>Download</a>
                     {aiStatus === "failed" && canRetrySupportingDocuments && <button type="button" aria-label={`Retry AI processing for ${document.original_filename}`} disabled={documentBusy} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 transition hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void retrySupportingDocument(document)}>{documentAction === `retry-${document.id}` ? "Retrying..." : "Retry AI processing"}</button>}
-                    {canChangeSupportingDocuments && <button type="button" aria-label={`Remove ${document.original_filename}`} disabled={documentBusy} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void removeSupportingDocument(document)}>{documentAction === `remove-${document.id}` ? "Removing..." : "Remove"}</button>}
+                    {canChangeSupportingDocuments && (!isRevisionMode || document.revision === Number(revisionId)) && <button type="button" aria-label={`Remove ${document.original_filename}`} disabled={documentBusy} className="inline-flex min-h-9 items-center justify-center rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void removeSupportingDocument(document)}>{documentAction === `remove-${document.id}` ? "Removing..." : "Remove"}</button>}
                   </div>
                 </div>
                 {document.processing_error && <p className="mt-2 text-xs text-rose-700">AI processing: {document.processing_error}</p>}
@@ -2242,7 +2247,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
           Contributor answers are read-only. Use validator notes and the checkboxes to request changes from the contributor.
         </div>
       )}
-      {isValidator && normalizedReviewStatus === "endorsed" && (
+      {isValidator && workflowStatus === "validated" && (
         <div className="portal-card p-3 mb-3 border-emerald-200 bg-emerald-50 text-emerald-800 text-sm">
           This project is already endorsed and is now view-only.
         </div>
@@ -2510,7 +2515,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
                   rows={3}
                   value={validatorNotes}
                   onChange={(e) => setValidatorNotes(e.target.value)}
-                  placeholder="Required when requesting revisions or rejecting"
+                  placeholder="Required when requesting revisions"
                 />
               </label>
             </div>

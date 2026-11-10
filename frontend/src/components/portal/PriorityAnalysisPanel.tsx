@@ -282,7 +282,7 @@ const CriteriaTable: React.FC<{ title: string; group: string; criteria?: Criteri
             <td className="px-3 py-2 font-medium text-slate-800">{item.criterion}</td>
             <td className="px-3 py-2">
               {adjustable ? (
-                <div><input type="number" min={0} max={10} step={1} aria-label={`${item.criterion} raw score`} className="w-20 rounded border border-slate-200 px-2 py-1" value={adjusted[`${group}:${item.key}`] ?? item.raw} onChange={(e) => onAdjust?.(`${group}:${item.key}`, Number(e.target.value))} /><p className="mt-1 text-slate-500">AI: {item.raw}</p></div>
+                <div><input type="number" min={0} max={10} step={1} aria-label={`${item.criterion} raw score`} className="w-20 rounded border border-slate-200 px-2 py-1" value={adjusted[`${group}:${item.key}`] ?? item.raw} onChange={(e) => { const entered = Number(e.target.value); if (Number.isFinite(entered)) onAdjust?.(`${group}:${item.key}`, Math.min(10, Math.max(0, Math.trunc(entered)))); }} /><p className="mt-1 text-slate-500">AI: {item.raw}</p></div>
               ) : <span>{adjusted[`${group}:${item.key}`] ?? item.raw}{adjusted[`${group}:${item.key}`] !== undefined && adjusted[`${group}:${item.key}`] !== item.raw && <span className="block text-slate-500">AI: {item.raw}</span>}</span>}
             </td>
             <td className="px-3 py-2">{item.weight}%</td>
@@ -472,6 +472,8 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, role, developmentSe
       }) as Analysis;
       setAnalysis(next);
       setAnalyses((previous) => [next, ...previous.filter((item) => item.id !== next.id)]);
+      setAdjustedScores(next.evaluation?.adjusted_scores || {});
+      setValidatorRemarks(next.evaluation?.validator_remarks || {});
       setFinalPriority(normalizePriority(next.evaluation?.calculated_priority));
       setEvaluationDirty(false);
       setNotice("Validator scores and remarks saved.");

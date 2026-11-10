@@ -7,6 +7,7 @@ export type SupportingDocumentUploadStatus = "uploaded" | "upload_failed";
 export type SupportingDocument = {
   id: number;
   project: number;
+  revision?: number | null;
   field_key: string;
   form_key: string;
   form_version: number;
@@ -66,11 +67,12 @@ const rows = (value: unknown): SupportingDocument[] => {
 };
 
 export const projectDocumentsApi = {
-  list: async (projectId: string | number) => rows(await api.get(`project-supporting-documents/?project=${projectId}`, true)),
-  upload: (projectId: string | number, fieldKey: string, file: File) => {
+  list: async (projectId: string | number, revisionId?: string | number) => rows(await api.get(`project-supporting-documents/?project=${projectId}${revisionId ? `&revision=${revisionId}` : ""}`, true)),
+  upload: (projectId: string | number, fieldKey: string, file: File, revisionId?: string | number) => {
     const body = new FormData();
     body.append("project", String(projectId));
     body.append("field_key", fieldKey);
+    if (revisionId) body.append("revision", String(revisionId));
     body.append("file", file, file.name);
     return api.postForm("project-supporting-documents/", body) as Promise<SupportingDocument>;
   },

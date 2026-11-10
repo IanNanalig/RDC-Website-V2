@@ -73,6 +73,23 @@ class PriorityEvaluationApiTests(APITestCase):
         loaded = self.client.get(f"/api/validator/projects/{self.project.id}/priority-analysis/")
         self.assertEqual(loaded.data["analyses"][0]["evaluation"]["validator_remarks"]["pap:readiness"], "Checked.")
 
+    def test_confirm_accepts_the_same_partial_payload_used_to_save(self):
+        self.client.force_authenticate(self.validator)
+        scores = {"pap:readiness": 8}
+        remarks = {"pap:readiness": " Checked. "}
+        saved = self.client.post(self.url, {
+            "adjusted_scores": scores, "validator_remarks": remarks,
+        }, format="json")
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual(saved.data["evaluation"]["validator_remarks"]["pap:readiness"], "Checked.")
+        confirmed = self.client.post(
+            f"/api/validator/projects/{self.project.id}/priority-analysis/{self.analysis.id}/confirm/",
+            {"adjusted_scores": scores, "validator_remarks": remarks, "final_priority": "low"},
+            format="json",
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.data)
+        self.assertEqual(confirmed.data["latest_confirmation"]["final_priority"], "low")
+
     def test_rejects_out_of_range_and_non_validator(self):
         self.client.force_authenticate(self.validator)
         invalid = self.client.post(self.url, {"adjusted_scores": {"pap:readiness": 11}}, format="json")

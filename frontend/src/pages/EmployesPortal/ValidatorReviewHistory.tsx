@@ -15,6 +15,8 @@ type ApiProject = {
   agency?: string;
   budget?: number;
   status?: string;
+  workflow_status?: string;
+  workflow_status_label?: string;
   updated_at?: string;
   submitted_by_name?: string;
   submitted_by?: {
@@ -29,14 +31,14 @@ const reviewPath = (project: ApiProject) => `/validator/projects/${project.id}/r
 
 const statusLabel = (status?: string) => {
   switch (status) {
-    case "planning":
+    case "draft":
       return "Draft";
-    case "proposed":
-      return "Submitted";
-    case "completed":
+    case "pending_validation":
+      return "Pending Validation";
+    case "needs_revision":
+      return "Needs Revision";
+    case "validated":
       return "Validated";
-    case "ongoing":
-      return "Ongoing";
     default:
       return status || "N/A";
   }
@@ -44,42 +46,17 @@ const statusLabel = (status?: string) => {
 
 const statusBadge = (status?: string) => {
   switch (status) {
-    case "planning":
+    case "draft":
       return "bg-amber-100 text-amber-700";
-    case "proposed":
+    case "pending_validation":
       return "bg-blue-100 text-blue-700";
-    case "completed":
+    case "validated":
       return "bg-emerald-100 text-emerald-700";
+    case "needs_revision":
+      return "bg-violet-100 text-violet-700";
     default:
       return "bg-slate-100 text-slate-700";
   }
-};
-
-const getValidatorReview = (p: ApiProject) => {
-  const pd = p.profile_data as Record<string, unknown> | undefined;
-  const vr = pd?.validator_review;
-  if (!vr || typeof vr !== "object") return null;
-  return vr as Record<string, unknown>;
-};
-
-const reviewStateLabel = (p: ApiProject) => {
-  const vr = getValidatorReview(p);
-  const status = String(vr?.review_status || "").toLowerCase();
-  if (status === "draft") return "Draft";
-  if (status === "reviewed") return "Needs Revision";
-  if (status === "endorsed" || status === "validated") return "Validated";
-  if (status === "rejected") return "Rejected";
-  return "Not Reviewed";
-};
-
-const reviewStateBadge = (p: ApiProject) => {
-  const vr = getValidatorReview(p);
-  const status = String(vr?.review_status || "").toLowerCase();
-  if (status === "draft") return "bg-slate-100 text-slate-700";
-  if (status === "reviewed") return "bg-violet-100 text-violet-700";
-  if (status === "endorsed" || status === "validated") return "bg-emerald-100 text-emerald-700";
-  if (status === "rejected") return "bg-rose-100 text-rose-700";
-  return "bg-slate-100 text-slate-700";
 };
 
 const ValidatorReviewHistory: React.FC = () => {
@@ -137,7 +114,6 @@ const ValidatorReviewHistory: React.FC = () => {
     { key: "agency", label: "Agency" },
     { key: "budget", label: "Budget" },
     { key: "status", label: "Status" },
-    { key: "review", label: "Review State" },
     { key: "updated", label: "Updated" },
   ];
   const changeSort = (key: string) => {
@@ -155,8 +131,7 @@ const ValidatorReviewHistory: React.FC = () => {
       case "contributor": return project.submitted_by_name || project.submitted_by?.username || "Unknown";
       case "agency": return project.agency || "";
       case "budget": return Number(project.budget || 0);
-      case "status": return statusLabel(project.status);
-      case "review": return reviewStateLabel(project);
+      case "status": return statusLabel(project.workflow_status);
       case "updated": return project.updated_at ? new Date(project.updated_at).getTime() : null;
       default: return "";
     }
@@ -216,8 +191,7 @@ const ValidatorReviewHistory: React.FC = () => {
                   <p><span className="font-medium text-slate-800">Agency:</span> {p.agency || "N/A"}</p>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusBadge(p.status)}`}>{statusLabel(p.status)}</span>
-                  <span className={`rounded-full px-2 py-1 text-xs font-semibold ${reviewStateBadge(p)}`}>{reviewStateLabel(p)}</span>
+                  <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusBadge(p.workflow_status)}`}>{p.workflow_status_label || statusLabel(p.workflow_status)}</span>
                 </div>
                 <button
                   type="button"
@@ -238,7 +212,6 @@ const ValidatorReviewHistory: React.FC = () => {
                 <SortableTableHeader label="Agency" sortKey="agency" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden lg:table-cell" />
                 <SortableTableHeader label="Budget" sortKey="budget" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden xl:table-cell" />
                 <SortableTableHeader label="Status" sortKey="status" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
-                <SortableTableHeader label="Review State" sortKey="review" activeKey={sortKey} direction={sortDirection} onSort={changeSort} />
                 <SortableTableHeader label="Updated" sortKey="updated" activeKey={sortKey} direction={sortDirection} onSort={changeSort} className="hidden 2xl:table-cell" />
                 <th>Actions</th>
               </tr>
@@ -253,13 +226,8 @@ const ValidatorReviewHistory: React.FC = () => {
                   <td className="hidden lg:table-cell max-w-[170px] truncate" title={p.agency || "N/A"}>{p.agency || "N/A"}</td>
                   <td className="hidden xl:table-cell">PHP {(p.budget || 0).toLocaleString()}</td>
                   <td>
-                    <span className={`px-2 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${statusBadge(p.status)}`}>
-                      {statusLabel(p.status)}
-                    </span>
-                  </td>
-                  <td>
-                    <span className={`px-2 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${reviewStateBadge(p)}`}>
-                      {reviewStateLabel(p)}
+                    <span className={`px-2 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${statusBadge(p.workflow_status)}`}>
+                      {p.workflow_status_label || statusLabel(p.workflow_status)}
                     </span>
                   </td>
                   <td className="hidden 2xl:table-cell">{p.updated_at ? new Date(p.updated_at).toLocaleString() : "-"}</td>

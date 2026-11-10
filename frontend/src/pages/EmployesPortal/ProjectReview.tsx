@@ -41,16 +41,6 @@ const getValidatorReview = (project: ApiProject | null): Record<string, any> | n
   return vr as Record<string, any>;
 };
 
-const formatReviewStatus = (raw: string) => {
-  const normalized = String(raw || "").toLowerCase();
-  if (!normalized) return "Not Reviewed";
-  if (normalized === "draft") return "Draft";
-  if (normalized === "reviewed") return "Needs Revision";
-  if (normalized === "endorsed" || normalized === "validated") return "Validated";
-  if (normalized === "rejected") return "Rejected";
-  return normalized.replaceAll("_", " ");
-};
-
 const formatFundingEntries = (raw?: Record<string, string>, legacy?: Record<string, any>, prefix?: "fr" | "aa") => {
   const entries: Array<[string, string]> = [];
   if (raw && typeof raw === "object") {
@@ -257,7 +247,7 @@ const ProjectReview: React.FC = () => {
             </div>
           )}
         </div>
-        {(project.validation_comment || project.workflow_status === "needs_revision" || project.workflow_status === "rejected") && (
+        {(project.validation_comment || project.workflow_status === "needs_revision") && (
           <div className="border border-amber-200 bg-amber-50 rounded p-3 text-sm text-amber-900">
             <p className="font-semibold">{project.workflow_status_label || "Validator decision"}</p>
             {project.validation_comment ? <p className="mt-1">{project.validation_comment}</p> : null}
@@ -266,12 +256,6 @@ const ProjectReview: React.FC = () => {
         {(isAdmin || isValidator) && (
           <div className="border border-indigo-200 bg-indigo-50 rounded p-3 text-sm space-y-1">
             <p className="font-semibold text-indigo-900">Validator Review Metadata</p>
-            <p>
-              State:{" "}
-              <span className="font-medium">
-                {formatReviewStatus(String(validatorReview?.review_status || ""))}
-              </span>
-            </p>
             <p>
               Reviewed by: {validatorReview?.reviewed_by_username || "-"} |{" "}
               {validatorReview?.reviewed_at ? new Date(validatorReview.reviewed_at).toLocaleString() : "-"}

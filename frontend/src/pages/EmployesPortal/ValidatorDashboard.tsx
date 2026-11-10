@@ -6,9 +6,9 @@ import { userDisplayName } from "../../utils/userDisplayName";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 interface DashboardStats {
-  review_draft?: number;
-  review_reviewed?: number;
-  review_endorsed?: number;
+  pending_projects?: number;
+  needs_revision_projects?: number;
+  validated_projects?: number;
 }
 
 const ValidatorDashboard: React.FC = () => {
@@ -54,9 +54,9 @@ const ValidatorDashboard: React.FC = () => {
   const displayName = userDisplayName(user, "Validator");
 
   const queueMix = [
-    { label: "Draft", count: stats.review_draft || 0 },
-    { label: "Reviewed", count: stats.review_reviewed || 0 },
-    { label: "Endorsed", count: stats.review_endorsed || 0 },
+    { label: "Pending Validation", count: stats.pending_projects || 0 },
+    { label: "Needs Revision", count: stats.needs_revision_projects || 0 },
+    { label: "Validated", count: stats.validated_projects || 0 },
   ];
 
   return (
@@ -73,16 +73,16 @@ const ValidatorDashboard: React.FC = () => {
     >
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 md:gap-4 mb-4">
         <div className="portal-stat">
-          <p className="portal-stat-title">Draft Reviews</p>
-          <p className="portal-stat-value text-amber-600">{loading ? "..." : stats.review_draft || 0}</p>
+          <p className="portal-stat-title">Pending Validation</p>
+          <p className="portal-stat-value text-amber-600">{loading ? "..." : stats.pending_projects || 0}</p>
         </div>
         <div className="portal-stat">
-          <p className="portal-stat-title">Reviewed</p>
-          <p className="portal-stat-value text-blue-600">{loading ? "..." : stats.review_reviewed || 0}</p>
+          <p className="portal-stat-title">Needs Revision</p>
+          <p className="portal-stat-value text-blue-600">{loading ? "..." : stats.needs_revision_projects || 0}</p>
         </div>
         <div className="portal-stat">
-          <p className="portal-stat-title">Endorsed</p>
-          <p className="portal-stat-value text-emerald-600">{loading ? "..." : stats.review_endorsed || 0}</p>
+          <p className="portal-stat-title">Validated</p>
+          <p className="portal-stat-value text-emerald-600">{loading ? "..." : stats.validated_projects || 0}</p>
         </div>
       </div>
 

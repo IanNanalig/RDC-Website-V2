@@ -208,7 +208,8 @@ def assess_supporting_documents(self, assessment_id, job_id=None):
         stage=ProjectAIProcessingJob.STAGE_ASSESSMENT,
         assessment=assessment,
     )
-    documents = list(assessment.project.supporting_documents.filter(removed_at__isnull=True).order_by("id"))
+    from .document_policy import active_project_documents
+    documents = list(active_project_documents(assessment.project).order_by("id"))
     if not documents or any(item.extraction_status != ProjectSupportingDocument.EXTRACTION_READY for item in documents):
         assessment.status = ProjectDocumentAssessment.STATUS_UNAVAILABLE
         assessment.error_message = "Every active document must finish processing before assessment."

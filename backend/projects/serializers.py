@@ -429,6 +429,7 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
             "validated_by",
             "workflow_status",
             "workflow_status_label",
+            "validated",
             "official_priority",
             "official_priority_label",
             "validation_comment",
@@ -539,16 +540,7 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
         return review if isinstance(review, dict) else {}
 
     def get_workflow_status(self, obj):
-        review_status = str(self._validator_review(obj).get("review_status") or "").lower()
-        if review_status in ("reviewed", "rejected"):
-            return "needs_revision" if review_status == "reviewed" else "rejected"
-        if review_status in ("endorsed", "validated") or obj.validated or obj.status == "completed":
-            return "validated"
-        if obj.status == "proposed":
-            return "pending_validation"
-        if obj.status == "planning":
-            return "draft"
-        return obj.status or ""
+        return obj.workflow_status
 
     def get_workflow_status_label(self, obj):
         return {
@@ -556,9 +548,6 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
             "pending_validation": "Pending Validation",
             "needs_revision": "Needs Revision",
             "validated": "Validated",
-            "rejected": "Rejected",
-            "ongoing": "Ongoing",
-            "completed": "Validated",
         }.get(self.get_workflow_status(obj), self.get_workflow_status(obj).replace("_", " ").title())
 
     def _latest_confirmation(self, obj):
@@ -603,11 +592,11 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
         mapping = {
             "draft": "planning",
             "pending_validation": "proposed",
-            "approved": "completed",
-            "validated": "completed",
-            "rejected": "planning",
         }
-        return mapping.get(value, value)
+        legacy_status = mapping.get(value, value)
+        if legacy_status not in {"planning", "proposed", "ongoing", "completed"}:
+            raise serializers.ValidationError("Use the project review actions to change workflow status.")
+        return legacy_status
 
     def validate_profile_data(self, value):
         if value in (None, ""):
@@ -649,11 +638,13 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
                 )
             except FormSchemaError as exc:
                 raise serializers.ValidationError(str(exc)) from exc
-            self._validate_simplified_funding(simplified, value.get("form_schema"))
+            self._validate_simplified_funding(simplified, value.get("form_schema"), allow_incomplete=True)
         return value
 
     def validate(self, attrs):
         request = self.context.get("request")
+        if self.instance is not None and "status" in attrs and attrs["status"] != self.instance.status:
+            raise serializers.ValidationError({"status": "Use the project review actions to change workflow status."})
         if (
             request is not None
             and request.method == "POST"
@@ -762,13 +753,13 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
     def _parse_year(self, value):
         try:
             n = int(str(value or "").strip())
-        except ObjectDoesNotExist:
+        except (TypeError, ValueError):
             return None
         if n < 1900 or n > 2200:
             return None
         return n
 
-    def _validate_simplified_funding(self, simplified, form_marker=None):
+    def _validate_simplified_funding(self, simplified, form_marker=None, *, allow_incomplete=False):
         marker = form_marker if isinstance(form_marker, dict) else {}
         # Direct callers without a version marker use the original pure
         # year-range validation and must not require database access. Real
@@ -783,6 +774,15 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
                 return
         start = self._parse_year(simplified.get("startYear"))
         end = self._parse_year(simplified.get("endYear"))
+        if allow_incomplete and (
+            not str(simplified.get("startYear") or "").strip()
+            or not str(simplified.get("endYear") or "").strip()
+        ):
+            if str(simplified.get("startYear") or "").strip() and start is None:
+                raise serializers.ValidationError("Start Year must be a valid year.")
+            if str(simplified.get("endYear") or "").strip() and end is None:
+                raise serializers.ValidationError("End Year must be a valid year.")
+            return
         if start is None or end is None:
             raise serializers.ValidationError("Start Year and End Year must be valid years.")
         if end < start:
@@ -826,11 +826,10 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
         request = self.context.get("request")
         role = getattr(getattr(request, "user", None), "role", "")
         profile = project.profile_data if isinstance(project.profile_data, dict) else {}
-        review = profile.get("validator_review") if isinstance(profile.get("validator_review"), dict) else {}
         if (
             role in ("staff", "employee")
             and not project.supporting_document_policy
-            and (project.status == "planning" or str(review.get("review_status") or "").lower() == "reviewed")
+            and project.workflow_status in {Project.WORKFLOW_DRAFT, Project.WORKFLOW_NEEDS_REVISION}
         ):
             from .document_policy import current_document_policy
 
@@ -849,12 +848,14 @@ class ProjectFormMigrationSummarySerializer(ContributorFormVersionStatusMixin, s
     form_version = serializers.SerializerMethodField()
     current_form_version = serializers.SerializerMethodField()
     uses_outdated_form = serializers.SerializerMethodField()
+    migration_reason = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
         fields = [
             "id", "title", "name", "agency", "submitted_by_name",
             "form_version", "current_form_version", "uses_outdated_form",
+            "migration_reason",
         ]
         read_only_fields = fields
 
@@ -862,6 +863,28 @@ class ProjectFormMigrationSummarySerializer(ContributorFormVersionStatusMixin, s
         if not obj.created_by:
             return ""
         return _user_display_name(obj.created_by) or obj.created_by.username
+
+    def _active_draft(self, obj):
+        cache = self.context.setdefault("_migration_draft_cache", {})
+        if obj.pk not in cache:
+            cache[obj.pk] = obj.revisions.filter(
+                revision_type="progress_update", state="draft"
+            ).order_by("-updated_at").first()
+        return cache[obj.pk]
+
+    def _form_profile(self, obj):
+        draft = self._active_draft(obj)
+        profile = draft.profile_data_snapshot if draft else obj.profile_data
+        return profile if isinstance(profile, dict) else {}
+
+    def get_migration_reason(self, obj):
+        from .form_migrations import analyze_profile_migration, migration_eligibility
+
+        eligible, reason = migration_eligibility(obj)
+        if not eligible:
+            return reason
+        result = analyze_profile_migration(self._form_profile(obj))
+        return "; ".join(result.get("issues") or []) if not result.get("compatible") else ""
 
 
 class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.ModelSerializer):
@@ -876,7 +899,6 @@ class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.Mo
     validation_comment = serializers.SerializerMethodField()
     submission_type = serializers.SerializerMethodField()
     rdip_status = serializers.SerializerMethodField()
-    review_status = serializers.SerializerMethodField()
     reviewed_by_username = serializers.SerializerMethodField()
     reviewed_by_name = serializers.SerializerMethodField()
     validator_edited = serializers.SerializerMethodField()
@@ -915,7 +937,6 @@ class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.Mo
             "submitted_by_name",
             "submission_type",
             "rdip_status",
-            "review_status",
             "reviewed_by_username",
             "reviewed_by_name",
             "validator_edited",
@@ -981,9 +1002,6 @@ class ProjectSummarySerializer(ContributorFormVersionStatusMixin, serializers.Mo
     def get_rdip_status(self, obj):
         simplified = self._profile(obj).get("simplified_form")
         return self._display_rdip_status(obj, simplified.get("status")) if isinstance(simplified, dict) else ""
-
-    def get_review_status(self, obj):
-        return str(self._review(obj).get("review_status") or "").strip().lower()
 
     def get_reviewed_by_username(self, obj):
         return str(self._review(obj).get("reviewed_by_username") or "").strip()
@@ -1125,7 +1143,7 @@ class ProjectSupportingDocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProjectSupportingDocument
         fields = [
-            "id", "project", "field_key", "form_key", "form_version", "original_filename",
+            "id", "project", "revision", "field_key", "form_key", "form_version", "original_filename",
             "content_type", "extension", "size_bytes", "checksum_sha256", "upload_status",
             "ai_processing_status", "extraction_status",
             "extraction_metadata", "processing_error", "processing_job", "uploaded_by_name", "created_at", "updated_at",
@@ -1162,6 +1180,7 @@ class ProjectRevisionSerializer(ContributorFormVersionStatusMixin, serializers.M
             "revision_number",
             "revision_type",
             "state",
+            "workflow_status",
             "profile_data_snapshot",
             "public_summary_snapshot",
             "changed_fields",
@@ -1223,6 +1242,7 @@ class ProjectRevisionSummarySerializer(ProjectRevisionSerializer):
             "revision_number",
             "revision_type",
             "state",
+            "workflow_status",
             "budget",
             "submission_type",
             "created_by_name",

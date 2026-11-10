@@ -105,6 +105,7 @@ from .document_policy import (
     PROJECT_DOCUMENT_MAX_TOTAL_BYTES,
     active_project_documents,
     resolve_project_document_policy,
+    revision_document_policy,
     validate_project_documents_for_submit,
 )
 from .document_assessments import (
@@ -245,7 +246,7 @@ def _is_primary_agency_contributor(user, project):
 
 
 def _is_collaborating_agency_contributor(user, project):
-    if getattr(user, "role", "") not in ("staff", "employee") or project.status == "planning":
+    if getattr(user, "role", "") not in ("staff", "employee") or project.workflow_status == Project.WORKFLOW_DRAFT:
         return False
     user_agency = getattr(user, "agency_record", None)
     user_code = user_agency.code if user_agency else str(getattr(user, "agency", "") or "").strip()
@@ -957,17 +958,8 @@ def _project_title(project):
     return getattr(project, "title", "") or getattr(project, "name", "") or "Project"
 
 
-def _project_review_status(project):
-    profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
-    review = profile_data.get("validator_review")
-    if not isinstance(review, dict):
-        return ""
-    status_value = str(review.get("review_status") or "").lower()
-    return "endorsed" if status_value == "validated" else status_value
-
-
 def _project_needs_revision(project):
-    return getattr(project, "status", "") == "proposed" and _project_review_status(project) == "reviewed"
+    return project.workflow_status == Project.WORKFLOW_NEEDS_REVISION
 
 
 def _is_simplified_profile(profile_data):
@@ -1188,18 +1180,7 @@ def _latest_project_confirmation(project):
 
 
 def _workflow_status_for_project(project):
-    review_status = _project_review_status(project)
-    if review_status == "reviewed":
-        return "needs_revision"
-    if review_status == "rejected":
-        return "rejected"
-    if review_status == "endorsed" or getattr(project, "validated", False) or getattr(project, "status", "") == "completed":
-        return "validated"
-    if getattr(project, "status", "") == "proposed":
-        return "pending_validation"
-    if getattr(project, "status", "") == "planning":
-        return "draft"
-    return getattr(project, "status", "") or ""
+    return project.workflow_status
 
 
 def _filter_projects_for_workflow(qs, workflow):
@@ -1221,7 +1202,6 @@ def _filter_projects_for_workflow(qs, workflow):
         "revision": "needs_revision",
         "validated": "validated",
         "approved": "validated",
-        "rejected": "rejected",
         "draft": "draft",
     }
     expected = aliases.get(workflow, workflow)
@@ -1273,7 +1253,7 @@ def _selected_admin_projects(data, *, include_archived=False):
 def _archive_ineligibility(project):
     if project.archived or not project.is_active:
         return "This project is already archived."
-    if project.status == "proposed" or _project_needs_revision(project):
+    if project.workflow_status in {Project.WORKFLOW_PENDING, Project.WORKFLOW_NEEDS_REVISION}:
         return "Projects pending validation or returned for correction cannot be archived."
     active_update = project.revisions.filter(
         revision_type="progress_update",
@@ -1339,7 +1319,8 @@ def _migration_preview_row(project, *, version_cache=None):
     ).order_by("-updated_at").first()
     if draft is not None:
         source_profile = draft.profile_data_snapshot
-    analysis = analyze_profile_migration(source_profile, version_cache=version_cache) if eligible else {}
+    # Show both versions even when workflow state currently prevents migration.
+    analysis = analyze_profile_migration(source_profile, version_cache=version_cache)
     if eligible and not analysis.get("compatible"):
         reason = "; ".join(analysis.get("issues") or ["This form cannot be migrated safely."])
     if eligible and analysis.get("already_current"):
@@ -2949,7 +2930,7 @@ def _validator_review_source(profile_data):
     review = profile_data.get("validator_review")
     if isinstance(review, dict):
         # A contributor's resubmission supersedes any older validator working copy.
-        if str(review.get("review_status") or "").lower() == "draft" and review.get("resubmitted_at"):
+        if review.get("resubmitted_at"):
             return contributor_snapshot
         if isinstance(review.get("working_copy"), dict):
             return review["working_copy"]
@@ -3436,6 +3417,7 @@ def _apply_revision_to_project(revision, user):
     project.profile_data = profile
     project.status = "completed"
     project.validated = True
+    project.workflow_status = Project.WORKFLOW_VALIDATED
     project.save(
         update_fields=[
             "name",
@@ -3448,6 +3430,7 @@ def _apply_revision_to_project(revision, user):
             "profile_data",
             "status",
             "validated",
+            "workflow_status",
             "updated_at",
         ]
     )
@@ -3458,6 +3441,7 @@ def _apply_revision_to_project(revision, user):
     revision.profile_data_snapshot = profile
     revision.public_summary_snapshot = summary if isinstance(summary, dict) else {}
     revision.state = "endorsed"
+    revision.workflow_status = Project.WORKFLOW_VALIDATED
     revision.is_public_current = True
     revision.reviewed_by = user
     revision.endorsed_by = user
@@ -3468,6 +3452,7 @@ def _apply_revision_to_project(revision, user):
             "profile_data_snapshot",
             "public_summary_snapshot",
             "state",
+            "workflow_status",
             "is_public_current",
             "reviewed_by",
             "endorsed_by",
@@ -3590,7 +3575,7 @@ def _project_summary_queryset(qs, *, prefetch_priority=True):
     """Load only columns required by the compact project-list serializer."""
     qs = qs.only(
         "id", "name", "agency", "budget", "completion", "status", "updated_at",
-        "validated", "profile_data", "primary_agency_id", "created_by_id", "created_by__username",
+        "validated", "workflow_status", "profile_data", "primary_agency_id", "created_by_id", "created_by__username",
         "created_by__first_name", "created_by__last_name",
     )
     return _project_queryset_with_related(qs, prefetch_priority=prefetch_priority)
@@ -3609,14 +3594,13 @@ def _can_access_project_documents(user, project):
     if project.archived:
         return False
     if role == "validator":
-        if project.status == "proposed":
+        if project.workflow_status in {Project.WORKFLOW_PENDING, Project.WORKFLOW_NEEDS_REVISION}:
+            return True
+        if project.revisions.exclude(state="draft").exists():
             return True
         profile = project.profile_data if isinstance(project.profile_data, dict) else {}
         review = profile.get("validator_review") if isinstance(profile.get("validator_review"), dict) else {}
-        return (
-            str(review.get("reviewed_by_id") or "") == str(user.id)
-            and str(review.get("review_status") or "").lower() in {"draft", "reviewed", "endorsed", "validated", "rejected"}
-        )
+        return str(review.get("reviewed_by_id") or "") == str(user.id) and project.workflow_status == Project.WORKFLOW_VALIDATED
     if role in ("staff", "employee"):
         return _is_primary_agency_contributor(user, project) or _is_collaborating_agency_contributor(user, project)
     return False
@@ -3625,7 +3609,7 @@ def _can_access_project_documents(user, project):
 def _can_change_project_documents(user, project, field_key):
     if getattr(user, "role", "") not in ("staff", "employee") or not _is_primary_agency_contributor(user, project):
         return False
-    if project.status == "planning":
+    if project.workflow_status == Project.WORKFLOW_DRAFT:
         return True
     if not _project_needs_revision(project):
         return False
@@ -3633,6 +3617,32 @@ def _can_change_project_documents(user, project, field_key):
     review = profile.get("validator_review") if isinstance(profile.get("validator_review"), dict) else {}
     editable = review.get("editable_fields")
     return isinstance(editable, list) and field_key in editable
+
+
+def _can_access_revision_documents(user, revision):
+    role = getattr(user, "role", "")
+    if role == "admin":
+        return True
+    if revision.project.archived:
+        return False
+    if role == "validator":
+        return revision.state in {"submitted", "validator_draft", "reviewed", "endorsed", "rejected"}
+    return role in {"staff", "employee"} and _is_primary_agency_contributor(user, revision.project)
+
+
+def _can_change_revision_documents(user, revision, field_key):
+    if not _can_access_revision_documents(user, revision) or getattr(user, "role", "") not in {"staff", "employee"}:
+        return False
+    if revision.revision_type != "progress_update" or _is_completed_rdip_project(revision.project):
+        return False
+    if not _resolve_progress_update_window_state()["is_open"]:
+        return False
+    if revision.state == "draft":
+        return True
+    if revision.state != "reviewed":
+        return False
+    access = revision.profile_data_snapshot.get("validator_revision_access") if isinstance(revision.profile_data_snapshot, dict) else None
+    return isinstance(access, dict) and field_key in (access.get("editable_fields") or [])
 
 
 def _validate_uploaded_document(filename, content_type, data, extension):
@@ -3644,13 +3654,30 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     http_method_names = ["get", "post", "delete", "head", "options"]
 
+    def get_object(self):
+        document = super().get_object()
+        if document.revision and document.revision.state != "endorsed" and not _can_access_revision_documents(self.request.user, document.revision):
+            raise PermissionDenied("You cannot access this progress update's documents.")
+        return document
+
     def get_queryset(self):
         queryset = ProjectSupportingDocument.objects.filter(removed_at__isnull=True).select_related(
-            "project", "project__created_by", "project__primary_agency", "uploaded_by"
+            "project", "project__created_by", "project__primary_agency", "uploaded_by", "revision"
         )
         project_id = self.request.query_params.get("project")
         if project_id:
             queryset = queryset.filter(project_id=project_id)
+        if self.action == "list":
+            revision_id = self.request.query_params.get("revision")
+            if revision_id:
+                revision = ProjectRevision.objects.select_related("project").filter(pk=revision_id).first() if str(revision_id).isdigit() else None
+                if not revision or not _can_access_revision_documents(self.request.user, revision):
+                    raise PermissionDenied("You cannot access this progress update's documents.")
+                queryset = queryset.filter(project_id=revision.project_id).filter(
+                    Q(revision__isnull=True) | Q(revision__state="endorsed") | Q(revision=revision)
+                )
+            else:
+                queryset = queryset.filter(Q(revision__isnull=True) | Q(revision__state="endorsed"))
         role = getattr(self.request.user, "role", "")
         if role == "admin":
             return queryset
@@ -3660,9 +3687,11 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
                 | Q(project__profile_data__validator_review__reviewed_by_id=str(self.request.user.id))
             )
             return queryset.filter(project__archived=False).filter(
-                Q(project__status="proposed")
-                | (reviewed_by_user & Q(project__profile_data__validator_review__review_status__in=("draft", "reviewed", "endorsed", "validated", "rejected")))
-            )
+                Q(project__workflow_status__in=(Project.WORKFLOW_PENDING, Project.WORKFLOW_NEEDS_REVISION))
+                | (reviewed_by_user & Q(project__workflow_status=Project.WORKFLOW_VALIDATED))
+                | Q(project__revisions__state__in=("submitted", "validator_draft", "reviewed", "endorsed", "rejected"))
+                | Q(revision__state__in=("submitted", "validator_draft", "reviewed", "endorsed", "rejected"))
+            ).distinct()
         if role in ("staff", "employee"):
             return queryset.filter(
                 _contributor_project_scope(self.request.user, prefix="project__"),
@@ -3677,7 +3706,13 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
             project = Project.objects.get(pk=int(request.data.get("project") or 0))
         except (Project.DoesNotExist, TypeError, ValueError):
             return Response({"detail": "Project not found."}, status=404)
-        policy = resolve_project_document_policy(project, persist=True)
+        revision = None
+        revision_id = request.data.get("revision")
+        if revision_id:
+            revision = ProjectRevision.objects.select_related("project").filter(pk=revision_id, project=project).first() if str(revision_id).isdigit() else None
+            if revision is None:
+                return Response({"detail": "Progress update not found for this project."}, status=404)
+        policy = revision_document_policy(revision) if revision else resolve_project_document_policy(project, persist=True)
         if not policy:
             from .document_policy import current_document_policy
 
@@ -3688,7 +3723,8 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
         if not policy:
             return Response({"detail": "This project form has no active supporting-document field."}, status=400)
         field_key = str(request.data.get("field_key") or policy.get("field_key") or "")
-        if field_key != policy.get("field_key") or not _can_change_project_documents(request.user, project, field_key):
+        may_change = _can_change_revision_documents(request.user, revision, field_key) if revision else _can_change_project_documents(request.user, project, field_key)
+        if field_key != policy.get("field_key") or not may_change:
             raise PermissionDenied("Supporting documents are not editable for this project.")
         upload = request.FILES.get("file")
         if upload is None:
@@ -3712,6 +3748,8 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
             with transaction.atomic():
                 locked_project = Project.objects.select_for_update().get(pk=project.pk)
                 documents = list(active_project_documents(locked_project))
+                if revision:
+                    documents.extend(revision.supporting_documents.filter(removed_at__isnull=True))
                 if len(documents) >= min(int(policy.get("max_files") or 10), 10):
                     return Response({"detail": "The maximum number of supporting documents has been reached."}, status=400)
                 if sum(item.size_bytes for item in documents) + len(data) > PROJECT_DOCUMENT_MAX_TOTAL_BYTES:
@@ -3720,6 +3758,7 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
                     return Response({"detail": f"{filename} is already attached to this project."}, status=409)
                 document = ProjectSupportingDocument.objects.create(
                     project=locked_project,
+                    revision=revision,
                     field_key=field_key,
                     form_key=str(policy.get("form_key") or "simplified-rdip"),
                     form_version=int(policy.get("form_version") or 1),
@@ -3739,13 +3778,14 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
             request,
             "supporting_document_uploaded",
             project,
-            {"document_id": document.id, "filename": filename, "size_bytes": len(data)},
+            {"document_id": document.id, "revision_id": revision.id if revision else None, "filename": filename, "size_bytes": len(data)},
         )
         return Response(self.get_serializer(document).data, status=201)
 
     def destroy(self, request, *args, **kwargs):
         document = self.get_object()
-        if not _can_change_project_documents(request.user, document.project, document.field_key):
+        may_change = _can_change_revision_documents(request.user, document.revision, document.field_key) if document.revision else _can_change_project_documents(request.user, document.project, document.field_key)
+        if not may_change:
             raise PermissionDenied("Supporting documents are not editable for this project.")
         document.removed_at = timezone.now()
         document.content = b""
@@ -3762,7 +3802,8 @@ class ProjectSupportingDocumentViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def download(self, request, pk=None):
         document = self.get_object()
-        if not _can_access_project_documents(request.user, document.project):
+        may_access = _can_access_revision_documents(request.user, document.revision) if document.revision and document.revision.state != "endorsed" else _can_access_project_documents(request.user, document.project)
+        if not may_access:
             raise PermissionDenied("You cannot access this project's supporting documents.")
         response = HttpResponse(bytes(document.content), content_type=document.content_type)
         safe_name = document.original_filename.replace('"', "")
@@ -3973,7 +4014,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 project.save(update_fields=["primary_agency", "agency", "implementing_agency", "updated_at"])
         if getattr(self.request.user, "role", "") not in ("staff", "employee"):
             return
-        if project.status == "planning":
+        if project.workflow_status == Project.WORKFLOW_DRAFT:
             _notify_many(
                 _admins(),
                 event_type="contributor_project_draft_created",
@@ -3986,7 +4027,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 actor=self.request.user,
                 dedupe_key=f"project:{project.id}:contributor-draft:admins",
             )
-        elif project.status == "proposed":
+        elif project.workflow_status == Project.WORKFLOW_PENDING:
             _notify_many(
                 _active_validators(),
                 event_type="project_submitted",
@@ -4046,8 +4087,9 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if document_error:
             return Response({"detail": document_error, "code": "supporting_documents_not_ready"}, status=400)
         was_needs_revision = _project_needs_revision(project)
-        if project.status == "planning":
+        if project.workflow_status == Project.WORKFLOW_DRAFT:
             project.status = "proposed"
+            project.workflow_status = Project.WORKFLOW_PENDING
             # Refresh deterministic public summary on submit.
             if isinstance(project.profile_data, dict):
                 try:
@@ -4056,9 +4098,9 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                         project.profile_data["public_summary"] = build_public_summary(sf)
                 except Exception:
                     pass
-                project.save(update_fields=["status", "profile_data", "updated_at"])
+                project.save(update_fields=["status", "workflow_status", "profile_data", "updated_at"])
             else:
-                project.save(update_fields=["status", "updated_at"])
+                project.save(update_fields=["status", "workflow_status", "updated_at"])
             _sync_project_collaborators(project, project.profile_data, request.user)
             _log_activity(request, "project_submit", project, {"status": project.status})
             _notify_user(
@@ -4080,18 +4122,19 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 dedupe_key=f"project:{project.id}:submitted:validators",
             )
         elif was_needs_revision:
+            project.workflow_status = Project.WORKFLOW_PENDING
             profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
             review = profile_data.get("validator_review")
             if isinstance(review, dict):
                 next_review = dict(review)
-                next_review["review_status"] = "draft"
+                next_review.pop("review_status", None)
                 next_review["resubmitted_by_id"] = request.user.id
                 next_review["resubmitted_at"] = timezone.now().isoformat()
                 profile_data["validator_review"] = next_review
                 project.profile_data = profile_data
-                project.save(update_fields=["profile_data", "updated_at"])
+                project.save(update_fields=["workflow_status", "profile_data", "updated_at"])
             else:
-                project.save(update_fields=["updated_at"])
+                project.save(update_fields=["workflow_status", "updated_at"])
             _sync_project_collaborators(project, project.profile_data, request.user)
             _log_activity(request, "project_submit", project, {"status": project.status, "revision_resubmitted": True})
             _notify_many(
@@ -4112,19 +4155,17 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if role not in ("validator", "admin"):
             raise PermissionDenied("Only validator/admin can validate")
 
+        if project.workflow_status != Project.WORKFLOW_PENDING:
+            return Response(
+                {"detail": "Only submissions pending validation can be reviewed. A returned project must be resubmitted first."},
+                status=409,
+            )
+
         action_value = (request.data.get("action") or "").lower()
         profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
         if not _is_simplified_profile(profile_data):
             return Response({"detail": "This project does not use the supported project form and cannot be reviewed."}, status=400)
         existing_review = profile_data.get("validator_review")
-        if isinstance(existing_review, dict):
-            existing_status = str(existing_review.get("review_status") or "").lower()
-        else:
-            existing_status = ""
-        if existing_status in ("endorsed", "validated") and action_value not in ("endorse", "validate", "approve"):
-            return Response({"detail": "Endorsed reviews are final and cannot be reverted."}, status=400)
-        if existing_status in ("endorsed", "validated") and action_value in ("endorse", "validate", "approve"):
-            return Response({"detail": "This project has already been endorsed.", "code": "already_endorsed"}, status=409)
         contributor_snapshot = profile_data.get("contributor_snapshot")
         if not isinstance(contributor_snapshot, dict):
             contributor_snapshot = _strip_validator_meta(profile_data)
@@ -4191,12 +4232,12 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         reviewed_at = timezone.now().isoformat()
         update_fields = ["profile_data", "updated_at"]
         if action_value in ("save_reviewed", "reviewed", "review", "save", "reject") and not review_notes:
-            return Response({"detail": "A comment/reason is required for Needs Revision or Rejected decisions."}, status=400)
+            return Response({"detail": "A reason is required when requesting a revision."}, status=400)
 
         warning = ""
         if action_value in ("save_draft", "draft"):
             review_state = "draft"
-            project.validated = False
+            # The project remains submitted while the Validator saves notes.
             event = "validator_draft"
         elif action_value in ("save_reviewed", "reviewed", "review", "save"):
             if editable_fields == []:
@@ -4206,6 +4247,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 )
             review_state = "reviewed"
             project.validated = False
+            project.workflow_status = Project.WORKFLOW_NEEDS_REVISION
+            update_fields.append("workflow_status")
             event = "validator_reviewed"
         elif action_value in ("endorse", "approve", "validate"):
             eligibility = confirmation_eligibility(project, confirmation_snapshot) if project.priority_analysis_eligible else {"eligible": True}
@@ -4221,21 +4264,16 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             review_state = "endorsed"
             project.status = "completed"
             project.validated = True
-            update_fields.extend(["status", "validated"])
+            project.workflow_status = Project.WORKFLOW_VALIDATED
+            update_fields.extend(["status", "validated", "workflow_status"])
             event = "validator_endorsed"
-            if existing_status not in ("reviewed", "endorsed", "validated"):
-                warning = "Endorsed without a prior reviewed state."
         elif action_value == "reject":
-            review_state = "rejected"
-            project.status = "planning"
-            project.validated = False
-            update_fields.extend(["status", "validated"])
-            event = "project_reject"
+            return Response({"detail": "Request Revision instead of rejecting a project."}, status=400)
         else:
-            return Response({"detail": "action must be save_draft/save_reviewed/endorse/reject"}, status=400)
+            return Response({"detail": "action must be save_draft/save_reviewed/endorse"}, status=400)
 
         next_review = {
-            "review_status": review_state,
+            "decision": "request_revision" if review_state == "reviewed" else "validate" if review_state == "endorsed" else "draft_saved",
             "reviewed_by_id": request.user.id,
             "reviewed_by_username": request.user.username,
             "reviewed_by_name": _user_display_name(request.user),
@@ -4262,7 +4300,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             _ensure_public_revision(project, request.user)
         details = {
             "status": project.status,
-            "review_status": review_state,
+            "workflow_status": project.workflow_status,
             "edited": len(edited_fields) > 0,
             "edited_fields_count": len(edited_fields),
             "editable_fields_count": len(editable_fields or []),
@@ -4308,7 +4346,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 actor=request.user,
                 dedupe_key=f"project:{project.id}:needs-revision:{reviewed_at}",
             )
-        elif review_state == "endorsed" and existing_status not in ("endorsed", "validated"):
+        elif review_state == "endorsed":
             _notify_many(
                 _admins(),
                 event_type="project_endorsed_admin",
@@ -4327,20 +4365,10 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 actor=request.user,
                 dedupe_key=f"project:{project.id}:validated",
             )
-        elif review_state == "rejected" and existing_status != "rejected":
-            _notify_many(
-                _project_employee_recipients(project),
-                event_type="project_rejected",
-                title="Project rejected",
-                message=review_notes or "Your project submission has been rejected.",
-                project=project,
-                actor=request.user,
-                dedupe_key=f"project:{project.id}:rejected",
-            )
         return Response(
             {
                 "status": project.status,
-                "review_status": review_state,
+                "workflow_status": project.workflow_status,
                 "edited": len(edited_fields) > 0,
                 "edited_fields_count": len(edited_fields),
                 "editable_fields": editable_fields or [],
@@ -4382,8 +4410,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if getattr(request.user, "role", "") != "validator":
             raise PermissionDenied("Only validators can save priority evaluations.")
         profile = project.profile_data if isinstance(project.profile_data, dict) else {}
-        review = profile.get("validator_review") if isinstance(profile.get("validator_review"), dict) else {}
-        if project.status not in ("proposed", "planning") or str(review.get("review_status") or "").lower() in ("endorsed", "validated"):
+        if project.workflow_status != Project.WORKFLOW_PENDING:
             return Response({"detail": "Priority decisions are locked after endorsement."}, status=409)
         analysis = project.priority_analyses.filter(pk=analysis_id).first()
         if analysis is None:
@@ -4415,7 +4442,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Legacy projects are excluded from priority analysis enforcement."}, status=400)
         if not _is_simplified_profile(project.profile_data):
             return Response({"detail": "Priority analysis is available only for simplified-form projects."}, status=400)
-        if project.status not in ("proposed", "planning"):
+        if project.workflow_status != Project.WORKFLOW_PENDING:
             return Response({"detail": "Priority analysis is available before endorsement only."}, status=400)
         document_assessment = serialize_document_assessment(project)
         if document_assessment.get("status") == "missing":
@@ -4558,8 +4585,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         if getattr(request.user, "role", "") != "validator":
             raise PermissionDenied("Only validators can confirm priority analysis.")
         profile = project.profile_data if isinstance(project.profile_data, dict) else {}
-        review = profile.get("validator_review") if isinstance(profile.get("validator_review"), dict) else {}
-        if project.status not in ("proposed", "planning") or str(review.get("review_status") or "").lower() in ("endorsed", "validated"):
+        if project.workflow_status != Project.WORKFLOW_PENDING:
             return Response({"detail": "Priority decisions are locked after endorsement."}, status=400)
         try:
             analysis = project.priority_analyses.get(pk=analysis_id)
@@ -4574,7 +4600,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             return Response({"detail": "This analysis no longer matches the current project information. Run the AI scorer again.", "code": "analysis_project_outdated"}, status=409)
         previous_confirmation = _latest_project_confirmation(project)
         previous_group = _priority_group(previous_confirmation.final_priority) if previous_confirmation else ""
-        from .priority_evaluation import save_evaluation
+        from .priority_evaluation import calculate_evaluation, save_evaluation
         try:
             if analysis.suggested_priority == "incomplete" or (isinstance(analysis.suggested_scores, dict) and analysis.suggested_scores.get("missing_facts")):
                 raise ValueError("Incomplete priority analyses cannot be confirmed. Supply the missing facts and rerun the analysis first.")
@@ -4584,7 +4610,10 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             if saved_evaluation is not None:
                 incoming_scores = request.data.get("adjusted_scores", saved_evaluation.adjusted_scores)
                 incoming_remarks = request.data.get("validator_remarks", saved_evaluation.validator_remarks)
-                if incoming_scores != saved_evaluation.adjusted_scores or incoming_remarks != saved_evaluation.validator_remarks:
+                normalized_scores, normalized_remarks, _, _, _ = calculate_evaluation(
+                    analysis, incoming_scores, incoming_remarks
+                )
+                if normalized_scores != saved_evaluation.adjusted_scores or normalized_remarks != saved_evaluation.validator_remarks:
                     raise ValueError("Save Validator scores and remarks before confirming this analysis.")
             evaluation = save_evaluation(
                 analysis, request.user,
@@ -4896,7 +4925,7 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
         self._ensure_encoding_open()
 
     def _ensure_mutable_project(self, project):
-        if project.status == "planning" or _project_needs_revision(project):
+        if project.workflow_status in {Project.WORKFLOW_DRAFT, Project.WORKFLOW_NEEDS_REVISION}:
             return
         raise PermissionDenied("Submitted/validated projects are view-only for contributors.")
 
@@ -5097,7 +5126,7 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
         project = self.get_object()
-        if project.status == "proposed" and not _project_needs_revision(project):
+        if project.workflow_status == Project.WORKFLOW_PENDING:
             return Response({"status": project.status})
         self._ensure_project_write_open(project)
         self._ensure_mutable_project(project)
@@ -5415,9 +5444,10 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
             base_profile = current.profile_data_snapshot if current else revision.project.profile_data
             revision.changed_fields = _safe_revision_changes(base_profile, revision.profile_data_snapshot)
         revision.state = "submitted"
+        revision.workflow_status = Project.WORKFLOW_PENDING
         revision.submitted_by = request.user
         revision.submitted_at = timezone.now()
-        revision.save(update_fields=["state", "submitted_by", "submitted_at", "changed_fields", "updated_at"])
+        revision.save(update_fields=["state", "workflow_status", "submitted_by", "submitted_at", "changed_fields", "updated_at"])
         _log_activity(
             request,
             "project_revision_submitted",
@@ -5447,7 +5477,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
         action_value = (request.data.get("action") or "").strip().lower()
         if revision.state == "endorsed" and action_value not in ("endorse", "validate", "approve"):
             return Response({"detail": "Endorsed revisions are final and cannot be reverted."}, status=400)
-        if revision.state not in ("submitted", "validator_draft", "reviewed", "endorsed"):
+        if revision.workflow_status != Project.WORKFLOW_PENDING or revision.state not in ("submitted", "validator_draft"):
             return Response({"detail": "Only submitted progress updates can be reviewed."}, status=400)
 
         saved_profile = revision.profile_data_snapshot if isinstance(revision.profile_data_snapshot, dict) else {}
@@ -5532,18 +5562,19 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
 
         if action_value in ("save_draft", "draft"):
             revision.state = "validator_draft"
+            revision.workflow_status = Project.WORKFLOW_PENDING
             event = "project_revision_reviewed"
         elif action_value in ("save_reviewed", "reviewed", "review", "save"):
             revision.state = "reviewed"
+            revision.workflow_status = Project.WORKFLOW_NEEDS_REVISION
             event = "project_revision_reviewed"
         elif action_value in ("endorse", "validate", "approve"):
             _apply_revision_to_project(revision, request.user)
             event = "project_revision_endorsed"
         elif action_value == "reject":
-            revision.state = "rejected"
-            event = "project_revision_rejected"
+            return Response({"detail": "Request Revision instead of rejecting a project update."}, status=400)
         else:
-            return Response({"detail": "action must be save_draft/save_reviewed/endorse/reject"}, status=400)
+            return Response({"detail": "action must be save_draft/save_reviewed/endorse"}, status=400)
 
         if action_value not in ("endorse", "validate", "approve"):
             revision.save(
@@ -5555,6 +5586,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                     "reviewed_by",
                     "reviewed_at",
                     "state",
+                    "workflow_status",
                     "updated_at",
                 ]
             )
@@ -5677,13 +5709,11 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
             Q(profile_data__validator_review__reviewed_by_id=user.id)
             | Q(profile_data__validator_review__reviewed_by_id=str(user.id))
         )
-        visible_project_states = ("draft", "reviewed", "endorsed", "validated", "rejected")
-
         if self.action == "list":
             if scope == "history":
-                qs = Project.objects.filter(archived=False).exclude(status="planning").filter(
+                qs = Project.objects.filter(archived=False).exclude(workflow_status=Project.WORKFLOW_DRAFT).filter(
                     reviewed_by_user,
-                    profile_data__validator_review__review_status__in=("reviewed", "endorsed", "validated", "rejected"),
+                    workflow_status__in=(Project.WORKFLOW_NEEDS_REVISION, Project.WORKFLOW_VALIDATED),
                 ).order_by("-updated_at")
                 workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
                 return _project_list_queryset(
@@ -5691,9 +5721,9 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
                     self.request,
                     prefetch_priority=True,
                 )
-            qs = Project.objects.filter(archived=False).exclude(status="planning").filter(
-                Q(status="proposed")
-                | (reviewed_by_user & Q(profile_data__validator_review__review_status__in=("draft", "reviewed")))
+            qs = Project.objects.filter(archived=False).filter(
+                Q(workflow_status=Project.WORKFLOW_PENDING)
+                | (reviewed_by_user & Q(workflow_status=Project.WORKFLOW_NEEDS_REVISION))
             ).order_by("-created_at")
             workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
             return _project_list_queryset(
@@ -5702,9 +5732,9 @@ class ValidatorProjectViewSet(BaseProjectViewSet):
                 prefetch_priority=True,
             )
 
-        qs = Project.objects.filter(archived=False).exclude(status="planning").filter(
-            Q(status="proposed")
-            | (reviewed_by_user & Q(profile_data__validator_review__review_status__in=visible_project_states))
+        qs = Project.objects.filter(archived=False).exclude(workflow_status=Project.WORKFLOW_DRAFT).filter(
+            Q(workflow_status=Project.WORKFLOW_PENDING)
+            | (reviewed_by_user & Q(workflow_status__in=(Project.WORKFLOW_NEEDS_REVISION, Project.WORKFLOW_VALIDATED)))
         ).order_by("-created_at")
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
         return _project_list_queryset(
@@ -5755,8 +5785,12 @@ class AdminProjectViewSet(BaseProjectViewSet):
                     draft_profiles.setdefault(project_id, profile)
                 for project in qs.only("id", "profile_data"):
                     source_profile = draft_profiles.get(project.id, project.profile_data)
+                    marker = saved_form_marker(source_profile)
+                    if marker is None:
+                        continue
                     analysis = analyze_profile_migration(source_profile, version_cache=version_cache)
-                    if not analysis.get("already_current") and analysis.get("target_version"):
+                    target_version = analysis.get("target_version")
+                    if target_version is None or marker[1] < target_version:
                         outdated_ids.append(project.id)
                 qs = Project.objects.filter(id__in=outdated_ids)
         workflow = self.request.query_params.get("workflow") or self.request.query_params.get("status")
@@ -5866,7 +5900,7 @@ class AdminProjectViewSet(BaseProjectViewSet):
         ids = payload.get("project_ids") if isinstance(payload, dict) else None
         if not isinstance(ids, list) or not ids:
             return Response({"detail": "The migration preview is invalid."}, status=400)
-        counts = {"migrated": 0, "prepared": 0, "attention": 0, "skipped": 0, "blocked": 0, "failed": 0}
+        counts = {"migrated": 0, "correction_migrated": 0, "prepared": 0, "attention": 0, "skipped": 0, "blocked": 0, "failed": 0}
         rows = []
         for project_id in ids:
             try:
@@ -5880,9 +5914,9 @@ class AdminProjectViewSet(BaseProjectViewSet):
                 else:
                     counts["failed"] += 1
                 attention = result.get("attention_fields") or []
-                if result_status in {"migrated", "prepared"} and attention:
+                if result_status in {"migrated", "correction_migrated", "prepared"} and attention:
                     counts["attention"] += 1
-                if result_status in {"migrated", "prepared"}:
+                if result_status in {"migrated", "correction_migrated", "prepared"}:
                     _log_activity(request, "project_update", project, {
                         "operation": "contributor_form_migration",
                         "trigger": "admin_batch",
@@ -5918,7 +5952,7 @@ class AdminProjectViewSet(BaseProjectViewSet):
         if not preview["eligible"]:
             return Response({"detail": preview["reason"], "migration": preview}, status=409)
         result = prepare_project_migration(project, user=request.user, trigger="admin_single")
-        if result.get("status") not in {"migrated", "prepared", "current"}:
+        if result.get("status") not in {"migrated", "correction_migrated", "prepared", "current"}:
             return Response({"detail": result.get("reason") or "; ".join(result.get("issues") or [])}, status=409)
         _log_activity(request, "project_update", project, {
             "operation": "contributor_form_migration",
@@ -5927,7 +5961,7 @@ class AdminProjectViewSet(BaseProjectViewSet):
             "target_version": result.get("target_version"),
         })
         return Response({
-            "detail": "A latest-form update draft was prepared." if result.get("status") == "prepared" else "The project form was migrated.",
+            "detail": "A latest-form update draft was prepared." if result.get("status") == "prepared" else "The correction now uses the latest form. The Contributor must resubmit it for review." if result.get("status") == "correction_migrated" else "The project form was migrated.",
             "status": result.get("status"),
             "project_id": project.id,
             "source_version": result.get("source_version"),
@@ -6876,15 +6910,12 @@ class DashboardView(APIView):
         if role == "admin":
             project_counts = Project.objects.aggregate(
                 total_projects=Count("id"),
-                draft_projects=Count("id", filter=Q(status="planning")),
-                pending_projects=Count("id", filter=Q(status="proposed")),
-                approved_projects=Count("id", filter=Q(status="completed")),
+                draft_projects=Count("id", filter=Q(workflow_status=Project.WORKFLOW_DRAFT)),
+                pending_projects=Count("id", filter=Q(workflow_status=Project.WORKFLOW_PENDING)),
+                needs_revision_projects=Count("id", filter=Q(workflow_status=Project.WORKFLOW_NEEDS_REVISION)),
+                approved_projects=Count("id", filter=Q(workflow_status=Project.WORKFLOW_VALIDATED)),
                 archived_projects=Count("id", filter=Q(archived=True)),
-                reviewed_projects=Count("id", filter=Q(profile_data__validator_review__review_status="reviewed")),
                 validator_edited_projects=Count("id", filter=Q(profile_data__validator_review__edited=True)),
-                review_draft=Count("id", filter=Q(profile_data__validator_review__review_status="draft")),
-                review_reviewed=Count("id", filter=Q(profile_data__validator_review__review_status="reviewed")),
-                review_endorsed=Count("id", filter=Q(profile_data__validator_review__review_status="endorsed")),
             )
             user_counts = User.objects.aggregate(
                 users=Count("id"),
@@ -6898,17 +6929,18 @@ class DashboardView(APIView):
             }
         elif role == "validator":
             data = Project.objects.filter(archived=False).aggregate(
-                review_draft=Count("id", filter=Q(profile_data__validator_review__review_status="draft")),
-                review_reviewed=Count("id", filter=Q(profile_data__validator_review__review_status="reviewed")),
-                review_endorsed=Count("id", filter=Q(profile_data__validator_review__review_status="endorsed")),
+                pending_projects=Count("id", filter=Q(workflow_status=Project.WORKFLOW_PENDING)),
+                needs_revision_projects=Count("id", filter=Q(workflow_status=Project.WORKFLOW_NEEDS_REVISION)),
+                validated_projects=Count("id", filter=Q(workflow_status=Project.WORKFLOW_VALIDATED)),
             )
         else:
             my = Project.objects.filter(_contributor_project_scope(user), archived=False).distinct()
             data = my.aggregate(
                 my_projects=Count("id"),
-                draft_projects=Count("id", filter=Q(status="planning")),
-                submitted_projects=Count("id", filter=Q(status="proposed")),
-                approved_projects=Count("id", filter=Q(status="completed")),
+                draft_projects=Count("id", filter=Q(workflow_status=Project.WORKFLOW_DRAFT)),
+                submitted_projects=Count("id", filter=Q(workflow_status=Project.WORKFLOW_PENDING)),
+                needs_revision_projects=Count("id", filter=Q(workflow_status=Project.WORKFLOW_NEEDS_REVISION)),
+                approved_projects=Count("id", filter=Q(workflow_status=Project.WORKFLOW_VALIDATED)),
             )
         response = Response(data)
         response["Cache-Control"] = "private, no-store"

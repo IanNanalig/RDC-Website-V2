@@ -25,6 +25,7 @@ from .models import (
     ProjectAIProcessingJob,
     ProjectDocumentAssessment,
     ProjectPriorityAnalysis,
+    ProjectRevision,
     ProjectSupportingDocument,
     SystemSetting,
     User,
@@ -93,6 +94,28 @@ class SupportingDocumentApiTests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(self.contributor)
 
+    def test_returned_project_can_attach_evidence_and_resubmit(self):
+        self.project.status = "proposed"
+        self.project.workflow_status = "pending_validation"
+        self.project.profile_data["validator_review"] = {
+            "review_status": "reviewed",
+            "editable_fields": ["custom_supporting_documents"],
+        }
+        self.project.workflow_status = "needs_revision"
+        self.project.profile_data["form_schema"]["legacy"] = True
+        self.project.save(update_fields=["workflow_status", "status", "profile_data"])
+        uploaded = self.client.post(
+            "/api/project-supporting-documents/",
+            {"project": self.project.id, "field_key": "custom_supporting_documents",
+             "file": SimpleUploadedFile("correction.csv", b"item,value\ncorrected,1\n", content_type="text/csv")},
+            format="multipart",
+        )
+        self.assertEqual(uploaded.status_code, 201, uploaded.data)
+        self.assertIsNone(uploaded.data["revision"])
+        submitted = self.client.post(f"/api/employee/projects/{self.project.id}/submit/", {}, format="json")
+        self.assertEqual(submitted.status_code, 200, submitted.data)
+        self.assertEqual(self.project.supporting_documents.filter(removed_at__isnull=True).count(), 1)
+
     @override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True)
     @patch("projects.views.dispatch_document_processing", side_effect=AssertionError("Upload must not dispatch AI processing"))
     def test_contributor_upload_is_stored_without_ai_processing(self, dispatch):
@@ -134,7 +157,8 @@ class SupportingDocumentApiTests(TestCase):
     @patch("projects.tasks.process_supporting_document.delay", side_effect=AssertionError("Broker must not be used"))
     def test_validator_inline_extraction_endpoint_processes_uploaded_document(self, delay):
         self.project.status = "proposed"
-        self.project.save(update_fields=["status"])
+        self.project.workflow_status = "pending_validation"
+        self.project.save(update_fields=["workflow_status", "status"])
         document = ProjectSupportingDocument.objects.create(
             project=self.project,
             original_filename="evidence.csv",
@@ -161,9 +185,59 @@ class SupportingDocumentApiTests(TestCase):
         self.assertIn("River rehabilitation", document.extracted_text)
         delay.assert_not_called()
 
+    @override_settings(DOCUMENT_AI_PROCESSING_MODE="inline", CELERY_TASK_ALWAYS_EAGER=False)
+    def test_inline_extraction_locks_only_active_documents_with_nullable_revisions(self):
+        from reportlab.pdfgen import canvas
+
+        self.project.status = "proposed"
+        self.project.workflow_status = "pending_validation"
+        self.project.save(update_fields=["workflow_status", "status"])
+        endorsed = ProjectRevision.objects.create(
+            project=self.project, revision_number=1, revision_type="progress_update", state="endorsed",
+        )
+        pending = ProjectRevision.objects.create(
+            project=self.project, revision_number=2, revision_type="progress_update", state="draft",
+        )
+        documents = []
+        for index, revision in enumerate((None, None, endorsed, pending), start=1):
+            buffer = io.BytesIO()
+            pdf = canvas.Canvas(buffer)
+            pdf.drawString(72, 720, f"Project evidence document {index}")
+            pdf.save()
+            data = buffer.getvalue()
+            documents.append(ProjectSupportingDocument.objects.create(
+                project=self.project,
+                revision=revision,
+                original_filename=f"evidence-{index}.pdf",
+                content_type="application/pdf",
+                extension="pdf",
+                size_bytes=len(data),
+                checksum_sha256=f"{index:064x}",
+                content=data,
+                extraction_status="not_processed",
+                uploaded_by=self.contributor,
+            ))
+
+        self.client.force_authenticate(self.validator)
+        response = self.client.post(
+            "/api/project-supporting-documents/process-inline/",
+            {"project": self.project.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["status"], "pending")
+        for document in documents[:3]:
+            document.refresh_from_db()
+            self.assertEqual(document.extraction_status, "ready")
+            self.assertIn("Project evidence document", document.extracted_text)
+        documents[3].refresh_from_db()
+        self.assertEqual(documents[3].extraction_status, "not_processed")
+
     def test_priority_preflight_names_the_missing_contributor_fields(self):
         self.project.status = "proposed"
-        self.project.save(update_fields=["status"])
+        self.project.workflow_status = "pending_validation"
+        self.project.save(update_fields=["workflow_status", "status"])
         ProjectSupportingDocument.objects.create(
             project=self.project,
             original_filename="evidence.csv",
@@ -259,8 +333,9 @@ class SupportingDocumentApiTests(TestCase):
         })
         self.project.profile_data = complete_profile
         self.project.status = "proposed"
+        self.project.workflow_status = "pending_validation"
         self.project.budget = 850_000_000
-        self.project.save(update_fields=["profile_data", "status", "budget", "updated_at"])
+        self.project.save(update_fields=["workflow_status", "profile_data", "status", "budget", "updated_at"])
         ProjectSupportingDocument.objects.create(
             project=self.project,
             original_filename="evidence.csv",
@@ -398,7 +473,8 @@ class SupportingDocumentApiTests(TestCase):
         )
 
         self.project.status = "proposed"
-        self.project.save(update_fields=["status"])
+        self.project.workflow_status = "pending_validation"
+        self.project.save(update_fields=["workflow_status", "status"])
         self.client.force_authenticate(self.validator)
         response = self.client.post(f"/api/project-supporting-documents/{document.id}/retry/", {})
 
@@ -509,7 +585,8 @@ class SupportingDocumentApiTests(TestCase):
 
     def test_validator_receives_retryable_error_when_ai_assessment_provider_is_unavailable(self):
         self.project.status = "proposed"
-        self.project.save(update_fields=["status"])
+        self.project.workflow_status = "pending_validation"
+        self.project.save(update_fields=["workflow_status", "status"])
         document = ProjectSupportingDocument.objects.create(
             project=self.project,
             original_filename="ready.csv",
@@ -545,7 +622,8 @@ class SupportingDocumentApiTests(TestCase):
 
     def test_validator_can_view_submitted_document_but_content_editor_cannot(self):
         self.project.status = "proposed"
-        self.project.save(update_fields=["status"])
+        self.project.workflow_status = "pending_validation"
+        self.project.save(update_fields=["workflow_status", "status"])
         document = ProjectSupportingDocument.objects.create(
             project=self.project,
             original_filename="evidence.csv",
@@ -604,7 +682,8 @@ class SupportingDocumentApiTests(TestCase):
     @patch("projects.views.dispatch_document_assessment", return_value=True)
     def test_ai_scorer_starts_document_assessment(self, dispatch):
         self.project.status = "proposed"
-        self.project.save(update_fields=["status"])
+        self.project.workflow_status = "pending_validation"
+        self.project.save(update_fields=["workflow_status", "status"])
         ProjectSupportingDocument.objects.create(
             project=self.project,
             original_filename="evidence.csv",
@@ -634,7 +713,8 @@ class SupportingDocumentApiTests(TestCase):
     @patch("projects.document_assessments.dispatch_document_processing", return_value=True)
     def test_validator_scorer_starts_processing_for_uploaded_unprocessed_document(self, dispatch):
         self.project.status = "proposed"
-        self.project.save(update_fields=["status"])
+        self.project.workflow_status = "pending_validation"
+        self.project.save(update_fields=["workflow_status", "status"])
         document = ProjectSupportingDocument.objects.create(
             project=self.project,
             original_filename="evidence.csv",
@@ -667,7 +747,8 @@ class SupportingDocumentApiTests(TestCase):
     @patch("projects.document_assessments.dispatch_document_processing", return_value=False)
     def test_broker_publish_failure_marks_the_job_and_document_failed(self, _dispatch):
         self.project.status = "proposed"
-        self.project.save(update_fields=["status"])
+        self.project.workflow_status = "pending_validation"
+        self.project.save(update_fields=["workflow_status", "status"])
         document = ProjectSupportingDocument.objects.create(
             project=self.project,
             original_filename="evidence.csv",
@@ -696,7 +777,8 @@ class SupportingDocumentApiTests(TestCase):
 
     def test_status_endpoint_marks_expired_worker_job_stalled_and_retryable(self):
         self.project.status = "proposed"
-        self.project.save(update_fields=["status"])
+        self.project.workflow_status = "pending_validation"
+        self.project.save(update_fields=["workflow_status", "status"])
         old = timezone.now() - timedelta(minutes=20)
         job = ProjectAIProcessingJob.objects.create(
             project=self.project,
@@ -783,7 +865,8 @@ class SupportingDocumentApiTests(TestCase):
     @patch("projects.tasks.assess_project_documents")
     def test_eager_ai_scorer_reads_documents_then_scores_project(self, assess_documents, analyze):
         self.project.status = "proposed"
-        self.project.save(update_fields=["status"])
+        self.project.workflow_status = "pending_validation"
+        self.project.save(update_fields=["workflow_status", "status"])
         document = ProjectSupportingDocument.objects.create(
             project=self.project,
             original_filename="evidence.csv",

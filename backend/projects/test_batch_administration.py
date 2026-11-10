@@ -121,6 +121,21 @@ class BatchAdministrationTests(APITestCase):
         self.assertEqual([row["status"] for row in response.data["rows"]], ["invalid", "valid"])
         self.assertIn("Assign an eligible agency", response.data["rows"][0]["reason"])
 
+    def test_project_summary_uses_workflow_status_when_review_snapshot_missing(self):
+        validated = self.project("Validated without review snapshot")
+        pending = self.project("Pending review", status_value="proposed", validated=False)
+        reviewed = self.project("Explicit endorsement")
+        reviewed.profile_data["validator_review"] = {"review_status": "endorsed"}
+        reviewed.save(update_fields=["profile_data", "updated_at"])
+        self.authenticate(self.admin)
+        response = self.client.get("/api/admin/projects/?view=summary")
+        self.assertEqual(response.status_code, 200)
+        by_id = {row["id"]: row for row in response.data}
+        self.assertEqual(by_id[validated.id]["workflow_status"], "validated")
+        self.assertEqual(by_id[pending.id]["workflow_status"], "pending_validation")
+        self.assertEqual(by_id[reviewed.id]["workflow_status"], "validated")
+        self.assertNotIn("review_status", by_id[validated.id])
+
     def test_batch_archive_rechecks_and_partially_succeeds(self):
         stable = self.project("Stable Project")
         pending = self.project("Pending Project", status_value="proposed", validated=False)
@@ -174,6 +189,188 @@ class BatchAdministrationTests(APITestCase):
         )
         self.assertEqual(preview.status_code, status.HTTP_200_OK)
         self.assertEqual({row["id"] for row in preview.data["rows"]}, {first.id, second.id})
+
+    def test_returned_correction_migrates_in_place_and_preserves_review(self):
+        form = CMSContributorForm.objects.select_related("current_published_version").get(key="simplified-rdip")
+        source = form.current_published_version
+        target_schema = deepcopy(source.schema_json)
+        target_schema["sections"][0]["fields"].append({
+            "key": "custom_new_correction", "label": "New correction detail",
+            "type": "text", "required": True, "visible": True,
+        })
+        target = CMSContributorFormVersion.objects.create(
+            form=form, version_number=source.version_number + 1,
+            schema_json=target_schema, based_on_version=source,
+            migration_plan_json=build_form_migration_plan(source.schema_json, target_schema),
+            published_by=self.admin,
+        )
+        form.current_published_version = target
+        form.save(update_fields=["current_published_version", "updated_at"])
+        project = self.project("Returned correction", status_value="proposed", validated=False)
+        old_profile = deepcopy(project.profile_data)
+        old_profile["form_schema"] = {"key": form.key, "version": source.version_number}
+        old_profile["validator_review"] = {
+            "review_status": "reviewed", "review_notes": "Correct the location.",
+            "editable_fields": ["location"], "working_copy": deepcopy(old_profile),
+        }
+        project.profile_data = old_profile
+        project.workflow_status = "needs_revision"
+        project.save(update_fields=["profile_data", "workflow_status", "updated_at"])
+        self.authenticate(self.admin)
+        preview = self.client.post(
+            "/api/admin/projects/form-migration-preview/", {"project_ids": [project.id]}, format="json",
+        )
+        self.assertEqual(preview.data["eligible"], 1, preview.data)
+        self.assertEqual(preview.data["rows"][0]["target_version"], target.version_number)
+        migrated = self.client.post(
+            f"/api/admin/projects/{project.id}/update-form/", {}, format="json",
+        )
+        self.assertEqual(migrated.status_code, 200, migrated.data)
+        self.assertEqual(migrated.data["status"], "correction_migrated")
+        project.refresh_from_db()
+        self.assertEqual(project.status, "proposed")
+        self.assertFalse(project.validated)
+        self.assertEqual(project.profile_data["form_schema"]["version"], target.version_number)
+        self.assertEqual(project.profile_data["contributor_snapshot"]["form_schema"]["version"], target.version_number)
+        review = project.profile_data["validator_review"]
+        self.assertEqual(review["review_status"], "reviewed")
+        self.assertEqual(review["review_notes"], "Correct the location.")
+        self.assertNotIn("working_copy", review)
+        self.assertIn("location", review["editable_fields"])
+        self.assertIn("custom_new_correction", review["editable_fields"])
+        self.assertEqual(project.supporting_document_policy["form_version"], target.version_number)
+        history = ProjectRevision.objects.get(project=project, revision_type="initial_submission", state="superseded")
+        self.assertFalse(history.is_public_current)
+        self.assertEqual(history.profile_data_snapshot, old_profile)
+        self.assertEqual(self.client.post(f"/api/admin/projects/{project.id}/update-form/", {}, format="json").status_code, 409)
+
+    def test_active_validator_review_stays_blocked_but_shows_target_version(self):
+        form = CMSContributorForm.objects.select_related("current_published_version").get(key="simplified-rdip")
+        source = form.current_published_version
+        target = CMSContributorFormVersion.objects.create(
+            form=form, version_number=source.version_number + 1,
+            schema_json=deepcopy(source.schema_json), based_on_version=source,
+            published_by=self.admin,
+        )
+        form.current_published_version = target
+        form.save(update_fields=["current_published_version", "updated_at"])
+        project = self.project("Active review", status_value="proposed", validated=False)
+        project.profile_data["form_schema"] = {"key": form.key, "version": source.version_number}
+        project.profile_data["validator_review"] = {"review_status": "draft"}
+        project.save(update_fields=["profile_data", "updated_at"])
+        self.authenticate(self.admin)
+        preview = self.client.post(
+            "/api/admin/projects/form-migration-preview/", {"project_ids": [project.id]}, format="json",
+        )
+        self.assertEqual(preview.data["eligible"], 0)
+        row = preview.data["rows"][0]
+        self.assertEqual(row["source_version"], source.version_number)
+        self.assertEqual(row["target_version"], target.version_number)
+        self.assertIn("Needs Revision", row["reason"])
+        self.assertEqual(ProjectRevision.objects.filter(project=project).count(), 0)
+
+    def test_outdated_project_with_missing_source_version_is_visible_with_blocker(self):
+        form = CMSContributorForm.objects.select_related("current_published_version").get(key="simplified-rdip")
+        source = form.current_published_version
+        target = CMSContributorFormVersion.objects.create(
+            form=form, version_number=source.version_number + 1,
+            schema_json=deepcopy(source.schema_json), based_on_version=source,
+            published_by=self.admin,
+        )
+        form.current_published_version = target
+        form.save(update_fields=["current_published_version", "updated_at"])
+        project = self.project("Unresolved old form")
+        project.profile_data["form_schema"] = {"key": form.key, "version": source.version_number}
+        project.save(update_fields=["profile_data", "updated_at"])
+        source.delete()
+        self.authenticate(self.admin)
+        listing = self.client.get("/api/admin/projects/?view=summary&scope=update_forms")
+        self.assertEqual(listing.status_code, 200, listing.data)
+        row = next(item for item in listing.data if item["id"] == project.id)
+        self.assertEqual(row["form_version"], source.version_number)
+        self.assertEqual(row["current_form_version"], target.version_number)
+        self.assertIn("unavailable", row["migration_reason"])
+        preview = self.client.post(
+            "/api/admin/projects/form-migration-preview/", {"project_ids": [project.id]}, format="json",
+        )
+        self.assertEqual(preview.data["eligible"], 0)
+        self.assertEqual(preview.data["rows"][0]["target_version"], target.version_number)
+
+    def test_migration_rechecks_returned_state_after_preview(self):
+        form = CMSContributorForm.objects.select_related("current_published_version").get(key="simplified-rdip")
+        source = form.current_published_version
+        target = CMSContributorFormVersion.objects.create(
+            form=form, version_number=source.version_number + 1,
+            schema_json=deepcopy(source.schema_json), based_on_version=source,
+            published_by=self.admin,
+        )
+        form.current_published_version = target
+        form.save(update_fields=["current_published_version", "updated_at"])
+        project = self.project("Review changed", status_value="proposed", validated=False)
+        project.profile_data["form_schema"] = {"key": form.key, "version": source.version_number}
+        project.profile_data["validator_review"] = {"review_status": "reviewed", "editable_fields": ["location"]}
+        project.workflow_status = "needs_revision"
+        project.save(update_fields=["profile_data", "workflow_status", "updated_at"])
+        self.authenticate(self.admin)
+        preview = self.client.post(
+            "/api/admin/projects/form-migration-preview/", {"project_ids": [project.id]}, format="json",
+        )
+        self.assertEqual(preview.data["eligible"], 1)
+        project.profile_data["validator_review"]["review_status"] = "draft"
+        project.workflow_status = "pending_validation"
+        project.save(update_fields=["profile_data", "workflow_status", "updated_at"])
+        execution = self.client.post(
+            "/api/admin/projects/migrate-forms/", {"preview_token": preview.data["preview_token"]},
+            format="json",
+        )
+        self.assertEqual(execution.status_code, 200)
+        self.assertEqual(execution.data["skipped"], 1)
+        self.assertFalse(ProjectRevision.objects.filter(project=project).exists())
+        project.refresh_from_db()
+        self.assertEqual(project.profile_data["form_schema"]["version"], source.version_number)
+
+    def test_returned_project_can_save_a_correction_draft_on_its_pinned_form(self):
+        form = CMSContributorForm.objects.select_related("current_published_version").get(key="simplified-rdip")
+        source = form.current_published_version
+        target = CMSContributorFormVersion.objects.create(
+            form=form, version_number=source.version_number + 1,
+            schema_json=deepcopy(source.schema_json), based_on_version=source,
+            published_by=self.admin,
+        )
+        form.current_published_version = target
+        form.save(update_fields=["current_published_version", "updated_at"])
+        project = self.project("Pinned correction", status_value="proposed", validated=False)
+        profile = deepcopy(project.profile_data)
+        profile["form_schema"] = {"key": form.key, "version": source.version_number}
+        profile["contributor_snapshot"] = deepcopy(profile)
+        profile["validator_review"] = {
+            "review_status": "reviewed", "review_notes": "Correct the location.",
+            "editable_fields": ["location"],
+        }
+        project.profile_data = profile
+        project.workflow_status = "needs_revision"
+        project.save(update_fields=["profile_data", "workflow_status", "updated_at"])
+        updated = deepcopy(profile)
+        updated["simplified_form"]["location"] = ["Manila"]
+        self.authenticate(self.contributor)
+        response = self.client.patch(
+            f"/api/employee/projects/{project.id}/", {"profile_data": updated}, format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        project.refresh_from_db()
+        self.assertEqual(project.status, "proposed")
+        self.assertEqual(project.profile_data["form_schema"]["version"], source.version_number)
+        self.assertEqual(project.profile_data["simplified_form"]["location"], ["Manila"])
+        self.assertEqual(project.profile_data["validator_review"]["review_status"], "reviewed")
+        project.profile_data["validator_review"]["editable_fields"].append("startYear")
+        project.save(update_fields=["profile_data", "updated_at"])
+        invalid = deepcopy(project.profile_data)
+        invalid["simplified_form"]["startYear"] = "not a year"
+        response = self.client.patch(
+            f"/api/employee/projects/{project.id}/", {"profile_data": invalid}, format="json",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("Start Year", str(response.data))
 
     def test_validated_form_migration_prepares_non_public_draft(self):
         form = CMSContributorForm.objects.select_related("current_published_version").get(key="simplified-rdip")

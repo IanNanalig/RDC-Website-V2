@@ -466,7 +466,9 @@ def dispatch_project_document_processing(project, *, retry_failed=False, request
             record_processing_event(processing_job, "requested", stage=ProjectAIProcessingJob.STAGE_DISPATCH)
         documents = list(
             active_project_documents(locked_project)
-            .select_for_update()
+            # The active-document filter joins the nullable revision FK.
+            # PostgreSQL cannot lock the nullable side of that outer join.
+            .select_for_update(of=("self",))
             .order_by("id")
         )
         candidates = [

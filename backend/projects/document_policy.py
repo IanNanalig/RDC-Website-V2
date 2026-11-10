@@ -1,4 +1,5 @@
 from copy import deepcopy
+from django.db.models import Q
 
 from cms.form_schema import (
     DOCUMENT_UPLOAD_EXTENSIONS,
@@ -102,7 +103,29 @@ def resolve_project_document_policy(project, *, persist=False):
 
 
 def active_project_documents(project):
-    return project.supporting_documents.filter(removed_at__isnull=True)
+    return project.supporting_documents.filter(removed_at__isnull=True).filter(
+        Q(revision__isnull=True) | Q(revision__state="endorsed")
+    )
+
+
+def revision_document_policy(revision):
+    """Use the revision's pinned form version for its upload rules."""
+    from cms.models import CMSContributorFormVersion
+
+    profile = revision.profile_data_snapshot if isinstance(revision.profile_data_snapshot, dict) else {}
+    marker = profile.get("form_schema") if isinstance(profile.get("form_schema"), dict) else {}
+    key = str(marker.get("key") or "simplified-rdip")
+    version_number = marker.get("version")
+    version = CMSContributorFormVersion.objects.filter(
+        form__key=key, version_number=version_number,
+    ).first() if version_number else None
+    if version:
+        policy = document_policy_from_schema(
+            version.schema_json, form_key=key, form_version=version.version_number,
+        )
+        if policy:
+            return policy
+    return current_document_policy(key) or resolve_project_document_policy(revision.project)
 
 
 def validate_project_documents_for_submit(project, policy=None):

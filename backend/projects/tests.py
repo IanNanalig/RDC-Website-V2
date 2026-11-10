@@ -4,6 +4,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.db import connection
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -12,6 +13,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 from cms.models import CMSContributorForm
 from .priority_scoring import _priority_for, _priority_with_regional_budget, confirm_analysis
+from .document_policy import current_document_policy
 from .models import (
     Notification,
     PriorityRuleSet,
@@ -116,6 +118,7 @@ class PortalWorkflowTests(APITestCase):
         )
         self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
         project_id = create_res.data["id"]
+        self.assertEqual(Project.objects.get(pk=project_id).workflow_status, "draft")
         # The general workflow test uses the supported exemption path; priority scoring has its own flow.
         project = Project.objects.get(id=project_id)
         project.priority_analysis_eligible = False
@@ -123,6 +126,7 @@ class PortalWorkflowTests(APITestCase):
 
         submit_res = self.client.post(f"/api/employee/projects/{project_id}/submit/", {}, format="json")
         self.assertEqual(submit_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(Project.objects.get(pk=project_id).workflow_status, "pending_validation")
 
         self._as(self.validator)
         validator_list = self.client.get("/api/validator/projects/")
@@ -135,6 +139,7 @@ class PortalWorkflowTests(APITestCase):
             format="json",
         )
         self.assertEqual(approve_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(Project.objects.get(pk=project_id).workflow_status, "validated")
 
         self._as(self.admin)
         admin_list = self.client.get("/api/admin/projects/")
@@ -639,6 +644,115 @@ class PortalWorkflowTests(APITestCase):
             ).exists()
         )
 
+    def test_progress_evidence_stays_pending_until_endorsement(self):
+        self._set_progress_window(timezone.now() - timedelta(hours=1), timezone.now() + timedelta(hours=1))
+        self.employee.agency = "MMDA"
+        self.employee.save(update_fields=["agency"])
+        version = CMSContributorForm.objects.get(key="simplified-rdip").current_published_version.version_number
+        project = Project.objects.create(
+            name="Progress Evidence", implementing_agency="MMDA", municipality="NCR",
+            status="ongoing", validated=True, cost=100000, latitude=14.5,
+            agency="MMDA", budget=100000, created_by=self.employee,
+            profile_data={
+                "form_schema": {"key": "simplified-rdip", "version": version, "legacy": True},
+                "simplified_form": {"projectActivity": "Progress Evidence", "startYear": "2026", "endYear": "2027"},
+            },
+        )
+        self._as(self.employee)
+        started = self.client.post(f"/api/employee/projects/{project.id}/start-update/", {}, format="json")
+        self.assertEqual(started.status_code, 201, started.data)
+        revision_id = started.data["id"]
+        draft_profile = deepcopy(started.data["profile_data_snapshot"])
+        draft_profile["simplified_form"]["description"] = "Updated progress details."
+        saved = self.client.put(
+            f"/api/project-revisions/{revision_id}/", {"profile_data": draft_profile}, format="json",
+        )
+        self.assertEqual(saved.status_code, 200, saved.data)
+        field_key = current_document_policy("simplified-rdip")["field_key"]
+        uploaded = self.client.post(
+            "/api/project-supporting-documents/",
+            {"project": project.id, "revision": revision_id, "field_key": field_key,
+             "file": SimpleUploadedFile("progress.csv", b"item,value\nworks,1\n", content_type="text/csv")},
+            format="multipart",
+        )
+        self.assertEqual(uploaded.status_code, 201, uploaded.data)
+        document_id = uploaded.data["id"]
+        self.assertEqual(uploaded.data["revision"], revision_id)
+        current = self.client.get(f"/api/project-supporting-documents/?project={project.id}")
+        pending = self.client.get(f"/api/project-supporting-documents/?project={project.id}&revision={revision_id}")
+        self.assertEqual(len(current.data), 0)
+        self.assertEqual(len(pending.data), 1)
+        self.assertEqual(self.client.get(f"/api/project-supporting-documents/{document_id}/download/").status_code, 200)
+        other_agency_user = User.objects.create_user(
+            username="other_agency_progress", password="password", role="staff", agency="DENR",
+            email="other_agency_progress@example.com",
+        )
+        self._as(other_agency_user)
+        self.assertEqual(self.client.get(f"/api/project-supporting-documents/?project={project.id}&revision={revision_id}").status_code, 403)
+        self.assertIn(self.client.get(f"/api/project-supporting-documents/{document_id}/download/").status_code, (403, 404))
+        self._as(self.validator)
+        self.assertIn(self.client.get(f"/api/project-supporting-documents/{document_id}/download/").status_code, (403, 404))
+        self._as(self.employee)
+        invalid = self.client.post(
+            "/api/project-supporting-documents/",
+            {"project": project.id, "revision": revision_id, "field_key": field_key,
+             "file": SimpleUploadedFile("invalid.exe", b"not evidence", content_type="application/octet-stream")},
+            format="multipart",
+        )
+        self.assertEqual(invalid.status_code, 400)
+        submitted = self.client.post(f"/api/project-revisions/{revision_id}/submit/", {}, format="json")
+        self.assertEqual(submitted.status_code, 200, submitted.data)
+        self.assertEqual(self.client.post(f"/api/project-revisions/{revision_id}/submit/", {}, format="json").status_code, 403)
+        project.refresh_from_db()
+        self.assertEqual(project.name, "Progress Evidence")
+        self.assertNotEqual(project.description, "Updated progress details.")
+        self._as(self.validator)
+        queue = self.client.get("/api/project-revisions/?view=summary&scope=queue")
+        self.assertEqual(queue.status_code, 200)
+        self.assertIn(revision_id, [row["id"] for row in queue.data])
+        self.assertEqual(self.client.get(f"/api/project-supporting-documents/{document_id}/download/").status_code, 200)
+        self.assertEqual(len(self.client.get(f"/api/project-supporting-documents/?project={project.id}").data), 0)
+        endorsed = self.client.post(f"/api/project-revisions/{revision_id}/review/", {"action": "endorse"}, format="json")
+        self.assertEqual(endorsed.status_code, 200, endorsed.data)
+        self.assertEqual(len(self.client.get(f"/api/project-supporting-documents/?project={project.id}").data), 1)
+        self.assertEqual(self.client.get(f"/api/project-supporting-documents/{document_id}/download/").status_code, 200)
+
+    def test_returned_progress_evidence_never_becomes_current(self):
+        self._set_progress_window(timezone.now() - timedelta(hours=1), timezone.now() + timedelta(hours=1))
+        self.employee.agency = "MMDA"
+        self.employee.save(update_fields=["agency"])
+        version = CMSContributorForm.objects.get(key="simplified-rdip").current_published_version.version_number
+        profile = {
+            "form_schema": {"key": "simplified-rdip", "version": version, "legacy": True},
+            "simplified_form": {"projectActivity": "Rejected evidence", "startYear": "2026", "endYear": "2027"},
+        }
+        project = Project.objects.create(
+            name="Rejected evidence", implementing_agency="MMDA", municipality="NCR",
+            status="ongoing", validated=True, cost=100000, latitude=14.5,
+            agency="MMDA", budget=100000, created_by=self.employee, profile_data=profile,
+        )
+        self._as(self.employee)
+        started = self.client.post(f"/api/employee/projects/{project.id}/start-update/", {}, format="json")
+        self.assertEqual(started.status_code, 201, started.data)
+        revision_id = started.data["id"]
+        uploaded = self.client.post(
+            "/api/project-supporting-documents/",
+            {"project": project.id, "revision": revision_id,
+             "field_key": current_document_policy("simplified-rdip")["field_key"],
+             "file": SimpleUploadedFile("rejected.csv", b"item,value\nrejected,1\n", content_type="text/csv")},
+            format="multipart",
+        )
+        self.assertEqual(uploaded.status_code, 201, uploaded.data)
+        self.assertEqual(self.client.post(f"/api/project-revisions/{revision_id}/submit/", {}, format="json").status_code, 200)
+        self._as(self.validator)
+        returned = self.client.post(f"/api/project-revisions/{revision_id}/review/", {"action": "save_reviewed", "notes": "Revise evidence."}, format="json")
+        self.assertEqual(returned.status_code, 200, returned.data)
+        self.assertEqual(returned.data["workflow_status"], "needs_revision")
+        project.refresh_from_db()
+        self.assertEqual(project.name, "Rejected evidence")
+        self.assertEqual(len(self.client.get(f"/api/project-supporting-documents/?project={project.id}").data), 0)
+        self.assertEqual(ProjectSupportingDocument.objects.get(pk=uploaded.data["id"]).revision_id, revision_id)
+
     def test_opening_an_editable_progress_draft_syncs_the_project_form_version(self):
         self._set_progress_window(timezone.now() - timedelta(hours=1), timezone.now() + timedelta(hours=1))
         self.employee.agency = "DENR"
@@ -731,6 +845,7 @@ class PortalWorkflowTests(APITestCase):
             format="json",
         )
         self.assertEqual(needs_revision.status_code, status.HTTP_200_OK)
+        self.assertEqual(Project.objects.get(pk=project_id).workflow_status, "needs_revision")
         self.assertEqual(
             Notification.objects.filter(project_id=project_id, recipient=self.employee, event_type="project_needs_revision").count(),
             1,
@@ -741,10 +856,10 @@ class PortalWorkflowTests(APITestCase):
             {"action": "save_reviewed", "notes": "Please also confirm the proposal details."},
             format="json",
         )
-        self.assertEqual(repeated_request.status_code, status.HTTP_200_OK)
+        self.assertEqual(repeated_request.status_code, status.HTTP_409_CONFLICT)
         self.assertEqual(
             Notification.objects.filter(project_id=project_id, recipient=self.employee, event_type="project_needs_revision").count(),
-            2,
+            1,
         )
 
         self._set_encoding_window(timezone.now(), timezone.now(), enabled=False)
@@ -762,6 +877,7 @@ class PortalWorkflowTests(APITestCase):
         )
         self.assertEqual(update_res.status_code, status.HTTP_200_OK, update_res.data)
         project.refresh_from_db()
+        self.assertEqual(project.workflow_status, "needs_revision")
         ProjectSupportingDocument.objects.create(
             project=project,
             field_key="custom_supporting_documents",
@@ -785,7 +901,40 @@ class PortalWorkflowTests(APITestCase):
         )
         refreshed = Project.objects.get(id=project_id)
         self.assertEqual(refreshed.status, "proposed")
-        self.assertEqual(refreshed.profile_data.get("validator_review", {}).get("review_status"), "draft")
+        self.assertEqual(refreshed.workflow_status, "pending_validation")
+        self.assertNotIn("review_status", refreshed.profile_data.get("validator_review", {}))
+
+    def test_validator_draft_keeps_submission_pending_and_reject_action_is_closed(self):
+        self.employee.agency = "MMDA"
+        self.employee.save(update_fields=["agency"])
+        self._as(self.employee)
+        created = self.client.post(
+            "/api/employee/projects/",
+            {"title": "Review draft", "agency": "MMDA", "status": "draft",
+             "profile_data": self._simplified_profile("Review draft")},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        project = Project.objects.get(pk=created.data["id"])
+        project.priority_analysis_eligible = False
+        project.save(update_fields=["priority_analysis_eligible"])
+        self.assertEqual(self.client.post(f"/api/employee/projects/{project.id}/submit/").status_code, 200)
+        self._as(self.validator)
+        saved = self.client.post(
+            f"/api/validator/projects/{project.id}/validate/",
+            {"action": "save_draft", "notes": "Review in progress"}, format="json",
+        )
+        self.assertEqual(saved.status_code, 200, saved.data)
+        project.refresh_from_db()
+        self.assertEqual(project.workflow_status, "pending_validation")
+        self.assertIn(project.id, {row["id"] for row in self.client.get("/api/validator/projects/").data})
+        denied = self.client.post(
+            f"/api/validator/projects/{project.id}/validate/",
+            {"action": "reject", "notes": "Old action"}, format="json",
+        )
+        self.assertEqual(denied.status_code, 400)
+        project.refresh_from_db()
+        self.assertEqual(project.workflow_status, "pending_validation")
 
     def test_validator_field_selection_restricts_contributor_revision_changes(self):
         original_profile = {
@@ -1005,7 +1154,7 @@ class PortalWorkflowTests(APITestCase):
         )
 
         self.assertEqual(endorsed.status_code, status.HTTP_200_OK, endorsed.data)
-        self.assertEqual(endorsed.data["review_status"], "endorsed")
+        self.assertEqual(endorsed.data["workflow_status"], "validated")
 
     def test_validator_cannot_run_priority_analysis_for_detailed_form(self):
         detailed_profile = {

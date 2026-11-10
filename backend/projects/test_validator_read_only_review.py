@@ -90,11 +90,13 @@ class ValidatorReadOnlyReviewTests(APITestCase):
             content=b"%PDF-1.4", uploaded_by=self.contributor,
         )
         self.project.status = "completed"
+        self.project.validated = True
+        self.project.workflow_status = "validated"
         self.project.profile_data = {
             **self.profile,
             "validator_review": {"review_status": "validated", "reviewed_by_id": self.validator.id},
         }
-        self.project.save(update_fields=["status", "profile_data"])
+        self.project.save(update_fields=["status", "validated", "workflow_status", "profile_data"])
 
         listing = self.client.get(f"/api/project-supporting-documents/?project={self.project.id}")
         self.assertEqual(listing.status_code, 200, listing.data)
@@ -179,6 +181,7 @@ class ValidatorReadOnlyReviewTests(APITestCase):
             implementing_agency="DENR",
             municipality="NCR",
             status="ongoing",
+            workflow_status="needs_revision",
             cost=100,
             latitude=14.5,
             agency="DENR",
@@ -197,6 +200,7 @@ class ValidatorReadOnlyReviewTests(APITestCase):
             implementing_agency="DENR",
             municipality="NCR",
             status="ongoing",
+            workflow_status="needs_revision",
             cost=100,
             latitude=14.5,
             agency="DENR",

@@ -149,25 +149,8 @@ def _simplified(project):
     return value if isinstance(value, dict) else {}
 
 
-def _review_status(project):
-    profile = project.profile_data if isinstance(project.profile_data, dict) else {}
-    review = profile.get("validator_review")
-    return str(review.get("review_status") or "").strip().lower() if isinstance(review, dict) else ""
-
-
 def _workflow_status(project):
-    review = _review_status(project)
-    if review == "reviewed":
-        return "needs_revision"
-    if review == "rejected":
-        return "rejected"
-    if review == "endorsed" or project.validated or project.status == "completed":
-        return "validated"
-    if project.status == "proposed":
-        return "pending_validation"
-    if project.status == "planning":
-        return "draft"
-    return str(project.status or "")
+    return project.workflow_status
 
 
 def _project_queryset(filters):

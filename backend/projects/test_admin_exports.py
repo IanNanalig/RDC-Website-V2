@@ -145,7 +145,8 @@ class AdminExportTests(TestCase):
     def test_project_status_and_archive_filters_remain_distinct(self):
         revision = self.project("Needs revision", workflow="proposed", implementation="Ongoing")
         revision.profile_data["validator_review"] = {"review_status": "reviewed"}
-        revision.save(update_fields=["profile_data"])
+        revision.workflow_status = "needs_revision"
+        revision.save(update_fields=["profile_data", "workflow_status"])
         self.project("Validated new", workflow="completed", implementation="New")
         self.project("Archived ongoing", workflow="planning", implementation="Ongoing", archived=True)
         self.authenticate()

@@ -214,6 +214,16 @@ class ProfileEditRequest(models.Model):
 
 
 class Project(models.Model):
+    WORKFLOW_DRAFT = "draft"
+    WORKFLOW_PENDING = "pending_validation"
+    WORKFLOW_NEEDS_REVISION = "needs_revision"
+    WORKFLOW_VALIDATED = "validated"
+    WORKFLOW_CHOICES = [
+        (WORKFLOW_DRAFT, "Draft"),
+        (WORKFLOW_PENDING, "Pending Validation"),
+        (WORKFLOW_NEEDS_REVISION, "Needs Revision"),
+        (WORKFLOW_VALIDATED, "Validated"),
+    ]
     STATUS_CHOICES = [
         ("proposed", "Proposed"),
         ("planning", "Planning"),
@@ -225,6 +235,7 @@ class Project(models.Model):
     implementing_agency = models.CharField(max_length=100)
     municipality = models.CharField(max_length=100)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES)
+    workflow_status = models.CharField(max_length=20, choices=WORKFLOW_CHOICES, default=WORKFLOW_DRAFT, db_index=True)
     cost = models.DecimalField(max_digits=15, decimal_places=2)
     description = models.TextField(blank=True)
     latitude = models.FloatField()
@@ -265,11 +276,22 @@ class Project(models.Model):
     def title(self):
         return self.name
 
+    def save(self, *args, **kwargs):
+        # Creation by older importers/tests still supplies the legacy status.
+        # Subsequent transitions must set workflow_status explicitly.
+        if self._state.adding and self.workflow_status == self.WORKFLOW_DRAFT:
+            if self.validated:
+                self.workflow_status = self.WORKFLOW_VALIDATED
+            elif self.status == "proposed":
+                self.workflow_status = self.WORKFLOW_PENDING
+        super().save(*args, **kwargs)
+
     def submit_for_validation(self):
         # Keep flow simple for current schema.
         if self.status == "planning":
             self.status = "proposed"
-            self.save(update_fields=["status", "updated_at"])
+            self.workflow_status = self.WORKFLOW_PENDING
+            self.save(update_fields=["status", "workflow_status", "updated_at"])
 
     def change_status(self, new_status):
         if new_status in dict(self.STATUS_CHOICES):
@@ -332,6 +354,7 @@ class ProjectRevision(models.Model):
     revision_number = models.PositiveIntegerField()
     revision_type = models.CharField(max_length=30, choices=REVISION_TYPE_CHOICES)
     state = models.CharField(max_length=30, choices=STATE_CHOICES, default="draft")
+    workflow_status = models.CharField(max_length=20, choices=Project.WORKFLOW_CHOICES, null=True, blank=True, db_index=True)
     profile_data_snapshot = models.JSONField(default=dict, blank=True)
     public_summary_snapshot = models.JSONField(default=dict, blank=True)
     changed_fields = models.JSONField(default=list, blank=True)
@@ -367,6 +390,18 @@ class ProjectRevision(models.Model):
 
     def __str__(self):
         return f"{self.project_id} v{self.revision_number} {self.state}"
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.workflow_status is None:
+            self.workflow_status = {
+                "draft": Project.WORKFLOW_DRAFT,
+                "submitted": Project.WORKFLOW_PENDING,
+                "validator_draft": Project.WORKFLOW_PENDING,
+                "reviewed": Project.WORKFLOW_NEEDS_REVISION,
+                "rejected": Project.WORKFLOW_NEEDS_REVISION,
+                "endorsed": Project.WORKFLOW_VALIDATED,
+            }.get(self.state)
+        super().save(*args, **kwargs)
 
 
 class EditRequest(models.Model):
@@ -721,6 +756,10 @@ class ProjectSupportingDocument(models.Model):
     ]
 
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="supporting_documents")
+    revision = models.ForeignKey(
+        ProjectRevision, on_delete=models.CASCADE, null=True, blank=True,
+        related_name="supporting_documents",
+    )
     field_key = models.CharField(max_length=120, default="custom_supporting_documents")
     form_key = models.CharField(max_length=120, default="simplified-rdip")
     form_version = models.PositiveIntegerField(default=1)
@@ -769,9 +808,14 @@ class ProjectSupportingDocument(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=["project", "checksum_sha256"],
-                condition=models.Q(removed_at__isnull=True),
+                condition=models.Q(removed_at__isnull=True, revision__isnull=True),
                 name="unique_active_project_doc_hash",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["revision", "checksum_sha256"],
+                condition=models.Q(removed_at__isnull=True, revision__isnull=False),
+                name="unique_active_revision_doc_hash",
+            ),
         ]
 
     def __str__(self):

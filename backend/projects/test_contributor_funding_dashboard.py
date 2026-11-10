@@ -182,6 +182,9 @@ class ContributorFundingDashboardTests(APITestCase):
         owned_other_agency = self.project("DPWH", self.user, status="planning")
         same_agency = self.project("DENR", self.other, status="proposed")
         owned_same_agency = self.project("DENR", self.user, status="completed")
+        owned_same_agency.validated = True
+        owned_same_agency.workflow_status = Project.WORKFLOW_VALIDATED
+        owned_same_agency.save(update_fields=["validated", "workflow_status"])
         excluded = self.project("DPWH", self.other, status="planning")
         for project in (owned_other_agency, same_agency, owned_same_agency, excluded):
             UserActivity.objects.create(user=self.user, event="project_create", project=project)
