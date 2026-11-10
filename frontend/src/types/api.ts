@@ -2,6 +2,7 @@ export type PublicProject = {
   id: number;
   title: string;
   agency: string;
+  collaborating_agencies?: Array<{ code: string; name: string }>;
   implementation_status: string;
   budget: number;
   year: number | null;

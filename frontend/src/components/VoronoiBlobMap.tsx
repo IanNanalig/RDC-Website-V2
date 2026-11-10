@@ -10,6 +10,7 @@ type VoronoiBlobMapProps = {
   selectedCity?: string | undefined;
   selectedStatus?: string | "all";
   onCitySelect?: (city?: string) => void;
+  resetViewKey?: number;
   height?: number | string;
 };
 
@@ -60,13 +61,21 @@ function getProjectCoordinates(project: Project): [number, number][] {
 function FitBoundsToProjects({
   projects,
   selectedCity,
+  resetViewKey,
 }: {
   projects: Project[];
   selectedCity?: string;
+  resetViewKey: number;
 }) {
   const map = useMap();
+  const previous = useRef<{ initialized: boolean; city?: string; resetKey: number }>({ initialized: false, resetKey: resetViewKey });
   useEffect(() => {
     if (!map) return;
+    const prior = previous.current;
+    const shouldFit = !prior.initialized || prior.resetKey !== resetViewKey;
+    const cityChanged = prior.initialized && prior.city !== selectedCity;
+    if (!shouldFit && !cityChanged) return;
+    previous.current = { initialized: true, city: selectedCity, resetKey: resetViewKey };
     if (selectedCity && ncrCityCenters[selectedCity]) {
       const [lat, lng] = ncrCityCenters[selectedCity];
       map.setView([lat, lng], 12, { animate: true });
@@ -94,9 +103,13 @@ function FitBoundsToProjects({
     }
 
     map.setView([14.6, 121.02], 11);
-  }, [map, projects, selectedCity]);
+  }, [map, projects, selectedCity, resetViewKey]);
   return null;
 }
+
+const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[character] || character));
 
 function ProjectBlobs({
   groups,
@@ -111,7 +124,8 @@ function ProjectBlobs({
   const layerGroupRef = useRef<L.FeatureGroup | null>(null);
 
   useEffect(() => {
-    if (!map || !layerGroupRef.current) return;
+    if (!map) return;
+    if (!layerGroupRef.current) layerGroupRef.current = L.featureGroup().addTo(map);
     layerGroupRef.current.clearLayers();
 
     groups.forEach((group) => {
@@ -145,10 +159,10 @@ function ProjectBlobs({
       const preview = group.projects
         .slice(0, maxItems)
         .map((p) => {
-          const status = String(p.implementation_status || "Unspecified");
-          const title = String(p.title || "");
-          const year = p.year ? ` (${p.year})` : "";
-          return `<li style="margin:2px 0; font-size:12px; line-height:1.35;"><strong style="color:#0ea5a6;">${status}</strong> - ${title}${year}</li>`;
+          const status = escapeHtml(String(p.implementation_status || "Unspecified"));
+          const title = escapeHtml(String(p.title || ""));
+          const year = p.year ? ` (${Number(p.year)})` : "";
+          return `<li style="margin:2px 0; font-size:12px; line-height:1.35;"><strong style="color:#0ea5a6;">${status}</strong> - <a href="/projects/${Number(p.id)}">${title}</a>${year}</li>`;
         })
         .join("");
       const remainder =
@@ -159,13 +173,13 @@ function ProjectBlobs({
       const popupContent = `
         <div style="padding: 8px; max-width: 280px;">
           <h4 style="margin: 0 0 4px 0; font-weight: bold; font-size: 14px;">${
-            group.city
+            escapeHtml(group.city)
           }</h4>
           <p style="margin: 2px 0; font-size: 12px; color: #475569;">${
             group.count
           } project(s)</p>
           <span style="display: inline-block; background: ${statusColor}; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; text-transform: uppercase;">
-            ${String(group.dominantStatus || "Unspecified")}
+            ${escapeHtml(String(group.dominantStatus || "Unspecified"))}
           </span>
           <ul style="margin-top:8px; padding-left:16px; max-height:140px; overflow:auto;">${preview}</ul>
           ${remainder}
@@ -199,14 +213,13 @@ function ProjectBlobs({
   }, [groups, selectedCity, map, onCitySelect]);
 
   useEffect(() => {
-    if (!map) return;
-    if (!layerGroupRef.current) {
-      layerGroupRef.current = L.featureGroup().addTo(map);
-    }
     return () => {
-      if (layerGroupRef.current) layerGroupRef.current.clearLayers();
+      if (layerGroupRef.current) {
+        layerGroupRef.current.remove();
+        layerGroupRef.current = null;
+      }
     };
-  }, [map]);
+  }, []);
 
   return null;
 }
@@ -215,6 +228,7 @@ const VoronoiBlobMap: React.FC<VoronoiBlobMapProps> = ({
   projects,
   selectedCity,
   onCitySelect,
+  resetViewKey = 0,
   height = 600,
 }) => {
   const groups = useMemo(() => {
@@ -222,7 +236,7 @@ const VoronoiBlobMap: React.FC<VoronoiBlobMapProps> = ({
     projects.forEach((p) => {
       getProjectLgus(p).forEach((city) => {
         if (!byCity[city]) byCity[city] = [];
-        byCity[city].push(p);
+        if (!byCity[city].some((existing) => existing.id === p.id)) byCity[city].push(p);
       });
     });
 
@@ -277,7 +291,7 @@ const VoronoiBlobMap: React.FC<VoronoiBlobMapProps> = ({
           selectedCity={selectedCity}
           onCitySelect={onCitySelect}
         />
-        <FitBoundsToProjects projects={projects} selectedCity={selectedCity} />
+        <FitBoundsToProjects projects={projects} selectedCity={selectedCity} resetViewKey={resetViewKey} />
       </MapContainer>
     </div>
   );

@@ -4,12 +4,10 @@ import { Link } from "react-router-dom";
 import {
   getPublicProjects,
   getPublicProject,
-  getPublicProjectsStats,
 } from "../services/publicProjectsApi";
 import cmsApi, { type CMSPageSnapshot } from "../services/cmsApi";
 import type {
   PublicProject as Project,
-  PublicProjectsStats,
 } from "../types/api";
 import {
   FaSearch,
@@ -112,6 +110,8 @@ const Projects: React.FC = () => {
   const [updateFilter, setUpdateFilter] = useState<"all" | "recent">("all");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [searchMatches, setSearchMatches] = useState<{ query: string; ids: Set<number> } | null>(null);
+  const [searchRetryKey, setSearchRetryKey] = useState(0);
   const [municipalityFilter, setMunicipalityFilter] = useState<string>("all");
   const [activeTab, setActiveTab] = useState<"visual" | "table" | "map">(
     "visual",
@@ -125,8 +125,8 @@ const Projects: React.FC = () => {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
-  const [stats, setStats] = useState<PublicProjectsStats | null>(null);
   const [detailProject, setDetailProject] = useState<Project | null>(null);
+  const [mapResetKey, setMapResetKey] = useState(0);
   const [detailTab, setDetailTab] = useState<"overview" | "history">("overview");
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
@@ -147,32 +147,14 @@ const Projects: React.FC = () => {
     setLoading(true);
     setError("");
     try {
-      const filters = {
-        q: debouncedSearch || undefined,
-        agency: agencyFilter === "all" ? undefined : agencyFilter,
-        status: statusFilter === "all" ? undefined : statusFilter,
-        year: yearFilter === "all" ? undefined : yearFilter,
-        lgu: municipalityFilter === "all" ? undefined : municipalityFilter,
-      };
-      // Fetch stats without agency filter to keep agency dropdown stable
-      const statsFilters = {
-        q: debouncedSearch || undefined,
-        status: statusFilter === "all" ? undefined : statusFilter,
-        year: yearFilter === "all" ? undefined : yearFilter,
-        lgu: municipalityFilter === "all" ? undefined : municipalityFilter,
-      };
-      const [list, st] = await Promise.all([
-        getPublicProjects({
-          ...filters,
-          limit: 500,
-          offset: 0,
-          view: "summary",
-        }),
-        getPublicProjectsStats(statsFilters),
-      ]);
+      const list: Project[] = [];
+      let page: Project[];
+      do {
+        page = await getPublicProjects({ limit: 500, offset: list.length, view: "summary" });
+        list.push(...page);
+      } while (page.length === 500 && sequence === requestSequence.current);
       if (sequence !== requestSequence.current) return;
-      setProjects(list);
-      setStats(st);
+      setProjects(Array.from(new Map(list.map((project) => [project.id, project])).values()));
     } catch (e: unknown) {
       const msg =
         e && typeof e === "object" && "message" in e
@@ -182,7 +164,7 @@ const Projects: React.FC = () => {
     } finally {
       if (sequence === requestSequence.current) setLoading(false);
     }
-  }, [agencyFilter, debouncedSearch, municipalityFilter, statusFilter, yearFilter]);
+  }, []);
 
   const loadProjectDetail = useCallback(async (projectId: number) => {
     const sequence = ++detailRequestSequence.current;
@@ -240,6 +222,24 @@ const Projects: React.FC = () => {
   }, [fetchData]);
 
   useEffect(() => {
+    if (!debouncedSearch) return;
+    let cancelled = false;
+    const loadMatches = async () => {
+      const ids = new Set<number>();
+      let page: Project[];
+      do {
+        page = await getPublicProjects({ q: debouncedSearch, limit: 500, offset: ids.size, view: "summary" });
+        page.forEach((project) => ids.add(project.id));
+      } while (page.length === 500 && !cancelled);
+      if (!cancelled) setSearchMatches({ query: debouncedSearch, ids });
+    };
+    void loadMatches().catch(() => {
+      if (!cancelled) setError("Project search could not be completed. Please retry.");
+    });
+    return () => { cancelled = true; };
+  }, [debouncedSearch, searchRetryKey]);
+
+  useEffect(() => {
     let cancelled = false;
     cmsApi
       .getPublicPage("projects-dashboard")
@@ -262,20 +262,28 @@ const Projects: React.FC = () => {
             .map((p) => p.year)
             .filter((y): y is number => typeof y === "number"),
         ),
-      ).sort(),
+      ).sort((a, b) => a - b),
     [projects],
   );
 
-  const agencyOptions = useMemo(() => {
-    if (stats?.by_agency) {
-      return Object.keys(stats.by_agency).sort();
-    }
-    return Array.from(new Set(projects.map((p) => p.agency || "Other")));
-  }, [stats, projects]);
+  const agencyOptions = useMemo(() =>
+    Array.from(new Set(projects.flatMap((p) => [p.agency || "Other", ...(p.collaborating_agencies || []).flatMap((agency) => [agency.name, agency.code])]))).sort(),
+  [projects]);
 
   const municipalityOptions = useMemo(() => {
     return [...Object.keys(ncrCityCenters).sort(), "Unspecified"];
   }, []);
+
+  const resetFilters = () => {
+    setSearch("");
+    setDebouncedSearch("");
+    setYearFilter("all");
+    setStatusFilter("all");
+    setAgencyFilter("all");
+    setMunicipalityFilter("all");
+    setUpdateFilter("all");
+    setMapResetKey((key) => key + 1);
+  };
 
   // Municipality filter is the single source of truth. Keeping a second
   // selected-city state caused the two values to overwrite one another.
@@ -284,10 +292,15 @@ const Projects: React.FC = () => {
       ? undefined
       : municipalityFilter;
 
-  // Filter projects by year, status, agency, and search (NOT by municipality yet)
-  const filtered = useMemo(() => projects, [projects]);
+  const filtered = useMemo(() => projects.filter((project) => {
+    if (yearFilter !== "all" && project.year !== yearFilter) return false;
+    if (statusFilter !== "all" && project.implementation_status !== statusFilter) return false;
+    if (agencyFilter !== "all" && project.agency !== agencyFilter &&
+      !(project.collaborating_agencies || []).some((agency) => agency.name === agencyFilter || agency.code === agencyFilter)) return false;
+    if (debouncedSearch && (searchMatches?.query !== debouncedSearch || !searchMatches.ids.has(project.id))) return false;
+    return true;
+  }), [projects, yearFilter, statusFilter, agencyFilter, debouncedSearch, searchMatches]);
 
-  // For displaying in the project list - apply city filter
   const displayProjects = useMemo(() => {
     let rows = filtered;
     if (selectedCity) {
@@ -334,20 +347,6 @@ const Projects: React.FC = () => {
     return { totalProjects, totalBudget, byStatus };
   }, [displayProjects]);
 
-  // Projects to send to the map
-  const mapProjects = useMemo(() => {
-    if (selectedCity) {
-      return filtered.filter((p) => projectMatchesLgu(p, selectedCity));
-    }
-    if (municipalityFilter === "Unspecified") {
-      return filtered.filter((p) => getProjectLgus(p).length === 0);
-    }
-    if (municipalityFilter !== "all") {
-      return filtered.filter((p) => projectMatchesLgu(p, municipalityFilter));
-    }
-    return filtered;
-  }, [filtered, selectedCity, municipalityFilter]);
-
   const statusPie = useMemo(
     () =>
       Object.keys(totals.byStatus).map((k) => ({
@@ -368,11 +367,6 @@ const Projects: React.FC = () => {
   };
 
   const agencyBar = useMemo(() => {
-    if (stats?.by_agency) {
-      return Object.keys(stats.by_agency)
-        .map((k) => ({ agency: k, value: stats.by_agency[k] }))
-        .sort((a, b) => b.value - a.value);
-    }
     const m = displayProjects.reduce<Record<string, number>>((acc, p) => {
       const a = p.agency || "Other";
       acc[a] = (acc[a] || 0) + 1;
@@ -381,7 +375,7 @@ const Projects: React.FC = () => {
     return Object.keys(m)
       .map((k) => ({ agency: k, value: m[k] }))
       .sort((a, b) => b.value - a.value);
-  }, [displayProjects, stats?.by_agency]);
+  }, [displayProjects]);
 
   const yearBar = useMemo(() => {
     const m = displayProjects.reduce<Record<number, number>>((acc, p) => {
@@ -519,6 +513,7 @@ const Projects: React.FC = () => {
                 />
                 <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400" />
               </div>
+              {search && <button type="button" onClick={() => setSearch("")} className="text-sm text-blue-700 underline">Clear search</button>}
             </div>
           </div>
 
@@ -569,7 +564,7 @@ const Projects: React.FC = () => {
                   <button
                     type="button"
                     className="shrink-0 underline"
-                    onClick={fetchData}
+                    onClick={() => { setSearchRetryKey((key) => key + 1); void fetchData(); }}
                   >
                     Retry
                   </button>
@@ -695,6 +690,7 @@ const Projects: React.FC = () => {
               <h3 className="text-lg font-bold text-blue-900 mb-4 flex items-center gap-2">
                 <FaBuilding className="text-blue-400" /> Filters
               </h3>
+              <button type="button" onClick={resetFilters} className="mb-4 text-sm font-semibold text-blue-700 underline">Reset all filters</button>
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-semibold text-blue-800 mb-2">
@@ -718,6 +714,7 @@ const Projects: React.FC = () => {
                       </option>
                     ))}
                   </select>
+                  {yearFilter !== "all" && <button type="button" onClick={() => setYearFilter("all")} className="mt-1 text-xs text-blue-700 underline">Clear year</button>}
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-blue-800 mb-2">
@@ -738,6 +735,7 @@ const Projects: React.FC = () => {
                     <option value="On Hold">On Hold</option>
                     <option value="Cancelled">Cancelled</option>
                   </select>
+                  {statusFilter !== "all" && <button type="button" onClick={() => setStatusFilter("all")} className="mt-1 text-xs text-blue-700 underline">Clear status</button>}
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-blue-800 mb-2">
@@ -753,6 +751,7 @@ const Projects: React.FC = () => {
                     <option value="all">All Projects</option>
                     <option value="recent">Recently Updated</option>
                   </select>
+                  {updateFilter !== "all" && <button type="button" onClick={() => setUpdateFilter("all")} className="mt-1 text-xs text-blue-700 underline">Clear updates</button>}
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-blue-800 mb-2">
@@ -772,6 +771,7 @@ const Projects: React.FC = () => {
                       </option>
                     ))}
                   </select>
+                  {agencyFilter !== "all" && <button type="button" onClick={() => setAgencyFilter("all")} className="mt-1 text-xs text-blue-700 underline">Clear agency</button>}
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-blue-800 mb-2">
@@ -789,6 +789,7 @@ const Projects: React.FC = () => {
                       </option>
                     ))}
                   </select>
+                  {municipalityFilter !== "all" && <button type="button" onClick={() => setMunicipalityFilter("all")} className="mt-1 text-xs text-blue-700 underline">Clear municipality</button>}
                 </div>
               </div>
             </div>
@@ -1469,15 +1470,17 @@ const Projects: React.FC = () => {
             {/* Map Tab */}
             {activeTab === "map" && (
               <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-                <React.Suspense fallback={<div className="h-[600px] animate-pulse bg-slate-100" />}>
+                {!loading && displayProjects.length === 0 && <p role="status" className="px-4 py-3 text-sm text-slate-600">No projects match the selected filters on the map.</p>}
+                {loading ? <div className="h-[600px] animate-pulse bg-slate-100" aria-label="Loading project map" /> : <React.Suspense fallback={<div className="h-[600px] animate-pulse bg-slate-100" />}>
                   <VoronoiBlobMap
-                    projects={mapProjects}
+                    projects={displayProjects}
                     selectedCity={selectedCity}
                     selectedStatus={statusFilter === "all" ? "all" : statusFilter}
                     onCitySelect={(city) => setMunicipalityFilter(city || "all")}
+                    resetViewKey={mapResetKey}
                     height={600}
                   />
-                </React.Suspense>
+                </React.Suspense>}
               </div>
             )}
           </div>

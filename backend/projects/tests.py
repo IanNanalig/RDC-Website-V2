@@ -1863,6 +1863,43 @@ class PerformanceApiTests(APITestCase):
         self.assertIn("description", detail.data)
         self.assertIn("public_update_timeline", detail.data)
 
+    def test_public_list_and_stats_share_filters_and_exclude_private_projects(self):
+        manila = self._project(index=1, validated=True)
+        pasig = self._project(index=2, validated=True)
+        pasig.agency = "DPWH"
+        pasig.profile_data["simplified_form"].update({"agencyName": "DPWH", "location": "Pasig", "status": "Completed", "startYear": "2028"})
+        pasig.save(update_fields=["agency", "profile_data", "updated_at"])
+        self._project(index=3, validated=False)
+        params = "?agency=DPWH&lgu=Pasig&status=Completed&year=2028&q=Performance"
+        listed = self.client.get(f"/api/public/projects/{params}&view=summary")
+        stats = self.client.get(f"/api/public/projects/stats/{params}")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(stats.status_code, 200)
+        self.assertEqual([row["id"] for row in listed.data], [pasig.id])
+        self.assertEqual(stats.data["total_projects"], 1)
+        self.assertEqual(stats.data["total_budget"], listed.data[0]["budget"])
+        self.assertEqual(stats.data["by_status"], {"Completed": 1})
+        self.assertEqual(stats.data["by_agency"], {"DPWH": 1})
+        self.assertEqual(stats.data["by_lgu"], {"Pasig": 1})
+        self.assertNotEqual(manila.id, pasig.id)
+
+    def test_public_summary_pages_can_cover_more_than_five_hundred_projects(self):
+        template = self._project(validated=True)
+        Project.objects.bulk_create([
+            Project(
+                name=f"Paged public project {index}", implementing_agency="MMDA", municipality="NCR",
+                status="completed", cost=1000, latitude=14.5, longitude=121.0, agency="MMDA",
+                budget=1000, validated=True, created_by=self.admin,
+                profile_data=template.profile_data,
+            )
+            for index in range(500)
+        ])
+        first = self.client.get("/api/public/projects/?view=summary&limit=500&offset=0")
+        second = self.client.get("/api/public/projects/?view=summary&limit=500&offset=500")
+        self.assertEqual(len(first.data), 500)
+        self.assertEqual(len(second.data), 1)
+        self.assertEqual(len({row["id"] for row in first.data + second.data}), 501)
+
     def test_public_project_history_only_contains_endorsed_revisions(self):
         project = self._project(validated=True)
         base_time = timezone.now()

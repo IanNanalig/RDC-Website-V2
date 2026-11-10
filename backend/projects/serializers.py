@@ -1655,6 +1655,7 @@ class PublicProjectSummarySerializer(PublicProjectSerializer):
             "collaborating_agencies",
             "implementation_status",
             "budget",
+            "budget",
             "year",
             "lgu",
             "lgus",

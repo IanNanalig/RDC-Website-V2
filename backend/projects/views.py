@@ -357,7 +357,7 @@ PUBLIC_CHAT_DIRECT_CONFIDENCE = 0.62
 PUBLIC_CHAT_RELATED_CONFIDENCE = 0.60
 PUBLIC_PROJECTS_CACHE_TTL_SECONDS = 3600
 PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL = "public, no-cache, must-revalidate"
-PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 4
+PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 5
 PUBLIC_PROJECTS_CACHE_VERSION_KEY = "public_projects:version"
 
 
@@ -8002,6 +8002,43 @@ def _filter_public_project_status(queryset, status_value):
     return queryset.filter(selected)
 
 
+def _filter_public_project_queryset(qs, params):
+    q = (params.get("q") or "").strip()
+    if q:
+        qs = qs.filter(
+            Q(name__icontains=q) | Q(description__icontains=q) | Q(agency__icontains=q)
+            | Q(collaborating_agency_links__agency__code__icontains=q)
+            | Q(collaborating_agency_links__agency__name__icontains=q)
+        ).distinct()
+    agency = (params.get("agency") or "").strip()
+    if agency and agency.lower() != "all":
+        qs = qs.filter(
+            Q(agency__iexact=agency) | Q(profile_data__simplified_form__agencyName__iexact=agency)
+            | Q(collaborating_agency_links__agency__code__iexact=agency)
+            | Q(collaborating_agency_links__agency__name__iexact=agency)
+        ).distinct()
+    year_raw = (params.get("year") or "").strip()
+    if year_raw and year_raw.lower() != "all":
+        try:
+            year = int(year_raw)
+            qs = qs.filter(Q(year=year) | Q(profile_data__simplified_form__startYear=str(year)))
+        except ValueError:
+            pass
+    status_raw = (params.get("status") or "").strip()
+    if status_raw and status_raw.lower() != "all":
+        qs = _filter_public_project_status(qs, status_raw)
+    return qs
+
+
+def _filter_public_payload_location(payload, raw):
+    lgu = (raw or "").strip()
+    if not lgu or lgu.lower() == "all":
+        return payload
+    if lgu.lower() == "unspecified":
+        return [item for item in payload if not item.get("lgus")]
+    return [item for item in payload if lgu in (item.get("lgus") or [])]
+
+
 class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
     """
     Public read-only projects feed for the public website dashboard.
@@ -8055,38 +8092,10 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
 
         qs = self._base_queryset().order_by("-updated_at")
 
-        q = (request.query_params.get("q") or "").strip()
-        if q:
-            qs = qs.filter(
-                Q(name__icontains=q) | Q(description__icontains=q) | Q(agency__icontains=q)
-                | Q(collaborating_agency_links__agency__code__icontains=q)
-                | Q(collaborating_agency_links__agency__name__icontains=q)
-            ).distinct()
-
-        agency = (request.query_params.get("agency") or "").strip()
-        if agency and agency.lower() != "all":
-            qs = qs.filter(
-                Q(agency__iexact=agency) | Q(profile_data__simplified_form__agencyName__iexact=agency)
-                | Q(collaborating_agency_links__agency__code__iexact=agency)
-                | Q(collaborating_agency_links__agency__name__iexact=agency)
-            ).distinct()
-
-        year_raw = (request.query_params.get("year") or "").strip()
-        if year_raw and year_raw.lower() != "all":
-            try:
-                year = int(year_raw)
-                qs = qs.filter(Q(year=year) | Q(profile_data__simplified_form__startYear=str(year)))
-            except Exception:
-                pass
-
-        status_raw = (request.query_params.get("status") or "").strip()
-        if status_raw and status_raw.lower() != "all":
-            qs = _filter_public_project_status(qs, status_raw)
+        qs = _filter_public_project_queryset(qs, request.query_params)
 
         # LGU filter is computed (from location text), so filter in Python after serialization.
         lgu_filter = (request.query_params.get("lgu") or "").strip()
-        if lgu_filter.lower() == "unspecified":
-            lgu_filter = "Unspecified"
 
         limit = 200
         offset = 0
@@ -8102,10 +8111,7 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
         # If we filter by computed LGU, do it before applying offset/limit so results are correct.
         if lgu_filter and lgu_filter.lower() != "all":
             all_payload = [self._project_to_public_payload(p) for p in qs]
-            if lgu_filter == "Unspecified":
-                filtered_payload = [p for p in all_payload if not p.get("lgus")]
-            else:
-                filtered_payload = [p for p in all_payload if lgu_filter in (p.get("lgus") or [])]
+            filtered_payload = _filter_public_payload_location(all_payload, lgu_filter)
             payload = filtered_payload[offset : offset + limit]
         else:
             qs = qs[offset : offset + limit]
@@ -8137,50 +8143,20 @@ class PublicProjectsStatsView(APIView):
         if cached is not None:
             return _conditional_public_response(request, cached, etag_seed=etag_seed)
 
-        qs = Project.objects.filter(validated=True, archived=False, is_active=True)
-
-        q = (request.query_params.get("q") or "").strip()
-        if q:
-            qs = qs.filter(Q(name__icontains=q) | Q(description__icontains=q) | Q(agency__icontains=q))
-
-        agency = (request.query_params.get("agency") or "").strip()
-        if agency and agency.lower() != "all":
-            qs = qs.filter(Q(agency__iexact=agency) | Q(profile_data__simplified_form__agencyName__iexact=agency))
-
-        year_raw = (request.query_params.get("year") or "").strip()
-        if year_raw and year_raw.lower() != "all":
-            try:
-                year = int(year_raw)
-                qs = qs.filter(Q(year=year) | Q(profile_data__simplified_form__startYear=str(year)))
-            except Exception:
-                pass
-
-        status_raw = (request.query_params.get("status") or "").strip()
-        if status_raw and status_raw.lower() != "all":
-            qs = _filter_public_project_status(qs, status_raw)
-
+        qs = Project.objects.filter(validated=True, archived=False, is_active=True).select_related(
+            "primary_agency"
+        ).prefetch_related(
+            "collaborating_agency_links__agency",
+            Prefetch("revisions", queryset=ProjectRevision.objects.filter(state="endorsed").order_by("-endorsed_at", "-revision_number")[:1], to_attr="_public_latest_endorsed_revision"),
+            Prefetch("revisions", queryset=ProjectRevision.objects.filter(state="endorsed", revision_type="progress_update").order_by("-endorsed_at", "-revision_number")[:1], to_attr="_public_latest_progress_revision"),
+        )
+        qs = _filter_public_project_queryset(qs, request.query_params)
         projects = list(qs)
-        lgu_filter = (request.query_params.get("lgu") or "").strip()
-        if lgu_filter and lgu_filter.lower() != "all":
-            def project_location(project):
-                profile_data = project.profile_data if isinstance(project.profile_data, dict) else {}
-                simplified = profile_data.get("simplified_form")
-                simplified = simplified if isinstance(simplified, dict) else {}
-                return simplified.get("location")
-
-            if lgu_filter.lower() == "unspecified":
-                projects = [
-                    p
-                    for p in projects
-                    if not derive_ncr_lgus(project_location(p))
-                ]
-            else:
-                projects = [
-                    p
-                    for p in projects
-                    if lgu_filter
-                    in derive_ncr_lgus(project_location(p))
-                ]
+        payload_rows = _filter_public_payload_location(
+            PublicProjectSummarySerializer(projects, many=True).data,
+            request.query_params.get("lgu"),
+        )
+        projects_by_id = {project.id: project for project in projects}
 
         total_budget = 0
         by_status = {}
@@ -8190,30 +8166,18 @@ class PublicProjectsStatsView(APIView):
         unspecified = 0
         last_updated_at = None
 
-        for p in projects:
-            total_budget += int(getattr(p, "budget", 0) or 0)
+        for row in payload_rows:
+            p = projects_by_id[row["id"]]
+            total_budget += int(row.get("budget") or 0)
             if not last_updated_at or (getattr(p, "updated_at", None) and p.updated_at > last_updated_at):
                 last_updated_at = p.updated_at
-            sf = {}
-            if isinstance(p.profile_data, dict) and isinstance(p.profile_data.get("simplified_form"), dict):
-                sf = p.profile_data.get("simplified_form") or {}
-            impl_status = display_implementation_status(
-                sf.get("status") or getattr(p, "status", ""),
-                p.profile_data.get("form_schema")
-                if isinstance(p.profile_data, dict) and isinstance(p.profile_data.get("form_schema"), dict)
-                else None,
-            ) or "Unspecified"
-            agency_name = str(sf.get("agencyName") or getattr(p, "agency", "") or "").strip() or "Other"
-            location_raw = format_project_locations(sf.get("location"))
-            lgus = derive_ncr_lgus(location_raw)
+            impl_status = row.get("implementation_status") or "Unspecified"
+            agency_name = row.get("agency") or "Other"
+            lgus = row.get("lgus") or []
             if not lgus:
                 unspecified += 1
 
-            year_value = None
-            try:
-                year_value = int(str(sf.get("startYear") or "").strip())
-            except Exception:
-                year_value = getattr(p, "year", None)
+            year_value = row.get("year")
             if isinstance(year_value, int) and 1900 <= year_value <= 2200:
                 by_year[str(year_value)] = by_year.get(str(year_value), 0) + 1
 
@@ -8223,7 +8187,7 @@ class PublicProjectsStatsView(APIView):
                 by_lgu[lgu] = by_lgu.get(lgu, 0) + 1
 
         payload = {
-            "total_projects": len(projects),
+            "total_projects": len(payload_rows),
             "total_budget": total_budget,
             "by_status": by_status,
             "by_agency": by_agency,
