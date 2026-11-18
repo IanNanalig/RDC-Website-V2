@@ -564,11 +564,15 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
         return super().update(request, *args, **kwargs)
 
     def perform_update(self, serializer):
-        section = serializer.save(status="draft", lock_owner=None, lock_acquired_at=None)
-        from cms.services.collections import sync_normalized_section_draft
-        sync_normalized_section_draft(section, self.request.user)
-        mark_page_changed(section.page, self.request.user)
-        _log_cms_activity(self.request, "cms_content_updated", {"content_type": "section", "id": section.pk, "page": section.page_id})
+        # A collection sync can reject an archived identity. Keep the section
+        # draft and its normalized rows in one transaction so a failed save
+        # does not leave an unsaveable draft behind.
+        with transaction.atomic():
+            section = serializer.save(status="draft", lock_owner=None, lock_acquired_at=None)
+            from cms.services.collections import sync_normalized_section_draft
+            sync_normalized_section_draft(section, self.request.user)
+            mark_page_changed(section.page, self.request.user)
+            _log_cms_activity(self.request, "cms_content_updated", {"content_type": "section", "id": section.pk, "page": section.page_id})
 
     def destroy(self, request, *args, **kwargs):
         return Response({"detail": "Fixed page sections cannot be deleted."}, status=405)
@@ -910,6 +914,29 @@ class AdminCMSPublicationDocumentViewSet(CMSManagedContentViewSet):
         queryset = super().get_queryset()
         category = str(self.request.query_params.get("category") or "").strip()
         return queryset.filter(category__code=category) if category else queryset
+
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin], url_path="keep-in-draft")
+    def keep_in_draft(self, request, pk=None):
+        """Reinsert an accidentally omitted published document by its existing identity."""
+        from cms.services.collections import _referenced_keys, restore_managed_content_to_draft
+
+        with transaction.atomic():
+            document = CMSPublicationDocument.objects.select_for_update().select_related("category").filter(pk=pk).first()
+            if document is None:
+                return Response({"detail": "This publication document no longer exists."}, status=404)
+            if document.status == "archived":
+                return Response({"detail": "Restore this document from Archived Content first."}, status=409)
+            if document.category.status == "archived":
+                return Response({"detail": "Restore the document's category first."}, status=409)
+            page = CMSPage.objects.select_for_update().get(slug="publications")
+            if document.stable_key not in _referenced_keys(page, published=True)["documents"]:
+                return Response({"detail": "This document is not part of the published Publications page."}, status=409)
+            if document.category.code not in _referenced_keys(page)["categories"]:
+                return Response({"detail": "Restore the document's category to the draft first."}, status=409)
+            restore_managed_content_to_draft(document, request.user)
+            if document.stable_key not in _referenced_keys(page)["documents"]:
+                return Response({"detail": "The document could not be restored to the draft."}, status=409)
+        return Response({"detail": "Existing document retained in the Publications draft.", "stable_key": document.stable_key})
 
 
 class AdminCMSResolutionViewSet(CMSManagedContentViewSet):

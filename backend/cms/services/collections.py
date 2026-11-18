@@ -116,6 +116,8 @@ def managed_content_snapshot(obj):
             "categoryCode": obj.category.code,
             "sortOrder": obj.sort_order,
         }
+        if obj.attachment and not obj.attachment.is_archived:
+            snapshot["mediaAssetId"] = str(obj.attachment_id)
         if obj.cover_image and not obj.cover_image.is_archived:
             snapshot["coverAssetId"] = str(obj.cover_image_id)
             snapshot["coverImage"] = obj.cover_image.resolved_public_url
@@ -412,19 +414,24 @@ def sync_normalized_section_draft(section, user=None):
             )
 
     if section.page.slug == "publications" and section.section_key == "publication-catalog":
+        explicit_category_codes = {
+            _stable_key(category.get("code") or category.get("id"), "")[:80]
+            for category in content.get("categories") or []
+            if isinstance(category, dict) and (category.get("code") or category.get("id"))
+        }
         for category_index, row in enumerate(content.get("categories") or [], 1):
             if not isinstance(row, dict):
                 continue
             explicit = _stable_key(row.get("code") or row.get("id"), "")[:80]
             legacy = _stable_key(row.get("title"), f"category-{category_index}")[:80]
-            code = explicit or _existing_key(
-                CMSPublicationCategory,
-                "code",
-                [legacy],
-                position=category_index,
-                title_field="name",
+            legacy_match = _existing_key(
+                CMSPublicationCategory, "code", [legacy],
+                position=category_index, title_field="name",
                 title=row.get("title") or row.get("name"),
-            ) or _generated_key(CMSPublicationCategory, "code", "category", 80)
+            ) if not explicit else ""
+            code = explicit or (legacy_match if legacy_match not in explicit_category_codes else "") or _generated_key(
+                CMSPublicationCategory, "code", "category", 80,
+            )
             if row.get("id") != code or row.get("code") != code:
                 row["id"] = code
                 row["code"] = code
@@ -464,9 +471,28 @@ def sync_normalized_section_draft(section, user=None):
                     "sort_order": category_index,
                 }, user,
             )
+            explicit_document_ids = {
+                _stable_key(document.get("id"), "")
+                for document in row.get("documents") or []
+                if isinstance(document, dict) and document.get("id")
+            }
+            used_media_ids = {}
             for document_index, item in enumerate(row.get("documents") or [], 1):
                 if not isinstance(item, dict):
                     continue
+                media_identity = str(item.get("mediaAssetId") or item.get("documentAssetId") or "").strip()
+                if media_identity:
+                    first_index = used_media_ids.get(media_identity)
+                    if first_index is not None:
+                        raise serializers.ValidationError({
+                            "detail": (
+                                f'The same Media Library file is selected in Documents {first_index} '
+                                f'and {document_index} of "{row.get("title") or row.get("name") or code}". '
+                                "Keep one document row for this file."
+                            ),
+                            "code": "duplicate_publication_media",
+                        })
+                    used_media_ids[media_identity] = document_index
                 raw_id = _stable_key(item.get("id"), "")
                 legacy_item_key = _stable_key(item.get("title"), f"document-{document_index}")
                 composite = (
@@ -474,14 +500,25 @@ def sync_normalized_section_draft(section, user=None):
                     if raw_id.startswith(f"{code}-")
                     else _stable_key(f"{code}-{raw_id or legacy_item_key}", f"{code}-document-{document_index}")
                 )
-                key = _existing_key(
-                    CMSPublicationDocument,
-                    "stable_key",
-                    [raw_id, composite],
-                    position=document_index,
-                    title_field="title",
-                    title=item.get("title"),
-                ) or (composite if raw_id else _generated_key(CMSPublicationDocument, "stable_key", f"{code}-document"))
+                if raw_id:
+                    key = _existing_key(
+                        CMSPublicationDocument, "stable_key", [raw_id, composite],
+                    ) or composite
+                else:
+                    # A legacy row without an ID may match only a document in
+                    # its own category. Equal titles elsewhere are distinct.
+                    matches = list(CMSPublicationDocument.objects.exclude(status="archived").filter(
+                        category=category, sort_order=document_index,
+                        title__iexact=str(item.get("title") or "").strip(),
+                    ).select_related("attachment")[:2])
+                    draft_url = _safe_url(item.get("url"))
+                    matches = [document for document in matches if document.stable_key not in explicit_document_ids and (
+                        document.attachment.resolved_public_url if document.attachment and not document.attachment.is_archived
+                        else document.external_url
+                    ) == draft_url]
+                    key = matches[0].stable_key if len(matches) == 1 else _generated_key(
+                        CMSPublicationDocument, "stable_key", f"{code}-document",
+                    )
                 if item.get("id") != key:
                     item["id"] = key
                     identity_changed = True
@@ -499,6 +536,24 @@ def sync_normalized_section_draft(section, user=None):
                     ).first() if cover_media_id else None
                 except (TypeError, ValueError):
                     document_cover = None
+                media_id = item.get("mediaAssetId") or item.get("documentAssetId")
+                try:
+                    attachment = CMSMediaAsset.objects.filter(
+                        pk=media_id,
+                        is_archived=False,
+                        file_type=CMSMediaAsset.FILE_TYPE_DOCUMENT,
+                    ).first() if media_id else None
+                except (TypeError, ValueError):
+                    attachment = None
+                if not media_id:
+                    existing_document = CMSPublicationDocument.objects.filter(stable_key=key).select_related("attachment").first()
+                    existing_attachment = existing_document.attachment if existing_document else None
+                    if (
+                        existing_attachment
+                        and not existing_attachment.is_archived
+                        and _safe_url(item.get("url")) == existing_attachment.resolved_public_url
+                    ):
+                        attachment = existing_attachment
                 _upsert(
                     CMSPublicationDocument, {"stable_key": key}, {
                         **common,
@@ -507,6 +562,7 @@ def sync_normalized_section_draft(section, user=None):
                         "description": str(item.get("description") or ""),
                         "publication_date": publication_date,
                         "document_type": str(item.get("fileType") or "PDF"),
+                        "attachment": attachment,
                         "cover_image": document_cover,
                         "cover_alt_text": str(item.get("coverAlt") or "").strip(),
                         "external_url": _safe_url(item.get("url")),
