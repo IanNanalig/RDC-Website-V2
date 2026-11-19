@@ -32,6 +32,7 @@ type HomeNewsArticle = {
 type DocCard = {
   title: string;
   link: string;
+  description?: string;
   icon?: React.ReactNode;
   category?: string;
   quickLinks?: Array<{ label: string; link: string }>;
@@ -133,6 +134,7 @@ const mapCmsDocItems = (
     const nextItem: DocCard = {
       title: asString(row.title),
       link,
+      description: asString(row.description),
       category: asString(row.category),
       icon: iconForCms(row.icon),
       quickLinks: quickLinks.length ? quickLinks : undefined,
@@ -811,6 +813,7 @@ const Home: React.FC = () => {
             <h4 className="font-bold text-gray-800 text-lg group-hover:text-green-700 transition-colors">
               {doc.title}
             </h4>
+            {doc.description && <p className="mt-2 text-sm text-gray-600">{doc.description}</p>}
             <div className="inline-flex items-center gap-2 text-green-600 hover:text-green-800 font-medium mt-4 transition-colors">
               View Details
               <svg
@@ -1081,6 +1084,7 @@ const Home: React.FC = () => {
                           <h4 className="font-bold text-gray-800 text-lg group-hover:text-green-700 transition-colors">
                             {doc.title}
                           </h4>
+                          {doc.description && <p className="mt-2 text-sm text-gray-600">{doc.description}</p>}
                           <div className="inline-flex items-center gap-2 text-green-600 hover:text-green-800 font-medium mt-4 transition-colors">
                             View Details
                             <svg

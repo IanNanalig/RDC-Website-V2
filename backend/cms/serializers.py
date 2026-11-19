@@ -266,6 +266,23 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError("Latitude or longitude is outside its valid range.")
                 value = {**value, "latitude": lat_value, "longitude": lng_value}
 
+        if page_slug == "regional-profile" and section_key == "geographic-coverage":
+            media_id = value.get("mapAssetId")
+            if media_id:
+                try:
+                    image = CMSMediaAsset.objects.filter(
+                        pk=media_id,
+                        is_archived=False,
+                        file_type=CMSMediaAsset.FILE_TYPE_IMAGE,
+                    ).first()
+                except (TypeError, ValueError):
+                    image = None
+                if not image or not image.resolved_public_url:
+                    raise serializers.ValidationError({"mapAssetId": "Choose an active image from the Media Library."})
+                value = {**value, "mapAssetId": image.pk, "mapImageUrl": image.resolved_public_url}
+            else:
+                value = {key: item for key, item in value.items() if key not in {"mapAssetId", "mapImageUrl"}}
+
         if page_slug == "regional-profile" and section_key == "regional-overview":
             numeric_fields = {
                 "population": "Population",

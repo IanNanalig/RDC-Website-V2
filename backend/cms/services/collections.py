@@ -1,4 +1,5 @@
 from datetime import date
+from copy import deepcopy
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -671,6 +672,58 @@ def _referenced_keys(page, published=False):
     return result
 
 
+def restore_missing_publication_documents_to_draft(page, stable_keys, user=None):
+    """Return previously published, still-active documents to the draft only."""
+    from cms.models import CMSPageSection
+
+    if page.slug != "publications" or not isinstance(stable_keys, list) or not stable_keys:
+        raise serializers.ValidationError({"detail": "Choose missing publication documents to restore."})
+    keys = [str(key).strip() for key in stable_keys]
+    if len(keys) > 20 or len(set(keys)) != len(keys) or any(not key for key in keys):
+        raise serializers.ValidationError({"detail": "Choose up to 20 distinct document identifiers."})
+    section = CMSPageSection.objects.select_for_update().get(page=page, section_key="publication-catalog")
+    from cms.services.locking import lock_is_active
+    if lock_is_active(section) and section.lock_owner_id != getattr(user, "id", None):
+        raise serializers.ValidationError({"detail": "The publication section is being edited by another user. Try again after its lock is released."})
+    missing = _referenced_keys(page, published=True)["documents"] - _referenced_keys(page)["documents"]
+    if not set(keys).issubset(missing):
+        raise serializers.ValidationError({"detail": "The selected documents are no longer missing from this draft. Refresh and try again."})
+    content = deepcopy(section.content_json or {})
+    categories = content.get("categories")
+    if not isinstance(categories, list):
+        raise serializers.ValidationError({"detail": "The publication draft has no category list."})
+    documents = {
+        row.stable_key: row for row in CMSPublicationDocument.objects.select_for_update(of=("self",))
+        .select_related("category", "attachment").filter(stable_key__in=keys)
+    }
+    restored = []
+    for key in keys:
+        document = documents.get(key)
+        if not document or document.status == "archived" or document.published_at is None:
+            raise serializers.ValidationError({"detail": f"Document {key} is not an active published document."})
+        category = next((row for row in categories if isinstance(row, dict) and
+                         _stable_key(row.get("code") or row.get("id"), "") == document.category.code), None)
+        if category is None:
+            raise serializers.ValidationError({"detail": f"Restore the category for {document.title} before restoring its document."})
+        row = deepcopy(document.published_snapshot_json) if isinstance(document.published_snapshot_json, dict) else {}
+        if not row:
+            row = managed_content_snapshot(document)
+        row["id"] = document.stable_key
+        if document.attachment and not document.attachment.is_archived:
+            row["mediaAssetId"] = document.attachment_id
+            row["url"] = document.attachment.resolved_public_url
+        category["documents"] = list(category.get("documents") or []) + [row]
+        restored.append(key)
+    section.content_json = content
+    section.status = "draft"
+    section.save(update_fields=["content_json", "status", "updated_at"])
+    page.status = "draft"
+    page.has_unpublished_changes = True
+    page.updated_by = user
+    page.save(update_fields=["status", "has_unpublished_changes", "updated_by", "updated_at"])
+    return restored
+
+
 def submit_normalized_page_content(page, user=None):
     models = []
     if page.slug == "home":
@@ -763,7 +816,7 @@ def publish_normalized_page_content(page, user=None):
             rows = list(manually_managed_omissions[:20])
             labels = ", ".join(str(item) for item in rows[:5])
             raise serializers.ValidationError({
-                "detail": f"Archive removed {content_type} through its archive action before publishing: {labels}.",
+                "detail": f"Previously published {content_type} are still active but missing from this draft: {labels}. Restore them to the draft, or archive them through the active content list before publishing.",
                 "code": "published_content_requires_archive",
                 "content_type": content_type,
                 "items": [

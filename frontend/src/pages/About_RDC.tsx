@@ -721,7 +721,7 @@ export default function AboutRDC() {
                   </div>
 
                   {/* Actions */}
-                  <div className="mt-auto flex gap-2">
+                  {canDownloadDocument(doc.url) && <div className="mt-auto flex gap-2">
                     <button
                       type="button"
                       onClick={(e) => handleView(doc, e)}
@@ -777,7 +777,7 @@ export default function AboutRDC() {
                           ? "Download"
                           : "Unavailable"}
                     </button>
-                  </div>
+                  </div>}
                 </div>
               </div>
             ))}

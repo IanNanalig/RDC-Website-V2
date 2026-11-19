@@ -387,7 +387,7 @@ const sortPublicationDocumentsNewestFirst = (values: unknown[]) =>
   values
     .map((value, index) => ({ value, index, year: publicationDocumentNewestYear(value) }))
     .sort((left, right) => right.year - left.year || left.index - right.index)
-    .map(({ value }) => value);
+    .map(({ value, index }) => ({ value, index }));
 
 const mediaFileTypeLabel = (item: CMSMediaAsset) => {
   if (item.mime_type === "application/pdf") return "PDF";
@@ -1360,7 +1360,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       }
       const locked = (await cmsApi.lockSection(section.id, overrideConfirmed)) as CMSSection;
       mergeSection(locked);
-      populateSectionForm(locked);
       setSectionReadOnly(false);
       setNotice(overrideConfirmed ? `Edit lock taken over from ${section.lock_owner_name || "the previous editor"}.` : "Section lock acquired for 10 minutes. It will stay active while this editor is open.");
     } catch (error) {
@@ -1771,6 +1770,34 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           setNotice(`${label}: removed carousel slides archived and publish completed.`);
         } catch (recoveryError) {
           setNotice(getErrorDetail(recoveryError, `The removed carousel slides could not be archived, so ${label} was not published.`));
+        }
+        return;
+      }
+      if (
+        kind === "page"
+        && action === "publish"
+        && isAdmin
+        && workflowPage?.slug === "publications"
+        && removal?.content_type === "publication documents"
+      ) {
+        const labels = removal.items.map((item) => item.label || item.id).join(", ");
+        if (!window.confirm(
+          `These documents are still active but missing from the Publications draft:\n\n${labels}\n\nRestore them to the draft? Nothing will be archived or published. Review the restored documents before publishing again.`,
+        )) {
+          setNotice(`Publishing paused. The active documents are missing from the draft: ${labels}.`);
+          return;
+        }
+        try {
+          await cmsApi.restoreMissingPublicationDocuments(removal.items.map((item) => item.id));
+          mergePage(await cmsApi.getModule("publications"));
+          if (sectionForm.page === id) {
+            const nextForm: SectionForm = { ...emptySectionForm, page: id };
+            setSectionForm(nextForm);
+            setSectionFormBaseline(JSON.stringify(nextForm));
+          }
+          setNotice(`Restored ${labels} to the Publications draft. Open the section to review them, then publish again.`);
+        } catch (recoveryError) {
+          setNotice(getErrorDetail(recoveryError, "The missing documents could not be restored to the draft."));
         }
         return;
       }
@@ -2375,6 +2402,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   ...sectionContent,
                   categories: [
                     {
+                      id: `category-${crypto.randomUUID()}`,
                       title: "New Publication Category",
                       description: "Short public category description",
                       categoryNumber: nextCategoryNumber,
@@ -2401,7 +2429,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               Array.isArray(category.documents) ? category.documents : [],
             );
             return (
-              <div key={categoryIndex} className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+              <div key={textValue(category.code || category.id) || `category-${category.categoryNumber}`} className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <strong className="text-sm text-slate-800">Category {textValue(category.categoryNumber)}</strong>
                   <button
@@ -2464,13 +2492,14 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     onClick={() => {
                       const nextDocuments = [
                         {
+                          id: `document-${crypto.randomUUID()}`,
                           title: "New document",
                           year: String(new Date().getFullYear()),
                           fileType: "PDF",
                           fileSize: "",
                           isVisible: true,
                         },
-                        ...documents,
+                        ...documents.map(({ value }) => value),
                       ];
                       updateCategory(categoryIndex, { ...category, documents: nextDocuments });
                       setNotice(`New document added at the top of ${textValue(category.title) || `Category ${categoryIndex + 1}`}. Complete its details, then select Save Section.`);
@@ -2480,7 +2509,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   </button>
                 </div>
 
-                {documents.map((documentEntry, documentIndex) => {
+                {documents.map(({ value: documentEntry, index: documentIndex }, displayIndex) => {
                   const document = parseRecord(documentEntry);
                   const documentSource = textValue(document.url)
                     ? stringValue(document.mediaAssetId)
@@ -2493,17 +2522,17 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                       : "Custom/manual cover URL"
                     : "No cover selected";
                   return (
-                    <div key={documentIndex} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <div key={textValue(document.id) || `${textValue(category.id)}-${documentIndex}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                       <div className="mb-3 flex items-center justify-between gap-3">
-                        <strong className="text-xs uppercase tracking-wide text-slate-500">Document {documentIndex + 1}</strong>
+                        <strong className="text-xs uppercase tracking-wide text-slate-500">Document {displayIndex + 1}</strong>
                         <button
                           type="button"
                           className="text-sm text-red-600"
                           onClick={() => void removeManagedCollectionItem(
                             "publication-documents",
                             textValue(document.id),
-                            textValue(document.title) || `Document ${documentIndex + 1}`,
-                            () => updateCategory(categoryIndex, { ...category, documents: documents.filter((_, itemIndex) => itemIndex !== documentIndex) }),
+                            textValue(document.title) || `Document ${displayIndex + 1}`,
+                            () => updateCategory(categoryIndex, { ...category, documents: (Array.isArray(category.documents) ? category.documents : []).filter((_, itemIndex) => itemIndex !== documentIndex) }),
                           )}
                         >
                           Remove
@@ -2695,7 +2724,13 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                       const selected = mediaById.get(value);
                       updateDocumentItem(index, (current) => {
                         if (!selected) {
-                          return { ...current, mediaAssetId: "", documentAssetId: "" };
+                          return {
+                            ...current,
+                            mediaAssetId: "",
+                            documentAssetId: "",
+                            url: current.mediaAssetId || current.documentAssetId ? "" : current.url,
+                            link: current.mediaAssetId || current.documentAssetId ? "" : current.link,
+                          };
                         }
                         return {
                           ...current,
@@ -2713,7 +2748,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   <Field
                     label="Destination URL / Link"
                     value={textValue(row.url || row.link)}
-                    onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, url: value, link: value }))}
+                    onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, mediaAssetId: "", documentAssetId: "", url: value, link: value }))}
                     helper="Use for downloadable legal documents, external files, or page links."
                   />
                   <Field label="File Type (optional)" value={textValue(row.fileType)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, fileType: value }))} />
@@ -2962,6 +2997,16 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           <Field label="Map Title" value={textValue(sectionContent.title)} onChange={(value) => updateSectionContent("title", value)} />
           <Field label="Map Subtitle" value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
           <Field label="Map Caption" value={textValue(sectionContent.caption)} onChange={(value) => updateSectionContent("caption", value)} />
+          {sectionForm.section_key === "geographic-coverage" && (
+            <MediaAssetPicker
+              {...mediaPickerStatus}
+              label="Regional Map Image"
+              assets={media.filter((item) => item.file_type === "image")}
+              value={stringValue(sectionContent.mapAssetId)}
+              onChange={(value) => setSectionContent({ ...sectionContent, mapAssetId: value, mapImageUrl: "" })}
+              helper="Choose an image from the Media Library. The built-in map is used when no image is selected."
+            />
+          )}
           <Field label="Badge Label" value={textValue(sectionContent.badgeLabel)} onChange={(value) => updateSectionContent("badgeLabel", value)} />
           {sectionForm.section_key === "location-map" && (
             <>

@@ -44,6 +44,99 @@ class ContentOnlyCMSTests(APITestCase):
             ],
         )
 
+    def test_regional_map_uses_only_active_media_library_images(self):
+        section = CMSPageSection.objects.get(page__slug="regional-profile", section_key="geographic-coverage")
+        image = CMSMediaAsset.objects.create(
+            file="cms/test-map.png", public_url="/media/test-map.png",
+            file_type=CMSMediaAsset.FILE_TYPE_IMAGE,
+        )
+        content = {**section.content_json, "mapAssetId": image.pk, "mapImageUrl": "https://invalid.example/map.png"}
+        saved = self.client.patch(
+            "/api/admin/cms/modules/regional-profile/",
+            {"sections": {"geographic-coverage": content}}, format="json",
+        )
+        self.assertEqual(saved.status_code, 200, saved.data)
+        section.refresh_from_db()
+        self.assertEqual(section.content_json["mapImageUrl"], "/media/test-map.png")
+        published = self.client.post("/api/admin/cms/modules/regional-profile/publish/", {}, format="json")
+        self.assertEqual(published.status_code, 200, published.data)
+        public = self.client.get("/api/public/cms/pages/regional-profile/")
+        coverage = next(row["content"] for row in public.data["sections"] if row["sectionKey"] == "geographic-coverage")
+        self.assertEqual(coverage["mapImageUrl"], "/media/test-map.png")
+        image.is_archived = True
+        image.save(update_fields=["is_archived"])
+        public = self.client.get("/api/public/cms/pages/regional-profile/")
+        coverage = next(row["content"] for row in public.data["sections"] if row["sectionKey"] == "geographic-coverage")
+        self.assertNotIn("mapImageUrl", coverage)
+
+    def test_active_missing_publication_document_can_be_restored_to_draft(self):
+        page = CMSPage.objects.get(slug="publications")
+        section = page.sections.get(section_key="publication-catalog")
+        category_row = section.content_json["categories"][0]
+        category_code = category_row.get("code") or category_row["id"]
+        category = CMSPublicationCategory.objects.get(code=category_code)
+        document = CMSPublicationDocument.objects.create(
+            stable_key="recovery-document", category=category, title="Recovery document",
+            external_url="https://example.com/recovery.pdf", created_by=self.admin,
+            status="published", published_at=timezone.now(),
+            published_snapshot_json={"id": "recovery-document", "title": "Recovery document", "url": "https://example.com/recovery.pdf"},
+        )
+        snapshot = dict(page.published_snapshot_json)
+        sections = [dict(row) for row in snapshot["sections"]]
+        catalog = next(row for row in sections if row["sectionKey"] == "publication-catalog")
+        catalog["content"] = dict(catalog["content"])
+        categories = [dict(row) for row in catalog["content"]["categories"]]
+        published_category = next(row for row in categories if (row.get("code") or row.get("id")) == category_code)
+        published_category["documents"] = list(published_category.get("documents") or []) + [{"id": document.stable_key}]
+        catalog["content"]["categories"] = categories
+        page.published_snapshot_json = {**snapshot, "sections": sections}
+        page.save(update_fields=["published_snapshot_json"])
+
+        self.client.force_authenticate(self.editor)
+        denied = self.client.post("/api/admin/cms/modules/publications/restore-missing-documents/", {
+            "document_keys": [document.stable_key],
+        }, format="json")
+        self.assertEqual(denied.status_code, 403)
+        self.client.force_authenticate(self.admin)
+        restored = self.client.post("/api/admin/cms/modules/publications/restore-missing-documents/", {
+            "document_keys": [document.stable_key],
+        }, format="json")
+        self.assertEqual(restored.status_code, 200, restored.data)
+        detail = self.client.get("/api/admin/cms/modules/publications/")
+        self.assertEqual(detail.status_code, 200, detail.data)
+        section.refresh_from_db()
+        rows = next(row for row in section.content_json["categories"] if (row.get("code") or row.get("id")) == category_code)["documents"]
+        self.assertEqual(sum(row.get("id") == document.stable_key for row in rows), 1)
+        document.refresh_from_db()
+        self.assertEqual(document.status, "published")
+        self.assertIsNone(document.archived_at)
+        repeated = self.client.post("/api/admin/cms/modules/publications/restore-missing-documents/", {
+            "document_keys": [document.stable_key],
+        }, format="json")
+        self.assertEqual(repeated.status_code, 400)
+        second = CMSPublicationDocument.objects.create(
+            stable_key="another-missing-document", category=category, title="Another missing document",
+            external_url="https://example.com/another.pdf", created_by=self.admin,
+            status="published", published_at=timezone.now(),
+            published_snapshot_json={"id": "another-missing-document", "title": "Another missing document", "url": "https://example.com/another.pdf"},
+        )
+        page.refresh_from_db()
+        snapshot = dict(page.published_snapshot_json)
+        sections = [dict(row) for row in snapshot["sections"]]
+        catalog = next(row for row in sections if row["sectionKey"] == "publication-catalog")
+        catalog["content"] = dict(catalog["content"])
+        categories = [dict(row) for row in catalog["content"]["categories"]]
+        published_category = next(row for row in categories if (row.get("code") or row.get("id")) == category_code)
+        published_category["documents"] = list(published_category.get("documents") or []) + [{"id": second.stable_key}]
+        catalog["content"]["categories"] = categories
+        page.published_snapshot_json = {**snapshot, "sections": sections}
+        page.save(update_fields=["published_snapshot_json"])
+        published = self.client.post("/api/admin/cms/modules/publications/publish/", {}, format="json")
+        self.assertEqual(published.status_code, 200, published.data)
+        section.refresh_from_db()
+        rows = next(row for row in section.content_json["categories"] if (row.get("code") or row.get("id")) == category_code)["documents"]
+        self.assertIn(second.stable_key, [row.get("id") for row in rows])
+
     def test_fixed_module_registry_rejects_structural_mutations(self):
         page = CMSPage.objects.get(slug="contact")
         section = page.sections.get(section_key="contact-hero")

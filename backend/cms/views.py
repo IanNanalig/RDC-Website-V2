@@ -4,7 +4,7 @@ import math
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
-from django.db import connection, transaction
+from django.db import OperationalError, connection, transaction
 from django.db.models import Count, Prefetch, Q
 from django.db.models.fields.json import KeyTextTransform
 from django.http import Http404
@@ -538,8 +538,10 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         return Response({"detail": "Page sections are fixed by the application and cannot be created."}, status=405)
 
+    @transaction.atomic
     def update(self, request, *args, **kwargs):
         section = self.get_object()
+        CMSPage.objects.select_for_update().get(pk=section.page_id)
         definition = editable_section_definition(section.page.slug, section.section_key)
         if not definition:
             return Response({"detail": "This is not an editable fixed page section."}, status=404)
@@ -1000,7 +1002,7 @@ class AdminCMSModuleDetailView(APIView):
                     row, data={"content_json": content}, partial=True, context={"request": request},
                 )
                 section_serializer.is_valid(raise_exception=True)
-                row = section_serializer.save(content_json=content)
+                row = section_serializer.save()
                 row.section_type = allowed[key]["type"]
                 row.order = allowed[key]["order"]
                 row.is_visible = True
@@ -1026,6 +1028,19 @@ class AdminCMSModuleActionView(APIView):
 
     def post(self, request, slug, operation):
         page = _fixed_module_page(slug)
+        if operation == "restore-missing-documents":
+            if slug != "publications" or getattr(request.user, "role", "") != "admin":
+                raise PermissionDenied("Only Administrators can restore missing publication documents to the draft.")
+            from cms.services.collections import restore_missing_publication_documents_to_draft
+            with transaction.atomic():
+                locked_page = CMSPage.objects.select_for_update().get(pk=page.pk)
+                restored = restore_missing_publication_documents_to_draft(
+                    locked_page, request.data.get("document_keys"), request.user,
+                )
+            _log_cms_activity(request, "cms_publication_documents_restored_to_draft", {
+                "content_type": "module", "slug": slug, "document_keys": restored,
+            })
+            return Response({"restored_keys": restored})
         if operation == "submit":
             if page.status not in {"draft", "rejected", "published"}:
                 return Response({"detail": "This module cannot be submitted in its current state."}, status=409)
@@ -1039,7 +1054,18 @@ class AdminCMSModuleActionView(APIView):
             if getattr(request.user, "role", "") != "admin":
                 raise PermissionDenied("Only Administrators can publish public content.")
             try:
-                page = publish_page(page, user=request.user)
+                for attempt in range(2):
+                    try:
+                        page = publish_page(page, user=request.user)
+                        break
+                    except OperationalError as exc:
+                        if getattr(exc.__cause__, "pgcode", None) != "40P01":
+                            raise
+                        if attempt:
+                            return Response(
+                                {"detail": "Publishing encountered concurrent CMS editing. Please try again."},
+                                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            )
             except serializers.ValidationError as exc:
                 detail = exc.detail if isinstance(exc.detail, dict) else {}
                 _log_cms_activity(request, "api_action_failed", {

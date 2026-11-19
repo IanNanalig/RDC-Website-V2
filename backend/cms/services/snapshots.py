@@ -120,6 +120,7 @@ def compose_public_page_snapshot(page):
     from cms.models import (
         CMSCarouselItem,
         CMSLegacyMigrationIssue,
+        CMSMediaAsset,
         CMSPublicationCategory,
         CMSPublicationDocument,
         CMSResolution,
@@ -142,6 +143,21 @@ def compose_public_page_snapshot(page):
         ).values_list("section_key", flat=True)
     )
     published_references = _referenced_keys(page, published=True)
+
+    if page.slug == "regional-profile" and "geographic-coverage" in by_key:
+        content = by_key["geographic-coverage"]["content"]
+        media_id = content.get("mapAssetId")
+        try:
+            image = CMSMediaAsset.objects.filter(
+                pk=media_id,
+                is_archived=False,
+                file_type=CMSMediaAsset.FILE_TYPE_IMAGE,
+            ).first() if media_id else None
+        except (TypeError, ValueError):
+            image = None
+        content.pop("mapImageUrl", None)
+        if image and image.resolved_public_url:
+            content["mapImageUrl"] = image.resolved_public_url
 
     if page.slug == "home":
         for section_key in ("development-plans", "investment-programming", "monitoring-evaluation"):

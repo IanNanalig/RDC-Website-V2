@@ -36,6 +36,18 @@ def publish_page(page, user=None):
         locked_page = CMSPage.objects.select_for_update().get(pk=page_id)
         from cms.services.collections import reconcile_normalized_page_content
         reconcile_normalized_page_content(locked_page, user)
+        if locked_page.slug == "publications":
+            from cms.models import CMSPublicationDocument
+            from cms.services.collections import _referenced_keys, restore_missing_publication_documents_to_draft
+            references = _referenced_keys(locked_page)
+            missing_keys = _referenced_keys(locked_page, published=True)["documents"] - references["documents"]
+            active_keys = list(CMSPublicationDocument.objects.filter(
+                stable_key__in=missing_keys,
+                category__code__in=references["categories"],
+                published_at__isnull=False,
+            ).exclude(status="archived").values_list("stable_key", flat=True))
+            if active_keys:
+                restore_missing_publication_documents_to_draft(locked_page, active_keys, user)
         if locked_page.slug == "home":
             # These fields were introduced by the legacy Home-to-Publications
             # coupling. Home document cards are now authored directly in their

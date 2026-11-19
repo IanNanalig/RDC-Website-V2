@@ -92,17 +92,14 @@ export const downloadDocument = async (options: DownloadDocumentOptions) => {
 
   const fileName = downloadFileName({ ...options, url: sourceUrl });
 
-  if (parsedUrl.origin === window.location.origin) {
-    clickDownloadLink(parsedUrl.toString(), fileName);
-    return;
-  }
-
+  let receivedHtml = false;
   try {
     const response = await fetch(parsedUrl.toString(), { credentials: "omit" });
     if (!response.ok) throw new Error(`Download failed with status ${response.status}.`);
 
     const contentType = response.headers.get("content-type")?.toLowerCase() || "";
     if (contentType.includes("text/html")) {
+      receivedHtml = true;
       throw new Error("The remote address returned a web page instead of a file.");
     }
 
@@ -110,6 +107,9 @@ export const downloadDocument = async (options: DownloadDocumentOptions) => {
     clickDownloadLink(objectUrl, fileName);
     window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
   } catch {
+    if (receivedHtml || parsedUrl.origin === window.location.origin) {
+      throw new Error("The address did not return a downloadable file.");
+    }
     // Some public file hosts block browser fetches but still download files
     // correctly when their URL is opened directly.
     clickDownloadLink(parsedUrl.toString(), fileName, true);

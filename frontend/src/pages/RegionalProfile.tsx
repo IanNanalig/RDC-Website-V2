@@ -134,6 +134,7 @@ export default function RegionalProfile() {
   const hero = asRecord(getRegionSection(cmsPage, "region-hero"));
   const overview = asRecord(getRegionSection(cmsPage, "regional-overview"));
   const coverage = asRecord(getRegionSection(cmsPage, "geographic-coverage"));
+  const mapImageUrl = coverage.mapAssetId ? asString(coverage.mapImageUrl) : "";
   const lguDirectory = asRecord(getRegionSection(cmsPage, "lgu-directory"));
 
   const overviewParagraphs = useMemo(() => {
@@ -223,10 +224,10 @@ export default function RegionalProfile() {
               <div className="rounded-2xl border border-slate-100 bg-white p-6 shadow-lg">
                 <div className="overflow-hidden rounded-xl border-2 border-slate-200 bg-slate-50">
                   <picture>
-                    <source type="image/avif" srcSet={`${ncrMapAvif768} 768w, ${ncrMapAvif1408} 1408w`} sizes="(min-width: 1024px) 50vw, 100vw" />
-                    <source type="image/webp" srcSet={`${ncrMapWebp768} 768w, ${ncrMapWebp1408} 1408w`} sizes="(min-width: 1024px) 50vw, 100vw" />
+                    {!mapImageUrl && <source type="image/avif" srcSet={`${ncrMapAvif768} 768w, ${ncrMapAvif1408} 1408w`} sizes="(min-width: 1024px) 50vw, 100vw" />}
+                    {!mapImageUrl && <source type="image/webp" srcSet={`${ncrMapWebp768} 768w, ${ncrMapWebp1408} 1408w`} sizes="(min-width: 1024px) 50vw, 100vw" />}
                     <img
-                      src={ncrMapWebp1408}
+                      src={mapImageUrl || ncrMapWebp1408}
                       alt="Metro Manila Map"
                       width={1408}
                       height={768}

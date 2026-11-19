@@ -22,7 +22,7 @@ def lock_is_active(section, now=None):
 
 def acquire_section_lock(section_id, user, force=False):
     with transaction.atomic():
-        section = CMSPageSection.objects.select_for_update().select_related("page").get(pk=section_id)
+        section = CMSPageSection.objects.select_related("page").select_for_update(of=("self",)).get(pk=section_id)
         if lock_is_active(section) and section.lock_owner_id != user.id and not force:
             return section, False
         section.lock_owner = user
@@ -33,7 +33,7 @@ def acquire_section_lock(section_id, user, force=False):
 
 def heartbeat_section_lock(section_id, user):
     with transaction.atomic():
-        section = CMSPageSection.objects.select_for_update().select_related("page").get(pk=section_id)
+        section = CMSPageSection.objects.select_related("page").select_for_update(of=("self",)).get(pk=section_id)
         if not lock_is_active(section) or section.lock_owner_id != user.id:
             return section, False
         section.lock_acquired_at = timezone.now()
@@ -77,7 +77,7 @@ def heartbeat_form_lock(form_id, user):
 
 def release_section_lock(section_id, user, force=False):
     with transaction.atomic():
-        section = CMSPageSection.objects.select_for_update().select_related("page").get(pk=section_id)
+        section = CMSPageSection.objects.select_related("page").select_for_update(of=("self",)).get(pk=section_id)
         if lock_is_active(section) and section.lock_owner_id != user.id and not force:
             return section, False
         section.lock_owner = None
