@@ -51,3 +51,22 @@ backend/media/
 *.lnk
 sampler_extract.txt
 template_extract.txt
+
+# Local beta testing kits and supporting documents
+.gitattributes
+AUDIT.md
+BETA_CLEANUP_RUNBOOK.md
+RDC-NCR_10_Additional_Project_Beta_Testing_Kit.zip
+RDC-NCR_10_Additional_Project_Beta_Testing_Kit/
+RDC-NCR_10_New_Project_Beta_Testing_Kit.zip
+RDC-NCR_10_New_Project_Beta_Testing_Kit/
+RDC-NCR_20_Project_Beta_Testing_Kit_2026-11-07.zip
+RDC-NCR_One_Multi-Location_Project_Kit.zip
+RDC-NCR_Second_DPWH_Project_Kit.zip
+build_additional_10_projects.py
+sample-data-kit-20/
+sample-data-kit/
+sample-project-kit-dpwh-overpass/
+sample-project-kit-multi-location/
+tools/generate_second_dpwh_project.py
+tools/generate_single_multilocation_project.py
