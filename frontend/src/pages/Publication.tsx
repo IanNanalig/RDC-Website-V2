@@ -63,8 +63,11 @@ const mergeDocuments = (cmsDocuments: unknown[], baseCategory?: Category): Docum
   cmsDocuments.forEach((documentEntry, documentIndex) => {
     const documentRow = asRecord(documentEntry);
     const documentId = asString(documentRow.id);
+    const title = asString(documentRow.title);
     const matchIndex = result.findIndex(
-      (document) => !!documentId && document.id === documentId,
+      (document) =>
+        (!!documentId && document.id === documentId) ||
+        (!!title && document.title.toLowerCase() === title.toLowerCase()),
     );
     const baseDocument = matchIndex >= 0 ? result[matchIndex] : undefined;
     if (!isVisible(documentRow)) {
@@ -110,7 +113,11 @@ const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
     const row = asRecord(entry);
     const id = asString(row.id);
     const title = asString(row.title);
-    const matchIndex = result.findIndex((category) => !!id && category.id === id);
+    const matchIndex = result.findIndex(
+      (category) =>
+        (!!id && category.id === id) ||
+        (!!title && category.title.toLowerCase() === title.toLowerCase()),
+    );
     const baseCategory = matchIndex >= 0 ? result[matchIndex] : undefined;
 
     if (!isVisible(row)) {

@@ -632,8 +632,6 @@ export const cmsApi = {
     id: number,
     payload: Record<string, unknown> = {},
   ) => api.post(`admin/cms/${kind}/${id}/archive/`, payload),
-  keepPublicationDocumentInDraft: (id: number) =>
-    api.post(`admin/cms/publication-documents/${id}/keep-in-draft/`),
   getPublicationCategoryDependencies: (id: number) => api.get(`admin/cms/publication-categories/${id}/dependencies/`) as Promise<{
     documents: Array<{ status: CMSStatus; count: number }>;
   }>,

@@ -1741,34 +1741,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     } catch (error) {
       const removal = getPublishedRemovalError(error);
       if (
-        kind === "page" && action === "publish" && isAdmin
-        && workflowPage?.slug === "publications"
-        && removal?.content_type === "publication documents"
-      ) {
-        const labels = removal.items.map((item) => item.label || item.id).join(", ");
-        if (!window.confirm(
-          `These published documents are absent from the Publications draft but are not archived:\n\n${labels}\n\nKeep the existing documents in the draft? Choose Cancel if you intended to remove them, then archive them through their archive action.`,
-        )) {
-          setNotice(`Publishing paused. Keep the documents in the draft or archive them explicitly: ${labels}.`);
-          return;
-        }
-        try {
-          for (const item of removal.items) {
-            const rows = await cmsApi.listManagedCollection("publication-documents", item.id);
-            const row = rows.find((candidate) => candidate.stable_key === item.id);
-            if (!row) throw new Error(`The publication document "${item.label || item.id}" could not be found. Refresh the CMS and inspect its record.`);
-            await cmsApi.keepPublicationDocumentInDraft(row.id);
-          }
-          const refreshed = await loadPageDetail(id);
-          const catalog = refreshed.sections?.find((section) => section.section_key === "publication-catalog");
-          if (catalog && sectionForm.id === catalog.id && !sectionFormHasChanges) populateSectionForm(catalog);
-          setNotice(`Existing publication documents restored to the draft: ${labels}. Review the draft and select Publish again.`);
-        } catch (recoveryError) {
-          setNotice(getErrorDetail(recoveryError, `Could not keep the publication documents in the draft: ${labels}.`));
-        }
-        return;
-      }
-      if (
         kind === "page"
         && action === "publish"
         && isAdmin
@@ -2340,16 +2312,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
           updatePublicationDocument(categoryIndex, documentIndex, { ...document, mediaAssetId: "", url: "" });
           return;
         }
-        const categoryDocuments = Array.isArray(categories[categoryIndex]?.documents)
-          ? categories[categoryIndex].documents as Record<string, unknown>[]
-          : [];
-        const existingIndex = categoryDocuments.findIndex((entry, index) =>
-          index !== documentIndex && stringValue(parseRecord(entry).mediaAssetId) === String(selected.id),
-        );
-        if (existingIndex !== -1) {
-          setNotice(`This Media Library file is already used by Document ${existingIndex + 1} in this category. Select that row to edit it.`);
-          return;
-        }
         updatePublicationDocument(categoryIndex, documentIndex, {
           ...document,
           mediaAssetId: selected.id,
@@ -2502,7 +2464,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     onClick={() => {
                       const nextDocuments = [
                         {
-                          id: `${textValue(category.code || category.id) || "publication"}-document-${crypto.randomUUID()}`,
                           title: "New document",
                           year: String(new Date().getFullYear()),
                           fileType: "PDF",
@@ -2532,7 +2493,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                       : "Custom/manual cover URL"
                     : "No cover selected";
                   return (
-                    <div key={textValue(document.id) || `legacy-${documentIndex}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <div key={documentIndex} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                       <div className="mb-3 flex items-center justify-between gap-3">
                         <strong className="text-xs uppercase tracking-wide text-slate-500">Document {documentIndex + 1}</strong>
                         <button
