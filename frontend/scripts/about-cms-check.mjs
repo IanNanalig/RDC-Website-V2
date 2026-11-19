@@ -108,8 +108,9 @@ try {
   await page.getByRole("button", { name: "Cancel" }).click();
 
   await page.locator('[data-cms-section-id="43"]').getByRole("button", { name: "Edit Content" }).click();
-  assert.equal(await page.getByRole("button", { name: "Add Committee" }).count(), 0, "fixed committee entries cannot be added");
+  assert.equal(await page.getByRole("button", { name: "Add Committee", exact: true }).count(), 0, "fixed committee entries cannot be added");
   assert.equal(await page.locator("[data-section-editor]").getByRole("button", { name: "Remove", exact: true }).count(), 0, "fixed committee entries cannot be removed");
+  await page.getByRole("button", { name: "Add Committee Information", exact: true }).first().click();
   const functions = page.getByLabel("Functions (one per line)").first();
   await functions.fill("");
   await functions.pressSequentially("Plan and coordinate regional work");
@@ -119,7 +120,10 @@ try {
   await page.getByRole("heading", { name: "CMS About RDC" }).waitFor();
   await page.getByText("2025", { exact: true }).first().waitFor();
   assert.equal(await page.getByText("Archive 1", { exact: true }).count(), 0, "numeric CMS years are not replaced by an archive placeholder");
-  assert.equal(await page.getByRole("button", { name: "View", exact: true }).isDisabled(), true, "legal documents without a URL cannot open a blank tab");
+  const legalDocument = page.getByRole("heading", { name: "Law without file" });
+  await legalDocument.waitFor();
+  const legalCard = legalDocument.locator("xpath=../..");
+  assert.equal(await legalCard.getByRole("button", { name: "View", exact: true }).and(legalCard.locator(":enabled")).count(), 0, "legal documents without a URL cannot open a blank tab");
   await page.getByRole("button", { name: /executive committee/i }).click();
   await page.getByRole("dialog").getByRole("heading", { name: "Functions" }).waitFor();
   await page.getByRole("dialog").getByText("Coordinate regional work", { exact: true }).waitFor();

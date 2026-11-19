@@ -1773,34 +1773,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         }
         return;
       }
-      if (
-        kind === "page"
-        && action === "publish"
-        && isAdmin
-        && workflowPage?.slug === "publications"
-        && removal?.content_type === "publication documents"
-      ) {
-        const labels = removal.items.map((item) => item.label || item.id).join(", ");
-        if (!window.confirm(
-          `These documents are still active but missing from the Publications draft:\n\n${labels}\n\nRestore them to the draft? Nothing will be archived or published. Review the restored documents before publishing again.`,
-        )) {
-          setNotice(`Publishing paused. The active documents are missing from the draft: ${labels}.`);
-          return;
-        }
-        try {
-          await cmsApi.restoreMissingPublicationDocuments(removal.items.map((item) => item.id));
-          mergePage(await cmsApi.getModule("publications"));
-          if (sectionForm.page === id) {
-            const nextForm: SectionForm = { ...emptySectionForm, page: id };
-            setSectionForm(nextForm);
-            setSectionFormBaseline(JSON.stringify(nextForm));
-          }
-          setNotice(`Restored ${labels} to the Publications draft. Open the section to review them, then publish again.`);
-        } catch (recoveryError) {
-          setNotice(getErrorDetail(recoveryError, "The missing documents could not be restored to the draft."));
-        }
-        return;
-      }
       setNotice(getErrorDetail(error, `Failed to ${action} ${label}.`));
     } finally {
       setLoading(false);
@@ -2435,18 +2407,26 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   <button
                     type="button"
                     className="text-sm text-red-600"
-                      onClick={() => void removeManagedCollectionItem(
-                        "publication-categories",
-                        textValue(category.code || category.id),
-                        textValue(category.title || category.name) || `Category ${textValue(category.categoryNumber)}`,
-                        () => setSectionContent({ ...sectionContent, categories: categories.filter((_, itemIndex) => itemIndex !== categoryIndex) }),
-                      )}
+                    onClick={() => {
+                      const label = textValue(category.title) || "this category";
+                      if (!window.confirm(`Remove ${label} and its ${documents.length} document(s) from the public listing after publishing? Their records and files will be kept.`)) return;
+                      setSectionContent({ ...sectionContent, categories: categories.filter((_, index) => index !== categoryIndex) });
+                    }}
                   >
                     Remove
                   </button>
+                  {isAdmin && textValue(category.code || category.id) && <button
+                    type="button"
+                    className="text-sm text-red-600"
+                    onClick={() => void removeManagedCollectionItem(
+                      "publication-categories",
+                      textValue(category.code || category.id),
+                      textValue(category.title) || "Publication category",
+                      () => setSectionContent({ ...sectionContent, categories: categories.filter((_, index) => index !== categoryIndex) }),
+                    )}
+                  >Archive</button>}
                 </div>
                 <div className="grid min-w-0 gap-3 md:grid-cols-2">
-                  {developerMode && isAdmin && <Field label="Developer: Category ID" value={textValue(category.id)} onChange={(value) => updateCategory(categoryIndex, { ...category, id: value })} />}
                   <Field label="Title" value={textValue(category.title)} onChange={(value) => updateCategory(categoryIndex, { ...category, title: value })} />
                   <Area label="Description" value={textValue(category.description)} onChange={(value) => updateCategory(categoryIndex, { ...category, description: value })} rows={2} />
                   <Select label="Color" value={textValue(category.color)} onChange={(value) => updateCategory(categoryIndex, { ...category, color: value })} options={colorOptions} emptyLabel="Use the current category color" />
@@ -2528,15 +2508,18 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                         <button
                           type="button"
                           className="text-sm text-red-600"
-                          onClick={() => void removeManagedCollectionItem(
-                            "publication-documents",
-                            textValue(document.id),
-                            textValue(document.title) || `Document ${displayIndex + 1}`,
-                            () => updateCategory(categoryIndex, { ...category, documents: (Array.isArray(category.documents) ? category.documents : []).filter((_, itemIndex) => itemIndex !== documentIndex) }),
-                          )}
+                          onClick={() => {
+                            if (!window.confirm("Remove this document from the public listing after publishing? Its record and file will be kept.")) return;
+                            const remaining = (Array.isArray(category.documents) ? category.documents : []).filter((_, index) => index !== documentIndex);
+                            updateCategory(categoryIndex, { ...category, documents: remaining });
+                          }}
                         >
                           Remove
                         </button>
+                        {isAdmin && textValue(document.id) && <button type="button" className="text-sm text-red-600" onClick={() => void removeManagedCollectionItem(
+                          "publication-documents", textValue(document.id), textValue(document.title) || "Document",
+                          () => updateCategory(categoryIndex, { ...category, documents: (Array.isArray(category.documents) ? category.documents : []).filter((_, index) => index !== documentIndex) }),
+                        )}>Archive</button>}
                       </div>
                       <div className="mb-3 grid gap-2 md:grid-cols-2">
                         <div className="rounded-lg border border-blue-100 bg-white px-3 py-2 text-xs text-blue-800">
@@ -2547,8 +2530,19 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                         </div>
                       </div>
                       <div className="grid min-w-0 gap-3 md:grid-cols-3">
-                        {developerMode && isAdmin && <Field label="Developer: Document ID" value={textValue(document.id)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, id: value })} />}
                         <Field label="Title" value={textValue(document.title)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, title: value })} />
+                        {categories.length > 1 && <Select label="Move to category" value="" emptyLabel="Choose a category"
+                          options={categories.flatMap((row, index) => index === categoryIndex ? [] : [{ value: String(index), label: textValue(row.title) || `Category ${row.categoryNumber}` }])}
+                          onChange={(value) => {
+                            if (!value) return;
+                            const targetIndex = Number(value);
+                            setSectionContent({ ...sectionContent, categories: categories.map((row, index) => {
+                              const members = Array.isArray(row.documents) ? row.documents : [];
+                              if (index === categoryIndex) return { ...row, documents: members.filter((_, sourceIndex) => sourceIndex !== documentIndex) };
+                              if (index === targetIndex) return { ...row, documents: [...members, document] };
+                              return row;
+                            }) });
+                          }} />}
                         <Field label="Year" value={textValue(document.year)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, year: value })} />
                         <Field label="File Type" value={textValue(document.fileType)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, fileType: value })} />
                         <Field label="File Size" value={textValue(document.fileSize)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, fileSize: value })} />

@@ -1,5 +1,4 @@
 from datetime import date
-from copy import deepcopy
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -413,9 +412,16 @@ def sync_normalized_section_draft(section, user=None):
             )
 
     if section.page.slug == "publications" and section.section_key == "publication-catalog":
+        if not isinstance(content.get("categories"), list):
+            raise serializers.ValidationError({"detail": "The publication catalog must contain a category list."})
+        category_codes = set()
+        document_keys = set()
+        document_ids = set()
         for category_index, row in enumerate(content.get("categories") or [], 1):
             if not isinstance(row, dict):
-                continue
+                raise serializers.ValidationError({"detail": "Each publication category must be an object."})
+            if not isinstance(row.get("documents", []), list):
+                raise serializers.ValidationError({"detail": "Each publication category must contain a document list."})
             explicit = _stable_key(row.get("code") or row.get("id"), "")[:80]
             legacy = _stable_key(row.get("title"), f"category-{category_index}")[:80]
             code = explicit or _existing_key(
@@ -426,6 +432,9 @@ def sync_normalized_section_draft(section, user=None):
                 title_field="name",
                 title=row.get("title") or row.get("name"),
             ) or _generated_key(CMSPublicationCategory, "code", "category", 80)
+            if code in category_codes:
+                raise serializers.ValidationError({"detail": f"Duplicate publication category identifier: {code}."})
+            category_codes.add(code)
             if row.get("id") != code or row.get("code") != code:
                 row["id"] = code
                 row["code"] = code
@@ -467,8 +476,14 @@ def sync_normalized_section_draft(section, user=None):
             )
             for document_index, item in enumerate(row.get("documents") or [], 1):
                 if not isinstance(item, dict):
-                    continue
+                    raise serializers.ValidationError({"detail": "Each publication document must be an object."})
                 raw_id = _stable_key(item.get("id"), "")
+                if raw_id in document_ids:
+                    raise serializers.ValidationError({"detail": f"Duplicate publication document identifier: {raw_id}."})
+                if raw_id:
+                    document_ids.add(raw_id)
+                    if CMSPublicationDocument.objects.filter(stable_key=raw_id, status="archived").exists():
+                        raise serializers.ValidationError({"detail": "Restore the archived publication document before adding it to the draft.", "code": "archived_content_requires_restore"})
                 legacy_item_key = _stable_key(item.get("title"), f"document-{document_index}")
                 composite = (
                     raw_id
@@ -479,10 +494,13 @@ def sync_normalized_section_draft(section, user=None):
                     CMSPublicationDocument,
                     "stable_key",
                     [raw_id, composite],
-                    position=document_index,
+                    position=None if raw_id else document_index,
                     title_field="title",
                     title=item.get("title"),
                 ) or (composite if raw_id else _generated_key(CMSPublicationDocument, "stable_key", f"{code}-document"))
+                if key in document_keys:
+                    raise serializers.ValidationError({"detail": f"Duplicate publication document identifier: {key}."})
+                document_keys.add(key)
                 if item.get("id") != key:
                     item["id"] = key
                     identity_changed = True
@@ -500,10 +518,25 @@ def sync_normalized_section_draft(section, user=None):
                     ).first() if cover_media_id else None
                 except (TypeError, ValueError):
                     document_cover = None
+                attachment_fields = {}
+                if "mediaAssetId" in item:
+                    media_id = item["mediaAssetId"]
+                    attachment = None
+                    if media_id:
+                        try:
+                            attachment = CMSMediaAsset.objects.filter(
+                                pk=media_id, is_archived=False, file_type=CMSMediaAsset.FILE_TYPE_DOCUMENT,
+                            ).first()
+                        except (TypeError, ValueError):
+                            pass
+                        if not attachment:
+                            raise serializers.ValidationError({"detail": "Choose an active publication document from the Media Library."})
+                    attachment_fields["attachment"] = attachment
                 _upsert(
                     CMSPublicationDocument, {"stable_key": key}, {
                         **common,
                         "category": category,
+                        **attachment_fields,
                         "title": str(item.get("title") or "Untitled publication"),
                         "description": str(item.get("description") or ""),
                         "publication_date": publication_date,
@@ -568,6 +601,12 @@ def sync_normalized_section_draft(section, user=None):
                         "sort_order": item_index,
                     }, user,
                 )
+
+    if section.page.slug == "publications" and section.section_key == "publication-catalog":
+        for field in ("removedCategoryIds", "removedDocumentIds"):
+            if field in content:
+                del content[field]
+                identity_changed = True
 
     if identity_changed:
         # Stable identities are content metadata, not structure. Persisting them
@@ -640,6 +679,19 @@ def _document_reference_key(category_code, item, index):
     return _stable_key(f"{category_code}-{item_key}", f"{category_code}-document-{index}")
 
 
+def publication_membership(content):
+    for category_index, row in enumerate(content.get("categories") or [], 1):
+        if not isinstance(row, dict):
+            continue
+        code = _stable_key(row.get("code") or row.get("id") or row.get("title"), f"category-{category_index}")[:80]
+        documents = {
+            _document_reference_key(code, item, index): item
+            for index, item in enumerate(row.get("documents") or [], 1)
+            if isinstance(item, dict)
+        }
+        yield code, row, documents
+
+
 def _referenced_keys(page, published=False):
     result = {"carousel": set(), "categories": set(), "documents": set(), "resolutions": set()}
     for section_key, content in _section_content_rows(page, published=published):
@@ -648,14 +700,9 @@ def _referenced_keys(page, published=False):
                 if isinstance(row, dict):
                     result["carousel"].add(_stable_key(row.get("id") or row.get("key") or row.get("title"), f"slide-{index}"))
         elif page.slug == "publications" and section_key == "publication-catalog":
-            for category_index, row in enumerate(content.get("categories") or [], 1):
-                if not isinstance(row, dict):
-                    continue
-                code = _stable_key(row.get("id") or row.get("code") or row.get("title"), f"category-{category_index}")
+            for code, _, documents in publication_membership(content):
                 result["categories"].add(code)
-                for document_index, item in enumerate(row.get("documents") or [], 1):
-                    if isinstance(item, dict):
-                        result["documents"].add(_document_reference_key(code, item, document_index))
+                result["documents"].update(documents)
         elif page.slug == "about-rdc" and section_key == "resolutions-archive":
             for year_row in content.get("years") or []:
                 if not isinstance(year_row, dict):
@@ -670,58 +717,6 @@ def _referenced_keys(page, published=False):
                         number = str(item.get("number") or item.get("resolutionNumber") or item.get("title") or f"Resolution {item_index}")
                         result["resolutions"].add(_stable_key(item.get("id") or f"{year}-{number}", f"resolution-{year}-{item_index}"))
     return result
-
-
-def restore_missing_publication_documents_to_draft(page, stable_keys, user=None):
-    """Return previously published, still-active documents to the draft only."""
-    from cms.models import CMSPageSection
-
-    if page.slug != "publications" or not isinstance(stable_keys, list) or not stable_keys:
-        raise serializers.ValidationError({"detail": "Choose missing publication documents to restore."})
-    keys = [str(key).strip() for key in stable_keys]
-    if len(keys) > 20 or len(set(keys)) != len(keys) or any(not key for key in keys):
-        raise serializers.ValidationError({"detail": "Choose up to 20 distinct document identifiers."})
-    section = CMSPageSection.objects.select_for_update().get(page=page, section_key="publication-catalog")
-    from cms.services.locking import lock_is_active
-    if lock_is_active(section) and section.lock_owner_id != getattr(user, "id", None):
-        raise serializers.ValidationError({"detail": "The publication section is being edited by another user. Try again after its lock is released."})
-    missing = _referenced_keys(page, published=True)["documents"] - _referenced_keys(page)["documents"]
-    if not set(keys).issubset(missing):
-        raise serializers.ValidationError({"detail": "The selected documents are no longer missing from this draft. Refresh and try again."})
-    content = deepcopy(section.content_json or {})
-    categories = content.get("categories")
-    if not isinstance(categories, list):
-        raise serializers.ValidationError({"detail": "The publication draft has no category list."})
-    documents = {
-        row.stable_key: row for row in CMSPublicationDocument.objects.select_for_update(of=("self",))
-        .select_related("category", "attachment").filter(stable_key__in=keys)
-    }
-    restored = []
-    for key in keys:
-        document = documents.get(key)
-        if not document or document.status == "archived" or document.published_at is None:
-            raise serializers.ValidationError({"detail": f"Document {key} is not an active published document."})
-        category = next((row for row in categories if isinstance(row, dict) and
-                         _stable_key(row.get("code") or row.get("id"), "") == document.category.code), None)
-        if category is None:
-            raise serializers.ValidationError({"detail": f"Restore the category for {document.title} before restoring its document."})
-        row = deepcopy(document.published_snapshot_json) if isinstance(document.published_snapshot_json, dict) else {}
-        if not row:
-            row = managed_content_snapshot(document)
-        row["id"] = document.stable_key
-        if document.attachment and not document.attachment.is_archived:
-            row["mediaAssetId"] = document.attachment_id
-            row["url"] = document.attachment.resolved_public_url
-        category["documents"] = list(category.get("documents") or []) + [row]
-        restored.append(key)
-    section.content_json = content
-    section.status = "draft"
-    section.save(update_fields=["content_json", "status", "updated_at"])
-    page.status = "draft"
-    page.has_unpublished_changes = True
-    page.updated_by = user
-    page.save(update_fields=["status", "has_unpublished_changes", "updated_by", "updated_at"])
-    return restored
 
 
 def submit_normalized_page_content(page, user=None):
@@ -802,11 +797,12 @@ def publish_normalized_page_content(page, user=None):
         # Retire every imported row omitted by the current CMS draft, including
         # stale normalized rows that were never part of the latest snapshot.
         # CMS-created rows keep the explicit Administrator archive safeguard.
-        legacy_omissions = queryset.filter(created_by__isnull=True).exclude(
-            **{f"{key_field}__in": keys}
-        ).exclude(status="archived")
-        _retire_omitted_legacy_rows(legacy_omissions, user, now)
-        removed_keys = previous_keys - keys
+        if page.slug != "publications":
+            legacy_omissions = queryset.filter(created_by__isnull=True).exclude(
+                **{f"{key_field}__in": keys}
+            ).exclude(status="archived")
+            _retire_omitted_legacy_rows(legacy_omissions, user, now)
+        removed_keys = previous_keys - keys if page.slug != "publications" else set()
         manually_managed_omissions = queryset.filter(
             **{f"{key_field}__in": removed_keys},
             created_by__isnull=False,

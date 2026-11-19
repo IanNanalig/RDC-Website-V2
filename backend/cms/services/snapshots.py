@@ -42,13 +42,17 @@ def build_page_snapshot(page):
     published_at = timezone.now()
     sections = []
     for section in page.sections.filter(status="published", is_visible=True).order_by("order", "id"):
+        content = dict(section.content_json or {})
+        if page.slug == "publications" and section.section_key == "publication-catalog":
+            content.pop("removedCategoryIds", None)
+            content.pop("removedDocumentIds", None)
         sections.append(
             {
                 "sectionKey": section.section_key,
                 "sectionType": section.section_type,
                 "order": section.order,
                 "schemaVersion": section.schema_version,
-                "content": _portable_media_references(sanitize_public_structure(section.content_json or {})),
+                "content": _portable_media_references(sanitize_public_structure(content)),
             }
         )
 
@@ -125,7 +129,7 @@ def compose_public_page_snapshot(page):
         CMSPublicationDocument,
         CMSResolution,
     )
-    from cms.services.collections import _referenced_keys
+    from cms.services.collections import _referenced_keys, publication_membership
 
     snapshot = deepcopy(page.published_snapshot_json or {})
     sections = snapshot.get("sections")
@@ -177,32 +181,40 @@ def compose_public_page_snapshot(page):
         if carousel and "hero-carousel" in by_key and "hero-carousel" not in unresolved_sections:
             by_key["hero-carousel"]["content"]["slides"] = [row for row in carousel if row]
 
-    if (
-        page.slug == "publications"
-        and "publication-catalog" in by_key
-        and "publication-catalog" not in unresolved_sections
-    ):
-        documents = {}
-        for row in CMSPublicationDocument.objects.filter(
-            published_at__isnull=False,
+    if page.slug == "publications" and "publication-catalog" in by_key:
+        catalog = by_key["publication-catalog"]["content"]
+        catalog.pop("removedCategoryIds", None)
+        catalog.pop("removedDocumentIds", None)
+        document_records = CMSPublicationDocument.objects.filter(
             stable_key__in=published_references["documents"],
-        ).exclude(status="archived").select_related("category"):
-            if row.published_snapshot_json:
-                documents.setdefault(row.category.code, []).append(row.published_snapshot_json)
-        categories = []
-        for row in CMSPublicationCategory.objects.filter(
-            published_at__isnull=False,
+        ).in_bulk(field_name="stable_key")
+        category_records = CMSPublicationCategory.objects.filter(
             code__in=published_references["categories"],
-        ).exclude(status="archived").order_by("-display_number", "id"):
-            if not row.published_snapshot_json:
+        ).in_bulk(field_name="code")
+        use_normalized = "publication-catalog" not in unresolved_sections
+        categories = []
+        for code, published_category, members in publication_membership(catalog):
+            record = category_records.get(code)
+            if record and record.status == "archived":
                 continue
-            category = deepcopy(row.published_snapshot_json)
-            category["documents"] = sorted(
-                documents.get(row.code, []), key=_publication_document_sort_key,
-            )
+            category = dict(published_category)
+            if use_normalized and record and record.published_at and record.published_snapshot_json:
+                category = dict(record.published_snapshot_json)
+                category.update({key: published_category[key] for key in ("visible", "isVisible") if key in published_category})
+            documents = []
+            for key, published_document in members.items():
+                record = document_records.get(key)
+                if record and record.status == "archived":
+                    continue
+                document = dict(published_document)
+                if use_normalized and record and record.published_at and record.published_snapshot_json:
+                    document = dict(record.published_snapshot_json)
+                    document.update({field: published_document[field] for field in ("visible", "isVisible") if field in published_document})
+                document["categoryCode"] = code
+                documents.append(document)
+            category["documents"] = sorted(documents, key=_publication_document_sort_key)
             categories.append(category)
-        if categories:
-            by_key["publication-catalog"]["content"]["categories"] = categories
+        catalog["categories"] = sorted(categories, key=lambda category: -int(category.get("categoryNumber") or 0))
 
     if (
         page.slug == "about-rdc"

@@ -1028,19 +1028,6 @@ class AdminCMSModuleActionView(APIView):
 
     def post(self, request, slug, operation):
         page = _fixed_module_page(slug)
-        if operation == "restore-missing-documents":
-            if slug != "publications" or getattr(request.user, "role", "") != "admin":
-                raise PermissionDenied("Only Administrators can restore missing publication documents to the draft.")
-            from cms.services.collections import restore_missing_publication_documents_to_draft
-            with transaction.atomic():
-                locked_page = CMSPage.objects.select_for_update().get(pk=page.pk)
-                restored = restore_missing_publication_documents_to_draft(
-                    locked_page, request.data.get("document_keys"), request.user,
-                )
-            _log_cms_activity(request, "cms_publication_documents_restored_to_draft", {
-                "content_type": "module", "slug": slug, "document_keys": restored,
-            })
-            return Response({"restored_keys": restored})
         if operation == "submit":
             if page.status not in {"draft", "rejected", "published"}:
                 return Response({"detail": "This module cannot be submitted in its current state."}, status=409)

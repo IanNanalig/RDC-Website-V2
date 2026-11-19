@@ -523,10 +523,6 @@ export const cmsApi = {
   submitPage: (id: number) => api.post(`admin/cms/pages/${id}/submit/?view=editor`),
   rejectPage: (id: number, remarks = "") => api.post(`admin/cms/pages/${id}/reject/?view=editor`, { remarks }),
   publishModule: (slug: string) => api.post(`admin/cms/modules/${slug}/publish/`) as Promise<CMSPage>,
-  restoreMissingPublicationDocuments: (documentKeys: string[]) => api.post(
-    "admin/cms/modules/publications/restore-missing-documents/",
-    { document_keys: documentKeys },
-  ) as Promise<{ restored_keys: string[] }>,
   submitModule: (slug: string) => api.post(`admin/cms/modules/${slug}/submit/`) as Promise<CMSPage>,
   rejectModule: (slug: string, reviewNotes = "") => api.post(
     `admin/cms/modules/${slug}/reject/`,

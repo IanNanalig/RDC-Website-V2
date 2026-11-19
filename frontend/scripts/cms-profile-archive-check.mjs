@@ -56,7 +56,9 @@ try {
     };
     const publicationSection = {
       id: 33, page: 3, section_key: "publication-catalog", section_type: "publication_catalog",
-      order: 1, content_json: { title: "Publications", categories: [] }, schema_version: 1, is_visible: true,
+      order: 1, content_json: { title: "Publications", categories: [{
+        id: "rdp", title: "Regional Development Plans", documents: [{ id: "rdp-brochure", title: "Published brochure" }],
+      }] }, schema_version: 1, is_visible: true,
       status: "draft", is_locked: false, locked_by_me: false,
       created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-02T00:00:00Z",
     };
@@ -75,6 +77,13 @@ try {
       if (path === "/api/admin/cms/pages/3/") return respond(route, publicationPage);
       if (path === "/api/admin/cms/modules/home/") return respond(route, cmsPage);
       if (path === "/api/admin/cms/modules/publications/") return respond(route, publicationPage);
+      if (path === "/api/admin/cms/sections/33/lock/") {
+        return respond(route, { ...publicationSection, is_locked: true, locked_by_me: true });
+      }
+      if (path === "/api/admin/cms/sections/33/" && route.request().method() === "PUT") {
+        Object.assign(publicationSection, route.request().postDataJSON());
+        return respond(route, publicationSection);
+      }
       if (path === "/api/admin/cms/pages/") return respond(route, { results: [{ ...cmsPage, sections: undefined, section_count: 1 }, { ...profilePage, sections: undefined, section_count: 1 }, { ...publicationPage, sections: undefined, section_count: 1 }], count: 3, next: null, total_pages: 1 });
       if (path === "/api/admin/cms/modules/home/publish/" && route.request().method() === "POST") {
         homePublishAttempts += 1;
@@ -197,6 +206,25 @@ try {
     assert.ok(homePublishDialogs.some((message) => message.includes("Strategic Development") && message.includes("NEW")), "The archive confirmation names every removed slide");
     assert.equal(await page.locator('[data-cms-page-id="1"]').getByText("unpublished changes", { exact: true }).count(), 0, "Publishing Home clears its unpublished indicator");
     await page.locator('[data-cms-page-id="1"]').getByText("Published", { exact: true }).waitFor();
+    await page.locator('[data-cms-page-id="3"]').getByRole("button", { name: "Manage Content" }).click();
+    await page.locator('[data-cms-section-id="33"]').getByRole("button", { name: "Edit Content" }).click();
+    const publicationEditor = page.locator("[data-section-editor]");
+    assert.equal(await publicationEditor.getByRole("button", { name: "Recover missing published items" }).count(), 0);
+    const removeCategory = publicationEditor.getByRole("button", { name: "Remove", exact: true }).first();
+    page.once("dialog", (dialog) => dialog.dismiss());
+    await removeCategory.click();
+    assert.equal(await publicationEditor.getByRole("button", { name: "Remove", exact: true }).count(), 2);
+    let categoryWarning = "";
+    page.once("dialog", async (dialog) => {
+      categoryWarning = dialog.message();
+      await dialog.accept();
+    });
+    await removeCategory.click();
+    assert.match(categoryWarning, /Regional Development Plans.*1 document/);
+    await publicationEditor.getByRole("button", { name: "Save Content Draft" }).click();
+    await page.getByText("Section updated. Publish the page when ready.").waitFor();
+    assert.deepEqual(publicationSection.content_json.categories, []);
+    assert.equal("removedCategoryIds" in publicationSection.content_json, false);
     await page.locator('[data-cms-page-id="3"]').getByRole("button", { name: "Publish", exact: true }).click();
     await page.getByRole("heading", { name: "Review page draft: Publications" }).waitFor();
     page.once("dialog", (dialog) => dialog.accept());

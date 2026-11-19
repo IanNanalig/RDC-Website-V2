@@ -69,74 +69,6 @@ class ContentOnlyCMSTests(APITestCase):
         coverage = next(row["content"] for row in public.data["sections"] if row["sectionKey"] == "geographic-coverage")
         self.assertNotIn("mapImageUrl", coverage)
 
-    def test_active_missing_publication_document_can_be_restored_to_draft(self):
-        page = CMSPage.objects.get(slug="publications")
-        section = page.sections.get(section_key="publication-catalog")
-        category_row = section.content_json["categories"][0]
-        category_code = category_row.get("code") or category_row["id"]
-        category = CMSPublicationCategory.objects.get(code=category_code)
-        document = CMSPublicationDocument.objects.create(
-            stable_key="recovery-document", category=category, title="Recovery document",
-            external_url="https://example.com/recovery.pdf", created_by=self.admin,
-            status="published", published_at=timezone.now(),
-            published_snapshot_json={"id": "recovery-document", "title": "Recovery document", "url": "https://example.com/recovery.pdf"},
-        )
-        snapshot = dict(page.published_snapshot_json)
-        sections = [dict(row) for row in snapshot["sections"]]
-        catalog = next(row for row in sections if row["sectionKey"] == "publication-catalog")
-        catalog["content"] = dict(catalog["content"])
-        categories = [dict(row) for row in catalog["content"]["categories"]]
-        published_category = next(row for row in categories if (row.get("code") or row.get("id")) == category_code)
-        published_category["documents"] = list(published_category.get("documents") or []) + [{"id": document.stable_key}]
-        catalog["content"]["categories"] = categories
-        page.published_snapshot_json = {**snapshot, "sections": sections}
-        page.save(update_fields=["published_snapshot_json"])
-
-        self.client.force_authenticate(self.editor)
-        denied = self.client.post("/api/admin/cms/modules/publications/restore-missing-documents/", {
-            "document_keys": [document.stable_key],
-        }, format="json")
-        self.assertEqual(denied.status_code, 403)
-        self.client.force_authenticate(self.admin)
-        restored = self.client.post("/api/admin/cms/modules/publications/restore-missing-documents/", {
-            "document_keys": [document.stable_key],
-        }, format="json")
-        self.assertEqual(restored.status_code, 200, restored.data)
-        detail = self.client.get("/api/admin/cms/modules/publications/")
-        self.assertEqual(detail.status_code, 200, detail.data)
-        section.refresh_from_db()
-        rows = next(row for row in section.content_json["categories"] if (row.get("code") or row.get("id")) == category_code)["documents"]
-        self.assertEqual(sum(row.get("id") == document.stable_key for row in rows), 1)
-        document.refresh_from_db()
-        self.assertEqual(document.status, "published")
-        self.assertIsNone(document.archived_at)
-        repeated = self.client.post("/api/admin/cms/modules/publications/restore-missing-documents/", {
-            "document_keys": [document.stable_key],
-        }, format="json")
-        self.assertEqual(repeated.status_code, 400)
-        second = CMSPublicationDocument.objects.create(
-            stable_key="another-missing-document", category=category, title="Another missing document",
-            external_url="https://example.com/another.pdf", created_by=self.admin,
-            status="published", published_at=timezone.now(),
-            published_snapshot_json={"id": "another-missing-document", "title": "Another missing document", "url": "https://example.com/another.pdf"},
-        )
-        page.refresh_from_db()
-        snapshot = dict(page.published_snapshot_json)
-        sections = [dict(row) for row in snapshot["sections"]]
-        catalog = next(row for row in sections if row["sectionKey"] == "publication-catalog")
-        catalog["content"] = dict(catalog["content"])
-        categories = [dict(row) for row in catalog["content"]["categories"]]
-        published_category = next(row for row in categories if (row.get("code") or row.get("id")) == category_code)
-        published_category["documents"] = list(published_category.get("documents") or []) + [{"id": second.stable_key}]
-        catalog["content"]["categories"] = categories
-        page.published_snapshot_json = {**snapshot, "sections": sections}
-        page.save(update_fields=["published_snapshot_json"])
-        published = self.client.post("/api/admin/cms/modules/publications/publish/", {}, format="json")
-        self.assertEqual(published.status_code, 200, published.data)
-        section.refresh_from_db()
-        rows = next(row for row in section.content_json["categories"] if (row.get("code") or row.get("id")) == category_code)["documents"]
-        self.assertIn(second.stable_key, [row.get("id") for row in rows])
-
     def test_fixed_module_registry_rejects_structural_mutations(self):
         page = CMSPage.objects.get(slug="contact")
         section = page.sections.get(section_key="contact-hero")
@@ -679,10 +611,11 @@ class ContentOnlyCMSTests(APITestCase):
         carousel = next(row for row in public_page.data["sections"] if row["sectionKey"] == "hero-carousel")
         self.assertNotIn(removed_key, {row.get("id") for row in carousel["content"]["slides"]})
 
-    def test_publications_replaces_migrated_catalog_without_leaking_old_rows(self):
+    def test_confirmed_publication_removal_preserves_migrated_records(self):
         page = CMSPage.objects.get(slug="publications")
         section = page.sections.get(section_key="publication-catalog")
         content = dict(section.content_json)
+        content["removedCategoryIds"] = [row.get("code") or row["id"] for row in content["categories"]]
         content["categories"] = [{
             "title": "CMS-managed category",
             "description": "Replacement content",
@@ -704,17 +637,103 @@ class ContentOnlyCMSTests(APITestCase):
         self.assertEqual(CMSPublicationCategory.objects.get(code=replacement_code).status, "published")
         self.assertEqual(
             CMSPublicationCategory.objects.get(code="rdp").status,
-            "archived",
-            "An omitted migrated category not used by Home is retired automatically.",
+            "published",
+            "An omitted category is retained without archival.",
         )
         self.assertEqual(
             CMSPublicationCategory.objects.get(code="greenprint").status,
-            "archived",
-            "Home no longer keeps omitted migrated publication categories active.",
+            "published",
+            "Unlisting a migrated category preserves its record.",
         )
         public_page = self.client.get("/api/public/cms/pages/publications/")
         catalog = next(row for row in public_page.data["sections"] if row["sectionKey"] == "publication-catalog")
         self.assertEqual([row["id"] for row in catalog["content"]["categories"]], [replacement_code])
+        self.assertNotIn("removedCategoryIds", catalog["content"])
+        self.assertTrue(CMSPublicationDocument.objects.filter(category__code="rdp", status="published").exists())
+
+    def test_publications_can_publish_an_empty_draft_without_archiving_content(self):
+        section = CMSPageSection.objects.get(page__slug="publications", section_key="publication-catalog")
+        public_url = "/api/public/cms/pages/publications/"
+        publish_url = "/api/admin/cms/modules/publications/publish/"
+        prior = self.client.get(public_url).data
+        categories_before = list(CMSPublicationCategory.objects.order_by("pk").values_list("pk", "status", "archived_at"))
+        documents_before = list(CMSPublicationDocument.objects.order_by("pk").values_list("pk", "status", "archived_at", "category_id", "attachment_id"))
+        self.client.force_authenticate(self.editor)
+        saved = self.client.patch(
+            f"/api/admin/cms/sections/{section.pk}/",
+            {"content_json": {**section.content_json, "categories": []}},
+            format="json",
+        )
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual(self.client.post(publish_url, {}, format="json").status_code, 403)
+        self.assertEqual(self.client.get(public_url).data, prior)
+
+        self.client.force_authenticate(self.admin)
+        published = self.client.post(publish_url, {}, format="json")
+        self.assertEqual(published.status_code, 200, published.data)
+        result = self.client.get(public_url)
+        catalog = next(row["content"] for row in result.data["sections"] if row["sectionKey"] == "publication-catalog")
+        self.assertEqual(catalog["categories"], [])
+        self.assertEqual(list(CMSPublicationCategory.objects.order_by("pk").values_list("pk", "status", "archived_at")), categories_before)
+        self.assertEqual(list(CMSPublicationDocument.objects.order_by("pk").values_list("pk", "status", "archived_at", "category_id", "attachment_id")), documents_before)
+
+    def test_public_document_membership_changes_only_after_publish(self):
+        section = CMSPageSection.objects.get(page__slug="publications", section_key="publication-catalog")
+        publish_url = "/api/admin/cms/modules/publications/publish/"
+        initial = self.client.post(publish_url, {}, format="json")
+        self.assertEqual(initial.status_code, 200, initial.data)
+        section.refresh_from_db()
+        content = section.content_json
+        source, target = content["categories"][:2]
+        document = source["documents"].pop()
+        key = document["id"]
+        target["documents"].append(document)
+        def public_category():
+            response = self.client.get("/api/public/cms/pages/publications/")
+            catalog = next(row["content"] for row in response.data["sections"] if row["sectionKey"] == "publication-catalog")
+            return next(row["id"] for row in catalog["categories"] if any(item["id"] == key for item in row["documents"]))
+        self.assertEqual(public_category(), source["id"])
+        saved = self.client.patch(f"/api/admin/cms/sections/{section.pk}/", {"content_json": content}, format="json")
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual(public_category(), source["id"])
+        published = self.client.post(publish_url, {}, format="json")
+        self.assertEqual(published.status_code, 200, published.data)
+        self.assertEqual(public_category(), target["id"])
+
+    def test_unlisting_a_publication_preserves_its_attachment_and_archive_workflow(self):
+        section = CMSPageSection.objects.get(page__slug="publications", section_key="publication-catalog")
+        publish_url = "/api/admin/cms/modules/publications/publish/"
+        initial = self.client.post(publish_url, {}, format="json")
+        self.assertEqual(initial.status_code, 200, initial.data)
+        section.refresh_from_db()
+        content = section.content_json
+        category = content["categories"][0]
+        item = category["documents"][0]
+        document = CMSPublicationDocument.objects.get(stable_key=item["id"])
+        attachment = CMSMediaAsset.objects.create(
+            file="cms/retained.pdf", public_url="/media/retained.pdf",
+            file_type=CMSMediaAsset.FILE_TYPE_DOCUMENT,
+        )
+        item["mediaAssetId"] = attachment.pk
+        save_url = f"/api/admin/cms/sections/{section.pk}/"
+        self.assertEqual(self.client.patch(save_url, {"content_json": content}, format="json").status_code, 200)
+        self.assertEqual(self.client.post(publish_url, {}, format="json").status_code, 200)
+        section.refresh_from_db()
+        content = section.content_json
+        content["categories"][0]["documents"].pop(0)
+        self.assertEqual(self.client.patch(save_url, {"content_json": content}, format="json").status_code, 200)
+        self.assertEqual(self.client.post(publish_url, {}, format="json").status_code, 200)
+        document.refresh_from_db()
+        self.assertEqual(document.attachment_id, attachment.pk)
+        self.assertEqual(document.status, "published")
+        detail_url = f"/api/admin/cms/publication-documents/{document.pk}/"
+        self.assertEqual(self.client.post(f"{detail_url}archive/", {}, format="json").status_code, 200)
+        document.refresh_from_db()
+        self.assertEqual(document.status, "archived")
+        self.assertEqual(self.client.post(f"{detail_url}restore/", {}, format="json").status_code, 200)
+        document.refresh_from_db()
+        self.assertEqual(document.attachment_id, attachment.pk)
+        self.assertEqual(document.status, "draft")
 
     def test_collection_archive_and_restore_keep_draft_json_in_sync(self):
         section = CMSPageSection.objects.get(page__slug="home", section_key="hero-carousel")
