@@ -356,7 +356,7 @@ def _normalize_result(
     }
 
 
-def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector, guidelines):
+def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector, guidelines, *, regional_context=None):
     if not is_groq_enabled():
         return None
     historical, _matches, dataset_version, reference_model = _historical_context(
@@ -420,6 +420,11 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
         "validator_confirmed_historical_examples": historical,
         "allowed_revision_fields": sorted(field_keys),
     }
+    if regional_context is not None:
+        user_payload["regional_scorecard_context"] = {
+            **regional_context,
+            "instruction": "Regional bands are applied by the scoring service. Use them only as context and score only the supplied outcome criteria.",
+        }
 
     expected_criteria = {str(item.get("key") or "") for item in criteria_payload}
 

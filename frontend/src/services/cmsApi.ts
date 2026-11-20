@@ -412,6 +412,7 @@ export type CMSAIPreview = {
   hidden_fields?: string[];
   criterion_coverage?: { covered_criteria: number; total_criteria: number; coverage_percent: number; covered_subtotal: number };
   external_provider_expected?: boolean;
+  regional_outcome_bands?: Array<{ key: string; label: string; raw_score: number }>;
   input_preflight?: {
     status: "incomplete";
     missing: Array<{ field_key: string; field_label: string; source: string; message: string }>;

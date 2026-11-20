@@ -75,6 +75,82 @@ const criterionCategoryLabel = (value: string) => ({
 const withinRange = (value: number, min: number, max = Infinity) =>
   Number.isFinite(value) && value >= min && value <= max;
 
+const regionalBandDefinitions = {
+  cost: { title: "Total Regional Project Cost", keys: ["at_least_5b", "over_3b", "over_1b", "over_500m"] },
+  outcome_contribution: { title: "RDP Sectoral Outcome Contribution", keys: ["at_least_7", "at_least_5", "at_least_3", "at_least_2", "at_least_1"] },
+  beneficiaries: { title: "Magnitude of Beneficiaries", keys: ["over_3m", "over_1m", "at_least_1"] },
+} as const;
+const spatialLabels = {
+  interregional: "Interregional", region_wide: "Region-wide",
+  eight_to_twelve_lgus: "8–12 LGUs", single_city: "Single city",
+} as const;
+const outcomeRatingLabels = {
+  chapter_and_two_keywords: "Chapter + 2 valid matches",
+  chapter_or_three_keywords: "Chapter + context or 3 matches",
+  one_keyword: "At least 1 valid match",
+  no_keywords: "No valid evidence",
+} as const;
+const papScaleOrder = {
+  readiness: ["completed_documents", "ongoing_documents", "project_profile", "concept_only"],
+  gad: ["gender_responsive", "gender_sensitive", "promising_prospects", "invisible"],
+} as const;
+type RegionalBandGroup = keyof typeof regionalBandDefinitions;
+const regionalNumber = new Intl.NumberFormat("en-PH", { maximumFractionDigits: 20 });
+
+const regionalBandLabel = (group: RegionalBandGroup, key: string, value: number) => {
+  const operator = key.startsWith("at_least_") ? "At least" : "More than";
+  if (!Number.isFinite(value)) return `${operator}: enter a threshold`;
+  const quantity = regionalNumber.format(value);
+  if (group === "cost") return `${operator} PHP ${quantity}`;
+  const unit = group === "outcome_contribution"
+    ? (value === 1 ? "outcome" : "outcomes")
+    : (value === 1 ? "beneficiary" : "beneficiaries");
+  return `${operator} ${quantity} ${unit}`;
+};
+
+const bandLevels = (keys: readonly string[]): Record<string, string> =>
+  Object.fromEntries(keys.map((key, index) => [key, `Level ${keys.length - index}`]));
+
+const collectRankingErrors = (config: CMSAIRuleConfig) => {
+  const errors: Record<RegionalBandGroup | "spatial_coverage" | "outcome_rating" | keyof typeof papScaleOrder, string[]> = {
+    cost: [], spatial_coverage: [], outcome_contribution: [], beneficiaries: [],
+    readiness: [], gad: [], outcome_rating: [],
+  };
+  const regional = config.thresholds.regional_criteria;
+  const rules = config.keyword_dictionaries;
+  const check = (group: keyof typeof errors, title: string, labels: Record<string, string>, values: Record<string, number>) => {
+    const keys = Object.keys(labels);
+    for (let index = 1; index < keys.length; index++) {
+      const [higher, lower] = [keys[index - 1], keys[index]];
+      if (Number.isFinite(values[higher]) && Number.isFinite(values[lower]) && values[higher] <= values[lower]) {
+        errors[group].push(`${title}: ${labels[higher]} (${values[higher]}) must be greater than ${labels[lower]} (${values[lower]}).`);
+      }
+    }
+  };
+  for (const group of Object.keys(regionalBandDefinitions) as RegionalBandGroup[]) {
+    const { title, keys } = regionalBandDefinitions[group];
+    const labels = bandLevels(keys);
+    if (!Object.values(regional[group].thresholds).every((value) => withinRange(value, 0))) {
+      errors[group].push(`${title} thresholds must be valid numbers of at least 0.`);
+    }
+    check(group, `${title} thresholds`, labels, regional[group].thresholds);
+    check(group, `${title} scores`, { ...labels, otherwise: "Otherwise" }, regional[group].scores);
+  }
+  check("spatial_coverage", "Regional spatial coverage scores", spatialLabels, regional.spatial_coverage.scores);
+  check("outcome_rating", "Text-matching scores", outcomeRatingLabels, rules.outcome_rating);
+  for (const group of ["readiness", "gad"] as const) {
+    const labels = Object.fromEntries(papScaleOrder[group].map((key) => [key, key.replaceAll("_", " ")]));
+    const values = Object.fromEntries(rules[group].map((row) => [row.key, row.raw]));
+    const title = group === "readiness" ? "Readiness scores" : "GAD responsiveness scores";
+    if (Object.keys(values).length !== Object.keys(labels).length || Object.keys(labels).some((key) => !(key in values))) {
+      errors[group].push(`${title} must contain each supported level exactly once.`);
+    } else {
+      check(group, title, labels, values);
+    }
+  }
+  return errors;
+};
+
 const weightsTotal100 = (weights: number[]) => {
   if (!weights.every((weight) => withinRange(weight, 0, 100))) return false;
   // Use decimal digits so fractional weights are checked without binary rounding.
@@ -109,6 +185,15 @@ const scoringLimitErrors = (config: CMSAIRuleConfig) => {
   }
   return errors;
 };
+
+const hasScoringErrors = (config: CMSAIRuleConfig) =>
+  scoringLimitErrors(config).length > 0 || Object.values(collectRankingErrors(config)).some((errors) => errors.length > 0);
+
+const CriterionWarnings = ({ errors }: { errors: string[] }) => errors.length ? (
+  <ul className="mt-2 space-y-1 text-xs text-rose-700" aria-live="polite">
+    {errors.map((error) => <li key={error}>{error}</li>)}
+  </ul>
+) : null;
 
 const NumberInput = ({
   label,
@@ -296,9 +381,8 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
 
   const save = async () => {
     if (!config || !canEdit) return;
-    const errors = scoringLimitErrors(config);
-    if (errors.length) {
-      setNotice("Correct the scoring limits before saving.");
+    if (hasScoringErrors(config)) {
+      setNotice("Correct the highlighted scoring settings before saving.");
       return;
     }
     if (!changeNote.trim()) {
@@ -313,6 +397,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
         : await cmsApi.createAIScoringDraft(config, changeNote.trim());
       setDraft(response.draft_rule_set);
       setConfig(prepareContextualConfig(response.draft_rule_set.config));
+      setPreviewResult(null);
       setNotice(response.compatibility.status === "incompatible"
         ? "Draft saved, but it has blocking form compatibility errors."
         : "AI scoring draft saved. Preview and activate it when ready.");
@@ -324,7 +409,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
   };
 
   const activateDraft = async () => {
-    if (!draft || !canEdit) return;
+    if (!draft || !canEdit || !config || hasScoringErrors(config)) return;
     if (!window.confirm("Activate this saved AI scoring draft? Existing analyses will remain unchanged.")) return;
     setSaving(true);
     setNotice("");
@@ -417,6 +502,8 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
   if (!workspace || !config) return <div className="portal-card p-5 text-sm text-rose-700">{notice || "AI scoring settings are unavailable."}</div>;
 
   const limitErrors = scoringLimitErrors(config);
+  const rankingErrors = collectRankingErrors(config);
+  const hasInvalidScoring = limitErrors.length > 0 || Object.values(rankingErrors).some((errors) => errors.length > 0);
   const papWeights = config.thresholds.pap_weights;
   const papTotal = Object.values(papWeights).reduce((sum, value) => sum + Number(value || 0), 0);
   const commonTotal = config.keyword_dictionaries.common_outcomes.reduce((sum, rule) => sum + Number(rule.weight || 0), 0);
@@ -521,15 +608,16 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
             <div className="grid gap-4 xl:grid-cols-2">
               <div className="rounded-xl border border-slate-200 p-4">
                 <h5 className="font-semibold text-slate-800">Total Regional Project Cost</h5>
+                <CriterionWarnings errors={rankingErrors.cost} />
                 <p className="mt-1 text-xs text-slate-500">Cost band cutoffs (PHP) and raw scores.</p>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <NumberInput label="At least: highest band" value={config.thresholds.regional_criteria.cost.thresholds.at_least_5b} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.at_least_5b = value; })} />
+                  <NumberInput label={regionalBandLabel("cost", "at_least_5b", config.thresholds.regional_criteria.cost.thresholds.at_least_5b)} value={config.thresholds.regional_criteria.cost.thresholds.at_least_5b} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.at_least_5b = value; })} />
                   <NumberInput label="Highest-band score" value={config.thresholds.regional_criteria.cost.scores.at_least_5b} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.at_least_5b = value; })} />
-                  <NumberInput label="More than: next band" value={config.thresholds.regional_criteria.cost.thresholds.over_3b} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_3b = value; })} />
+                  <NumberInput label={regionalBandLabel("cost", "over_3b", config.thresholds.regional_criteria.cost.thresholds.over_3b)} value={config.thresholds.regional_criteria.cost.thresholds.over_3b} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_3b = value; })} />
                   <NumberInput label="Next-band score" value={config.thresholds.regional_criteria.cost.scores.over_3b} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.over_3b = value; })} />
-                  <NumberInput label="More than: middle band" value={config.thresholds.regional_criteria.cost.thresholds.over_1b} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_1b = value; })} />
+                  <NumberInput label={regionalBandLabel("cost", "over_1b", config.thresholds.regional_criteria.cost.thresholds.over_1b)} value={config.thresholds.regional_criteria.cost.thresholds.over_1b} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_1b = value; })} />
                   <NumberInput label="Middle-band score" value={config.thresholds.regional_criteria.cost.scores.over_1b} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.over_1b = value; })} />
-                  <NumberInput label="More than: lower band" value={config.thresholds.regional_criteria.cost.thresholds.over_500m} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_500m = value; })} />
+                  <NumberInput label={regionalBandLabel("cost", "over_500m", config.thresholds.regional_criteria.cost.thresholds.over_500m)} value={config.thresholds.regional_criteria.cost.thresholds.over_500m} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_500m = value; })} />
                   <NumberInput label="Lower-band score" value={config.thresholds.regional_criteria.cost.scores.over_500m} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.over_500m = value; })} />
                   <NumberInput label="Otherwise score" value={config.thresholds.regional_criteria.cost.scores.otherwise} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.otherwise = value; })} />
                 </div>
@@ -537,6 +625,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
 
               <div className="rounded-xl border border-slate-200 p-4">
                 <h5 className="font-semibold text-slate-800">Spatial Coverage</h5>
+                <CriterionWarnings errors={rankingErrors.spatial_coverage} />
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   <NumberInput label="Interregional score" value={config.thresholds.regional_criteria.spatial_coverage.scores.interregional} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.spatial_coverage.scores.interregional = value; })} />
                   <NumberInput label="Region-wide score" value={config.thresholds.regional_criteria.spatial_coverage.scores.region_wide} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.spatial_coverage.scores.region_wide = value; })} />
@@ -547,17 +636,18 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
 
               <div className="rounded-xl border border-slate-200 p-4">
                 <h5 className="font-semibold text-slate-800">RDP Sectoral Outcome Contribution</h5>
+                <CriterionWarnings errors={rankingErrors.outcome_contribution} />
                 <p className="mt-1 text-xs text-slate-500">Minimum outcome counts and their raw scores.</p>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <NumberInput label="At least 7 outcomes" value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_7} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_7 = value; })} />
+                  <NumberInput label={regionalBandLabel("outcome_contribution", "at_least_7", config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_7)} value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_7} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_7 = value; })} />
                   <NumberInput label="Score" value={config.thresholds.regional_criteria.outcome_contribution.scores.at_least_7} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.scores.at_least_7 = value; })} />
-                  <NumberInput label="At least 5 outcomes" value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_5} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_5 = value; })} />
+                  <NumberInput label={regionalBandLabel("outcome_contribution", "at_least_5", config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_5)} value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_5} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_5 = value; })} />
                   <NumberInput label="Score" value={config.thresholds.regional_criteria.outcome_contribution.scores.at_least_5} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.scores.at_least_5 = value; })} />
-                  <NumberInput label="At least 3 outcomes" value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_3} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_3 = value; })} />
+                  <NumberInput label={regionalBandLabel("outcome_contribution", "at_least_3", config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_3)} value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_3} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_3 = value; })} />
                   <NumberInput label="Score" value={config.thresholds.regional_criteria.outcome_contribution.scores.at_least_3} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.scores.at_least_3 = value; })} />
-                  <NumberInput label="At least 2 outcomes" value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_2} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_2 = value; })} />
+                  <NumberInput label={regionalBandLabel("outcome_contribution", "at_least_2", config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_2)} value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_2} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_2 = value; })} />
                   <NumberInput label="Score" value={config.thresholds.regional_criteria.outcome_contribution.scores.at_least_2} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.scores.at_least_2 = value; })} />
-                  <NumberInput label="At least 1 outcome" value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_1} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_1 = value; })} />
+                  <NumberInput label={regionalBandLabel("outcome_contribution", "at_least_1", config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_1)} value={config.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_1} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.thresholds.at_least_1 = value; })} />
                   <NumberInput label="Score" value={config.thresholds.regional_criteria.outcome_contribution.scores.at_least_1} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.scores.at_least_1 = value; })} />
                   <NumberInput label="Otherwise score" value={config.thresholds.regional_criteria.outcome_contribution.scores.otherwise} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.outcome_contribution.scores.otherwise = value; })} />
                 </div>
@@ -565,12 +655,13 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
 
               <div className="rounded-xl border border-slate-200 p-4">
                 <h5 className="font-semibold text-slate-800">Magnitude of Beneficiaries</h5>
+                <CriterionWarnings errors={rankingErrors.beneficiaries} />
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <NumberInput label="More than: highest band" value={config.thresholds.regional_criteria.beneficiaries.thresholds.over_3m} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.thresholds.over_3m = value; })} />
+                  <NumberInput label={regionalBandLabel("beneficiaries", "over_3m", config.thresholds.regional_criteria.beneficiaries.thresholds.over_3m)} value={config.thresholds.regional_criteria.beneficiaries.thresholds.over_3m} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.thresholds.over_3m = value; })} />
                   <NumberInput label="Highest-band score" value={config.thresholds.regional_criteria.beneficiaries.scores.over_3m} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.scores.over_3m = value; })} />
-                  <NumberInput label="More than: next band" value={config.thresholds.regional_criteria.beneficiaries.thresholds.over_1m} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.thresholds.over_1m = value; })} />
+                  <NumberInput label={regionalBandLabel("beneficiaries", "over_1m", config.thresholds.regional_criteria.beneficiaries.thresholds.over_1m)} value={config.thresholds.regional_criteria.beneficiaries.thresholds.over_1m} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.thresholds.over_1m = value; })} />
                   <NumberInput label="Next-band score" value={config.thresholds.regional_criteria.beneficiaries.scores.over_1m} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.scores.over_1m = value; })} />
-                  <NumberInput label="At least: lowest band" value={config.thresholds.regional_criteria.beneficiaries.thresholds.at_least_1} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.thresholds.at_least_1 = value; })} />
+                  <NumberInput label={regionalBandLabel("beneficiaries", "at_least_1", config.thresholds.regional_criteria.beneficiaries.thresholds.at_least_1)} value={config.thresholds.regional_criteria.beneficiaries.thresholds.at_least_1} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.thresholds.at_least_1 = value; })} />
                   <NumberInput label="Lowest-band score" value={config.thresholds.regional_criteria.beneficiaries.scores.at_least_1} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.scores.at_least_1 = value; })} />
                   <NumberInput label="Otherwise score" value={config.thresholds.regional_criteria.beneficiaries.scores.otherwise} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.beneficiaries.scores.otherwise = value; })} />
                 </div>
@@ -582,6 +673,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
             {(["readiness", "gad"] as const).map((group) => (
               <div key={group} className="rounded-xl border border-slate-200 p-4">
                 <h4 className="font-semibold text-slate-800">{group === "readiness" ? "Readiness scoring" : "GAD responsiveness scoring"}</h4>
+                <CriterionWarnings errors={rankingErrors[group]} />
                 <div className="mt-3 space-y-3">
                   {config.keyword_dictionaries[group].map((rule, index) => (
                     <div key={rule.key} className="grid gap-2 sm:grid-cols-[100px_1fr]">
@@ -596,6 +688,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
 
           <div className="rounded-xl border border-slate-200 p-4">
             <h4 className="font-semibold text-slate-800">Project-text matching scores</h4>
+            <CriterionWarnings errors={rankingErrors.outcome_rating} />
             <p className="mt-1 text-xs text-slate-500">These values determine the raw rating after the active criterion rule decides whether the project contains valid evidence. Contextual rules require a matching term and supporting wording in the same sentence.</p>
             <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <NumberInput label="Chapter + 2 valid matches" value={config.keyword_dictionaries.outcome_rating.chapter_and_two_keywords} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries.outcome_rating.chapter_and_two_keywords = value; })} />
@@ -637,10 +730,18 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
           {canEdit && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
               <label className="block"><span className="text-sm font-semibold text-amber-950">Required change note</span><textarea rows={2} value={changeNote} onChange={(event) => setChangeNote(event.target.value)} className="mt-2 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" placeholder="Example: Updated thresholds based on the approved RDC scoring memorandum." /></label>
-              <div className="mt-3 flex flex-wrap items-end justify-between gap-3"><div className="min-w-[220px] flex-1"><label className="block"><span className="text-xs font-semibold text-amber-950">Preview project ID</span><input value={previewProjectId} onChange={(event) => setPreviewProjectId(event.target.value)} inputMode="numeric" className="mt-1 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" placeholder="Eligible project ID" /></label><p className="mt-1 text-xs text-amber-900">Preview is read-only and never saves an official analysis.</p></div><div className="flex flex-wrap gap-2"><button type="button" disabled={saving || limitErrors.length > 0} onClick={() => void save()} className="portal-btn portal-btn-primary">{saving ? "Saving..." : draft ? "Save Draft" : "Create Draft"}</button>{draft && <button type="button" disabled={saving || previewing} onClick={() => void previewDraft()} className="portal-btn portal-btn-ghost">{previewing ? "Previewing..." : "Run Preview"}</button>}{draft && <button type="button" disabled={saving || draft.compatibility.status === "incompatible"} onClick={() => void activateDraft()} className="portal-btn portal-btn-primary">Activate Draft</button>}</div></div>
+              <div className="mt-3 flex flex-wrap items-end justify-between gap-3"><div className="min-w-[220px] flex-1"><label className="block"><span className="text-xs font-semibold text-amber-950">Preview project ID</span><input value={previewProjectId} onChange={(event) => setPreviewProjectId(event.target.value)} inputMode="numeric" className="mt-1 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" placeholder="Eligible project ID" /></label><p className="mt-1 text-xs text-amber-900">Preview is read-only and never saves an official analysis.</p></div><div className="flex flex-wrap gap-2"><button type="button" disabled={saving || hasInvalidScoring} onClick={() => void save()} className="portal-btn portal-btn-primary">{saving ? "Saving..." : draft ? "Save Draft" : "Create Draft"}</button>{draft && <button type="button" disabled={saving || previewing} onClick={() => void previewDraft()} className="portal-btn portal-btn-ghost">{previewing ? "Previewing..." : "Run Preview"}</button>}{draft && <button type="button" disabled={saving || hasInvalidScoring || draft.compatibility.status === "incompatible"} onClick={() => void activateDraft()} className="portal-btn portal-btn-primary">Activate Draft</button>}</div></div>
               {previewResult && <div className={`mt-3 rounded-lg border p-3 text-sm ${previewResult.status === "complete" ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
                 <p className="font-semibold">Preview: {previewResult.result ? priorityLabel(previewResult.result.suggested_priority) : "Incomplete"}{previewResult.result ? ` · ${Number(previewResult.result.base_score).toFixed(2)}/100` : ""}</p>
                 {previewResult.result && <p className="mt-1">{previewResult.result.summary}</p>}
+                {!!previewResult.regional_outcome_bands?.length && (
+                  <div className="mt-2">
+                    <p className="font-semibold">RDP outcome thresholds in the saved draft</p>
+                    <ul className="ml-5 list-disc">
+                      {previewResult.regional_outcome_bands.map((band) => <li key={band.key}>{band.label} ({band.raw_score}/10)</li>)}
+                    </ul>
+                  </div>
+                )}
                 {previewResult.criterion_coverage && <p className="mt-2">Criteria covered: {previewResult.criterion_coverage.covered_criteria}/{previewResult.criterion_coverage.total_criteria} ({previewResult.criterion_coverage.coverage_percent}%). Supported subtotal: {previewResult.criterion_coverage.covered_subtotal.toFixed(2)}.</p>}
                 {previewResult.input_preflight?.missing?.length ? <ul className="mt-2 list-disc pl-5">{previewResult.input_preflight.missing.map((item) => <li key={item.field_key}>{item.field_label}: {item.message}</li>)}</ul> : null}
                 <p className="mt-2 text-xs">Applicable answers: {previewResult.form_inputs?.filter((item) => item.answer_state === "answered").length || 0}. Hidden fields: {previewResult.hidden_fields?.length || 0}. External provider {previewResult.external_provider_expected ? "may be used" : "is not configured"}.</p>

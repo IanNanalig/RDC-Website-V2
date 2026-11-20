@@ -138,6 +138,24 @@ GAD = {
     "invisible": (0, "GAD is invisible in the program/project."),
 }
 
+REGIONAL_BAND_KEYS = {
+    "cost": ("at_least_5b", "over_3b", "over_1b", "over_500m"),
+    "outcome_contribution": ("at_least_7", "at_least_5", "at_least_3", "at_least_2", "at_least_1"),
+    "beneficiaries": ("over_3m", "over_1m", "at_least_1"),
+}
+REGIONAL_SPATIAL_LABELS = {
+    "interregional": "Interregional",
+    "region_wide": "Region-wide",
+    "eight_to_twelve_lgus": "8–12 LGUs",
+    "single_city": "Single city",
+}
+TEXT_MATCH_LABELS = {
+    "chapter_and_two_keywords": "Chapter plus two matching words",
+    "chapter_or_three_keywords": "Chapter or three matching words",
+    "one_keyword": "At least one matching word",
+    "no_keywords": "No matching words",
+}
+
 COMMON_OUTCOMES = [
     ("capabilities", "Develop and protect capabilities of individuals and families", 10, ["health", "education", "family", "community", "social", "housing"]),
     ("jobs", "Transform production sector to generate more quality jobs and competitive products", 5, ["employment", "livelihood", "jobs", "industry", "business", "trade"]),
@@ -398,8 +416,68 @@ def _scale_rule_rows(value, label):
     return rows
 
 
-def _validate_regional_criteria(value):
-    defaults = default_priority_rule_config()["thresholds"]["regional_criteria"]
+def _validate_rank(values, labels, title, *, strict):
+    keys = list(labels)
+    for higher, lower in zip(keys, keys[1:]):
+        high, low = values[higher], values[lower]
+        if high < low or (strict and high == low):
+            raise ValueError(
+                f"{title} must decrease from higher to lower levels: "
+                f"{labels[higher]} ({high:g}) must be {'greater than' if strict else 'at least'} "
+                f"{labels[lower]} ({low:g})."
+            )
+
+
+def _ranked_scale(rows, levels, title):
+    scores = {row["key"]: row["raw"] for row in rows}
+    if set(scores) != set(levels):
+        raise ValueError(f"{title} must contain each supported level exactly once.")
+    labels = {key: key.replace("_", " ").capitalize() for key in levels}
+    _validate_rank(scores, labels, title, strict=True)
+
+
+def _band_level_labels(keys):
+    count = len(keys) - ("otherwise" in keys)
+    return {key: f"Level {count - index}" if key != "otherwise" else "Otherwise" for index, key in enumerate(keys)}
+
+
+def regional_scoring_bands(regional_rules):
+    """Describe the exact thresholds and operators used by regional scoring."""
+    bands = {}
+    for group, keys in REGIONAL_BAND_KEYS.items():
+        rule = regional_rules[group]
+        rows = []
+        for key in keys:
+            minimum = rule["thresholds"][key]
+            inclusive = key.startswith("at_least_")
+            prefix = "At least" if inclusive else "More than"
+            if group == "cost":
+                quantity = f"PHP {minimum:,}"
+            else:
+                noun = "outcome" if group == "outcome_contribution" else "beneficiary"
+                plural = "outcomes" if group == "outcome_contribution" else "beneficiaries"
+                quantity = f"{minimum:,} {noun if minimum == 1 else plural}"
+            rows.append({
+                "key": key, "minimum": minimum, "inclusive": inclusive,
+                "label": f"{prefix} {quantity}", "raw_score": rule["scores"][key],
+            })
+        bands[group] = rows + [{"key": "otherwise", "label": "Otherwise", "raw_score": rule["scores"]["otherwise"]}]
+    spatial_scores = regional_rules["spatial_coverage"]["scores"]
+    bands["spatial_coverage"] = [
+        {"key": key, "label": label, "raw_score": spatial_scores[key]}
+        for key, label in REGIONAL_SPATIAL_LABELS.items()
+    ]
+    return bands
+
+
+def _matching_band(rows, value):
+    for band in rows[:-1]:
+        if value > band["minimum"] or (band["inclusive"] and value == band["minimum"]):
+            return band
+    return rows[-1]
+
+
+def _validate_regional_criteria(value, *, strict_scores=False):
     if not isinstance(value, dict):
         raise ValueError("Regional prioritization criteria are required.")
 
@@ -418,52 +496,42 @@ def _validate_regional_criteria(value):
     cost = value.get("cost")
     if not isinstance(cost, dict) or not isinstance(cost.get("thresholds"), dict):
         raise ValueError("Regional project-cost thresholds are required.")
-    cost_threshold_keys = ("at_least_5b", "over_3b", "over_1b", "over_500m")
+    cost_threshold_keys = REGIONAL_BAND_KEYS["cost"]
     cost_thresholds = {
         key: _number(cost["thresholds"].get(key), f"Regional cost {key.replace('_', ' ')} threshold", 0)
         for key in cost_threshold_keys
     }
-    if not (cost_thresholds["at_least_5b"] > cost_thresholds["over_3b"] > cost_thresholds["over_1b"] > cost_thresholds["over_500m"]):
-        raise ValueError("Regional cost thresholds must decrease from the highest band to the lowest band.")
+    _validate_rank(cost_thresholds, _band_level_labels(cost_threshold_keys), "Regional cost thresholds", strict=True)
     cost_scores = score_map("cost", (*cost_threshold_keys, "otherwise"), "Regional project-cost")
-    if not (cost_scores["at_least_5b"] >= cost_scores["over_3b"] >= cost_scores["over_1b"] >= cost_scores["over_500m"] >= cost_scores["otherwise"]):
-        raise ValueError("Regional project-cost scores must not increase as project cost decreases.")
+    _validate_rank(cost_scores, _band_level_labels((*cost_threshold_keys, "otherwise")), "Regional cost scores", strict=strict_scores)
 
-    spatial_keys = tuple(defaults["spatial_coverage"]["scores"])
+    spatial_keys = tuple(REGIONAL_SPATIAL_LABELS)
     spatial_scores = score_map("spatial_coverage", spatial_keys, "Regional spatial coverage")
-    if not (
-        spatial_scores["interregional"] >= spatial_scores["region_wide"]
-        >= spatial_scores["eight_to_twelve_lgus"] >= spatial_scores["single_city"]
-    ):
-        raise ValueError("Regional spatial-coverage scores must not increase as coverage narrows.")
+    _validate_rank(spatial_scores, REGIONAL_SPATIAL_LABELS, "Regional spatial coverage scores", strict=strict_scores)
 
     outcome = value.get("outcome_contribution")
     if not isinstance(outcome, dict) or not isinstance(outcome.get("thresholds"), dict):
         raise ValueError("RDP outcome-contribution thresholds are required.")
-    outcome_keys = ("at_least_7", "at_least_5", "at_least_3", "at_least_2", "at_least_1")
+    outcome_keys = REGIONAL_BAND_KEYS["outcome_contribution"]
     outcome_thresholds = {
         key: _number(outcome["thresholds"].get(key), f"RDP outcome {key.replace('_', ' ')} threshold", 0)
         for key in outcome_keys
     }
-    if not (outcome_thresholds["at_least_7"] > outcome_thresholds["at_least_5"] > outcome_thresholds["at_least_3"] > outcome_thresholds["at_least_2"] > outcome_thresholds["at_least_1"]):
-        raise ValueError("RDP outcome thresholds must decrease from the highest band to the lowest band.")
+    _validate_rank(outcome_thresholds, _band_level_labels(outcome_keys), "RDP outcome thresholds", strict=True)
     outcome_scores = score_map("outcome_contribution", (*outcome_keys, "otherwise"), "RDP outcome contribution")
-    if not (outcome_scores["at_least_7"] >= outcome_scores["at_least_5"] >= outcome_scores["at_least_3"] >= outcome_scores["at_least_2"] >= outcome_scores["at_least_1"] >= outcome_scores["otherwise"]):
-        raise ValueError("RDP outcome scores must not increase as outcome contribution decreases.")
+    _validate_rank(outcome_scores, _band_level_labels((*outcome_keys, "otherwise")), "RDP outcome scores", strict=strict_scores)
 
     beneficiaries = value.get("beneficiaries")
     if not isinstance(beneficiaries, dict) or not isinstance(beneficiaries.get("thresholds"), dict):
         raise ValueError("Beneficiary-magnitude thresholds are required.")
-    beneficiary_keys = ("over_3m", "over_1m", "at_least_1")
+    beneficiary_keys = REGIONAL_BAND_KEYS["beneficiaries"]
     beneficiary_thresholds = {
         key: _number(beneficiaries["thresholds"].get(key), f"Beneficiary {key.replace('_', ' ')} threshold", 0)
         for key in beneficiary_keys
     }
-    if not (beneficiary_thresholds["over_3m"] > beneficiary_thresholds["over_1m"] > beneficiary_thresholds["at_least_1"]):
-        raise ValueError("Beneficiary thresholds must decrease from the highest band to the lowest band.")
+    _validate_rank(beneficiary_thresholds, _band_level_labels(beneficiary_keys), "Beneficiary thresholds", strict=True)
     beneficiary_scores = score_map("beneficiaries", (*beneficiary_keys, "otherwise"), "Beneficiary magnitude")
-    if not (beneficiary_scores["over_3m"] >= beneficiary_scores["over_1m"] >= beneficiary_scores["at_least_1"] >= beneficiary_scores["otherwise"]):
-        raise ValueError("Beneficiary scores must not increase as beneficiary magnitude decreases.")
+    _validate_rank(beneficiary_scores, _band_level_labels((*beneficiary_keys, "otherwise")), "Beneficiary scores", strict=strict_scores)
 
     return {
         "cost": {"thresholds": cost_thresholds, "scores": cost_scores},
@@ -542,18 +610,14 @@ def validate_priority_rule_config(config, *, enforce_current_high=False):
         raise ValueError("Outcome text-matching scores are required.")
     outcome_rating = {
         key: _number(rating_value.get(key), f"{label} score", 0, 10)
-        for key, label in (
-            ("chapter_and_two_keywords", "Chapter plus two matching words"),
-            ("chapter_or_three_keywords", "Chapter or three matching words"),
-            ("one_keyword", "At least one matching word"),
-            ("no_keywords", "No matching words"),
-        )
+        for key, label in TEXT_MATCH_LABELS.items()
     }
-    if not (
-        outcome_rating["chapter_and_two_keywords"] >= outcome_rating["chapter_or_three_keywords"]
-        >= outcome_rating["one_keyword"] >= outcome_rating["no_keywords"]
-    ):
-        raise ValueError("Text-matching scores must decrease from strongest match to no match.")
+    _validate_rank(outcome_rating, TEXT_MATCH_LABELS, "Text-matching scores", strict=enforce_current_high)
+    readiness = _scale_rule_rows(dictionaries.get("readiness"), "Readiness rules")
+    gad = _scale_rule_rows(dictionaries.get("gad"), "GAD responsiveness rules")
+    if enforce_current_high:
+        _ranked_scale(readiness, READINESS, "Readiness scores")
+        _ranked_scale(gad, GAD, "GAD responsiveness scores")
 
     guidelines_value = dictionaries.get("guidelines")
     if not isinstance(guidelines_value, list):
@@ -564,7 +628,7 @@ def validate_priority_rule_config(config, *, enforce_current_high=False):
         raise ValueError("Add at least one employee guideline.")
 
     regional_cutoff = _number(thresholds.get("regional_project_cost"), "Regional-project cost threshold", 0)
-    regional_criteria = _validate_regional_criteria(thresholds.get("regional_criteria"))
+    regional_criteria = _validate_regional_criteria(thresholds.get("regional_criteria"), strict_scores=enforce_current_high)
     if any(value < regional_cutoff for value in regional_criteria["cost"]["thresholds"].values()):
         raise ValueError("Regional cost bands must meet or exceed the regional eligibility cutoff.")
     return {
@@ -578,8 +642,8 @@ def validate_priority_rule_config(config, *, enforce_current_high=False):
         "keyword_dictionaries": {
             "common_outcomes": common,
             "negative_rules": negative_rules,
-            "readiness": _scale_rule_rows(dictionaries.get("readiness"), "Readiness rules"),
-            "gad": _scale_rule_rows(dictionaries.get("gad"), "GAD responsiveness rules"),
+            "readiness": readiness,
+            "gad": gad,
             "outcome_rating": outcome_rating,
             "guidelines": guidelines,
         },
@@ -1623,6 +1687,8 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         ))
 
     groq_analysis = None
+    regional_rules = thresholds["regional_criteria"]
+    regional_bands = regional_scoring_bands(regional_rules)
     try:
         from ai_engine.groq_priority import analyze_priority_with_groq
 
@@ -1633,6 +1699,10 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
             outcome_rules,
             track,
             dictionaries.get("guidelines") or [],
+            regional_context={
+                "eligibility_cutoff_php": thresholds["regional_project_cost"],
+                "bands": regional_bands,
+            },
         )
     except Exception:
         # An external inference failure must not block a validator from using the existing safe scorecard.
@@ -1668,7 +1738,6 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     outcome_total = _criterion_points(outcomes)
     base_score = float(bounded_score(pap_total + outcome_total))
 
-    regional_rules = thresholds["regional_criteria"]
     regional = {
         "applicable": funding_total >= thresholds["regional_project_cost"],
         "total": 0,
@@ -1691,50 +1760,18 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
             missing.append("Regional spatial coverage category")
         if contributed_outcomes is None:
             missing.append("Number of contributed RDP outcomes")
-        cost_thresholds = regional_rules["cost"]["thresholds"]
-        cost_scores = regional_rules["cost"]["scores"]
-        if funding_total >= cost_thresholds["at_least_5b"]:
-            cost_raw = cost_scores["at_least_5b"]
-        elif funding_total > cost_thresholds["over_3b"]:
-            cost_raw = cost_scores["over_3b"]
-        elif funding_total > cost_thresholds["over_1b"]:
-            cost_raw = cost_scores["over_1b"]
-        elif funding_total > cost_thresholds["over_500m"]:
-            cost_raw = cost_scores["over_500m"]
-        else:
-            cost_raw = cost_scores["otherwise"]
-
+        cost_band = _matching_band(regional_bands["cost"], funding_total)
+        outcome_band = _matching_band(regional_bands["outcome_contribution"], contributed_outcomes or 0)
+        beneficiary_band = _matching_band(regional_bands["beneficiaries"], beneficiary_count or 0)
         spatial_raw = regional_rules["spatial_coverage"]["scores"].get(regional_scope, 0)
-        outcome_thresholds = regional_rules["outcome_contribution"]["thresholds"]
-        outcome_scores = regional_rules["outcome_contribution"]["scores"]
-        if (contributed_outcomes or 0) >= outcome_thresholds["at_least_7"]:
-            outcome_raw = outcome_scores["at_least_7"]
-        elif (contributed_outcomes or 0) >= outcome_thresholds["at_least_5"]:
-            outcome_raw = outcome_scores["at_least_5"]
-        elif (contributed_outcomes or 0) >= outcome_thresholds["at_least_3"]:
-            outcome_raw = outcome_scores["at_least_3"]
-        elif (contributed_outcomes or 0) >= outcome_thresholds["at_least_2"]:
-            outcome_raw = outcome_scores["at_least_2"]
-        elif (contributed_outcomes or 0) >= outcome_thresholds["at_least_1"]:
-            outcome_raw = outcome_scores["at_least_1"]
-        else:
-            outcome_raw = outcome_scores["otherwise"]
-
-        beneficiary_thresholds = regional_rules["beneficiaries"]["thresholds"]
-        beneficiary_scores = regional_rules["beneficiaries"]["scores"]
-        if (beneficiary_count or 0) > beneficiary_thresholds["over_3m"]:
-            beneficiary_score = beneficiary_scores["over_3m"]
-        elif (beneficiary_count or 0) > beneficiary_thresholds["over_1m"]:
-            beneficiary_score = beneficiary_scores["over_1m"]
-        elif (beneficiary_count or 0) >= beneficiary_thresholds["at_least_1"]:
-            beneficiary_score = beneficiary_scores["at_least_1"]
-        else:
-            beneficiary_score = beneficiary_scores["otherwise"]
         regional["criteria"] = [
-            _criterion("regional_cost", "Total Regional Project Cost", cost_raw, 25, f"Funding requirement: PHP {funding_total:,}."),
+            _criterion("regional_cost", "Total Regional Project Cost", cost_band["raw_score"], 25,
+                       f"Funding requirement: PHP {funding_total:,}. Applied band: {cost_band['label']}."),
             _criterion("regional_spatial", "Spatial Coverage", spatial_raw, 25, "Validator-confirmed regional spatial category."),
-            _criterion("regional_outcomes", "RDP Sectoral Outcome Contribution", outcome_raw, 25, f"{contributed_outcomes or 0} contributed outcomes."),
-            _criterion("regional_beneficiaries", "Magnitude of Beneficiaries", beneficiary_score, 25, f"{beneficiary_count or 0:,} estimated beneficiaries."),
+            _criterion("regional_outcomes", "RDP Sectoral Outcome Contribution", outcome_band["raw_score"], 25,
+                       f"{contributed_outcomes or 0} contributed outcomes. Applied band: {outcome_band['label']}."),
+            _criterion("regional_beneficiaries", "Magnitude of Beneficiaries", beneficiary_band["raw_score"], 25,
+                       f"{beneficiary_count or 0:,} estimated beneficiaries. Applied band: {beneficiary_band['label']}."),
         ]
         regional["total"] = float(bounded_score(_criterion_points(regional["criteria"])))
     else:

@@ -89,7 +89,12 @@ class GroqFeatureTests(SimpleTestCase):
             },
         }
 
-        def provider_response(_messages, **kwargs):
+        def provider_response(messages, **kwargs):
+            payload = json.loads(messages[-1]["content"])
+            regional = payload["regional_scorecard_context"]
+            self.assertEqual(regional["bands"]["outcome_contribution"][0]["minimum"], 11)
+            self.assertEqual([item["key"] for item in payload["criteria"]], ["connectivity"])
+            self.assertIn("only as context", regional["instruction"])
             self.assertTrue(kwargs["validate"](response_data))
             return GroqCompletion(
                 data=response_data,
@@ -116,6 +121,7 @@ class GroqFeatureTests(SimpleTestCase):
             criteria,
             "infrastructure",
             [],
+            regional_context={"bands": {"outcome_contribution": [{"minimum": 11, "label": "At least 11 outcomes"}]}},
         )
 
         self.assertEqual(result["outcomes"][0]["evidence"], ["reduce travel time"])

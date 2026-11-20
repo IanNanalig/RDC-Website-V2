@@ -412,6 +412,88 @@ class AIPriorityCMSTests(APITestCase):
             self.assertTrue(above_analysis.regional_scorecard["applicable"])
             self.assertEqual(above_analysis.suggested_priority, "high")
 
+    def test_draft_hierarchy_rejects_equal_and_reversed_adjacent_levels(self):
+        self.client.force_authenticate(self.admin)
+        url = "/api/admin/cms/ai-scoring/drafts/"
+        config = default_priority_rule_config()
+        regional = config["thresholds"]["regional_criteria"]
+        spatial = regional["spatial_coverage"]["scores"]
+        spatial["region_wide"] = 9
+        config["keyword_dictionaries"]["readiness"].reverse()
+        saved = self.client.post(url, {"config": config}, format="json")
+        self.assertEqual(saved.status_code, 201, saved.data)
+        draft = PriorityRuleSet.objects.get(pk=saved.data["draft_rule_set"]["id"])
+        self.assertEqual(draft.thresholds["regional_criteria"]["spatial_coverage"]["scores"]["region_wide"], 9)
+
+        for values, key, invalid, expected in (
+            (spatial, "eight_to_twelve_lgus", 10, "Region-wide (9)"),
+            (spatial, "eight_to_twelve_lgus", 9, "8–12 LGUs (9)"),
+            (regional["outcome_contribution"]["thresholds"], "at_least_3", 6, "Level 4 (5)"),
+            (regional["outcome_contribution"]["thresholds"], "at_least_3", 5, "Level 3 (5)"),
+            (regional["outcome_contribution"]["scores"], "at_least_5", 10, "RDP outcome scores"),
+            (regional["cost"]["scores"], "over_3b", 10, "Regional cost scores"),
+            (regional["beneficiaries"]["scores"], "over_1m", 10, "Beneficiary scores"),
+            (config["keyword_dictionaries"]["readiness"][0], "raw", 3, "Readiness scores"),
+            (config["keyword_dictionaries"]["gad"][1], "raw", 10, "GAD responsiveness scores"),
+            (config["keyword_dictionaries"]["outcome_rating"], "chapter_or_three_keywords", 10, "Text-matching scores"),
+        ):
+            previous = values[key]
+            with self.subTest(key=key, invalid=invalid):
+                values[key] = invalid
+                response = self.client.patch(f"{url}{draft.pk}/", {"config": config}, format="json")
+                self.assertEqual(response.status_code, 400, response.data)
+                self.assertIn(expected, response.data["detail"])
+                values[key] = previous
+
+        # A legacy draft already in storage must pass the same checks before use.
+        draft.thresholds["regional_criteria"]["spatial_coverage"]["scores"]["region_wide"] = 10
+        draft.save(update_fields=["thresholds"])
+        for action in ("preview", "publish"):
+            result = self.client.post(f"{url}{draft.pk}/{action}/", {"project_id": self.project.pk}, format="json")
+            self.assertEqual(result.status_code, 400, result.data)
+            self.assertIn("Region-wide (10)", result.data["detail"])
+
+    @override_settings(GROQ_ENABLED=False)
+    def test_saved_outcome_threshold_drives_preview_and_new_analyses(self):
+        self.client.force_authenticate(self.admin)
+        self.snapshot["simplified_form"]["fundingRequirementByYear"] = {"2026": 500_000_000}
+        self.project.profile_data = self.snapshot
+        self.project.save(update_fields=["profile_data"])
+        config = default_priority_rule_config()
+        config["thresholds"]["regional_criteria"]["outcome_contribution"]["thresholds"]["at_least_7"] = 11
+        url = "/api/admin/cms/ai-scoring/drafts/"
+        saved = self.client.post(url, {"config": config}, format="json")
+        self.assertEqual(saved.status_code, 201, saved.data)
+        draft_id = saved.data["draft_rule_set"]["id"]
+        draft = self.client.get(f"{url}{draft_id}/")
+        self.assertEqual(draft.data["config"]["thresholds"]["regional_criteria"]["outcome_contribution"]["thresholds"]["at_least_7"], 11)
+        preview = self.client.post(f"{url}{draft_id}/preview/", {"project_id": self.project.pk}, format="json")
+        self.assertEqual(preview.status_code, 200, preview.data)
+        self.assertEqual(preview.data["regional_outcome_bands"][0]["label"], "At least 11 outcomes")
+        published = self.client.post(f"{url}{draft_id}/publish/", {}, format="json")
+        self.assertEqual(published.status_code, 200, published.data)
+
+        with patch("ai_engine.groq_priority.analyze_priority_with_groq", return_value=None) as groq:
+            for count, expected_score, expected_label in ((10, 8, "At least 5 outcomes"), (11, 10, "At least 11 outcomes")):
+                supplements = {
+                    "readinessLevel": "completed_documents", "gadResponsiveness": "gender_responsive",
+                    "spatialCoverageScope": "region_wide", "beneficiaryCount": "100",
+                    "regionalSpatialCategory": "region_wide", "contributedOutcomeCount": str(count),
+                }
+                analysis, _ = analyze_project(self.project, self.validator, self.snapshot, supplements)
+                row = next(row for row in analysis.regional_scorecard["criteria"] if row["key"] == "regional_outcomes")
+                self.assertEqual(row["raw"], expected_score)
+                self.assertIn(expected_label, row["remarks"])
+                self.assertEqual(analysis.rule_set_id, draft_id)
+                self.assertLessEqual(analysis.base_score, 100)
+            context = groq.call_args.kwargs["regional_context"]
+            self.assertEqual(context["bands"]["outcome_contribution"][0]["minimum"], 11)
+        self.analysis.refresh_from_db()
+        self.confirmation.refresh_from_db()
+        self.assertEqual(self.analysis.base_score, 65)
+        self.assertEqual(self.analysis.rule_set_id, self.rule_set.pk)
+        self.assertEqual(self.confirmation.final_priority, "low")
+
     def test_admin_can_version_regional_criteria_bands_and_invalid_order_is_rejected(self):
         config = deepcopy(default_priority_rule_config())
         config["thresholds"]["regional_criteria"]["cost"]["thresholds"]["at_least_5b"] = 6_000_000_000

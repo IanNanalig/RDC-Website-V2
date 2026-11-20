@@ -96,6 +96,7 @@ from projects.priority_scoring import (
     contextual_priority_rule_draft,
     get_active_priority_rule_set,
     priority_rule_config,
+    regional_scoring_bands,
     validate_priority_rule_config,
 )
 from projects.scoring_contract import (
@@ -1702,7 +1703,7 @@ class AdminAIPriorityDraftPreviewView(APIView):
         if not draft:
             raise Http404("AI scoring draft not found.")
         try:
-            priority_rule_config(draft, strict=True)
+            config = priority_rule_config(draft, strict=True)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         try:
@@ -1736,6 +1737,7 @@ class AdminAIPriorityDraftPreviewView(APIView):
             "preview": True,
             "status": preview_status,
             "result": preview,
+            "regional_outcome_bands": regional_scoring_bands(config["thresholds"]["regional_criteria"])["outcome_contribution"],
             "input_preflight": preview.get("suggested_scores", {}).get("input_preflight"),
             "form_inputs": form_inputs,
             "hidden_fields": [item["key"] for item in form_inputs if item.get("answer_state") == "hidden_by_condition"],
