@@ -1666,7 +1666,7 @@ class AdminAIPriorityDraftPublishView(APIView):
         if not draft:
             raise Http404("AI scoring draft not found.")
         try:
-            config = validate_priority_rule_config(priority_rule_config(draft), enforce_current_high=True)
+            config = priority_rule_config(draft, strict=True)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         compatibility = form_compatibility_report(
@@ -1701,6 +1701,10 @@ class AdminAIPriorityDraftPreviewView(APIView):
         draft = PriorityRuleSet.objects.filter(pk=pk, status=PriorityRuleSet.STATUS_DRAFT).first()
         if not draft:
             raise Http404("AI scoring draft not found.")
+        try:
+            priority_rule_config(draft, strict=True)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         try:
             project_id = int(request.data.get("project_id"))
         except (TypeError, ValueError):

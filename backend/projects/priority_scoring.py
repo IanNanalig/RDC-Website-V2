@@ -1,8 +1,9 @@
 import hashlib
 import json
+import math
 import re
 from copy import deepcopy
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, localcontext
 
 from django.conf import settings
 
@@ -22,6 +23,7 @@ from .utils import derive_ncr_lgus
 
 RULE_VERSION = "rdc-priority-v1"
 ALGORITHM_VERSION = "expert-v4-regional-eligibility"
+SCORE_TOTAL_VERSION = 2
 REGIONAL_THRESHOLD = 200_000_000
 ANALYSIS_GUIDANCE_VERSION = "contextual-explanations-v3"
 # Changing how safe Groq JSON responses are normalized must result in a fresh
@@ -289,9 +291,9 @@ def default_priority_rule_config():
 def _number(value, label, minimum=0, maximum=None):
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ValueError(f"{label} must be a number.")
-    if parsed < minimum or (maximum is not None and parsed > maximum):
+    if not math.isfinite(parsed) or parsed < minimum or (maximum is not None and parsed > maximum):
         limit = f" between {minimum:g} and {maximum:g}" if maximum is not None else f" at least {minimum:g}"
         raise ValueError(f"{label} must be{limit}.")
     return int(parsed) if parsed.is_integer() else parsed
@@ -480,7 +482,7 @@ def validate_priority_rule_config(config, *, enforce_current_high=False):
     if not isinstance(thresholds, dict) or not isinstance(sectors, dict) or not isinstance(dictionaries, dict):
         raise ValueError("Thresholds, sector criteria, and keyword dictionaries are required.")
 
-    high = _number(thresholds.get("high"), "High-priority threshold", 0, 100)
+    high = _number(thresholds.get("high"), "High-priority threshold", 1 if enforce_current_high else 0, 100)
     pap_weights_value = thresholds.get("pap_weights")
     if not isinstance(pap_weights_value, dict):
         raise ValueError("PAP criterion weights are required.")
@@ -503,14 +505,18 @@ def validate_priority_rule_config(config, *, enforce_current_high=False):
             raise ValueError(f"Outcome criterion keys must be unique. Duplicate: {sorted(duplicate)[0]}.")
         normalized_sectors[sector] = rows
 
-    pap_total = sum(float(value) for value in pap_weights.values())
-    common_total = sum(float(row["weight"]) for row in common)
-    for sector, rows in normalized_sectors.items():
-        total = pap_total + common_total + sum(float(row["weight"]) for row in rows)
-        if abs(total - 100) > 0.01:
-            raise ValueError(
-                f"The PAP, common, and {sector.replace('_', ' ')} weights must total 100; current total is {total:g}."
-            )
+    tolerance = Decimal("0") if enforce_current_high else Decimal("0.01")
+    with localcontext() as context:
+        # Preserve even the smallest finite float expressed in decimal form.
+        context.prec = 350
+        pap_total = sum(Decimal(str(value)) for value in pap_weights.values())
+        common_total = sum(Decimal(str(row["weight"])) for row in common)
+        for sector, rows in normalized_sectors.items():
+            total = pap_total + common_total + sum(Decimal(str(row["weight"])) for row in rows)
+            if abs(total - 100) > tolerance:
+                raise ValueError(
+                    f"The PAP, common, and {sector.replace('_', ' ')} weights must total 100; current total is {total:g}."
+                )
 
     negative_value = dictionaries.get("negative_rules")
     if not isinstance(negative_value, list):
@@ -580,10 +586,16 @@ def validate_priority_rule_config(config, *, enforce_current_high=False):
     }
 
 
-def priority_rule_config(rule_set=None):
+def priority_rule_config(rule_set=None, *, strict=False):
     config = default_priority_rule_config()
     if rule_set is None:
-        return validate_priority_rule_config(config)
+        return validate_priority_rule_config(config, enforce_current_high=strict)
+    if strict:
+        return validate_priority_rule_config({
+            "thresholds": rule_set.thresholds,
+            "sector_criteria": rule_set.sector_criteria,
+            "keyword_dictionaries": rule_set.keyword_dictionaries,
+        }, enforce_current_high=True)
 
     if isinstance(rule_set.thresholds, dict):
         incoming_thresholds = deepcopy(rule_set.thresholds)
@@ -926,8 +938,20 @@ def _fact_key(value):
     }.get(key, key)
 
 
+def weighted_points(raw, weight):
+    return Decimal(str(raw)) * Decimal(str(weight)) / Decimal("10")
+
+
+def bounded_score(points):
+    return min(Decimal("100"), max(Decimal("0"), points)).quantize(Decimal("0.01"))
+
+
+def _criterion_points(criteria):
+    return sum((weighted_points(item["raw"], item["weight"]) for item in criteria), Decimal("0"))
+
+
 def _criterion(key, label, raw, weight, remarks, evidence=None, extra=None):
-    points = (Decimal(str(raw)) / Decimal("10") * Decimal(str(weight))).quantize(Decimal("0.01"))
+    points = weighted_points(raw, weight).quantize(Decimal("0.01"))
     result = {
         "key": key,
         "criterion": label,
@@ -1398,6 +1422,7 @@ def source_hash(
         "supplements": supplements if isinstance(supplements, dict) else {},
         "rules": rules.version,
         "algorithm": rules.algorithm_version,
+        "score_total_version": SCORE_TOTAL_VERSION,
         "input_contract": contract_for_rule_set(rules),
         "ai_provider": "groq" if getattr(settings, "GROQ_ENABLED", False) else "local-fallback",
         "ai_primary_model": getattr(settings, "GROQ_PRIMARY_MODEL", "") if getattr(settings, "GROQ_ENABLED", False) else "",
@@ -1561,7 +1586,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
             spatial[1],
         ),
     ]
-    pap_total = sum(item["score"] for item in pap)
+    pap_total = _criterion_points(pap)
 
     track = _sector_track(form, facts, text)
     if _is_sceeed_sector(form) and not facts.get("sceeedTrack"):
@@ -1622,10 +1647,16 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
             assessment = assessment_by_key.get(outcome["key"])
             if not assessment:
                 continue
-            raw = max(0.0, min(10.0, float(assessment.get("raw_score") or 0)))
+            try:
+                raw = float(assessment.get("raw_score"))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(raw):
+                continue
+            raw = max(0.0, min(10.0, raw))
             outcome["raw"] = raw
             outcome["score"] = float(
-                (Decimal(str(raw)) / Decimal("10") * Decimal(str(outcome["weight"]))).quantize(Decimal("0.01"))
+                weighted_points(raw, outcome["weight"]).quantize(Decimal("0.01"))
             )
             outcome["remarks"] = "Groq evaluated the project narrative against the active CMS criterion guidance."
             outcome["evidence"] = assessment.get("evidence") or []
@@ -1634,8 +1665,8 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
             outcome["ai_explanation"] = assessment.get("explanation") or ""
             outcome["ai_recommendation"] = assessment.get("recommendation") or ""
             outcome["ai_revision_fields"] = assessment.get("revision_fields") or []
-    outcome_total = sum(item["score"] for item in outcomes)
-    base_score = round(pap_total + outcome_total, 2)
+    outcome_total = _criterion_points(outcomes)
+    base_score = float(bounded_score(pap_total + outcome_total))
 
     regional_rules = thresholds["regional_criteria"]
     regional = {
@@ -1705,7 +1736,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
             _criterion("regional_outcomes", "RDP Sectoral Outcome Contribution", outcome_raw, 25, f"{contributed_outcomes or 0} contributed outcomes."),
             _criterion("regional_beneficiaries", "Magnitude of Beneficiaries", beneficiary_score, 25, f"{beneficiary_count or 0:,} estimated beneficiaries."),
         ]
-        regional["total"] = sum(item["score"] for item in regional["criteria"])
+        regional["total"] = float(bounded_score(_criterion_points(regional["criteria"])))
     else:
         regional["message"] = (
             f"Not applicable: total funding requirement is below PHP {thresholds['regional_project_cost']:,}."
@@ -1759,14 +1790,14 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         criterion["status"] = "incomplete" if "outcome_rules" in unsupported_criteria else "complete"
         coverage_items.append(criterion)
     covered_items = [item for item in coverage_items if item["status"] == "complete"]
-    covered_subtotal = round(sum(float(item.get("score") or 0) for item in covered_items), 2)
+    covered_subtotal = float(bounded_score(_criterion_points(covered_items)))
     coverage_percent = round((len(covered_items) / len(coverage_items) * 100), 2) if coverage_items else 100.0
     suggested_scores = {
         "pap": pap,
-        "pap_total": round(pap_total, 2),
+        "pap_total": float(round(pap_total, 2)),
         "rdp_track": track,
         "rdp_outcomes": outcomes,
-        "rdp_total": round(outcome_total, 2),
+        "rdp_total": float(round(outcome_total, 2)),
         "base_total": base_score,
         "missing_facts": missing,
         "input_preflight": input_report,

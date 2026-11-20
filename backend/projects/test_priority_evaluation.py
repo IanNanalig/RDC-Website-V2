@@ -46,6 +46,13 @@ class PriorityEvaluationCalculationTests(SimpleTestCase):
             with self.subTest(scores=scores), self.assertRaises(ValueError):
                 calculate_evaluation(self.analysis, scores, {})
 
+    @patch("projects.priority_evaluation.priority_rule_config", return_value={"thresholds": {"high": 100, "regional_project_cost": 0}})
+    def test_final_scores_are_bounded_independently(self, _config):
+        self.analysis.suggested_scores["pap"][0]["weight"] = 40.009
+        self.analysis.regional_scorecard["criteria"][0].update(raw=10, weight=100)
+        result = calculate_evaluation(self.analysis, {"pap:readiness": 10, "rdp:outcome": 10}, {})
+        self.assertEqual(result[2:], (100, 100, "high"))
+
 
 class PriorityEvaluationApiTests(APITestCase):
     def setUp(self):

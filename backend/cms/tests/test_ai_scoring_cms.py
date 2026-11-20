@@ -83,6 +83,48 @@ class AIPriorityCMSTests(APITestCase):
             final_priority="low",
         )
 
+    def test_invalid_scoring_limits_are_rejected_on_save_preview_and_activation(self):
+        self.client.force_authenticate(self.admin)
+        url = "/api/admin/cms/ai-scoring/drafts/"
+        config = default_priority_rule_config()
+        config["thresholds"]["high"] = 101
+        self.assertEqual(self.client.post(url, {"config": config}, format="json").status_code, 400)
+        config["thresholds"]["high"] = 100
+        saved = self.client.post(url, {"config": config}, format="json")
+        self.assertEqual(saved.status_code, 201, saved.data)
+        draft_id = saved.data["draft_rule_set"]["id"]
+        config["thresholds"]["pap_weights"]["readiness"] = 101
+        self.assertEqual(self.client.patch(f"{url}{draft_id}/", {"config": config}, format="json").status_code, 400)
+        draft = PriorityRuleSet.objects.get(pk=draft_id)
+        draft.thresholds["high"] = 101
+        draft.save(update_fields=["thresholds"])
+        for action in ("preview", "publish"):
+            result = self.client.post(f"{url}{draft_id}/{action}/", {"project_id": self.project.pk}, format="json")
+            self.assertEqual(result.status_code, 400, result.data)
+            self.assertIn("High-priority threshold", result.data["detail"])
+        self.rule_set.refresh_from_db()
+        self.assertTrue(self.rule_set.is_active)
+
+    @override_settings(GROQ_ENABLED=False)
+    def test_maximum_ai_score_rounds_the_total_once(self):
+        config = default_priority_rule_config()
+        config["thresholds"]["high"] = 100
+        config["thresholds"]["pap_weights"] = {
+            "readiness": 33.335, "gad_responsiveness": 33.335, "spatial_coverage": 33.33,
+        }
+        for group in [config["keyword_dictionaries"]["common_outcomes"], *config["sector_criteria"].values()]:
+            for criterion in group:
+                criterion["weight"] = 0
+        rules = PriorityRuleSet.objects.create(version="fractional-weights", **config)
+        with (
+            patch("projects.priority_scoring._scale_rating", return_value=(10, "Maximum rating")),
+            patch("projects.priority_scoring._spatial_rating", return_value=(10, "Maximum rating")),
+        ):
+            result, _ = analyze_project(self.project, self.validator, self.snapshot, rule_set=rules, persist=False)
+        self.assertGreater(sum(item["score"] for item in result["suggested_scores"]["pap"]), 100)
+        self.assertEqual(result["base_score"], 100)
+        self.assertEqual(result["suggested_scores"]["base_total"], 100)
+
     @override_settings(GROQ_ENABLED=False)
     def test_cms_explains_controlled_learning_and_lists_training_projects(self):
         self.client.force_authenticate(self.editor)

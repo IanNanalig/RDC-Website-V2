@@ -3,7 +3,7 @@
 from decimal import Decimal, InvalidOperation
 
 from .models import ProjectPriorityEvaluation
-from .priority_scoring import priority_rule_config, _priority_with_regional_budget, _money_total
+from .priority_scoring import bounded_score, priority_rule_config, weighted_points, _priority_with_regional_budget, _money_total
 
 
 def calculate_evaluation(analysis, adjusted_scores, validator_remarks):
@@ -48,9 +48,15 @@ def calculate_evaluation(analysis, adjusted_scores, validator_remarks):
             if not isinstance(remark, str) or len(remark) > 2000:
                 raise ValueError(f"{item['criterion']} remarks must be at most 2,000 characters.")
             clean_remarks[key] = remark.strip()
-            totals[group] += number * Decimal(str(item["weight"])) / Decimal("10")
-    score = (totals["pap"] + totals["rdp"]).quantize(Decimal("0.01"))
-    regional_score = totals["regional"].quantize(Decimal("0.01"))
+            try:
+                weight = Decimal(str(item["weight"]))
+            except (InvalidOperation, ValueError, TypeError):
+                raise ValueError(f"{item['criterion']} has an invalid saved weight.")
+            if not weight.is_finite() or not 0 <= weight <= 100:
+                raise ValueError(f"{item['criterion']} has an invalid saved weight.")
+            totals[group] += weighted_points(number, weight)
+    score = bounded_score(totals["pap"] + totals["rdp"])
+    regional_score = bounded_score(totals["regional"])
     rules = priority_rule_config(analysis.rule_set)["thresholds"]
     form = analysis.input_snapshot.get("simplified_form") if isinstance(analysis.input_snapshot, dict) else {}
     funding = _money_total((form or {}).get("fundingRequirementByYear"))

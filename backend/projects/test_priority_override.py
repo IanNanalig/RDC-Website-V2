@@ -7,6 +7,27 @@ from .priority_scoring import confirm_analysis, default_priority_rule_config, va
 
 
 class PriorityConfigurationTests(SimpleTestCase):
+    def test_fractional_weights_must_total_100_for_each_sector(self):
+        config = default_priority_rule_config()
+        weights = config["thresholds"]["pap_weights"]
+        weights["readiness"] += 0.125
+        weights["gad_responsiveness"] -= 0.125
+        validate_priority_rule_config(config, enforce_current_high=True)
+        for offset in (-0.001, 0.001):
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, "must total 100"):
+                weights["readiness"] += offset
+                try:
+                    validate_priority_rule_config(config, enforce_current_high=True)
+                finally:
+                    weights["readiness"] -= offset
+
+    def test_non_finite_and_out_of_range_raw_ratings_are_rejected(self):
+        for raw in (11, -1, float("nan"), float("inf")):
+            config = default_priority_rule_config()
+            config["keyword_dictionaries"]["outcome_rating"]["chapter_and_two_keywords"] = raw
+            with self.subTest(raw=raw), self.assertRaisesRegex(ValueError, "between 0 and 10"):
+                validate_priority_rule_config(config, enforce_current_high=True)
+
     def test_configured_high_threshold_and_regional_cost_floor(self):
         config = default_priority_rule_config()
         config["thresholds"]["high"] = 82

@@ -72,6 +72,44 @@ const criterionCategoryLabel = (value: string) => ({
   risk_checks: "Risk checks",
 }[value] || value.replaceAll("_", " "));
 
+const withinRange = (value: number, min: number, max = Infinity) =>
+  Number.isFinite(value) && value >= min && value <= max;
+
+const weightsTotal100 = (weights: number[]) => {
+  if (!weights.every((weight) => withinRange(weight, 0, 100))) return false;
+  // Use decimal digits so fractional weights are checked without binary rounding.
+  const parts = weights.map((weight) => {
+    const [mantissa, exponent = "0"] = String(weight).split("e");
+    const [whole, fraction = ""] = mantissa.split(".");
+    return { digits: BigInt(whole + fraction), scale: fraction.length - Number(exponent) };
+  });
+  const scale = Math.max(0, ...parts.map((part) => part.scale));
+  return parts.reduce((sum, part) => sum + part.digits * 10n ** BigInt(scale - part.scale), 0n)
+    === 100n * 10n ** BigInt(scale);
+};
+
+const scoringLimitErrors = (config: CMSAIRuleConfig) => {
+  const { thresholds, keyword_dictionaries: rules, sector_criteria: sectors } = config;
+  const sharedWeights = [
+    ...Object.values(thresholds.pap_weights),
+    ...rules.common_outcomes.map((rule) => rule.weight),
+  ];
+  const rawScores = [
+    ...Object.values(rules.outcome_rating),
+    ...[...rules.readiness, ...rules.gad].map((rule) => rule.raw),
+    ...Object.values(thresholds.regional_criteria).flatMap((criterion) => Object.values(criterion.scores)),
+  ];
+  const errors = [];
+  if (!withinRange(thresholds.high, 1, 100)) errors.push("The High-priority cutoff must be between 1 and 100.");
+  if (!rawScores.every((score) => withinRange(score, 0, 10))) errors.push("All raw ratings must be between 0 and 10.");
+  for (const [sector, outcomes] of Object.entries(sectors)) {
+    if (!weightsTotal100([...sharedWeights, ...outcomes.map((rule) => rule.weight)])) {
+      errors.push(`${sector.replaceAll("_", " ")}: combined weights must total exactly 100, with each weight between 0 and 100.`);
+    }
+  }
+  return errors;
+};
+
 const NumberInput = ({
   label,
   value,
@@ -86,20 +124,28 @@ const NumberInput = ({
   onChange: (value: number) => void;
   min?: number;
   max?: number;
-}) => (
-  <label className="block">
-    <span className="text-xs font-medium text-slate-600">{label}</span>
-    <input
-      type="number"
-      min={min}
-      max={max}
-      disabled={disabled}
-      value={value}
-      onChange={(event) => onChange(Number(event.target.value))}
-      className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
-    />
-  </label>
-);
+}) => {
+  const valid = withinRange(value, min, max);
+  return (
+    <label className="block">
+      <span className="text-xs font-medium text-slate-600">{label}</span>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step="any"
+        disabled={disabled}
+        aria-invalid={!valid}
+        value={Number.isFinite(value) ? value : ""}
+        onChange={(event) => onChange(event.target.valueAsNumber)}
+        className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
+      />
+      {!valid && <span className="mt-1 block text-xs text-rose-700">
+        {max === undefined ? `Enter a number of at least ${min}.` : `Enter a number from ${min} to ${max}.`}
+      </span>}
+    </label>
+  );
+};
 
 const OutcomeRuleEditor = ({
   title,
@@ -250,6 +296,11 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
 
   const save = async () => {
     if (!config || !canEdit) return;
+    const errors = scoringLimitErrors(config);
+    if (errors.length) {
+      setNotice("Correct the scoring limits before saving.");
+      return;
+    }
     if (!changeNote.trim()) {
       setNotice("Add a short change note explaining why the scoring rules are being updated.");
       return;
@@ -365,6 +416,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
   if (loading && !workspace) return <div className="portal-card p-5 text-sm text-slate-600">Loading AI scoring rules and historical references...</div>;
   if (!workspace || !config) return <div className="portal-card p-5 text-sm text-rose-700">{notice || "AI scoring settings are unavailable."}</div>;
 
+  const limitErrors = scoringLimitErrors(config);
   const papWeights = config.thresholds.pap_weights;
   const papTotal = Object.values(papWeights).reduce((sum, value) => sum + Number(value || 0), 0);
   const commonTotal = config.keyword_dictionaries.common_outcomes.reduce((sum, rule) => sum + Number(rule.weight || 0), 0);
@@ -443,13 +495,20 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
           <div>
             <h4 className="font-semibold text-slate-800">Priority thresholds and PAP weights</h4>
             <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"><span className="block text-xs font-medium text-slate-600">Priority grade</span><span className="mt-1 block">Low: 0–{config.thresholds.high - 1} · High: {config.thresholds.high}–100</span></div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"><span className="block text-xs font-medium text-slate-600">Priority grade</span><span className="mt-1 block">{withinRange(config.thresholds.high, 1, 100)
+                ? `Low: below ${config.thresholds.high} · High: ${config.thresholds.high}–100`
+                : "Enter a valid cutoff to see the priority ranges."}</span></div>
               <NumberInput label="High-priority score starts at" value={config.thresholds.high} min={1} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.high = value; })} />
               <NumberInput label="Regional eligibility and automatic-Low cutoff (PHP)" value={config.thresholds.regional_project_cost} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_project_cost = value; })} />
               <NumberInput label="Readiness weight" value={papWeights.readiness} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.readiness = value; })} />
               <NumberInput label="GAD responsiveness weight" value={papWeights.gad_responsiveness} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.gad_responsiveness = value; })} />
               <NumberInput label="Spatial coverage weight" value={papWeights.spatial_coverage} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.spatial_coverage = value; })} />
             </div>
+            {limitErrors.length > 0 && (
+              <ul className="mt-2 space-y-1 text-xs text-rose-700">
+                {limitErrors.map((error) => <li key={error}>{error}</li>)}
+              </ul>
+            )}
             <p className="mt-2 text-xs text-slate-500">PAP weight total: {papTotal}. PAP + common outcomes ({commonTotal}) + the selected sector outcomes must total 100.</p>
             <p className="mt-1 text-xs text-slate-500">A project below the regional cutoff skips the regional scorecard and receives an automatic Low recommendation, even when its score reaches the configured High threshold. Validators may still override it with a rationale. Exactly the cutoff amount qualifies for regional scoring.</p>
           </div>
@@ -578,7 +637,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
           {canEdit && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
               <label className="block"><span className="text-sm font-semibold text-amber-950">Required change note</span><textarea rows={2} value={changeNote} onChange={(event) => setChangeNote(event.target.value)} className="mt-2 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" placeholder="Example: Updated thresholds based on the approved RDC scoring memorandum." /></label>
-              <div className="mt-3 flex flex-wrap items-end justify-between gap-3"><div className="min-w-[220px] flex-1"><label className="block"><span className="text-xs font-semibold text-amber-950">Preview project ID</span><input value={previewProjectId} onChange={(event) => setPreviewProjectId(event.target.value)} inputMode="numeric" className="mt-1 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" placeholder="Eligible project ID" /></label><p className="mt-1 text-xs text-amber-900">Preview is read-only and never saves an official analysis.</p></div><div className="flex flex-wrap gap-2"><button type="button" disabled={saving} onClick={() => void save()} className="portal-btn portal-btn-primary">{saving ? "Saving..." : draft ? "Save Draft" : "Create Draft"}</button>{draft && <button type="button" disabled={saving || previewing} onClick={() => void previewDraft()} className="portal-btn portal-btn-ghost">{previewing ? "Previewing..." : "Run Preview"}</button>}{draft && <button type="button" disabled={saving || draft.compatibility.status === "incompatible"} onClick={() => void activateDraft()} className="portal-btn portal-btn-primary">Activate Draft</button>}</div></div>
+              <div className="mt-3 flex flex-wrap items-end justify-between gap-3"><div className="min-w-[220px] flex-1"><label className="block"><span className="text-xs font-semibold text-amber-950">Preview project ID</span><input value={previewProjectId} onChange={(event) => setPreviewProjectId(event.target.value)} inputMode="numeric" className="mt-1 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" placeholder="Eligible project ID" /></label><p className="mt-1 text-xs text-amber-900">Preview is read-only and never saves an official analysis.</p></div><div className="flex flex-wrap gap-2"><button type="button" disabled={saving || limitErrors.length > 0} onClick={() => void save()} className="portal-btn portal-btn-primary">{saving ? "Saving..." : draft ? "Save Draft" : "Create Draft"}</button>{draft && <button type="button" disabled={saving || previewing} onClick={() => void previewDraft()} className="portal-btn portal-btn-ghost">{previewing ? "Previewing..." : "Run Preview"}</button>}{draft && <button type="button" disabled={saving || draft.compatibility.status === "incompatible"} onClick={() => void activateDraft()} className="portal-btn portal-btn-primary">Activate Draft</button>}</div></div>
               {previewResult && <div className={`mt-3 rounded-lg border p-3 text-sm ${previewResult.status === "complete" ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
                 <p className="font-semibold">Preview: {previewResult.result ? priorityLabel(previewResult.result.suggested_priority) : "Incomplete"}{previewResult.result ? ` · ${Number(previewResult.result.base_score).toFixed(2)}/100` : ""}</p>
                 {previewResult.result && <p className="mt-1">{previewResult.result.summary}</p>}
