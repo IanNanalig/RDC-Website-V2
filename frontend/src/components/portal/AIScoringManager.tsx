@@ -111,10 +111,18 @@ const regionalBandLabel = (group: RegionalBandGroup, key: string, value: number)
 const bandLevels = (keys: readonly string[]): Record<string, string> =>
   Object.fromEntries(keys.map((key, index) => [key, `Level ${keys.length - index}`]));
 
+const papSpatialLabels = {
+  wide_coverage: "Region-wide or interregional",
+  six_to_twelve_lgus: "6–12 cities/municipalities",
+  one_to_five_lgus: "1–5 cities/municipalities",
+  none: "None",
+} as const;
+const papSpatialDefaults = { wide_coverage: 10, six_to_twelve_lgus: 6, one_to_five_lgus: 3, none: 0 };
+
 const collectRankingErrors = (config: CMSAIRuleConfig) => {
-  const errors: Record<RegionalBandGroup | "spatial_coverage" | "outcome_rating" | keyof typeof papScaleOrder, string[]> = {
+  const errors: Record<RegionalBandGroup | "spatial_coverage" | "pap_spatial" | "outcome_rating" | keyof typeof papScaleOrder, string[]> = {
     cost: [], spatial_coverage: [], outcome_contribution: [], beneficiaries: [],
-    readiness: [], gad: [], outcome_rating: [],
+    readiness: [], gad: [], outcome_rating: [], pap_spatial: [],
   };
   const regional = config.thresholds.regional_criteria;
   const rules = config.keyword_dictionaries;
@@ -137,6 +145,7 @@ const collectRankingErrors = (config: CMSAIRuleConfig) => {
     check(group, `${title} scores`, { ...labels, otherwise: "Otherwise" }, regional[group].scores);
   }
   check("spatial_coverage", "Regional spatial coverage scores", spatialLabels, regional.spatial_coverage.scores);
+  check("pap_spatial", "PAP Spatial Coverage scores", papSpatialLabels, config.thresholds.pap_spatial_scores || papSpatialDefaults);
   check("outcome_rating", "Text-matching scores", outcomeRatingLabels, rules.outcome_rating);
   for (const group of ["readiness", "gad"] as const) {
     const labels = Object.fromEntries(papScaleOrder[group].map((key) => [key, key.replaceAll("_", " ")]));
@@ -172,6 +181,7 @@ const scoringLimitErrors = (config: CMSAIRuleConfig) => {
   ];
   const rawScores = [
     ...Object.values(rules.outcome_rating),
+    ...Object.values(thresholds.pap_spatial_scores || papSpatialDefaults),
     ...[...rules.readiness, ...rules.gad].map((rule) => rule.raw),
     ...Object.values(thresholds.regional_criteria).flatMap((criterion) => Object.values(criterion.scores)),
   ];
@@ -580,30 +590,26 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
           </details>
 
           <div>
-            <h4 className="font-semibold text-slate-800">Priority thresholds and PAP weights</h4>
+            <h4 className="font-semibold text-slate-800">Priority thresholds</h4>
             <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"><span className="block text-xs font-medium text-slate-600">Priority grade</span><span className="mt-1 block">{withinRange(config.thresholds.high, 1, 100)
                 ? `Low: below ${config.thresholds.high} · High: ${config.thresholds.high}–100`
                 : "Enter a valid cutoff to see the priority ranges."}</span></div>
               <NumberInput label="High-priority score starts at" value={config.thresholds.high} min={1} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.high = value; })} />
               <NumberInput label="Regional eligibility and automatic-Low cutoff (PHP)" value={config.thresholds.regional_project_cost} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_project_cost = value; })} />
-              <NumberInput label="Readiness weight" value={papWeights.readiness} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.readiness = value; })} />
-              <NumberInput label="GAD responsiveness weight" value={papWeights.gad_responsiveness} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.gad_responsiveness = value; })} />
-              <NumberInput label="Spatial coverage weight" value={papWeights.spatial_coverage} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.spatial_coverage = value; })} />
             </div>
             {limitErrors.length > 0 && (
               <ul className="mt-2 space-y-1 text-xs text-rose-700">
                 {limitErrors.map((error) => <li key={error}>{error}</li>)}
               </ul>
             )}
-            <p className="mt-2 text-xs text-slate-500">PAP weight total: {papTotal}. PAP + common outcomes ({commonTotal}) + the selected sector outcomes must total 100.</p>
             <p className="mt-1 text-xs text-slate-500">A project below the regional cutoff skips the regional scorecard and receives an automatic Low recommendation, even when its score reaches the configured High threshold. Validators may still override it with a rationale. Exactly the cutoff amount qualifies for regional scoring.</p>
           </div>
 
           <div className="space-y-3">
             <div>
-              <h4 className="font-semibold text-slate-800">Regional prioritization criteria</h4>
-              <p className="mt-1 text-xs text-slate-500">This separate 100-point scorecard uses four criteria weighted at 25 points each. Scores are out of 10 before weighting.</p>
+              <h4 className="font-semibold text-slate-800">Regional Prioritization Criteria</h4>
+              <p className="mt-1 text-xs text-slate-500">Four criteria contribute up to 25 points each. For eligible projects, this scorecard supplies half of the overall score.</p>
             </div>
             <div className="grid gap-4 xl:grid-cols-2">
               <div className="rounded-xl border border-slate-200 p-4">
@@ -624,7 +630,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
               </div>
 
               <div className="rounded-xl border border-slate-200 p-4">
-                <h5 className="font-semibold text-slate-800">Spatial Coverage</h5>
+                <h5 className="font-semibold text-slate-800">Regional Spatial Coverage</h5>
                 <CriterionWarnings errors={rankingErrors.spatial_coverage} />
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   <NumberInput label="Interregional score" value={config.thresholds.regional_criteria.spatial_coverage.scores.interregional} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.spatial_coverage.scores.interregional = value; })} />
@@ -669,12 +675,16 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
             </div>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+          <section className="space-y-3">
+          <h4 className="font-semibold text-slate-800">PAPs Criterion</h4>
+          <p className="text-xs text-slate-500">PAP weight total: {papTotal}. PAP + common outcomes ({commonTotal}) + the selected sector outcomes must total 100.</p>
+          <div className="grid gap-4 xl:grid-cols-3">
             {(["readiness", "gad"] as const).map((group) => (
               <div key={group} className="rounded-xl border border-slate-200 p-4">
                 <h4 className="font-semibold text-slate-800">{group === "readiness" ? "Readiness scoring" : "GAD responsiveness scoring"}</h4>
                 <CriterionWarnings errors={rankingErrors[group]} />
                 <div className="mt-3 space-y-3">
+                  <NumberInput label={group === "readiness" ? "Readiness weight" : "GAD responsiveness weight"} value={papWeights[group === "readiness" ? "readiness" : "gad_responsiveness"]} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights[group === "readiness" ? "readiness" : "gad_responsiveness"] = value; })} />
                   {config.keyword_dictionaries[group].map((rule, index) => (
                     <div key={rule.key} className="grid gap-2 sm:grid-cols-[100px_1fr]">
                       <NumberInput label={`${rule.key.replaceAll("_", " ")} score`} value={rule.raw} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries[group][index].raw = value; })} />
@@ -684,7 +694,21 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
                 </div>
               </div>
             ))}
+            <div className="rounded-xl border border-slate-200 p-4">
+              <h5 className="font-semibold text-slate-800">Spatial Coverage</h5>
+              <p className="mt-1 text-xs text-slate-500">Uses the PAP coverage scope and the project’s listed NCR locations.</p>
+              <CriterionWarnings errors={rankingErrors.pap_spatial} />
+              <div className="mt-3 space-y-3">
+                <NumberInput label="Spatial coverage weight" value={papWeights.spatial_coverage} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.spatial_coverage = value; })} />
+                {(Object.keys(papSpatialLabels) as Array<keyof typeof papSpatialLabels>).map((key) => (
+                  <NumberInput key={key} label={papSpatialLabels[key]} value={(config.thresholds.pap_spatial_scores || papSpatialDefaults)[key]} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => {
+                    next.thresholds.pap_spatial_scores = { ...(next.thresholds.pap_spatial_scores || papSpatialDefaults), [key]: value };
+                  })} />
+                ))}
+              </div>
+            </div>
           </div>
+          </section>
 
           <div className="rounded-xl border border-slate-200 p-4">
             <h4 className="font-semibold text-slate-800">Project-text matching scores</h4>

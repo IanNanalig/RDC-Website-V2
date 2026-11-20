@@ -3,7 +3,10 @@
 from decimal import Decimal, InvalidOperation
 
 from .models import ProjectPriorityEvaluation
-from .priority_scoring import bounded_score, priority_rule_config, weighted_points, _priority_with_regional_budget, _money_total
+from .priority_scoring import (
+    SCORE_TOTAL_VERSION, bounded_score, overall_score, priority_rule_config, regional_eligibility,
+    weighted_points, _priority_with_regional_budget, _money_total,
+)
 
 
 def calculate_evaluation(analysis, adjusted_scores, validator_remarks):
@@ -41,9 +44,12 @@ def calculate_evaluation(analysis, adjusted_scores, validator_remarks):
                 number = Decimal(str(raw))
             except (InvalidOperation, ValueError, TypeError):
                 raise ValueError(f"{item['criterion']} must be a whole number from 0 to 10.")
-            if not number.is_finite() or number != number.to_integral_value() or not 0 <= number <= 10:
+            if (
+                not number.is_finite() or not 0 <= number <= 10
+                or (number != number.to_integral_value() and number != Decimal(str(item["raw"])))
+            ):
                 raise ValueError(f"{item['criterion']} must be a whole number from 0 to 10.")
-            clean_scores[key] = int(number)
+            clean_scores[key] = int(number) if number == number.to_integral_value() else float(number)
             remark = validator_remarks.get(key, "")
             if not isinstance(remark, str) or len(remark) > 2000:
                 raise ValueError(f"{item['criterion']} remarks must be at most 2,000 characters.")
@@ -55,11 +61,18 @@ def calculate_evaluation(analysis, adjusted_scores, validator_remarks):
             if not weight.is_finite() or not 0 <= weight <= 100:
                 raise ValueError(f"{item['criterion']} has an invalid saved weight.")
             totals[group] += weighted_points(number, weight)
-    score = bounded_score(totals["pap"] + totals["rdp"])
+    current_formula = suggested.get("score_total_version") == SCORE_TOTAL_VERSION
+    score = overall_score(
+        totals["pap"], totals["rdp"], totals["regional"],
+        include_regional=current_formula and regional.get("applicable"),
+    )
     regional_score = bounded_score(totals["regional"])
     rules = priority_rule_config(analysis.rule_set)["thresholds"]
     form = analysis.input_snapshot.get("simplified_form") if isinstance(analysis.input_snapshot, dict) else {}
-    funding = _money_total((form or {}).get("fundingRequirementByYear"))
+    funding = (
+        Decimal(regional_eligibility(analysis.input_snapshot, rules)["total"])
+        if current_formula else _money_total((form or {}).get("fundingRequirementByYear"))
+    )
     incomplete = analysis.suggested_priority == "incomplete" or bool(suggested.get("missing_facts"))
     priority = _priority_with_regional_budget(float(score), rules, funding, incomplete)
     return clean_scores, clean_remarks, score, regional_score, priority

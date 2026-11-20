@@ -2523,6 +2523,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
 
           {id && (isValidator || isAdmin) && (
             <PriorityAnalysisPanel
+              key={`${id}:${revisionId ?? "project"}`}
               projectId={id}
               revisionId={isRevisionMode ? revisionId : undefined}
               locked={workflowStatus === "validated"}

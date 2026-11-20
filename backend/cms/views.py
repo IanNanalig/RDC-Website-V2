@@ -92,6 +92,7 @@ from projects.models import (
 )
 from projects.priority_scoring import (
     PriorityInputError,
+    PriorityOutcomeError,
     analyze_project,
     contextual_priority_rule_draft,
     get_active_priority_rule_set,
@@ -1721,6 +1722,11 @@ class AdminAIPriorityDraftPreviewView(APIView):
             preview, _unused = analyze_project(
                 project, request.user, profile, supplements, rule_set=draft, persist=False,
                 enforce_input_contract=True,
+            )
+        except PriorityOutcomeError as exc:
+            return Response(
+                {"preview": True, "detail": str(exc), "code": "ai_outcome_unavailable", "retry_available": True},
+                status=status.HTTP_502_BAD_GATEWAY,
             )
         except PriorityInputError as exc:
             return Response(

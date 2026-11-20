@@ -232,6 +232,12 @@ export type CMSAIRuleConfig = {
   thresholds: {
     high: number;
     regional_project_cost: number;
+    pap_spatial_scores: {
+      none: number;
+      one_to_five_lgus: number;
+      six_to_twelve_lgus: number;
+      wide_coverage: number;
+    };
     regional_criteria: {
       cost: {
         thresholds: { at_least_5b: number; over_3b: number; over_1b: number; over_500m: number };

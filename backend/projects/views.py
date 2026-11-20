@@ -101,7 +101,12 @@ from .project_status import (
     stored_status_values_for_label,
 )
 from .public_agencies import agency_lookup
-from .priority_scoring import PriorityInputError, analyze_project, confirm_analysis, confirmation_eligibility, ensure_analysis_guidance, get_active_priority_rule_set, has_matching_confirmation
+from .priority_facts import StalePriorityFacts, lock_priority_scope, priority_facts_state, save_priority_facts
+from .priority_scoring import (
+    PriorityInputError, PriorityOutcomeError, analyze_project, confirm_analysis, confirmation_eligibility,
+    ensure_analysis_guidance, get_active_priority_rule_set, has_matching_confirmation,
+    priority_rule_config, regional_eligibility, _confirmation_snapshot_hash,
+)
 from .document_policy import (
     PROJECT_DOCUMENT_MAX_TOTAL_BYTES,
     active_project_documents,
@@ -4187,12 +4192,14 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         return Response({"status": project.status})
 
     @action(detail=True, methods=["post"])
+    @transaction.atomic
     def validate(self, request, pk=None):
         project = self.get_object()
         role = getattr(request.user, "role", "")
         if role not in ("validator", "admin"):
             raise PermissionDenied("Only validator/admin can validate")
 
+        project = lock_priority_scope(project, None)
         if project.workflow_status != Project.WORKFLOW_PENDING:
             return Response(
                 {"detail": "Only submissions pending validation can be reviewed. A returned project must be resubmitted first."},
@@ -4435,33 +4442,84 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         serializer = ProjectPriorityAnalysisSerializer(analyses, many=True)
         profile = revision.profile_data_snapshot if revision else project.profile_data
         profile = profile if isinstance(profile, dict) else {}
+        snapshot = _validator_review_source(profile)
+        rules = get_active_priority_rule_set()
+        snapshot_hash = _confirmation_snapshot_hash(snapshot)
+        facts = priority_facts_state(project, revision, latest=analyses[0] if analyses else None)
+        current_analysis = next(
+            (
+                item for item in analyses
+                if item.rule_set_id == rules.pk
+                and (not facts.version or item.suggested_scores.get("facts_version") == facts.version)
+                and _confirmation_snapshot_hash(item.input_snapshot) == snapshot_hash
+            ),
+            None,
+        )
         eligibility = confirmation_eligibility(project, _validator_review_source(profile), revision=revision) if project.priority_analysis_eligible else {"eligible": True, "code": "not_required", "detail": "Priority analysis is not required for this project."}
         return Response(
             {
                 "eligible": bool(project.priority_analysis_eligible),
                 "validation_eligibility": eligibility,
                 "analyses": serializer.data,
+                "current_analysis_id": current_analysis.pk if current_analysis else None,
+                "validator_facts": facts.values,
+                "facts_version": facts.version,
+                "regional_eligibility": regional_eligibility(snapshot, priority_rule_config(rules)["thresholds"]),
             }
         )
 
+    @action(detail=True, methods=["put"], url_path="priority-analysis/facts")
+    def priority_analysis_facts(self, request, pk=None):
+        project = self.get_object()
+        revision = self._priority_revision(request, project)
+        if getattr(request.user, "role", "") != "validator":
+            raise PermissionDenied("Only validators can edit scoring facts.")
+        profile = revision.profile_data_snapshot if revision else project.profile_data
+        if not project.priority_analysis_eligible or not _is_simplified_profile(profile):
+            return Response({"detail": "Validator facts are unavailable for this project."}, status=400)
+        expected = request.data.get("facts_version")
+        if type(expected) is not int or expected < 0:
+            return Response({"detail": "A valid facts version is required."}, status=400)
+        context = regional_eligibility(_validator_review_source(profile), priority_rule_config(get_active_priority_rule_set())["thresholds"])
+        try:
+            facts, changed_keys = save_priority_facts(project, revision, request.user, request.data.get("supplements"), expected, context["applicable"])
+        except StalePriorityFacts as exc:
+            return Response({"detail": str(exc), "code": "priority_facts_stale"}, status=409)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        if changed_keys:
+            _log_activity(request, "priority_analysis_run", project, {
+                "event": "validator_facts_updated", "facts_version": facts.version,
+                "fields": changed_keys,
+                "revision_id": revision.pk if revision else None,
+            })
+        return Response({
+            "validator_facts": facts.values, "facts_version": facts.version,
+            "regional_eligibility": context,
+        })
+
     @action(detail=True, methods=["post"], url_path=r"priority-analysis/(?P<analysis_id>\d+)/evaluation")
+    @transaction.atomic
     def priority_analysis_evaluation(self, request, pk=None, analysis_id=None):
         project = self.get_object()
         revision = self._priority_revision(request, project)
         if getattr(request.user, "role", "") != "validator":
             raise PermissionDenied("Only validators can save priority evaluations.")
-        profile = revision.profile_data_snapshot if revision else project.profile_data
+        scope = lock_priority_scope(project, revision)
+        profile = scope.profile_data_snapshot if revision else scope.profile_data
         profile = profile if isinstance(profile, dict) else {}
-        if (revision.workflow_status if revision else project.workflow_status) != Project.WORKFLOW_PENDING:
+        if scope.workflow_status != Project.WORKFLOW_PENDING:
             return Response({"detail": "Priority decisions are locked after endorsement."}, status=409)
         analysis = project.priority_analyses.filter(pk=analysis_id, revision=revision).first()
         if analysis is None:
             return Response({"detail": "Priority analysis not found."}, status=404)
+        facts = priority_facts_state(project, revision)
+        if facts.version and analysis.suggested_scores.get("facts_version") != facts.version:
+            return Response({"detail": "Validator facts changed. Run the AI scorer again.", "code": "priority_facts_stale"}, status=409)
         if analysis.confirmations.exists():
             return Response({"detail": "This priority analysis is already confirmed. Run a new analysis before changing its evaluation."}, status=409)
         if analysis.rule_set_id != get_active_priority_rule_set().id:
             return Response({"detail": "This analysis uses an older scoring version."}, status=409)
-        from .priority_scoring import _confirmation_snapshot_hash
         if _confirmation_snapshot_hash(analysis.input_snapshot) != _confirmation_snapshot_hash(_validator_review_source(profile)):
             return Response({"detail": "Project information changed. Run the AI scorer again."}, status=409)
         from .priority_evaluation import save_evaluation
@@ -4488,6 +4546,28 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Priority analysis is available only for simplified-form projects."}, status=400)
         if (revision.workflow_status if revision else project.workflow_status) != Project.WORKFLOW_PENDING:
             return Response({"detail": "Priority analysis is available before endorsement only."}, status=400)
+        if "edited_profile_data" in request.data:
+            return Response({"detail": "Contributor answers are read-only for validators. Request revisions instead."}, status=403)
+        snapshot = _validator_review_source(profile_data)
+        rules = get_active_priority_rule_set()
+        facts = priority_facts_state(project, revision)
+        if "facts_version" in request.data:
+            if type(request.data["facts_version"]) is not int or request.data["facts_version"] != facts.version:
+                return Response({"detail": "Validator facts changed. Reload and retry.", "code": "priority_facts_stale"}, status=409)
+        elif isinstance(request.data.get("supplements"), dict):
+            context = regional_eligibility(snapshot, priority_rule_config(rules)["thresholds"])
+            try:
+                facts, changed_keys = save_priority_facts(project, revision, request.user, request.data["supplements"], None, context["applicable"])
+            except StalePriorityFacts as exc:
+                return Response({"detail": str(exc), "code": "priority_facts_stale"}, status=409)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=400)
+            if changed_keys:
+                _log_activity(request, "priority_analysis_run", project, {
+                    "event": "validator_facts_updated", "facts_version": facts.version,
+                    "fields": changed_keys,
+                    "revision_id": revision.pk if revision else None,
+                })
         document_assessment = serialize_document_assessment(project, revision=revision)
         if document_assessment.get("status") == "missing":
             return Response(
@@ -4552,16 +4632,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 status=409,
             )
 
-        if "edited_profile_data" in request.data:
-            return Response({"detail": "Contributor answers are read-only for validators. Request revisions instead."}, status=403)
-        profile_data = profile_data if isinstance(profile_data, dict) else {}
-        snapshot = _validator_review_source(profile_data)
-        snapshot = deepcopy(snapshot)
-        supplements = request.data.get("supplements")
-        if not isinstance(supplements, dict):
-            supplements = {}
-        supplements = dict(supplements)
-        supplements.pop("supporting_document_evidence", None)
+        supplements = dict(facts.values)
         if document_assessment.get("status") in {"pass", "fail"}:
             supplements["supporting_document_evidence"] = {
                 "status": document_assessment.get("status"),
@@ -4571,8 +4642,11 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             }
         try:
             analysis, reused = analyze_project(
-                project, request.user, snapshot, supplements, enforce_input_contract=True, revision=revision,
+                project, request.user, snapshot, supplements, rule_set=rules,
+                enforce_input_contract=True, revision=revision, facts_version=facts.version,
             )
+        except PriorityOutcomeError as exc:
+            return Response({"detail": str(exc), "code": "ai_outcome_unavailable", "retry_available": True}, status=502)
         except PriorityInputError as exc:
             missing_labels = [
                 str(item.get("field_label") or item.get("field_key") or "Required input")
@@ -4591,6 +4665,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_409_CONFLICT,
             )
+        if priority_facts_state(project, revision).version != facts.version:
+            return Response({"detail": "Validator facts changed while scoring. Run the scorer again.", "code": "priority_facts_stale"}, status=409)
         ai_provider = (
             analysis.suggested_scores.get("ai_provider")
             if isinstance(analysis.suggested_scores, dict)
@@ -4625,24 +4701,28 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         methods=["post"],
         url_path=r"priority-analysis/(?P<analysis_id>\d+)/confirm",
     )
+    @transaction.atomic
     def priority_analysis_confirm(self, request, pk=None, analysis_id=None):
         project = self.get_object()
         revision = self._priority_revision(request, project)
         if getattr(request.user, "role", "") != "validator":
             raise PermissionDenied("Only validators can confirm priority analysis.")
-        profile = revision.profile_data_snapshot if revision else project.profile_data
+        scope = lock_priority_scope(project, revision)
+        profile = scope.profile_data_snapshot if revision else scope.profile_data
         profile = profile if isinstance(profile, dict) else {}
-        if (revision.workflow_status if revision else project.workflow_status) != Project.WORKFLOW_PENDING:
+        if scope.workflow_status != Project.WORKFLOW_PENDING:
             return Response({"detail": "Priority decisions are locked after endorsement."}, status=400)
         try:
             analysis = project.priority_analyses.get(pk=analysis_id, revision=revision)
         except ProjectPriorityAnalysis.DoesNotExist:
             return Response({"detail": "Priority analysis not found."}, status=404)
+        facts = priority_facts_state(project, revision)
+        if facts.version and analysis.suggested_scores.get("facts_version") != facts.version:
+            return Response({"detail": "Validator facts changed. Run the AI scorer again.", "code": "priority_facts_stale"}, status=409)
         if analysis.confirmations.exists():
             return Response({"detail": "This analysis is already confirmed. Run a new analysis if the project information has changed.", "code": "analysis_already_confirmed"}, status=409)
         if analysis.rule_set_id != get_active_priority_rule_set().id:
             return Response({"detail": "This analysis uses an older scoring version. Run the AI scorer again.", "code": "analysis_rule_outdated"}, status=409)
-        from .priority_scoring import _confirmation_snapshot_hash
         if _confirmation_snapshot_hash(analysis.input_snapshot) != _confirmation_snapshot_hash(_validator_review_source(profile)):
             return Response({"detail": "This analysis no longer matches the current project information. Run the AI scorer again.", "code": "analysis_project_outdated"}, status=409)
         previous_confirmation = _latest_project_confirmation(project)

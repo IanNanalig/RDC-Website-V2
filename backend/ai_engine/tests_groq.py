@@ -131,7 +131,7 @@ class GroqFeatureTests(SimpleTestCase):
     @patch("ai_engine.groq_priority._historical_context")
     @patch("ai_engine.groq_priority.complete_json")
     @patch("ai_engine.groq_priority.is_groq_enabled", return_value=True)
-    def test_priority_response_is_bounded_and_unknown_fields_are_rejected(
+    def test_priority_rejects_bad_outcomes_and_preserves_valid_zero(
         self,
         _enabled,
         completion,
@@ -186,7 +186,7 @@ class GroqFeatureTests(SimpleTestCase):
             }
         ]
 
-        result = analyze_priority_with_groq(
+        args = (
             SimpleNamespace(pk=1),
             {"objective": "The road project will reduce travel time."},
             {},
@@ -194,8 +194,22 @@ class GroqFeatureTests(SimpleTestCase):
             "infrastructure",
             ["Use supported facts."],
         )
-
-        self.assertEqual(result["outcomes"][0]["raw_score"], 10)
+        invalid = completion.return_value.data
+        with self.assertRaises(GroqUnavailable):
+            analyze_priority_with_groq(*args)
+        invalid["historical_prediction"]["confidence"] = 1
+        row = invalid["outcome_assessments"][0]
+        invalid["outcome_assessments"] = [row]
+        with self.assertRaises(GroqUnavailable):
+            analyze_priority_with_groq(*args)
+        row["raw_score"] = 0
+        for rows in ([], [row, row], [dict(row, raw_score="bad")], [dict(row, key="unknown")]):
+            invalid["outcome_assessments"] = rows
+            with self.subTest(rows=rows), self.assertRaises(GroqUnavailable):
+                analyze_priority_with_groq(*args)
+        invalid["outcome_assessments"] = [row]
+        result = analyze_priority_with_groq(*args)
+        self.assertEqual(result["outcomes"][0]["raw_score"], 0)
         self.assertEqual(result["outcomes"][0]["revision_fields"], ["objective"])
         self.assertEqual(result["historical_prediction"]["confidence"], 1)
         self.assertEqual(result["provider"]["model"], "backup-model")

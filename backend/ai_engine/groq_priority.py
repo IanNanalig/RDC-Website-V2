@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import re
 from copy import deepcopy
 
@@ -309,7 +310,7 @@ def _normalize_result(
         if key not in criterion_by_key or key in seen:
             continue
         seen.add(key)
-        score = max(0.0, min(10.0, _number(item.get("raw_score"))))
+        score = float(item["raw_score"])
         evidence = _text_list(item.get("evidence"))
         revision_fields = [
             str(value).strip()
@@ -398,7 +399,8 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
         "Historical projects are reference examples, not automatic labels. Return JSON only with keys: "
         "outcome_assessments, overall_reasoning, risks, historical_prediction. outcome_assessments must be an array of "
         "objects containing key, raw_score, explanation, evidence, recommendation, revision_fields. Evidence must quote "
-        "short exact phrases from the supplied project. revision_fields may contain only supplied project field names. "
+        "short exact phrases from the supplied project. Return exactly one assessment for every supplied criterion key, "
+        "including a zero with an explanation when there is no qualifying evidence. revision_fields may contain only supplied project field names. "
         "historical_prediction must contain priority (low or high), confidence (0 to 1), and explanation. "
         "Explain material uncertainty and never claim to validate or endorse the project."
     )
@@ -427,9 +429,12 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
         }
 
     expected_criteria = {str(item.get("key") or "") for item in criteria_payload}
+    validation_issue = ""
 
     def valid_provider_output(data):
         """Reject incomplete provider JSON instead of silently displaying it."""
+        nonlocal validation_issue
+        validation_issue = "Invalid historical prediction metadata"
         if not isinstance(data, dict) or not isinstance(data.get("historical_prediction"), dict):
             return False
         historical_prediction = data["historical_prediction"]
@@ -437,26 +442,33 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
             return False
         try:
             confidence = float(historical_prediction.get("confidence"))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return False
         if not 0 <= confidence <= 1 or not str(historical_prediction.get("explanation") or "").strip():
             return False
         rows = data.get("outcome_assessments")
-        if not isinstance(rows, list) or len(rows) != len(expected_criteria):
+        validation_issue = "Expected an array of outcome assessments"
+        if not isinstance(rows, list):
             return False
         seen = set()
         for row in rows:
+            validation_issue = "Non-object outcome assessment"
             if not isinstance(row, dict):
                 return False
             key = str(row.get("key") or "")
-            if key not in expected_criteria or key in seen:
+            if key not in expected_criteria:
+                validation_issue = "Outcome assessment contains an unrecognized criterion key"
+                return False
+            if key in seen:
+                validation_issue = f"Duplicate outcome assessment for {key}"
                 return False
             seen.add(key)
+            validation_issue = f"Invalid score, explanation, or evidence for {key}"
             try:
                 score = float(row.get("raw_score"))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return False
-            if not 0 <= score <= 10 or not str(row.get("explanation") or "").strip():
+            if isinstance(row.get("raw_score"), bool) or not math.isfinite(score) or not 0 <= score <= 10 or not str(row.get("explanation") or "").strip():
                 return False
             # Groq can legitimately encode one exact evidence phrase as a
             # string instead of a one-item JSON array. Normalize it below.
@@ -464,7 +476,9 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
                 return False
             if not isinstance(row.get("revision_fields", []), list):
                 return False
-        return seen == expected_criteria
+        missing = sorted(expected_criteria - seen)
+        validation_issue = f"Missing outcome assessments for {', '.join(missing)}" if missing else ""
+        return not missing
 
     try:
         completion = complete_json(
@@ -475,8 +489,12 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
             temperature=0.1,
             validate=valid_provider_output,
         )
-    except GroqUnavailable:
-        return None
+    except GroqUnavailable as exc:
+        if validation_issue:
+            raise GroqUnavailable(f"{exc} {validation_issue}.") from exc
+        raise
+    if not valid_provider_output(completion.data):
+        raise GroqUnavailable(f"Scoring response did not match the active outcome criteria. {validation_issue}.")
     return _normalize_result(
         completion.data,
         criteria_payload,

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import math
 import re
 from copy import deepcopy
@@ -23,13 +24,22 @@ from .utils import derive_ncr_lgus
 
 RULE_VERSION = "rdc-priority-v1"
 ALGORITHM_VERSION = "expert-v4-regional-eligibility"
-SCORE_TOTAL_VERSION = 2
+logger = logging.getLogger(__name__)
+SCORE_TOTAL_VERSION = 3
+REGIONAL_FACT_KEYS = ("beneficiaryCount", "contributedOutcomeCount", "regionalSpatialCategory")
+PAP_SPATIAL_LABELS = {
+    "wide_coverage": "Region-wide or interregional",
+    "six_to_twelve_lgus": "6–12 cities/municipalities",
+    "one_to_five_lgus": "1–5 cities/municipalities",
+    "none": "None",
+}
+PAP_SPATIAL_DEFAULTS = dict(zip(PAP_SPATIAL_LABELS, (10, 6, 3, 0)))
 REGIONAL_THRESHOLD = 200_000_000
 ANALYSIS_GUIDANCE_VERSION = "contextual-explanations-v3"
 # Changing how safe Groq JSON responses are normalized must result in a fresh
 # analysis, rather than reusing an older deterministic fallback for the same
 # project snapshot.
-GROQ_RESPONSE_CONTRACT_VERSION = "groq-json-v2-text-evidence"
+GROQ_RESPONSE_CONTRACT_VERSION = "groq-json-v3-complete-outcomes"
 
 DEFAULT_OUTCOME_CONTEXT_PHRASES = [
     "improve", "increase", "expand", "provide", "strengthen", "reduce", "protect",
@@ -267,6 +277,7 @@ def default_priority_rule_config():
             "high": 70,
             "regional_project_cost": REGIONAL_THRESHOLD,
             "pap_weights": {"readiness": 20, "gad_responsiveness": 15, "spatial_coverage": 15},
+            "pap_spatial_scores": PAP_SPATIAL_DEFAULTS.copy(),
             "regional_criteria": {
                 "cost": {
                     "thresholds": {"at_least_5b": 5_000_000_000, "over_3b": 3_000_000_000, "over_1b": 1_000_000_000, "over_500m": 500_000_000},
@@ -563,6 +574,15 @@ def validate_priority_rule_config(config, *, enforce_current_high=False):
         )
     }
 
+    spatial_values = thresholds.get("pap_spatial_scores", PAP_SPATIAL_DEFAULTS)
+    if not isinstance(spatial_values, dict) or spatial_values.keys() != PAP_SPATIAL_LABELS.keys():
+        raise ValueError("All four PAP Spatial Coverage score bands are required.")
+    pap_spatial_scores = {
+        key: _number(spatial_values[key], f"{label} score", 0, 10)
+        for key, label in PAP_SPATIAL_LABELS.items()
+    }
+    _validate_rank(pap_spatial_scores, PAP_SPATIAL_LABELS, "PAP Spatial Coverage scores", strict=True)
+
     common = _criterion_rules(dictionaries.get("common_outcomes"), "Common outcomes")
     normalized_sectors = {}
     all_keys = {row["key"] for row in common}
@@ -636,6 +656,7 @@ def validate_priority_rule_config(config, *, enforce_current_high=False):
             "high": high,
             "regional_project_cost": regional_cutoff,
             "pap_weights": pap_weights,
+            "pap_spatial_scores": pap_spatial_scores,
             "regional_criteria": regional_criteria,
         },
         "sector_criteria": normalized_sectors,
@@ -695,17 +716,29 @@ def contextual_priority_rule_draft(rule_set=None):
     return validate_priority_rule_config(config)
 
 
-def _money_total(value):
+def _funding_total(value):
     if not isinstance(value, dict):
-        return 0
+        return Decimal("0")
     total = Decimal("0")
     for raw in value.values():
         cleaned = re.sub(r"[^0-9.-]", "", str(raw or ""))
         try:
-            total += max(Decimal("0"), Decimal(cleaned or "0"))
+            amount = Decimal(cleaned or "0")
+            if amount.is_finite() and amount > 0:
+                total += amount
         except Exception:
             continue
-    return int(total.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    return total
+
+
+def _money_total(value):
+    return int(_funding_total(value).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def regional_eligibility(snapshot, thresholds):
+    total = _funding_total(_scoring_form(snapshot).get("fundingRequirementByYear"))
+    cutoff = Decimal(str(thresholds["regional_project_cost"]))
+    return {"applicable": total >= cutoff, "total": str(total), "cutoff": str(cutoff)}
 
 
 def _simplified(snapshot):
@@ -974,7 +1007,7 @@ def _is_sceeed_sector(form):
     return "sceeed" in sector or "economic and environment" in sector
 
 
-def _merge_facts(form, supplements):
+def _merge_facts(form, supplements, *, use_saved_blanks=False):
     contributor = form.get("priorityAnalysisFacts")
     facts = dict(contributor) if isinstance(contributor, dict) else {}
     if not _is_sceeed_sector(form):
@@ -982,7 +1015,7 @@ def _merge_facts(form, supplements):
     for key, value in (supplements or {}).items():
         if key == "sceeedTrack" and not _is_sceeed_sector(form):
             continue
-        if value not in (None, ""):
+        if use_saved_blanks or value not in (None, ""):
             facts[key] = value
     return facts
 
@@ -1010,6 +1043,13 @@ def bounded_score(points):
     return min(Decimal("100"), max(Decimal("0"), points)).quantize(Decimal("0.01"))
 
 
+def overall_score(pap, rdp, regional, *, include_regional=False):
+    base = min(Decimal("100"), max(Decimal("0"), pap + rdp))
+    if include_regional:
+        base = (base + min(Decimal("100"), max(Decimal("0"), regional))) / 2
+    return bounded_score(base)
+
+
 def _criterion_points(criteria):
     return sum((weighted_points(item["raw"], item["weight"]) for item in criteria), Decimal("0"))
 
@@ -1030,18 +1070,19 @@ def _criterion(key, label, raw, weight, remarks, evidence=None, extra=None):
     return result
 
 
-def _spatial_rating(scope, lgu_count):
+def _spatial_rating(scope, lgu_count, scores=None):
+    scores = PAP_SPATIAL_DEFAULTS if scores is None else scores
     if scope == "interregional":
-        return 10, "Interregional coverage."
+        return scores["wide_coverage"], "Interregional coverage."
     if scope == "region_wide":
-        return 10, "Region-wide coverage."
+        return scores["wide_coverage"], "Region-wide coverage."
     if scope == "none":
-        return 0, "No location coverage is declared."
+        return scores["none"], "No location coverage is declared."
     if scope == "specific_lgus":
         if 6 <= lgu_count <= 12:
-            return 6, f"{lgu_count} cities/municipalities are covered."
+            return scores["six_to_twelve_lgus"], f"{lgu_count} cities/municipalities are covered."
         if 1 <= lgu_count <= 5:
-            return 3, f"{lgu_count} cities/municipalities are covered."
+            return scores["one_to_five_lgus"], f"{lgu_count} cities/municipalities are covered."
         return None, "Coverage count does not map to an official PAP category. Validator selection is required."
     return None, "Spatial coverage scope is required."
 
@@ -1106,7 +1147,7 @@ def _priority_for(score, thresholds):
 def _priority_with_regional_budget(score, thresholds, funding_total, missing=False):
     if missing:
         return "incomplete"
-    if funding_total < thresholds["regional_project_cost"]:
+    if funding_total < Decimal(str(thresholds["regional_project_cost"])):
         return "low"
     return _priority_for(score, thresholds)
 
@@ -1382,8 +1423,8 @@ def _build_analysis_guidance(snapshot, scores, regional, flags, suggested_priori
     rdp_total = float(scores.get("rdp_total") or 0)
     status_text = PRIORITY_LABELS.get(suggested_priority, "Incomplete")
     overall = (
-        f"The {float(base_score):.2f}/100 base score is the sum of {pap_total:.2f} PAP points "
-        f"and {rdp_total:.2f} RDP-alignment points. Each weighted score equals the raw rating divided by 10, "
+        f"The PAP and RDP component adds {pap_total:.2f} PAP points and {rdp_total:.2f} RDP-alignment points. "
+        f"Each weighted score equals the raw rating divided by 10, "
         f"multiplied by the criterion weight. The high-priority threshold for this analysis is {high_threshold:g}/100. "
         f"This results in a {status_text.lower()} recommendation."
     )
@@ -1392,7 +1433,10 @@ def _build_analysis_guidance(snapshot, scores, regional, flags, suggested_priori
     elif suggested_priority == "low":
         overall += f" The score is {max(0.0, high_threshold - float(base_score)):.2f} points below the high-priority threshold."
     if regional.get("applicable"):
-        overall += " The regional prioritization scorecard is shown separately and does not change the base score."
+        if scores.get("score_total_version") == SCORE_TOTAL_VERSION:
+            overall += f" The {float(base_score):.2f}/100 overall score averages the PAP and RDP component with the {regional['total']:.2f}/100 regional scorecard."
+        else:
+            overall += " This analysis used the PAP and RDP component as its overall score."
     if missing:
         overall += " The recommendation remains incomplete until all required factual inputs are supplied."
 
@@ -1459,6 +1503,7 @@ def source_hash(
     rule_set=None,
     project=None,
     revision=None,
+    facts_version=None,
 ):
     rules = rule_set or _active_ruleset()
     historical_dataset_version = ""
@@ -1487,6 +1532,7 @@ def source_hash(
         "rules": rules.version,
         "algorithm": rules.algorithm_version,
         "score_total_version": SCORE_TOTAL_VERSION,
+        "facts_version": facts_version,
         "input_contract": contract_for_rule_set(rules),
         "ai_provider": "groq" if getattr(settings, "GROQ_ENABLED", False) else "local-fallback",
         "ai_primary_model": getattr(settings, "GROQ_PRIMARY_MODEL", "") if getattr(settings, "GROQ_ENABLED", False) else "",
@@ -1539,7 +1585,11 @@ class PriorityInputError(ValueError):
         self.report = report
 
 
-def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=None, persist=True, enforce_input_contract=False, revision=None):
+class PriorityOutcomeError(ValueError):
+    pass
+
+
+def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=None, persist=True, enforce_input_contract=False, revision=None, facts_version=None):
     supplements = dict(supplements) if isinstance(supplements, dict) else {}
     if not _is_sceeed_sector(_scoring_form(snapshot)):
         supplements.pop("sceeedTrack", None)
@@ -1547,7 +1597,13 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     rule_config = priority_rule_config(rules)
     thresholds = rule_config["thresholds"]
     dictionaries = rule_config["keyword_dictionaries"]
-    digest = source_hash(snapshot, supplements, rules, project=project, revision=revision)
+    eligibility = regional_eligibility(snapshot, thresholds)
+    regional_applicable = eligibility["applicable"]
+    funding_total = Decimal(eligibility["total"])
+    if not regional_applicable:
+        for key in REGIONAL_FACT_KEYS:
+            supplements.pop(key, None)
+    digest = source_hash(snapshot, supplements, rules, project=project, revision=revision, facts_version=facts_version)
     existing = ProjectPriorityAnalysis.objects.filter(project=project, revision=revision, rule_set=rules, source_hash=digest).first() if persist else None
     if existing:
         existing = ensure_analysis_guidance(existing)
@@ -1589,25 +1645,31 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
             and dependency["key"] not in enabled_contributor_keys
         ):
             form.pop(dependency["key"], None)
+    if not regional_applicable:
+        for key in REGIONAL_FACT_KEYS:
+            form.pop(key, None)
+            if isinstance(form.get("priorityAnalysisFacts"), dict):
+                form["priorityAnalysisFacts"].pop(key, None)
+    if not _is_sceeed_sector(form) and isinstance(form.get("priorityAnalysisFacts"), dict):
+        form["priorityAnalysisFacts"].pop("sceeedTrack", None)
     scoring_snapshot = deepcopy(snapshot)
     if isinstance(scoring_snapshot.get("simplified_form"), dict):
         scoring_snapshot["simplified_form"] = form
     else:
         scoring_snapshot = form
-    facts = _merge_facts(form, supplements)
+    facts = _merge_facts(form, supplements, use_saved_blanks=facts_version is not None)
     # The form answer intentionally contains no document binary or metadata.
     # Resolve this gate from the authoritative active-document relation so a
     # preview cannot treat an absent upload as a scored zero or a valid input.
     facts["_supporting_documents_ready"] = bool(
         (documents_for_revision(revision) if revision else active_project_documents(project)).exists()
     )
-    funding_total = _money_total(form.get("fundingRequirementByYear"))
     form_marker = snapshot.get("form_schema") if isinstance(snapshot, dict) else {}
     is_legacy_form = isinstance(form_marker, dict) and form_marker.get("legacy") is True
     input_report = runtime_input_report(
         form,
         facts,
-        regional_project=funding_total >= thresholds["regional_project_cost"],
+        regional_project=regional_applicable,
         economic_environment_sector=_is_sceeed_sector(form),
         legacy_form=is_legacy_form,
         contract=effective_contract,
@@ -1627,7 +1689,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     if gad is None:
         missing.append("GAD responsiveness")
         gad = (0, "GAD responsiveness must be supplied by the validator.")
-    spatial = _spatial_rating(_fact_key(facts.get("spatialCoverageScope")), lgu_count)
+    spatial = _spatial_rating(_fact_key(facts.get("spatialCoverageScope")), lgu_count, thresholds["pap_spatial_scores"])
     if spatial[0] is None:
         missing.append("Official spatial coverage category")
         spatial = (0, spatial[1])
@@ -1689,24 +1751,25 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     groq_analysis = None
     regional_rules = thresholds["regional_criteria"]
     regional_bands = regional_scoring_bands(regional_rules)
-    try:
-        from ai_engine.groq_priority import analyze_priority_with_groq
+    from ai_engine.groq_client import GroqUnavailable
+    from ai_engine.groq_priority import analyze_priority_with_groq
 
+    try:
         groq_analysis = analyze_priority_with_groq(
             project,
             scoring_snapshot,
-            supplements,
+            {key: value for key, value in facts.items() if key != "_supporting_documents_ready"},
             outcome_rules,
             track,
             dictionaries.get("guidelines") or [],
             regional_context={
                 "eligibility_cutoff_php": thresholds["regional_project_cost"],
                 "bands": regional_bands,
-            },
+            } if regional_applicable else None,
         )
-    except Exception:
-        # An external inference failure must not block a validator from using the existing safe scorecard.
-        groq_analysis = None
+    except GroqUnavailable as exc:
+        logger.warning("Outcome scoring unavailable for project %s, rules %s: %s", getattr(project, "pk", None), rules.version, exc)
+        raise PriorityOutcomeError("AI outcome scoring could not return a valid result for the active criteria. Retry the scorer.") from exc
     if groq_analysis:
         assessment_by_key = {
             item["key"]: item
@@ -1736,27 +1799,28 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
             outcome["ai_recommendation"] = assessment.get("recommendation") or ""
             outcome["ai_revision_fields"] = assessment.get("revision_fields") or []
     outcome_total = _criterion_points(outcomes)
-    base_score = float(bounded_score(pap_total + outcome_total))
-
     regional = {
-        "applicable": funding_total >= thresholds["regional_project_cost"],
+        "applicable": regional_applicable,
         "total": 0,
         "criteria": [],
     }
     if regional["applicable"]:
-        beneficiary_raw = facts.get("beneficiaryCount")
         try:
-            beneficiary_count = int(str(beneficiary_raw or "").replace(",", ""))
-        except Exception:
+            beneficiary_count = int(str(facts.get("beneficiaryCount", "")).replace(",", ""))
+            if beneficiary_count < 0:
+                beneficiary_count = None
+        except (TypeError, ValueError):
             beneficiary_count = None
         regional_scope = str(facts.get("regionalSpatialCategory") or "")
         try:
             contributed_outcomes = int(facts.get("contributedOutcomeCount"))
-        except Exception:
+            if contributed_outcomes < 0:
+                contributed_outcomes = None
+        except (TypeError, ValueError):
             contributed_outcomes = None
         if beneficiary_count is None:
             missing.append("Regional beneficiary count")
-        if not regional_scope:
+        if regional_scope not in REGIONAL_SPATIAL_LABELS:
             missing.append("Regional spatial coverage category")
         if contributed_outcomes is None:
             missing.append("Number of contributed RDP outcomes")
@@ -1767,7 +1831,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         regional["criteria"] = [
             _criterion("regional_cost", "Total Regional Project Cost", cost_band["raw_score"], 25,
                        f"Funding requirement: PHP {funding_total:,}. Applied band: {cost_band['label']}."),
-            _criterion("regional_spatial", "Spatial Coverage", spatial_raw, 25, "Validator-confirmed regional spatial category."),
+            _criterion("regional_spatial", "Regional Spatial Coverage", spatial_raw, 25, "Validator-confirmed regional spatial category."),
             _criterion("regional_outcomes", "RDP Sectoral Outcome Contribution", outcome_band["raw_score"], 25,
                        f"{contributed_outcomes or 0} contributed outcomes. Applied band: {outcome_band['label']}."),
             _criterion("regional_beneficiaries", "Magnitude of Beneficiaries", beneficiary_band["raw_score"], 25,
@@ -1799,7 +1863,10 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
             if risk and risk not in risks:
                 risks.append(risk)
 
-    below_regional_cutoff = funding_total < thresholds["regional_project_cost"]
+    base_score = float(overall_score(
+        pap_total, outcome_total, _criterion_points(regional["criteria"]), include_regional=regional_applicable,
+    ))
+    below_regional_cutoff = not regional_applicable
     suggested_priority = _priority_with_regional_budget(base_score, thresholds, funding_total, bool(missing))
     strongest = sorted(pap + outcomes, key=lambda item: item["score"], reverse=True)[:2]
     if missing:
@@ -1836,6 +1903,8 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         "rdp_outcomes": outcomes,
         "rdp_total": float(round(outcome_total, 2)),
         "base_total": base_score,
+        "score_total_version": SCORE_TOTAL_VERSION,
+        "facts_version": facts_version,
         "missing_facts": missing,
         "input_preflight": input_report,
         "criterion_coverage": {
@@ -1850,7 +1919,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         "budget_priority_override": {
             "applied": below_regional_cutoff and not missing,
             "cutoff": thresholds["regional_project_cost"],
-            "total_funding_requirement": funding_total,
+            "total_funding_requirement": float(funding_total),
             "priority": "low" if below_regional_cutoff and not missing else None,
         },
     }
@@ -1858,14 +1927,6 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         suggested_scores["ai_provider"] = groq_analysis.get("provider") or {"name": "groq"}
         suggested_scores["groq_analysis"] = {
             "historical_prediction": groq_analysis.get("historical_prediction") or {},
-        }
-    elif getattr(settings, "GROQ_ENABLED", False):
-        suggested_scores["ai_provider"] = {
-            "name": "groq",
-            "status": "unavailable",
-            "mode": "deterministic_emergency_fallback",
-            "primary_model": getattr(settings, "GROQ_PRIMARY_MODEL", ""),
-            "backup_model": getattr(settings, "GROQ_BACKUP_MODEL", ""),
         }
     else:
         suggested_scores["ai_provider"] = {
@@ -1945,36 +2006,44 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
             "base_score": base_score,
         }, False
 
-    analysis = ProjectPriorityAnalysis.objects.create(
+    analysis, created = ProjectPriorityAnalysis.objects.get_or_create(
         project=project,
         revision=revision,
-        validator=validator,
         rule_set=rules,
-        form_version=form_version_for_project_snapshot(snapshot),
         source_hash=digest,
-        input_snapshot=snapshot if isinstance(snapshot, dict) else {},
-        supplements=supplements,
-        suggested_scores=suggested_scores,
-        regional_scorecard=regional,
-        flags={"negative_matches": negative, "risks": risks},
-        summary=summary,
-        suggested_priority=suggested_priority,
-        base_score=base_score,
+        defaults={
+            "validator": validator,
+            "form_version": form_version_for_project_snapshot(snapshot),
+            "input_snapshot": snapshot if isinstance(snapshot, dict) else {},
+            "supplements": supplements,
+            "suggested_scores": suggested_scores,
+            "regional_scorecard": regional,
+            "flags": {"negative_matches": negative, "risks": risks},
+            "summary": summary,
+            "suggested_priority": suggested_priority,
+            "base_score": base_score,
+        },
     )
     from ai_engine.services import ensure_learning_assessment
     analysis._current_learning_assessment = ensure_learning_assessment(analysis)
-    return analysis, False
+    return analysis, not created
 
 
 def confirmation_eligibility(project, snapshot, *, revision=None):
     """Explain whether a persisted confirmation can endorse this project copy."""
     from .document_assessments import current_document_assessment
     from .document_policy import resolve_project_document_policy, revision_document_policy
+    from .priority_facts import priority_facts_state
 
     active_rules = _active_ruleset()
     current_snapshot_hash = _confirmation_snapshot_hash(snapshot)
     analyses = list(project.priority_analyses.filter(revision=revision).select_related("rule_set").prefetch_related("confirmations").order_by("-created_at"))
-    current_analyses = [item for item in analyses if item.rule_set_id == active_rules.id]
+    active_analyses = [item for item in analyses if item.rule_set_id == active_rules.id]
+    facts = priority_facts_state(project, revision, latest=analyses[0] if analyses else None)
+    current_analyses = [
+        item for item in active_analyses
+        if not facts.version or item.suggested_scores.get("facts_version") == facts.version
+    ]
     matching_analyses = [item for item in current_analyses if _confirmation_snapshot_hash(item.input_snapshot) == current_snapshot_hash]
     completed_analyses = [
         item for item in matching_analyses
@@ -2000,8 +2069,10 @@ def confirmation_eligibility(project, snapshot, *, revision=None):
                 return {"eligible": True, "code": "ready", "detail": "Priority confirmation is ready for validation.", "analysis_id": analysis.id, "confirmation_id": confirmation.id}
     if not analyses:
         code, detail = "analysis_missing", "AI analysis has not been completed for this project."
-    elif not current_analyses:
+    elif not active_analyses:
         code, detail = "analysis_rule_outdated", "The confirmed analysis uses an older scoring version. Run and confirm an analysis with the active rules."
+    elif not current_analyses:
+        code, detail = "priority_facts_stale", "Validator facts changed. Run and confirm a new analysis."
     elif not matching_analyses:
         code, detail = "analysis_project_outdated", "The analysis no longer matches the current project information. Run the AI scorer again."
     elif not completed_analyses:

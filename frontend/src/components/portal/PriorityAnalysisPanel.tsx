@@ -124,6 +124,7 @@ type Analysis = {
     rdp_outcomes?: Criterion[];
     rdp_total?: number;
     base_total?: number;
+    score_total_version?: number;
     missing_facts?: string[];
     criterion_coverage?: {
       status: "complete" | "incomplete";
@@ -229,7 +230,7 @@ const Select: React.FC<{
 }> = ({ label, value, onChange, options }) => (
   <label className="block">
     <span className="text-xs font-medium text-slate-600">{label}</span>
-    <select className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={value} onChange={(e) => onChange(e.target.value)}>
+    <select aria-label={label} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={value} onChange={(e) => onChange(e.target.value)}>
       <option value="">Choose</option>
       {options.map(([key, text]) => <option key={key} value={key}>{text}</option>)}
     </select>
@@ -259,6 +260,43 @@ const conciseCriterionExplanation = (value?: string) => {
   const useful = points.length ? points : explanationPoints(plain);
   const summary = useful.slice(0, /^The validator selected/i.test(useful[0] || "") ? 2 : 1).join(". ");
   return summary ? `${summary.replace(/[.!?]+$/, "")}.` : "See the full explanation for the evidence behind this score.";
+};
+
+const decimalParts = (value: number) => {
+  const [mantissa, exponent = "0"] = String(value).split("e");
+  const [whole, fraction = ""] = mantissa.split(".");
+  return { digits: BigInt(whole + fraction), scale: fraction.length - Number(exponent) };
+};
+
+const previewOverallScore = (analysis: Analysis, adjusted: Record<string, number>) => {
+  const regional = analysis.suggested_scores.score_total_version === 3 && analysis.regional_scorecard?.applicable;
+  const groups = [
+    ["pap", analysis.suggested_scores.pap || []],
+    ["rdp", analysis.suggested_scores.rdp_outcomes || []],
+    ["regional", regional ? analysis.regional_scorecard?.criteria || [] : []],
+  ] as const;
+  const rows = groups.flatMap(([group, criteria]) => criteria.map((item) => {
+    const raw = decimalParts(adjusted[`${group}:${item.key}`] ?? item.raw);
+    const weight = decimalParts(item.weight);
+    return { group, digits: raw.digits * weight.digits, scale: raw.scale + weight.scale + 1 };
+  }));
+  const scale = Math.max(2, ...rows.map((row) => row.scale));
+  const unit = 10n ** BigInt(scale);
+  let base = 0n;
+  let regionalPoints = 0n;
+  for (const row of rows) {
+    const points = row.digits * 10n ** BigInt(scale - row.scale);
+    if (row.group === "regional") regionalPoints += points;
+    else base += points;
+  }
+  const cap = 100n * unit;
+  const clamp = (value: bigint) => value > cap ? cap : value < 0n ? 0n : value;
+  const numerator = 100n * (clamp(base) + (regional ? clamp(regionalPoints) : 0n));
+  const denominator = regional ? 2n * unit : unit;
+  const cents = numerator / denominator;
+  const remainder = (numerator % denominator) * 2n;
+  // Match the backend's half-even rounding after weighting and blending.
+  return Number(cents + (remainder > denominator || (remainder === denominator && cents % 2n !== 0n) ? 1n : 0n)) / 100;
 };
 
 const CriteriaTable: React.FC<{ title: string; group: string; criteria?: Criterion[]; total?: number; adjustable?: boolean; adjusted?: Record<string, number>; remarks?: Record<string, string>; onAdjust?: (key: string, value: number) => void; onRemark?: (key: string, value: string) => void }> = ({
@@ -314,6 +352,9 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
   const [retryAvailable, setRetryAvailable] = useState(false);
   const [processingProgress, setProcessingProgress] = useState<ProcessingProgress | null>(null);
   const [supplements, setSupplements] = useState<Record<string, string>>({});
+  const [factsDirty, setFactsDirty] = useState(false);
+  const [factsVersion, setFactsVersion] = useState<number | null>(null);
+  const [regionalApplicable, setRegionalApplicable] = useState(false);
   const [adjustedScores, setAdjustedScores] = useState<Record<string, number>>({});
   const [validatorRemarks, setValidatorRemarks] = useState<Record<string, string>>({});
   const [evaluationDirty, setEvaluationDirty] = useState(false);
@@ -327,16 +368,22 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
 
   const load = useCallback(async () => {
     try {
-      const response = await api.get(`${endpointBase}/${projectId}/priority-analysis/${revisionId ? `?revision=${revisionId}` : ""}`);
+      const response = await api.get(`${endpointBase}/${projectId}/priority-analysis/${revisionId ? `?revision=${revisionId}` : ""}`, true);
       const list = Array.isArray(response?.analyses) ? response.analyses as Analysis[] : [];
       setEligible(response?.eligible !== false);
       setAnalyses(list);
-      setAnalysis(list[0] || null);
+      setAnalysis(response?.current_analysis_id === undefined || role === "admin"
+        ? list[0] || null
+        : list.find((item) => item.id === response.current_analysis_id) || null);
+      setSupplements(Object.fromEntries(Object.entries(response?.validator_facts || {}).map(([key, value]) => [key, String(value ?? "")])));
+      setFactsVersion(response?.facts_version ?? 0);
+      setRegionalApplicable(response?.regional_eligibility?.applicable === true);
+      setFactsDirty(false);
       setValidationEligibility(response?.validation_eligibility || null);
     } catch (error) {
       console.error("Failed to load priority analysis:", error);
     }
-  }, [endpointBase, projectId, revisionId]);
+  }, [endpointBase, projectId, revisionId, role]);
 
   useEffect(() => {
     load();
@@ -346,7 +393,6 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
     if (!analysis) return;
     if (initializedAnalysisId.current === analysis.id) return;
     initializedAnalysisId.current = analysis.id;
-    setSupplements(Object.fromEntries(Object.entries(analysis.supplements || {}).map(([key, value]) => [key, String(value ?? "")])));
     setAdjustedScores(analysis.evaluation?.adjusted_scores || analysis.latest_confirmation?.adjusted_scores || {});
     setValidatorRemarks(analysis.evaluation?.validator_remarks || analysis.latest_confirmation?.validator_remarks || {});
     setEvaluationDirty(false);
@@ -357,12 +403,28 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
     setDocumentOverrideRationale(analysis.latest_confirmation?.document_override_rationale || "");
   }, [analysis]);
 
+  const editFact = (key: string, value: string) => {
+    setSupplements((previous) => ({ ...previous, [key]: value }));
+    setFactsDirty(true);
+  };
+
   const run = async () => {
+    if (factsVersion === null) return;
     setBusy(true);
     setNotice("");
     setRetryAvailable(false);
     setProcessingProgress(null);
     try {
+      const savedFacts = await api.put(`validator/projects/${projectId}/priority-analysis/facts/`, {
+        ...(revisionId ? { revision: revisionId } : {}),
+        facts_version: factsVersion,
+        supplements: isSceeed ? supplements : { ...supplements, sceeedTrack: "" },
+      });
+      if (savedFacts.facts_version !== factsVersion) setAnalysis(null);
+      setSupplements(Object.fromEntries(Object.entries(savedFacts.validator_facts || {}).map(([key, value]) => [key, String(value ?? "")])));
+      setFactsVersion(savedFacts.facts_version);
+      setRegionalApplicable(savedFacts.regional_eligibility?.applicable === true);
+      setFactsDirty(false);
       let documentAssessment = await api.get(
         `project-supporting-documents/assessment-status/?project=${projectId}${revisionId ? `&revision=${revisionId}` : ""}`,
         true,
@@ -407,7 +469,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
       });
       const response = await api.post(`validator/projects/${projectId}/priority-analysis/run/`, {
         ...(revisionId ? { revision: revisionId } : {}),
-        supplements: isSceeed ? supplements : { ...supplements, sceeedTrack: "" },
+        facts_version: savedFacts.facts_version,
       });
       if (response?.processing) {
         throw new Error("The server is still configured for background document processing. Set DOCUMENT_AI_PROCESSING_MODE=inline and redeploy the API.");
@@ -436,6 +498,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
           : message,
       } : null);
       setNotice(message);
+      if (message.startsWith("Validator facts changed")) await load();
     } finally {
       setBusy(false);
     }
@@ -509,10 +572,11 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
     && analysis.suggested_priority !== "incomplete"
     && missingFacts.length === 0,
   );
-  const history = useMemo(() => analyses.slice(0, 5), [analyses]);
+  const history = useMemo(() => analyses.filter((item) => item.id !== analysis?.id), [analyses, analysis?.id]);
   const learning = analysis?.learning_result;
-  const liveBaseScore = [...(analysis?.suggested_scores.pap || []).map((item) => ({ ...item, group: "pap" })), ...(analysis?.suggested_scores.rdp_outcomes || []).map((item) => ({ ...item, group: "rdp" }))]
-    .reduce((total, item) => total + (adjustedScores[`${item.group}:${item.key}`] ?? item.raw) * item.weight / 10, 0);
+  const liveBaseScore = analysis && evaluationDirty
+    ? previewOverallScore(analysis, adjustedScores)
+    : Number(analysis?.latest_confirmation?.effective_score ?? analysis?.evaluation?.effective_score ?? analysis?.base_score ?? 0);
 
   if (!eligible) {
     return (
@@ -539,37 +603,39 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
           </p>
         )}
         {role === "validator" && !locked && (
-          <div className="rounded-xl border border-slate-200 p-3">
-            <p className="mb-3 text-sm font-semibold text-slate-800">Validator Facts Supplement</p>
+          <fieldset disabled={busy || factsVersion === null} className="rounded-xl border border-slate-200 p-3">
+            <legend className="px-1 text-sm font-semibold text-slate-800">Validator Facts Supplement</legend>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              <Select label="Readiness Level" value={supplements.readinessLevel || ""} onChange={(value) => setSupplements((prev) => ({ ...prev, readinessLevel: value }))} options={[
+              <Select label="Readiness Level" value={supplements.readinessLevel || ""} onChange={(value) => editFact("readinessLevel", value)} options={[
                 ["completed_documents", "With completed documents such as pre-FS/FS/POW and detailed design, where applicable"],
                 ["ongoing_documents", "Ongoing pre-FS/FS/POW and detailed design, where applicable"],
                 ["project_profile", "With Comprehensive Project Profile"],
                 ["concept_only", "With concept paper/none"],
               ]} />
-              <Select label="GAD Responsiveness" value={supplements.gadResponsiveness || ""} onChange={(value) => setSupplements((prev) => ({ ...prev, gadResponsiveness: value }))} options={[
+              <Select label="GAD Responsiveness" value={supplements.gadResponsiveness || ""} onChange={(value) => editFact("gadResponsiveness", value)} options={[
                 ["gender_responsive", "Gender-responsive"],
                 ["gender_sensitive", "Gender-sensitive"],
                 ["promising_prospects", "Promising GAD prospects"],
                 ["invisible", "GAD invisible"],
               ]} />
-              <Select label="Spatial Coverage" value={supplements.spatialCoverageScope || ""} onChange={(value) => setSupplements((prev) => ({ ...prev, spatialCoverageScope: value }))} options={[
+              <Select label="Spatial Coverage" value={supplements.spatialCoverageScope || ""} onChange={(value) => editFact("spatialCoverageScope", value)} options={[
                 ["specific_lgus", "Specific LGUs"],
                 ["region_wide", "Region-wide"],
                 ["interregional", "Interregional"],
                 ["none", "None"],
               ]} />
-              {isSceeed && <Select label="SCEED Track" value={supplements.sceeedTrack || ""} onChange={(value) => setSupplements((prev) => ({ ...prev, sceeedTrack: value }))} options={[["economic", "Economic"], ["environment", "Environment"]]} />}
-              <label className="block"><span className="text-xs font-medium text-slate-600">Estimated Beneficiaries</span><input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" inputMode="numeric" value={supplements.beneficiaryCount || ""} onChange={(e) => setSupplements((prev) => ({ ...prev, beneficiaryCount: e.target.value }))} /></label>
-              <label className="block"><span className="text-xs font-medium text-slate-600">Contributed RDP Outcomes</span><input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" type="number" min="0" value={supplements.contributedOutcomeCount || ""} onChange={(e) => setSupplements((prev) => ({ ...prev, contributedOutcomeCount: e.target.value }))} /></label>
-              <Select label="Regional Spatial Category" value={supplements.regionalSpatialCategory || ""} onChange={(value) => setSupplements((prev) => ({ ...prev, regionalSpatialCategory: value }))} options={[
+              {isSceeed && <Select label="SCEED Track" value={supplements.sceeedTrack || ""} onChange={(value) => editFact("sceeedTrack", value)} options={[["economic", "Economic"], ["environment", "Environment"]]} />}
+              {regionalApplicable && <>
+              <label className="block"><span className="text-xs font-medium text-slate-600">Estimated Beneficiaries</span><input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" inputMode="numeric" value={supplements.beneficiaryCount || ""} onChange={(e) => editFact("beneficiaryCount", e.target.value)} /></label>
+              <label className="block"><span className="text-xs font-medium text-slate-600">Contributed RDP Outcomes</span><input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" type="number" min="0" value={supplements.contributedOutcomeCount || ""} onChange={(e) => editFact("contributedOutcomeCount", e.target.value)} /></label>
+              <Select label="Regional Spatial Category" value={supplements.regionalSpatialCategory || ""} onChange={(value) => editFact("regionalSpatialCategory", value)} options={[
                 ["interregional", "Interregional"],
                 ["region_wide", "Region-wide"],
                 ["eight_to_twelve_lgus", "8 to 12 LGUs"],
                 ["single_city", "Single city"],
               ]} />
-              <label className="block md:col-span-2"><span className="text-xs font-medium text-slate-600">Readiness Evidence Notes</span><input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={supplements.readinessNotes || ""} onChange={(e) => setSupplements((prev) => ({ ...prev, readinessNotes: e.target.value }))} /></label>
+              </>}
+              <label className="block md:col-span-2"><span className="text-xs font-medium text-slate-600">Readiness Evidence Notes</span><input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={supplements.readinessNotes || ""} onChange={(e) => editFact("readinessNotes", e.target.value)} /></label>
             </div>
             <div className="mt-3 flex justify-end">
               <button type="button" onClick={run} disabled={busy} className="portal-btn portal-btn-primary">{busy ? "Analyzing..." : retryAvailable ? "Retry AI Scorer" : "Run AI Scorer"}</button>
@@ -587,7 +653,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
                 <p className={`mt-1 text-xs ${processingProgress.failed ? "text-rose-700" : "text-blue-700"}`}>This shows completed processing stages, not an estimated time or file-byte percentage.</p>
               </section>
             )}
-          </div>
+          </fieldset>
         )}
 
         {notice && <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">{notice}</div>}
@@ -596,7 +662,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
         ) : (
           <>
             <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-xl border border-slate-200 p-3"><p className="text-xs uppercase text-slate-500">Base Score</p><p className="mt-1 text-2xl font-bold text-slate-900">{Number(analysis.base_score).toFixed(2)}<span className="text-sm text-slate-500"> / 100</span></p>{analysis.suggested_scores.criterion_coverage && <p className="mt-1 text-xs text-slate-600">Coverage: {analysis.suggested_scores.criterion_coverage.coverage_percent}% · supported subtotal {analysis.suggested_scores.criterion_coverage.covered_subtotal.toFixed(2)}</p>}</div>
+              <div className="rounded-xl border border-slate-200 p-3"><p className="text-xs uppercase text-slate-500">Overall Score</p><p className="mt-1 text-2xl font-bold text-slate-900">{Number(analysis.base_score).toFixed(2)}<span className="text-sm text-slate-500"> / 100</span></p>{analysis.suggested_scores.criterion_coverage && <p className="mt-1 text-xs text-slate-600">Coverage: {analysis.suggested_scores.criterion_coverage.coverage_percent}% · supported subtotal {analysis.suggested_scores.criterion_coverage.covered_subtotal.toFixed(2)}</p>}</div>
               <div className="rounded-xl border border-slate-200 p-3"><p className="text-xs uppercase text-slate-500">Suggested</p><p className="mt-1 font-semibold">{priorityLabel(analysis.suggested_priority)}</p></div>
               <div className="rounded-xl border border-slate-200 p-3"><p className="text-xs uppercase text-slate-500">Rule Version</p><p className="mt-1 font-semibold">{analysis.rule_version || "-"}</p></div>
             </div>
@@ -733,9 +799,9 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
             <CriteriaTable title="PAP Criteria" group="pap" criteria={analysis.suggested_scores.pap} total={analysis.suggested_scores.pap_total} adjustable={role === "validator" && !locked && !confirmed} adjusted={adjustedScores} remarks={validatorRemarks} onAdjust={(key, value) => { setAdjustedScores((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} onRemark={(key, value) => { setValidatorRemarks((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} />
             <CriteriaTable title={`RDP Outcomes (${analysis.suggested_scores.rdp_track || "Sector"})`} group="rdp" criteria={analysis.suggested_scores.rdp_outcomes} total={analysis.suggested_scores.rdp_total} adjustable={role === "validator" && !locked && !confirmed} adjusted={adjustedScores} remarks={validatorRemarks} onAdjust={(key, value) => { setAdjustedScores((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} onRemark={(key, value) => { setValidatorRemarks((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} />
             {analysis.regional_scorecard?.applicable ? <CriteriaTable title="Regional Prioritization" group="regional" criteria={analysis.regional_scorecard.criteria} total={analysis.regional_scorecard.total} adjustable={role === "validator" && !locked && !confirmed} adjusted={adjustedScores} remarks={validatorRemarks} onAdjust={(key, value) => { setAdjustedScores((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} onRemark={(key, value) => { setValidatorRemarks((prev) => ({ ...prev, [key]: value })); setEvaluationDirty(true); }} /> : <p className="text-sm text-slate-600">{analysis.regional_scorecard?.message}</p>}
-            <p className="text-sm font-semibold text-slate-800">Validator base score: {liveBaseScore.toFixed(2)}/100 <span className="font-normal text-slate-500">(AI suggestion: {Number(analysis.base_score).toFixed(2)}/100)</span></p>
+            <p className="text-sm font-semibold text-slate-800">Validator overall score: {liveBaseScore.toFixed(2)}/100 <span className="font-normal text-slate-500">(AI suggestion: {Number(analysis.base_score).toFixed(2)}/100)</span></p>
             {analysis.evaluation && <p className="text-sm text-slate-700">Saved Validator score: {Number(analysis.evaluation.effective_score).toFixed(2)}/100 · Calculated priority: {priorityLabel(analysis.evaluation.calculated_priority)}</p>}
-            {role === "validator" && !locked && !confirmed && <div className="flex justify-end"><button type="button" onClick={saveEvaluation} disabled={busy} className="portal-btn portal-btn-ghost">{evaluationDirty ? "Save Validator Evaluation" : "Save Evaluation"}</button></div>}
+            {role === "validator" && !locked && !confirmed && <div className="flex justify-end"><button type="button" onClick={saveEvaluation} disabled={busy || factsDirty} className="portal-btn portal-btn-ghost">{evaluationDirty ? "Save Validator Evaluation" : "Save Evaluation"}</button></div>}
             {negativeMatches.length > 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm"><p className="font-semibold text-amber-900">Possible negative-list matches</p>{negativeMatches.map((item) => <label key={item.key} className="mt-2 flex gap-2"><input type="checkbox" disabled={role === "admin" || locked} checked={confirmedFlags.includes(item.key)} onChange={(e) => setConfirmedFlags((prev) => e.target.checked ? [...prev, item.key] : prev.filter((key) => key !== item.key))} /><span>{item.label} {item.evidence?.length ? `(${item.evidence.join(", ")})` : ""}</span></label>)}</div>}
             {(analysis.flags?.risks || []).length > 0 && <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900"><p className="font-semibold">Risk flags</p><ul className="mt-1 list-disc pl-5">{analysis.flags?.risks?.map((item) => <li key={item}>{item}</li>)}</ul></div>}
             {role === "validator" && !locked && !confirmed && (
@@ -749,12 +815,28 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
                 <Select label="Final Priority" value={finalPriority} onChange={setFinalPriority} options={[["high", "High Priority"], ["low", "Low Priority"]]} />
                 <label className="block"><span className="text-xs font-medium text-slate-600">Override rationale {rationaleRequired ? "(required)" : "(required if final priority differs)"}</span><textarea className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" rows={2} value={overrideRationale} onChange={(e) => setOverrideRationale(e.target.value)} /></label>
                 {documentOverrideRequired && <div className="rounded-lg border border-rose-200 bg-rose-50 p-3"><label className="flex items-start gap-2 text-sm font-semibold text-rose-900"><input type="checkbox" checked={documentOverride} onChange={(event) => setDocumentOverride(event.target.checked)} /><span>Override the non-passing supporting-document assessment</span></label><label className="mt-2 block"><span className="text-xs font-medium text-rose-800">Document override rationale (required)</span><textarea className="mt-1 w-full rounded-lg border border-rose-200 px-3 py-2 text-sm" rows={3} value={documentOverrideRationale} onChange={(event) => setDocumentOverrideRationale(event.target.value)} /></label></div>}
-                <div className="flex justify-end"><button type="button" onClick={confirm} disabled={busy || evaluationDirty || !analysis.evaluation || incompleteResult || !finalPriority || (rationaleRequired && !overrideRationale.trim()) || (documentOverrideRequired && (!documentOverride || !documentOverrideRationale.trim()))} className="portal-btn portal-btn-primary">{busy ? "Saving..." : "Confirm Priority Analysis"}</button></div>
+                <div className="flex justify-end"><button type="button" onClick={confirm} disabled={busy || factsDirty || evaluationDirty || !analysis.evaluation || incompleteResult || !finalPriority || (rationaleRequired && !overrideRationale.trim()) || (documentOverrideRequired && (!documentOverride || !documentOverrideRationale.trim()))} className="portal-btn portal-btn-primary">{busy ? "Saving..." : "Confirm Priority Analysis"}</button></div>
               </div>
             )}
             {confirmed && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">Official validator decision: <strong>{priorityLabel(confirmed.final_priority)}</strong> (AI result: {priorityLabel(analysis.suggested_priority)}){confirmed.validator_name ? ` by ${confirmed.validator_name}` : ""}{confirmed.created_at ? ` on ${new Date(confirmed.created_at).toLocaleString()}` : ""}.</div>}
-            {history.length > 1 && <p className="text-xs text-slate-500">Stored scorecard versions: {history.length}. Identical inputs reuse an existing version.</p>}
           </>
+        )}
+        {history.length > 0 && (
+          <details className="rounded-xl border border-slate-200 p-3">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-800">Previous analyses ({history.length})</summary>
+            {history.map((item) => (
+              <details key={item.id} className="mt-3 space-y-3 rounded-lg border border-slate-200 p-3">
+                <summary className="cursor-pointer text-sm text-slate-800">
+                  Analysis #{item.id} · {item.rule_version} · {Number(item.base_score).toFixed(2)}/100 · {priorityLabel(item.latest_confirmation?.final_priority || item.suggested_priority)}
+                  {item.latest_confirmation && " · Confirmed"}
+                </summary>
+                <p className="text-sm text-slate-600">{item.summary}</p>
+                <CriteriaTable title="PAPs Criterion" group="pap" criteria={item.suggested_scores.pap} />
+                <CriteriaTable title="RDP Outcomes" group="rdp" criteria={item.suggested_scores.rdp_outcomes} />
+                {item.regional_scorecard?.applicable && <CriteriaTable title="Regional Prioritization" group="regional" criteria={item.regional_scorecard.criteria} />}
+              </details>
+            ))}
+          </details>
         )}
       </div>
     </div>

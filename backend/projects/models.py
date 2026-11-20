@@ -692,6 +692,23 @@ class ProjectPriorityAnalysis(models.Model):
         return f"{self.project_id} {self.suggested_priority} {self.base_score}"
 
 
+class ProjectPriorityFacts(models.Model):
+    project = models.ForeignKey(Project, on_delete=models.CASCADE)
+    revision = models.OneToOneField("ProjectRevision", on_delete=models.CASCADE, null=True, blank=True)
+    values = models.JSONField(default=dict)
+    version = models.PositiveIntegerField(default=0)
+    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project"], condition=models.Q(revision__isnull=True),
+                name="unique_project_priority_facts",
+            ),
+        ]
+
+
 class ProjectPriorityConfirmation(models.Model):
     PRIORITY_CHOICES = [
         ("high", "High Priority"),
