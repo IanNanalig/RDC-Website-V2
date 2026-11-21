@@ -11,6 +11,10 @@ from .similarity import find_similar_projects
 from projects.scoring_contract import scoring_text_field_keys
 
 
+# This local UTF-8 request budget controls how much optional history we
+# include. The provider's actual input limit is measured separately.
+SCORING_REQUEST_BUDGET_BYTES = 24_000
+
 PROJECT_CONTEXT_FIELDS = tuple(dict.fromkeys((
     "agencyName",
     *scoring_text_field_keys(),
@@ -266,7 +270,7 @@ def _clean_text(value, limit=3000):
 def _number(value, default=0.0):
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return float(default)
 
 
@@ -332,16 +336,20 @@ def _normalize_result(
     predicted_priority = str(prediction.get("priority") or "").strip().lower()
     if predicted_priority not in {"low", "high"}:
         predicted_priority = ""
-    confidence = max(0.0, min(1.0, _number(prediction.get("confidence"))))
+    confidence = _number(prediction.get("confidence"), default=-1)
+    explanation = _clean_text(prediction.get("explanation"), 2500)
+    historical_prediction = {}
+    if predicted_priority and 0 <= confidence <= 1 and explanation:
+        historical_prediction = {
+            "priority": predicted_priority,
+            "confidence": round(confidence, 4),
+            "explanation": explanation,
+        }
     return {
         "outcomes": outcomes,
         "overall_reasoning": _clean_text(raw.get("overall_reasoning"), 4000),
         "risks": _text_list(raw.get("risks"), limit=8, item_limit=500),
-        "historical_prediction": {
-            "priority": predicted_priority,
-            "confidence": round(confidence, 4),
-            "explanation": _clean_text(prediction.get("explanation"), 2500),
-        },
+        "historical_prediction": historical_prediction,
         "provider": {
             "name": "groq",
             "model": completion.model,
@@ -357,6 +365,69 @@ def _normalize_result(
     }
 
 
+def _strict_outcome_schema(expected_keys):
+    def closed_object(properties):
+        return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
+
+    text = {"type": "string"}
+    text_list = {"type": "array", "items": text}
+    return {
+        "name": "rdc_priority_outcomes",
+        "strict": True,
+        "schema": closed_object({
+            "outcome_assessments": {"type": "array", "items": closed_object({
+                "key": {"type": "string", "enum": sorted(expected_keys)},
+                "raw_score": {"type": "number"},
+                "explanation": text,
+                "evidence": text_list,
+                "recommendation": text,
+                "revision_fields": text_list,
+            })},
+            "overall_reasoning": text,
+            "risks": text_list,
+            "historical_prediction": closed_object({
+                "priority": {"type": "string", "enum": ["low", "high", ""]},
+                "confidence": {"type": "number"},
+                "explanation": text,
+            }),
+        }),
+    }
+
+
+def _scoring_messages(system_prompt, payload):
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))},
+    ]
+
+
+def _scoring_request_bytes(messages, response_schema):
+    request = {"messages": messages, "response_format": {"type": "json_schema", "json_schema": response_schema}}
+    return len(json.dumps(request, ensure_ascii=False).encode("utf-8"))
+
+
+def _without_historical_context(payload):
+    return {
+        **payload,
+        "historical_reference_model": {},
+        "validator_confirmed_historical_examples": [],
+    }
+
+
+def _compact_scoring_payload(payload):
+    compact = _without_historical_context(payload)
+    project = compact["project"]
+    fields = [field for field in project.get("form_fields", []) if field.get("answer_state") in {"answered", "required_missing"}]
+    answers = {field["key"]: field["answer"] for field in fields if field.get("answer_state") == "answered"}
+    compact["project"] = {
+        key: value for key, value in project.items()
+        if key != "form_fields" and (key not in answers or value != answers[key])
+    }
+    if fields:
+        compact["project"]["form_fields"] = fields
+    return compact
+
+
 def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector, guidelines, *, regional_context=None):
     if not is_groq_enabled():
         return None
@@ -366,6 +437,10 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
         exclude_project_id=getattr(project, "pk", None),
     )
     project_payload = _project_payload(snapshot)
+    # Scoring needs the selected answers and their labels. Full dropdown
+    # catalogs are useful in the admin preview, but inflate provider requests.
+    for field in project_payload.get("form_fields", []):
+        field.pop("options", None)
     field_keys = {
         str(item.get("key") or "")
         for item in project_payload.get("form_fields", [])
@@ -400,8 +475,10 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
         "outcome_assessments, overall_reasoning, risks, historical_prediction. outcome_assessments must be an array of "
         "objects containing key, raw_score, explanation, evidence, recommendation, revision_fields. Evidence must quote "
         "short exact phrases from the supplied project. Return exactly one assessment for every supplied criterion key, "
-        "including a zero with an explanation when there is no qualifying evidence. revision_fields may contain only supplied project field names. "
-        "historical_prediction must contain priority (low or high), confidence (0 to 1), and explanation. "
+        "including a zero with an explanation and an empty evidence array when there is no qualifying evidence. "
+        "Use empty arrays for risks or revision_fields when none apply. revision_fields may contain only supplied project field names. "
+        "If useful historical examples are available, historical_prediction includes priority (low or high), confidence (0 to 1), and explanation. "
+        "Otherwise use empty strings for historical priority and explanation and zero confidence. "
         "Explain material uncertainty and never claim to validate or endorse the project."
     )
     user_payload = {
@@ -419,7 +496,7 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
             ),
         },
         "historical_reference_model": reference_model,
-        "validator_confirmed_historical_examples": historical,
+        "validator_confirmed_historical_examples": list(historical),
         "allowed_revision_fields": sorted(field_keys),
     }
     if regional_context is not None:
@@ -429,24 +506,24 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
         }
 
     expected_criteria = {str(item.get("key") or "") for item in criteria_payload}
+    response_schema = _strict_outcome_schema(expected_criteria) if expected_criteria else None
+    messages = _scoring_messages(system_prompt, user_payload)
+    examples = user_payload["validator_confirmed_historical_examples"]
+    while examples and _scoring_request_bytes(messages, response_schema) > SCORING_REQUEST_BUDGET_BYTES:
+        examples.pop()
+        if not examples:
+            user_payload = _without_historical_context(user_payload)
+        messages = _scoring_messages(system_prompt, user_payload)
+    if _scoring_request_bytes(messages, response_schema) > SCORING_REQUEST_BUDGET_BYTES:
+        user_payload = _compact_scoring_payload(user_payload)
+        messages = _scoring_messages(system_prompt, user_payload)
+
     validation_issue = ""
 
     def valid_provider_output(data):
         """Reject incomplete provider JSON instead of silently displaying it."""
         nonlocal validation_issue
-        validation_issue = "Invalid historical prediction metadata"
-        if not isinstance(data, dict) or not isinstance(data.get("historical_prediction"), dict):
-            return False
-        historical_prediction = data["historical_prediction"]
-        if str(historical_prediction.get("priority") or "").lower() not in {"low", "high"}:
-            return False
-        try:
-            confidence = float(historical_prediction.get("confidence"))
-        except (TypeError, ValueError, OverflowError):
-            return False
-        if not 0 <= confidence <= 1 or not str(historical_prediction.get("explanation") or "").strip():
-            return False
-        rows = data.get("outcome_assessments")
+        rows = data.get("outcome_assessments") if isinstance(data, dict) else None
         validation_issue = "Expected an array of outcome assessments"
         if not isinstance(rows, list):
             return False
@@ -470,37 +547,52 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
                 return False
             if isinstance(row.get("raw_score"), bool) or not math.isfinite(score) or not 0 <= score <= 10 or not str(row.get("explanation") or "").strip():
                 return False
-            # Groq can legitimately encode one exact evidence phrase as a
-            # string instead of a one-item JSON array. Normalize it below.
-            if not isinstance(row.get("evidence"), (list, str)):
-                return False
-            if not isinstance(row.get("revision_fields", []), list):
+            # A single quoted phrase is usable evidence. An explicit zero
+            # can also describe the absence of evidence in its explanation.
+            if not isinstance(row.get("evidence"), (list, str)) and not (
+                score == 0 and row.get("evidence") is None
+            ):
                 return False
         missing = sorted(expected_criteria - seen)
         validation_issue = f"Missing outcome assessments for {', '.join(missing)}" if missing else ""
         return not missing
 
+    def request_outcomes(request_messages):
+        nonlocal validation_issue
+        validation_issue = ""
+        return complete_json(request_messages, temperature=0.1, validate=valid_provider_output, response_schema=response_schema)
+
     try:
-        completion = complete_json(
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False, default=str)},
-            ],
-            temperature=0.1,
-            validate=valid_provider_output,
-        )
+        try:
+            completion = request_outcomes(messages)
+        except GroqUnavailable as exc:
+            if exc.reason != "request_too_large":
+                raise
+            compact_payload = _compact_scoring_payload(user_payload)
+            compact_messages = _scoring_messages(system_prompt, compact_payload)
+            if _scoring_request_bytes(compact_messages, response_schema) >= _scoring_request_bytes(messages, response_schema):
+                raise
+            user_payload = compact_payload
+            try:
+                completion = request_outcomes(compact_messages)
+            except GroqUnavailable as retry_error:
+                raise GroqUnavailable(
+                    f"Original request: {exc} Smaller retry: {retry_error}", reason=retry_error.reason,
+                ) from retry_error
     except GroqUnavailable as exc:
         if validation_issue:
-            raise GroqUnavailable(f"{exc} {validation_issue}.") from exc
+            raise GroqUnavailable(f"{exc} {validation_issue}.", reason=exc.reason) from exc
         raise
     if not valid_provider_output(completion.data):
-        raise GroqUnavailable(f"Scoring response did not match the active outcome criteria. {validation_issue}.")
+        raise GroqUnavailable(
+            f"Scoring response did not match the active outcome criteria. {validation_issue}.", reason="invalid_response",
+        )
     return _normalize_result(
         completion.data,
         criteria_payload,
         field_keys,
         completion,
-        len(historical),
+        len(user_payload["validator_confirmed_historical_examples"]),
         dataset_version,
         reference_model,
     )

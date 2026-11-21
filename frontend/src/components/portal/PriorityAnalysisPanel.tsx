@@ -299,6 +299,24 @@ const previewOverallScore = (analysis: Analysis, adjusted: Record<string, number
   return Number(cents + (remainder > denominator || (remainder === denominator && cents % 2n !== 0n) ? 1n : 0n)) / 100;
 };
 
+const OUTCOME_SCORING_WARNING = "AI outcome scoring could not return a valid result for the active criteria. Retry the scorer.";
+
+const scoringError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : "Failed to run priority analysis.";
+  try {
+    const payload = JSON.parse(message);
+    if (payload?.code === "ai_outcome_unavailable") {
+      return { message: OUTCOME_SCORING_WARNING, retryAvailable: payload.retry_available !== false };
+    }
+    if (typeof payload?.detail === "string" && payload.detail.trim()) {
+      return { message: payload.detail.trim(), retryAvailable: payload.retry_available !== false };
+    }
+  } catch {
+    // Network errors and local validation messages already contain plain text.
+  }
+  return { message, retryAvailable: true };
+};
+
 const CriteriaTable: React.FC<{ title: string; group: string; criteria?: Criterion[]; total?: number; adjustable?: boolean; adjusted?: Record<string, number>; remarks?: Record<string, string>; onAdjust?: (key: string, value: number) => void; onRemark?: (key: string, value: string) => void }> = ({
   title,
   group,
@@ -486,8 +504,8 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
       setNotice(response?.reused ? "Identical inputs detected. Reused the existing deterministic scorecard." : "Priority analysis completed.");
       await load();
     } catch (error) {
-      setRetryAvailable(true);
-      const message = error instanceof Error ? error.message : "Failed to run priority analysis.";
+      const { message, retryAvailable: canRetry } = scoringError(error);
+      setRetryAvailable(canRetry);
       const needsProjectInformation = message.startsWith("Required project or validator input is missing");
       setProcessingProgress((current) => current ? {
         ...current,
@@ -656,7 +674,9 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
           </fieldset>
         )}
 
-        {notice && <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">{notice}</div>}
+        {notice && (notice === OUTCOME_SCORING_WARNING || !(processingProgress?.failed && processingProgress.detail === notice)) && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">{notice}</div>
+        )}
         {!analysis ? (
           <p className="text-sm text-slate-500">{role === "validator" ? "Run the scorer to generate the first recommendation." : "No priority analysis has been run yet."}</p>
         ) : (

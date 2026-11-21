@@ -1,4 +1,5 @@
 import json
+import io
 import urllib.error
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -40,6 +41,39 @@ class GroqClientTests(SimpleTestCase):
         second_payload = json.loads(urlopen.call_args_list[1].args[0].data.decode("utf-8"))
         self.assertEqual(first_payload["model"], "primary-model")
         self.assertEqual(second_payload["model"], "backup-model")
+        self.assertEqual(first_payload["response_format"], {"type": "json_object"})
+
+    @override_settings(
+        GROQ_ENABLED=True, GROQ_API_KEY="test-key",
+        GROQ_PRIMARY_MODEL="openai/gpt-oss-20b", GROQ_BACKUP_MODEL="legacy-model",
+    )
+    @patch("ai_engine.groq_client.urllib.request.urlopen")
+    def test_structured_mode_keeps_legacy_fallback_and_logs_actual_status(self, urlopen):
+        urlopen.side_effect = [
+            urllib.error.HTTPError("https://example.test", 429, "private error text", None, None),
+            urllib.error.HTTPError("https://example.test", 429, "private error text", None, None),
+        ]
+        schema = {"name": "test", "strict": True, "schema": {"type": "object"}}
+        with self.assertRaises(GroqUnavailable) as raised:
+            complete_json([], response_schema=schema)
+        self.assertEqual(raised.exception.reason, "rate_limited")
+        self.assertIn("openai/gpt-oss-20b: HTTP 429", str(raised.exception))
+        self.assertNotIn("private error text", str(raised.exception))
+        modes = [json.loads(call.args[0].data)["response_format"] for call in urlopen.call_args_list]
+        self.assertEqual(modes, [{"type": "json_schema", "json_schema": schema}, {"type": "json_object"}])
+
+    @override_settings(GROQ_ENABLED=True, GROQ_API_KEY="test-key", GROQ_PRIMARY_MODEL="one", GROQ_BACKUP_MODEL="")
+    @patch("ai_engine.groq_client.urllib.request.urlopen")
+    def test_http_error_logs_safe_provider_code_without_body(self, urlopen):
+        payload = {"error": {"code": "context_length_exceeded", "message": "private context"}}
+        urlopen.side_effect = urllib.error.HTTPError(
+            "https://example.test", 400, "Bad Request", None, io.BytesIO(json.dumps(payload).encode()),
+        )
+        with self.assertRaises(GroqUnavailable) as raised:
+            complete_json([])
+        self.assertEqual(raised.exception.reason, "request_too_large")
+        self.assertIn("HTTP 400 (context_length_exceeded)", str(raised.exception))
+        self.assertNotIn("private context", str(raised.exception))
 
     @override_settings(
         GROQ_ENABLED=True,
@@ -59,6 +93,52 @@ class GroqClientTests(SimpleTestCase):
 
 
 class GroqFeatureTests(SimpleTestCase):
+    @patch("ai_engine.groq_priority.is_groq_enabled", return_value=True)
+    @patch("ai_engine.groq_priority.complete_json")
+    @patch("ai_engine.groq_priority._project_payload")
+    @patch("ai_engine.groq_priority._historical_context")
+    def test_outcome_context_budget_and_size_retry_preserve_scoring_inputs(self, history, project_payload, completion, _enabled):
+        examples = [{"project_text": str(index) * 8_000} for index in range(6)]
+        history.return_value = (examples, [], "dataset-1", {"version": "history-1"})
+        project_payload.return_value = {
+            "objective": "Keep the drainage outlet open.",
+            "program": "Independent canonical answer",
+            "form_fields": [
+                {"key": "objective", "answer": "Keep the drainage outlet open.", "answer_state": "answered"},
+                {"key": "custom_required", "answer": None, "answer_state": "required_missing"},
+                {"key": "custom_hidden", "answer": None, "answer_state": "hidden_by_condition"},
+            ],
+        }
+        facts = {"supporting_document_evidence": {"status": "pass", "summary": "A gated outlet."}}
+        criteria = [{"key": "utility", "label": "Utility", "weight": 10}]
+        data = {"outcome_assessments": [{"key": "utility", "raw_score": 8, "explanation": "A gated outlet.", "evidence": []}]}
+        model_response = GroqCompletion(data, "test-model", False, ("test-model",))
+        completion.side_effect = [GroqUnavailable("HTTP 413", reason="request_too_large"), model_response]
+
+        result = analyze_priority_with_groq(SimpleNamespace(pk=1), {}, facts, criteria, "infrastructure", [])
+
+        self.assertEqual(completion.call_count, 2)
+        primary, retry = [json.loads(call.args[0][-1]["content"]) for call in completion.call_args_list]
+        sent = primary["validator_confirmed_historical_examples"]
+        self.assertGreater(len(sent), 0)
+        self.assertLess(len(sent), len(examples))
+        self.assertEqual(sent, examples[:len(sent)])
+        self.assertEqual(retry["validator_confirmed_historical_examples"], [])
+        self.assertEqual(retry["validator_facts"], facts)
+        self.assertEqual(retry["criteria"], primary["criteria"])
+        self.assertEqual(retry["project"]["program"], "Independent canonical answer")
+        self.assertEqual([field["key"] for field in retry["project"]["form_fields"]], ["objective", "custom_required"])
+        self.assertEqual(retry["project"]["form_fields"][0]["answer"], "Keep the drainage outlet open.")
+        self.assertEqual(result["provider"]["historical_project_count"], 0)
+        self.assertEqual(result["outcomes"][0]["raw_score"], 8)
+
+        completion.reset_mock(side_effect=True)
+        completion.side_effect = GroqUnavailable("HTTP 429", reason="rate_limited")
+        with self.assertRaises(GroqUnavailable) as failed:
+            analyze_priority_with_groq(SimpleNamespace(pk=1), {}, facts, criteria, "infrastructure", [])
+        self.assertEqual(failed.exception.reason, "rate_limited")
+        self.assertEqual(completion.call_count, 1)
+
     @patch("ai_engine.groq_priority._historical_context")
     @patch("ai_engine.groq_priority.complete_json")
     @patch("ai_engine.groq_priority.is_groq_enabled", return_value=True)
@@ -96,6 +176,10 @@ class GroqFeatureTests(SimpleTestCase):
             self.assertEqual([item["key"] for item in payload["criteria"]], ["connectivity"])
             self.assertIn("only as context", regional["instruction"])
             self.assertTrue(kwargs["validate"](response_data))
+            self.assertEqual(
+                kwargs["response_schema"]["schema"]["properties"]["outcome_assessments"]["items"]["properties"]["key"]["enum"],
+                ["connectivity"],
+            )
             return GroqCompletion(
                 data=response_data,
                 model="primary-model",
@@ -197,7 +281,6 @@ class GroqFeatureTests(SimpleTestCase):
         invalid = completion.return_value.data
         with self.assertRaises(GroqUnavailable):
             analyze_priority_with_groq(*args)
-        invalid["historical_prediction"]["confidence"] = 1
         row = invalid["outcome_assessments"][0]
         invalid["outcome_assessments"] = [row]
         with self.assertRaises(GroqUnavailable):
@@ -208,6 +291,16 @@ class GroqFeatureTests(SimpleTestCase):
             with self.subTest(rows=rows), self.assertRaises(GroqUnavailable):
                 analyze_priority_with_groq(*args)
         invalid["outcome_assessments"] = [row]
+        self.assertEqual(analyze_priority_with_groq(*args)["historical_prediction"], {})
+        invalid.pop("historical_prediction")
+        row["evidence"] = None
+        row["revision_fields"] = "unstructured advisory field"
+        result = analyze_priority_with_groq(*args)
+        self.assertEqual(result["historical_prediction"], {})
+        self.assertEqual(result["outcomes"][0]["evidence"], [])
+        self.assertEqual(result["outcomes"][0]["revision_fields"], [])
+        row["revision_fields"] = ["objective", "secretField"]
+        invalid["historical_prediction"] = {"priority": "high", "confidence": 1, "explanation": "Advisory only."}
         result = analyze_priority_with_groq(*args)
         self.assertEqual(result["outcomes"][0]["raw_score"], 0)
         self.assertEqual(result["outcomes"][0]["revision_fields"], ["objective"])

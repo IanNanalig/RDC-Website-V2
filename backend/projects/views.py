@@ -4646,7 +4646,10 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 enforce_input_contract=True, revision=revision, facts_version=facts.version,
             )
         except PriorityOutcomeError as exc:
-            return Response({"detail": str(exc), "code": "ai_outcome_unavailable", "retry_available": True}, status=502)
+            return Response({
+                "detail": str(exc), "code": "ai_outcome_unavailable", "reason": exc.reason,
+                "retry_available": exc.reason != "provider_auth",
+            }, status=502)
         except PriorityInputError as exc:
             missing_labels = [
                 str(item.get("field_label") or item.get("field_key") or "Required input")

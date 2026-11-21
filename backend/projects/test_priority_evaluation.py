@@ -239,6 +239,7 @@ class ValidatorFactsApiTests(APITestCase):
         broken = True
         failed = self.client.post(self.url + "run/", {"facts_version": 1}, format="json")
         self.assertEqual(failed.status_code, 502, failed.data)
+        self.assertEqual(failed.data["reason"], "invalid_response")
         self.assertEqual(ProjectPriorityAnalysis.objects.filter(project=self.project).count(), 1)
         broken = False
         successful = self.client.post(self.url + "run/", {"facts_version": 1}, format="json")

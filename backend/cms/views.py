@@ -1725,7 +1725,10 @@ class AdminAIPriorityDraftPreviewView(APIView):
             )
         except PriorityOutcomeError as exc:
             return Response(
-                {"preview": True, "detail": str(exc), "code": "ai_outcome_unavailable", "retry_available": True},
+                {
+                    "preview": True, "detail": str(exc), "code": "ai_outcome_unavailable", "reason": exc.reason,
+                    "retry_available": exc.reason != "provider_auth",
+                },
                 status=status.HTTP_502_BAD_GATEWAY,
             )
         except PriorityInputError as exc:

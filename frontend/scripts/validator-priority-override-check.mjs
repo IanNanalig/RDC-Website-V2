@@ -41,6 +41,7 @@ let savedPayload = null;
 let confirmedPayload = null;
 let regionalTotal = "200000000.00";
 let factsVersion = 0;
+let scorerUnavailable = false;
 let currentAnalysis = analysis;
 let facts = { spatialCoverageScope: "specific_lgus" };
 const priorAnalyses = [analysis];
@@ -69,6 +70,15 @@ await page.route("**/api/**", async (route) => {
   if (url.includes("priority-analysis/run/") && method === "POST") {
     const payload = JSON.parse(route.request().postData() || "{}");
     assert.equal(payload.facts_version, factsVersion);
+    if (scorerUnavailable) {
+      return route.fulfill({
+        status: 502, contentType: "application/json", headers,
+        body: JSON.stringify({
+          detail: "Groq rejected the scoring request because it exceeded the provider's input limits.",
+          code: "ai_outcome_unavailable", reason: "request_too_large", retry_available: true,
+        }),
+      });
+    }
     currentAnalysis = {
       ...analysis, id: analysis.id + factsVersion, base_score: "29.00", evaluation: null, latest_confirmation: null,
       suggested_scores: { ...analysis.suggested_scores, score_total_version: 3, base_total: 29 },
@@ -150,6 +160,13 @@ try {
   assert.equal(await panel.getByText("Previous analyses (2)", { exact: true }).count(), 1);
   await panel.getByLabel("Project Cost raw score").fill("10");
   await panel.getByText("Validator overall score: 35.00/100", { exact: false }).waitFor();
+  scorerUnavailable = true;
+  await panel.getByRole("button", { name: "Run AI Scorer" }).click();
+  const warning = panel.getByText("AI outcome scoring could not return a valid result for the active criteria. Retry the scorer.", { exact: true });
+  await warning.first().waitFor();
+  assert.equal(await warning.count(), 2);
+  await panel.getByRole("button", { name: "Retry AI Scorer" }).waitFor();
+  assert.equal(await panel.getByText(/request_too_large|exceeded the provider's input limits/).count(), 0);
   console.log("PASS Validator score editing, confirmation, regional visibility, fact restoration, and history");
 
   const admin = await context.newPage();

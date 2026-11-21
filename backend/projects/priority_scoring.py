@@ -39,7 +39,7 @@ ANALYSIS_GUIDANCE_VERSION = "contextual-explanations-v3"
 # Changing how safe Groq JSON responses are normalized must result in a fresh
 # analysis, rather than reusing an older deterministic fallback for the same
 # project snapshot.
-GROQ_RESPONSE_CONTRACT_VERSION = "groq-json-v3-complete-outcomes"
+GROQ_RESPONSE_CONTRACT_VERSION = "groq-json-v5-budgeted-context"
 
 DEFAULT_OUTCOME_CONTEXT_PHRASES = [
     "improve", "increase", "expand", "provide", "strengthen", "reduce", "protect",
@@ -1586,7 +1586,18 @@ class PriorityInputError(ValueError):
 
 
 class PriorityOutcomeError(ValueError):
-    pass
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__({
+            "rate_limited": "Groq is temporarily rate limiting scoring requests. Wait before retrying.",
+            "provider_auth": "Groq rejected the scoring service credentials. Ask an administrator to check the provider configuration.",
+            "provider_timeout": "Groq timed out while scoring outcomes. Retry the scorer.",
+            "provider_network": "The scoring service could not connect to Groq. Retry the scorer.",
+            "provider_server_error": "Groq reported a server error while scoring outcomes. Retry the scorer.",
+            "provider_request_rejected": "Groq rejected the scoring request. Ask an administrator to check the provider configuration and server log.",
+            "request_too_large": "Groq rejected the scoring request because it exceeded the provider's input limits. Ask an administrator to review the scoring input size.",
+            "invalid_response": "Groq returned an incomplete or invalid outcome scorecard. Retry the scorer.",
+        }.get(reason, "Groq could not complete the outcome scoring request. Retry the scorer."))
 
 
 def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=None, persist=True, enforce_input_contract=False, revision=None, facts_version=None):
@@ -1769,7 +1780,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         )
     except GroqUnavailable as exc:
         logger.warning("Outcome scoring unavailable for project %s, rules %s: %s", getattr(project, "pk", None), rules.version, exc)
-        raise PriorityOutcomeError("AI outcome scoring could not return a valid result for the active criteria. Retry the scorer.") from exc
+        raise PriorityOutcomeError(exc.reason) from exc
     if groq_analysis:
         assessment_by_key = {
             item["key"]: item
