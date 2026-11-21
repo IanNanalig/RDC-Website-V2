@@ -3214,7 +3214,9 @@ def _validate_contributor_simplified_write(user, incoming_profile, *, project=No
         if not unchanged_agency and not legacy_agency_fill:
             return "Agency Name is locked and cannot be changed by a contributor."
 
-    existing_ids = set(project.collaborating_agencies.values_list("pk", flat=True)) if project else set()
+    existing_ids = set()
+    if project is not None and project.pk is not None and not project._state.adding:
+        existing_ids = set(project.collaborating_agencies.values_list("pk", flat=True))
     collaborators = _validate_collaborating_agencies(incoming_profile, primary_agency, existing_ids=existing_ids)
     if isinstance(collaborators, str):
         return collaborators
