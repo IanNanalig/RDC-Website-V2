@@ -125,6 +125,7 @@ from .document_assessments import (
     serialize_document_assessment,
 )
 from .utils import derive_ncr_lgus, format_project_locations
+from .form_catalogs import OUTCOME_GROUPS, project_outcome_context
 from .form_migrations import (
     analyze_profile_migration,
     migration_eligibility,
@@ -266,7 +267,7 @@ def _is_collaborating_agency_contributor(user, project):
     )
 
 
-def _validate_collaborating_agencies(profile_data, primary_agency):
+def _validate_collaborating_agencies(profile_data, primary_agency, *, existing_ids=()):
     simplified = _simplified_from_profile(profile_data)
     if "collaboratingAgencies" not in simplified:
         return None
@@ -285,12 +286,18 @@ def _validate_collaborating_agencies(profile_data, primary_agency):
     primary_code = getattr(primary_agency, "code", "") or str(primary_agency or "")
     resolved = []
     for value in normalized:
-        agency = _agency_for_value(value, active_only=True)
-        if agency is None:
+        if value.startswith("agency:"):
+            raw_id = value.removeprefix("agency:")
+            agency = Agency.objects.filter(pk=int(raw_id)).first() if raw_id.isascii() and raw_id.isdecimal() and len(raw_id) <= 18 else None
+        else:
+            agency = _agency_for_value(value)
+        if agency is None or agency.system_key or (not agency.is_active and agency.pk not in existing_ids):
             return f"Unknown or inactive collaborating agency: {value}."
         if primary_code and agency.code.casefold() == primary_code.casefold():
             return "The primary agency cannot also be a collaborating agency."
         resolved.append(agency)
+    if len({agency.pk for agency in resolved}) != len(resolved):
+        return "A collaborating agency can only be selected once."
     return resolved
 
 
@@ -298,14 +305,14 @@ def _sync_project_collaborators(project, profile_data, actor=None):
     simplified = _simplified_from_profile(profile_data)
     if "collaboratingAgencies" not in simplified:
         return
-    resolved = _validate_collaborating_agencies(profile_data, project.primary_agency or project.agency)
-    if isinstance(resolved, str):
-        raise ValidationError(resolved)
-    target_ids = {agency.id for agency in resolved}
     existing_links = list(
         ProjectCollaboratingAgency.objects.filter(project=project).select_related("agency")
     )
     existing_ids = {link.agency_id for link in existing_links}
+    resolved = _validate_collaborating_agencies(profile_data, project.primary_agency or project.agency, existing_ids=existing_ids)
+    if isinstance(resolved, str):
+        raise ValidationError(resolved)
+    target_ids = {agency.id for agency in resolved}
     existing_codes = sorted(link.agency.code for link in existing_links)
     ProjectCollaboratingAgency.objects.filter(project=project).exclude(agency_id__in=target_ids).delete()
     ProjectCollaboratingAgency.objects.bulk_create(
@@ -1006,7 +1013,7 @@ def _normalize_location_for_form_schema(profile_data, schema):
         ),
         None,
     )
-    if location_field is None:
+    if location_field is None or location_field.get("catalog"):
         return profile_data, ""
     simplified = profile_data.get("simplified_form")
     if not isinstance(simplified, dict):
@@ -1064,10 +1071,24 @@ def _upgrade_profile_form_marker(profile_data, source_profile_data, target_schem
     if saved_key != source_key or saved_version >= source_version:
         return profile_data, None
     upgraded = deepcopy(profile_data)
+    if target_schema is None:
+        target_schema, _ = resolve_simplified_form_schema(source_profile_data)
+    if isinstance(target_schema, dict):
+        from .form_catalogs import upgrade_catalog_answers
+
+        try:
+            upgraded = upgrade_catalog_answers(upgraded, target_schema)
+        except ValueError as exc:
+            return profile_data, {"error": str(exc)}
     upgraded, location_error = _normalize_location_for_form_schema(upgraded, target_schema)
     if location_error:
         return profile_data, {"error": location_error}
     upgraded["form_schema"] = {"key": source_key, "version": source_version}
+    if any(field.get("catalog") for field in schema_fields(target_schema)):
+        try:
+            validate_simplified_answers(upgraded, previous_profile=profile_data)
+        except FormSchemaError as exc:
+            return profile_data, {"error": str(exc)}
     return upgraded, {
         "form_key": source_key,
         "previous_form_version": saved_version,
@@ -3193,7 +3214,8 @@ def _validate_contributor_simplified_write(user, incoming_profile, *, project=No
         if not unchanged_agency and not legacy_agency_fill:
             return "Agency Name is locked and cannot be changed by a contributor."
 
-    collaborators = _validate_collaborating_agencies(incoming_profile, primary_agency)
+    existing_ids = set(project.collaborating_agencies.values_list("pk", flat=True)) if project else set()
+    collaborators = _validate_collaborating_agencies(incoming_profile, primary_agency, existing_ids=existing_ids)
     if isinstance(collaborators, str):
         return collaborators
 
@@ -3304,7 +3326,7 @@ def _apply_simplified_meta(incoming_profile, existing_profile, user):
 
     # Always keep an up-to-date deterministic public summary for reviewers/public dashboard.
     try:
-        incoming_profile["public_summary"] = build_public_summary(simplified)
+        incoming_profile["public_summary"] = build_public_summary(simplified, incoming_profile.get("catalog_selections"))
     except Exception:
         # Never block a save on summary generation issues.
         pass
@@ -3333,7 +3355,7 @@ def _project_public_summary(profile_data):
             return summary
         simplified = profile_data.get("simplified_form")
         if isinstance(simplified, dict):
-            return build_public_summary(simplified)
+            return build_public_summary(simplified, profile_data.get("catalog_selections"))
     return {}
 
 
@@ -3380,7 +3402,7 @@ def _ensure_public_revision(project, user=None):
         return current
     profile = deepcopy(project.profile_data) if isinstance(project.profile_data, dict) else {}
     if isinstance(profile.get("simplified_form"), dict):
-        profile["public_summary"] = build_public_summary(profile["simplified_form"])
+        profile["public_summary"] = build_public_summary(profile["simplified_form"], profile.get("catalog_selections"))
     ProjectRevision.objects.filter(project=project, is_public_current=True).update(is_public_current=False)
     revision = ProjectRevision.objects.create(
         project=project,
@@ -3407,7 +3429,7 @@ def _apply_revision_to_project(revision, user):
     profile = deepcopy(revision.profile_data_snapshot) if isinstance(revision.profile_data_snapshot, dict) else {}
     simplified = _simplified_from_profile(profile)
     if simplified:
-        profile["public_summary"] = build_public_summary(simplified)
+        profile["public_summary"] = build_public_summary(simplified, profile.get("catalog_selections"))
     project.name = str(simplified.get("projectActivity") or simplified.get("program") or project.name or "Untitled Project")
     project.description = str(simplified.get("description") or simplified.get("objective") or project.description or "")
     project.agency = str(simplified.get("agencyName") or project.agency or "")
@@ -4120,10 +4142,13 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         ):
             project.profile_data["form_schema"] = {"key": "simplified-rdip", "version": 1, "legacy": True}
         try:
-            validate_simplified_answers(project.profile_data, require_complete=versioned_form)
+            validate_simplified_answers(project.profile_data, require_complete=versioned_form, previous_profile=project.profile_data)
         except FormSchemaError as exc:
             return Response({"detail": str(exc)}, status=400)
-        collaborators = _validate_collaborating_agencies(project.profile_data, project.primary_agency or project.agency)
+        collaborators = _validate_collaborating_agencies(
+            project.profile_data, project.primary_agency or project.agency,
+            existing_ids=set(project.collaborating_agencies.values_list("pk", flat=True)),
+        )
         if isinstance(collaborators, str):
             return Response({"detail": collaborators}, status=400)
         document_error = validate_project_documents_for_submit(project)
@@ -4138,7 +4163,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 try:
                     sf = project.profile_data.get("simplified_form")
                     if isinstance(sf, dict):
-                        project.profile_data["public_summary"] = build_public_summary(sf)
+                        project.profile_data["public_summary"] = build_public_summary(sf, project.profile_data.get("catalog_selections"))
                 except Exception:
                     pass
                 project.save(update_fields=["status", "workflow_status", "profile_data", "updated_at"])
@@ -4248,6 +4273,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
             validate_simplified_answers(
                 edited_profile,
                 require_complete=versioned_form and action_value in ("endorse", "approve", "validate"),
+                previous_profile=_validator_review_source(project.profile_data),
             )
         except FormSchemaError as exc:
             return Response({"detail": str(exc)}, status=400)
@@ -4336,7 +4362,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         try:
             sf = profile_data.get("simplified_form")
             if isinstance(sf, dict):
-                profile_data["public_summary"] = build_public_summary(sf)
+                profile_data["public_summary"] = build_public_summary(sf, profile_data.get("catalog_selections"))
         except Exception:
             pass
         project.profile_data = profile_data
@@ -4445,6 +4471,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         snapshot = _validator_review_source(profile)
         rules = get_active_priority_rule_set()
         snapshot_hash = _confirmation_snapshot_hash(snapshot)
+        outcome_context = project_outcome_context(_simplified_from_profile(snapshot))
         facts = priority_facts_state(project, revision, latest=analyses[0] if analyses else None)
         current_analysis = next(
             (
@@ -4452,6 +4479,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 if item.rule_set_id == rules.pk
                 and (not facts.version or item.suggested_scores.get("facts_version") == facts.version)
                 and _confirmation_snapshot_hash(item.input_snapshot) == snapshot_hash
+                and item.suggested_scores.get("outcome_context", outcome_context) == outcome_context
             ),
             None,
         )
@@ -4465,6 +4493,11 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
                 "validator_facts": facts.values,
                 "facts_version": facts.version,
                 "regional_eligibility": regional_eligibility(snapshot, priority_rule_config(rules)["thresholds"]),
+                "outcome_tracks": [
+                    {"value": group, "label": OUTCOME_GROUPS[group]}
+                    for group in outcome_context["groups"] if group in OUTCOME_GROUPS
+                ] if outcome_context is not None else None,
+                "outcome_track_field": "sceeedTrack" if outcome_context and outcome_context["committee"] == "sceed" else "outcomeTrack",
             }
         )
 
@@ -4480,9 +4513,11 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         expected = request.data.get("facts_version")
         if type(expected) is not int or expected < 0:
             return Response({"detail": "A valid facts version is required."}, status=400)
-        context = regional_eligibility(_validator_review_source(profile), priority_rule_config(get_active_priority_rule_set())["thresholds"])
+        snapshot = _validator_review_source(profile)
+        context = regional_eligibility(snapshot, priority_rule_config(get_active_priority_rule_set())["thresholds"])
+        outcome_context = project_outcome_context(_simplified_from_profile(snapshot))
         try:
-            facts, changed_keys = save_priority_facts(project, revision, request.user, request.data.get("supplements"), expected, context["applicable"])
+            facts, changed_keys = save_priority_facts(project, revision, request.user, request.data.get("supplements"), expected, context["applicable"], outcome_context)
         except StalePriorityFacts as exc:
             return Response({"detail": str(exc), "code": "priority_facts_stale"}, status=409)
         except ValueError as exc:
@@ -4557,7 +4592,10 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         elif isinstance(request.data.get("supplements"), dict):
             context = regional_eligibility(snapshot, priority_rule_config(rules)["thresholds"])
             try:
-                facts, changed_keys = save_priority_facts(project, revision, request.user, request.data["supplements"], None, context["applicable"])
+                facts, changed_keys = save_priority_facts(
+                    project, revision, request.user, request.data["supplements"], None,
+                    context["applicable"], project_outcome_context(_simplified_from_profile(snapshot)),
+                )
             except StalePriorityFacts as exc:
                 return Response({"detail": str(exc), "code": "priority_facts_stale"}, status=409)
             except ValueError as exc:
@@ -4842,7 +4880,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         try:
             sf = profile_data.get("simplified_form")
             if isinstance(sf, dict):
-                profile_data["public_summary"] = build_public_summary(sf)
+                profile_data["public_summary"] = build_public_summary(sf, profile_data.get("catalog_selections"))
         except Exception:
             pass
         project.profile_data = profile_data
@@ -5113,7 +5151,7 @@ class EmployeeProjectViewSet(BaseProjectViewSet):
             try:
                 simplified = profile_data.get("simplified_form")
                 if isinstance(simplified, dict):
-                    profile_data["public_summary"] = build_public_summary(simplified)
+                    profile_data["public_summary"] = build_public_summary(simplified, profile_data.get("catalog_selections"))
             except Exception:
                 pass
             data["profile_data"] = profile_data
@@ -5562,7 +5600,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                 "key": "simplified-rdip", "version": 1, "legacy": True,
             }
         try:
-            validate_simplified_answers(revision.profile_data_snapshot, require_complete=versioned_form)
+            validate_simplified_answers(revision.profile_data_snapshot, require_complete=versioned_form, previous_profile=revision.profile_data_snapshot)
         except FormSchemaError as exc:
             return Response({"detail": str(exc)}, status=400)
         revision.profile_data_snapshot["contributor_snapshot"] = _strip_validator_meta(revision.profile_data_snapshot)
@@ -5638,6 +5676,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
             validate_simplified_answers(
                 edited_profile,
                 require_complete=versioned_form and action_value in ("endorse", "validate", "approve"),
+                previous_profile=_validator_review_source(revision.profile_data_snapshot),
             )
         except FormSchemaError as exc:
             return Response({"detail": str(exc)}, status=400)

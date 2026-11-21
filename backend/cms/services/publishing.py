@@ -15,6 +15,7 @@ from cms.form_schema import (
     FormSchemaError,
     build_form_migration_plan,
     normalize_system_managed_sections,
+    prepare_catalog_schema,
     validate_draft_schema,
     validate_form_schema,
 )
@@ -119,7 +120,9 @@ def publish_contributor_form(form, user=None):
             if locked_form.current_published_version_id
             else None
         )
-        schema = validate_form_schema(locked_form.draft_schema_json, published_schema=published_schema)
+        validate_draft_schema(locked_form.draft_schema_json)
+        schema = prepare_catalog_schema(locked_form.draft_schema_json, published_schema)
+        schema = validate_form_schema(schema, published_schema=published_schema)
         active_rules = get_active_priority_rule_set()
         compatibility = form_compatibility_report(
             schema,
@@ -268,6 +271,7 @@ def restore_contributor_form_version(form, version, user=None):
             restored_schema = normalize_system_managed_sections(restored_schema, published_schema)
         # Restoring a historical version creates a draft. It may predate the
         # current publication rules; let editors review and repair it first.
+        restored_schema = prepare_catalog_schema(restored_schema, repair=True)
         validate_draft_schema(restored_schema)
         locked_form.draft_schema_json = restored_schema
         locked_form.name = str(restored_schema.get("title") or locked_form.name)

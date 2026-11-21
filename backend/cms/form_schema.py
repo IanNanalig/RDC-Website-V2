@@ -285,23 +285,34 @@ REQUIRED_CORE_FIELDS = {key for key, field in CORE_FIELDS.items() if field.get("
 CONDITION_REQUIRED_CORE_FIELDS = set()
 FIXED_FIELD_TYPES = {
     "agencyName": "text",
+    "collaboratingAgencies": "multiselect_dropdown",
+    "program": "text",
     "projectActivity": "text",
+    "location": "multiselect_dropdown",
+    "description": "textarea",
+    "objective": "textarea",
+    "developmentSector": "select",
     "startYear": "year",
     "endYear": "year",
     "fundingRequirementByYear": "currency_by_year",
     "actualFundingByYear": "currency_by_year",
     "custom_supporting_documents": "document_upload",
 }
-PROTECTED_OPTION_FIELDS = {"collaboratingAgencies"}
+CATALOG_FIELD_KEYS = {"collaboratingAgencies", "location", "developmentSector"}
 PROTECTED_SECTION_KEYS = {
-    "project_information", "implementation_and_funding", "supporting_documents",
+    "project_information", "implementation_and_funding", "supporting_documents", "classification", "accomplishment",
 }
 PROTECTED_WORKFLOW_FIELD_KEYS = {
     "agencyName", "projectActivity", "startYear", "endYear",
     "fundingRequirementByYear", "actualFundingByYear", "custom_supporting_documents",
+    "collaboratingAgencies", "program", "location", "description", "objective", "developmentSector",
 }
+REQUIRED_WORKFLOW_FIELD_KEYS = {"agencyName", "program", "projectActivity", "location", "description", "objective", "developmentSector", "startYear", "endYear"}
 PROTECTED_FIELD_SECTIONS = {
     "agencyName": "project_information", "projectActivity": "project_information",
+    "collaboratingAgencies": "project_information", "program": "project_information",
+    "location": "project_information", "description": "project_information",
+    "objective": "project_information", "developmentSector": "classification",
     "startYear": "implementation_and_funding", "endYear": "implementation_and_funding",
     "fundingRequirementByYear": "implementation_and_funding",
     "actualFundingByYear": "implementation_and_funding",
@@ -311,6 +322,113 @@ PROTECTED_FIELD_SECTIONS = {
 
 class FormSchemaError(ValueError):
     pass
+
+
+def validate_workflow_protection(schema):
+    sections = {section["key"]: section for section in schema["sections"]}
+    for key in sorted(PROTECTED_SECTION_KEYS):
+        section = sections.get(key)
+        if not section or section.get("visible") is False or section.get("admin_only"):
+            title = next(item["title"] for item in DEFAULT_SIMPLIFIED_FORM_SCHEMA["sections"] if item["key"] == key)
+            raise FormSchemaError(f"Essential section '{title}' must remain visible and cannot be removed.")
+    for key, section in PROTECTED_FIELD_SECTIONS.items():
+        field = next((item for item in sections[section]["fields"] if item.get("key") == key), None)
+        label = CORE_FIELDS.get(key, {}).get("label", "Supporting Documents")
+        if not field or field.get("visible") is False or field_condition_group(field) or field.get("condition_required"):
+            raise FormSchemaError(f"Essential field '{label}' must stay available in its core section.")
+        if field.get("type") != FIXED_FIELD_TYPES[key]:
+            raise FormSchemaError(f"The field type for {key} is managed by the system and cannot be changed.")
+        if key in REQUIRED_WORKFLOW_FIELD_KEYS and not field.get("required"):
+            raise FormSchemaError(f"Essential field '{label}' must remain required.")
+        if key == "collaboratingAgencies" and field.get("required"):
+            raise FormSchemaError("Collaborating Agencies must remain optional.")
+    mappings = schema.get("scoring_mappings")
+    if isinstance(mappings, dict) and any(
+        key in PROTECTED_WORKFLOW_FIELD_KEYS and value != key for key, value in mappings.items()
+    ):
+        raise FormSchemaError("System-managed scoring inputs cannot be remapped.")
+
+
+def prepare_catalog_schema(schema, reference=None, *, repair=False):
+    from projects.form_catalogs import FORM_CATALOGS, catalog_fields, catalog_rows, catalog_value
+
+    result = deepcopy(schema)
+    if repair:
+        mappings = result.get("scoring_mappings")
+        if isinstance(mappings, dict):
+            result["scoring_mappings"] = {
+                key: value for key, value in mappings.items()
+                if key not in PROTECTED_WORKFLOW_FIELD_KEYS or value == key
+            }
+        defaults = default_simplified_form_schema()
+        sections = {section["key"]: section for section in result["sections"]}
+        for default in defaults["sections"]:
+            section_key = default["key"]
+            if section_key not in PROTECTED_SECTION_KEYS:
+                continue
+            if section_key not in sections:
+                result["sections"].append(deepcopy(default))
+                continue
+            sections[section_key]["visible"] = True
+            fields = sections[section_key]["fields"]
+            for default_field in default["fields"]:
+                key = default_field["key"]
+                if PROTECTED_FIELD_SECTIONS.get(key) != section_key:
+                    continue
+                prior = next((item for item in fields if item.get("key") == key), None)
+                if prior is None:
+                    for other in result["sections"]:
+                        other["fields"] = [item for item in other["fields"] if item.get("key") != key]
+                    sections[section_key]["fields"].append(deepcopy(default_field))
+                    fields = sections[section_key]["fields"]
+                else:
+                    prior["visible"] = True
+                    prior.pop("condition", None)
+                    prior.pop("condition_group", None)
+                    prior.pop("condition_required", None)
+                    prior["type"] = FIXED_FIELD_TYPES[key]
+                    if key in REQUIRED_WORKFLOW_FIELD_KEYS or key == "collaboratingAgencies":
+                        prior["required"] = key in REQUIRED_WORKFLOW_FIELD_KEYS
+    choices = catalog_rows()
+    previous_fields = _field_map(reference or {})
+    for field in catalog_fields(result):
+        key = field["key"]
+        label = field.get("label") or CORE_FIELDS[key]["label"]
+        source = field.get("catalog")
+        if source is not None and source != FORM_CATALOGS[key]:
+            raise FormSchemaError(f"The option source for {label} is system-managed.")
+        if not repair and "options" in field:
+            allowed = choices[key] if source else previous_fields.get(key, CORE_FIELDS[key]).get("options", [])
+            normalize = lambda rows: [(row.get("value"), row.get("label")) for row in rows]
+            if not isinstance(field["options"], list) or any(not isinstance(row, dict) for row in field["options"]) or normalize(field["options"]) != normalize(allowed):
+                raise FormSchemaError(f"Choices for {label} are managed by its catalog and cannot be edited here.")
+        field["catalog"] = FORM_CATALOGS[key]
+        field.pop("options", None)
+    for section in result["sections"]:
+        for field in section["fields"]:
+            group = field_condition_group(field)
+            if not group or not isinstance(group.get("conditions"), list):
+                continue
+            for rule in group.get("conditions", []):
+                if not isinstance(rule, dict):
+                    continue
+                key = rule.get("field")
+                if key not in choices:
+                    continue
+                for member in ("value", "values"):
+                    raw = rule.get(member)
+                    if raw is None:
+                        continue
+                    values = raw if isinstance(raw, list) else [raw]
+                    mapped = [catalog_value(key, value, choices[key]) for value in values]
+                    if any(value is None for value in mapped):
+                        if repair:
+                            continue
+                        raise FormSchemaError(f"A condition for {field.get('label') or field['key']} has an unresolved catalog choice in {key}.")
+                    rule[member] = mapped if isinstance(raw, list) else mapped[0]
+            field["condition_group"] = group
+            field.pop("condition", None)
+    return result
 
 
 def describe_form_error(error, schema):
@@ -527,6 +645,9 @@ def build_form_migration_plan(previous_schema, next_schema):
             continue
         source_type = str(source.get("type") or "")
         target_type = str(target.get("type") or "")
+        if target.get("catalog"):
+            rules.append({"field": key, "action": "resolve_catalog"})
+            continue
         if source_type != target_type:
             if key == "location" and target_type == "multiselect_dropdown":
                 rules.append({"field": key, "action": "transform_location", "from": source_type, "to": target_type})
@@ -565,6 +686,17 @@ def validate_form_schema(schema, published_schema=None):
     if len(sections) > 20:
         raise FormSchemaError("A form can contain at most 20 sections.")
 
+    catalog_schema = any(
+        isinstance(field, dict) and field.get("catalog")
+        for section in sections if isinstance(section, dict) and isinstance(section.get("fields"), list)
+        for field in section["fields"]
+    )
+    stored_schema = schema
+    if catalog_schema:
+        from projects.form_catalogs import with_catalog_options
+
+        schema = with_catalog_options(schema, for_editor=True)
+        sections = schema["sections"]
     section_keys = set()
     field_keys = set()
     field_count = 0
@@ -635,7 +767,7 @@ def validate_form_schema(schema, published_schema=None):
                     active_document_fields.append(key)
             options = field.get("options", [])
             if field_type in {"select", "multiselect", "multiselect_dropdown"}:
-                if not isinstance(options, list) or not options:
+                if not isinstance(options, list) or (not options and not field.get("catalog")):
                     raise FormSchemaError(f"Field {key} needs at least one option.")
                 values = [str(option.get("value") or "") for option in options if isinstance(option, dict)]
                 if len(values) != len(options) or any(not value for value in values) or len(set(values)) != len(values):
@@ -657,6 +789,7 @@ def validate_form_schema(schema, published_schema=None):
         labels = {key: DEFAULT_SIMPLIFIED_FORM_SCHEMA["sections"][0]["title"] if key == "agencyName" else CORE_FIELDS.get(key, {}).get("label", key) for key in missing}
         raise FormSchemaError("Essential project fields cannot be removed: " + ", ".join(sorted(labels.values())) + ".")
 
+    validate_workflow_protection(schema)
     current = _field_map(schema)
     mappings = schema.get("scoring_mappings", {})
     if not isinstance(mappings, dict):
@@ -670,7 +803,9 @@ def validate_form_schema(schema, published_schema=None):
         }
         if any(key not in allowed_facts or not isinstance(value, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", value) for key, value in mappings.items()):
             raise FormSchemaError("AI scoring mappings contain an unsupported fact or field identity.")
-    published_fields = _field_map(published_schema) if isinstance(published_schema, dict) else {}
+    published_fields = _field_map(
+        prepare_catalog_schema(published_schema, repair=True) if catalog_schema else published_schema
+    ) if isinstance(published_schema, dict) else {}
     reset_from_scratch = schema.get("reset_from_scratch") is True
     section_visible_for_field = {
         str(field.get("key")): section.get("visible") is not False and section.get("admin_only") is not True
@@ -704,7 +839,7 @@ def validate_form_schema(schema, published_schema=None):
         ):
             raise FormSchemaError(f"Conditional validation for {key} must remain visible and cannot be removed.")
         original_values = [option["value"] for option in original.get("options", [])]
-        if original_values:
+        if original_values and not candidate.get("catalog"):
             candidate_values = [option.get("value") for option in candidate.get("options", []) if isinstance(option, dict)]
             # A deployed form can contain an earlier official value set after system wording is revised.
             # Keep those already-published values valid so ordinary CMS edits are not blocked, while
@@ -722,12 +857,6 @@ def validate_form_schema(schema, published_schema=None):
         candidate = current.get(key)
         if candidate is not None and candidate.get("type") != field_type:
             raise FormSchemaError(f"The field type for {key} is managed by the system and cannot be changed.")
-
-    for key in PROTECTED_OPTION_FIELDS:
-        candidate = current.get(key)
-        original = CORE_FIELDS.get(key)
-        if candidate is not None and original is not None and candidate.get("options") != original.get("options"):
-            raise FormSchemaError("Collaborating Agency choices are managed by the Agency catalog and cannot be edited in the form builder.")
 
     operator_types = {
         "select": {"equals", "not_equals", "one_of", "not_one_of", "is_empty", "is_not_empty"},
@@ -809,7 +938,7 @@ def validate_form_schema(schema, published_schema=None):
         visit(field_key)
 
     validate_system_managed_sections(schema, published_schema)
-    return deepcopy(schema)
+    return deepcopy(stored_schema)
 
 
 def validate_draft_schema(schema):
@@ -835,9 +964,12 @@ def validate_draft_schema(schema):
             field_key = str(field.get("key") or "")
             if not re.fullmatch(r"(?:[A-Za-z][A-Za-z0-9_]*|priorityAnalysisFacts\.[A-Za-z][A-Za-z0-9_]*)", field_key) or field_key in field_keys:
                 raise FormSchemaError("Field identities must be unique and valid.")
+            if field.get("catalog") is not None and field_key not in CATALOG_FIELD_KEYS:
+                raise FormSchemaError("Only system-managed catalog fields can declare a catalog source.")
             field_keys.add(field_key)
     if len(field_keys) > 100:
         raise FormSchemaError("A form draft can contain at most 100 fields.")
+    validate_workflow_protection(schema)
     return deepcopy(schema)
 
 
@@ -902,7 +1034,7 @@ def resolve_simplified_form_schema(profile_data, schema_version=None):
     return (version.schema_json if version else default_simplified_form_schema()), version
 
 
-def validate_simplified_answers(profile_data, require_complete=False, legacy_status=None, schema_version=None):
+def validate_simplified_answers(profile_data, require_complete=False, legacy_status=None, schema_version=None, previous_profile=None):
     if not isinstance(profile_data, dict) or not isinstance(profile_data.get("simplified_form"), dict):
         return profile_data
     from projects.project_status import canonical_implementation_status
@@ -917,6 +1049,18 @@ def validate_simplified_answers(profile_data, require_complete=False, legacy_sta
     if legacy_marker:
         profile_data["form_schema"]["legacy"] = True
     simplified = profile_data["simplified_form"]
+    from projects.form_catalogs import catalog_selection_snapshot, with_catalog_options
+
+    try:
+        selections = catalog_selection_snapshot(schema, simplified, previous_profile)
+    except ValueError as exc:
+        raise FormSchemaError(str(exc)) from exc
+    if selections:
+        profile_data["catalog_selections"] = selections
+    else:
+        profile_data.pop("catalog_selections", None)
+    if selections:
+        schema = with_catalog_options(schema, previous_profile)
     saved_status = simplified.get("status")
     normalized_status = canonical_implementation_status(saved_status)
     # Retired implementation statuses are only normalized while preserving an
@@ -998,6 +1142,9 @@ def validate_simplified_answers(profile_data, require_complete=False, legacy_sta
             except (TypeError, ValueError):
                 invalid.append(str(field.get("label") or key))
         elif field_type in {"select", "multiselect", "multiselect_dropdown"}:
+            if key == "collaboratingAgencies" and not field.get("catalog"):
+                # Legacy agency choices come from the live catalog and are checked by the project write workflow.
+                continue
             allowed = {str(option.get("value")) for option in field.get("options", []) if isinstance(option, dict)}
             if key == "status":
                 allowed.update(CURRENT_PROJECT_STATUS_VALUES)

@@ -359,7 +359,7 @@ const CriteriaTable: React.FC<{ title: string; group: string; criteria?: Criteri
 );
 
 const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked = false, role, developmentSector = "" }) => {
-  const isSceeed = /sceeed|economic and environment/i.test(developmentSector);
+  const isSceeed = /sceed|sceeed|economic and environment/i.test(developmentSector);
   const [eligible, setEligible] = useState(true);
   const [analyses, setAnalyses] = useState<Analysis[]>([]);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
@@ -370,6 +370,8 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
   const [retryAvailable, setRetryAvailable] = useState(false);
   const [processingProgress, setProcessingProgress] = useState<ProcessingProgress | null>(null);
   const [supplements, setSupplements] = useState<Record<string, string>>({});
+  const [outcomeTracks, setOutcomeTracks] = useState<[string, string][] | null>(null);
+  const [trackField, setTrackField] = useState("sceeedTrack");
   const [factsDirty, setFactsDirty] = useState(false);
   const [factsVersion, setFactsVersion] = useState<number | null>(null);
   const [regionalApplicable, setRegionalApplicable] = useState(false);
@@ -394,6 +396,10 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
         ? list[0] || null
         : list.find((item) => item.id === response.current_analysis_id) || null);
       setSupplements(Object.fromEntries(Object.entries(response?.validator_facts || {}).map(([key, value]) => [key, String(value ?? "")])));
+      setOutcomeTracks(Array.isArray(response?.outcome_tracks)
+        ? response.outcome_tracks.map((item: { value: string; label: string }) => [item.value, item.label])
+        : null);
+      setTrackField(response?.outcome_tracks ? response.outcome_track_field : "sceeedTrack");
       setFactsVersion(response?.facts_version ?? 0);
       setRegionalApplicable(response?.regional_eligibility?.applicable === true);
       setFactsDirty(false);
@@ -436,7 +442,11 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
       const savedFacts = await api.put(`validator/projects/${projectId}/priority-analysis/facts/`, {
         ...(revisionId ? { revision: revisionId } : {}),
         facts_version: factsVersion,
-        supplements: isSceeed ? supplements : { ...supplements, sceeedTrack: "" },
+        supplements: {
+          ...supplements,
+          ...(trackField !== "sceeedTrack" || !(outcomeTracks ? outcomeTracks.length > 1 : isSceeed) ? { sceeedTrack: "" } : {}),
+          ...(trackField !== "outcomeTrack" || !outcomeTracks || outcomeTracks.length < 2 ? { outcomeTrack: "" } : {}),
+        },
       });
       if (savedFacts.facts_version !== factsVersion) setAnalysis(null);
       setSupplements(Object.fromEntries(Object.entries(savedFacts.validator_facts || {}).map(([key, value]) => [key, String(value ?? "")])));
@@ -642,7 +652,12 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
                 ["interregional", "Interregional"],
                 ["none", "None"],
               ]} />
-              {isSceeed && <Select label="SCEED Track" value={supplements.sceeedTrack || ""} onChange={(value) => editFact("sceeedTrack", value)} options={[["economic", "Economic"], ["environment", "Environment"]]} />}
+              {(outcomeTracks ? outcomeTracks.length > 1 : isSceeed) && <Select
+                label={trackField === "sceeedTrack" ? "SCEED Track" : "Outcome Track"}
+                value={supplements[trackField] || ""}
+                onChange={(value) => editFact(trackField, value)}
+                options={outcomeTracks || [["economic", "Economic"], ["environment", "Environment"]]}
+              />}
               {regionalApplicable && <>
               <label className="block"><span className="text-xs font-medium text-slate-600">Estimated Beneficiaries</span><input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" inputMode="numeric" value={supplements.beneficiaryCount || ""} onChange={(e) => editFact("beneficiaryCount", e.target.value)} /></label>
               <label className="block"><span className="text-xs font-medium text-slate-600">Contributed RDP Outcomes</span><input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" type="number" min="0" value={supplements.contributedOutcomeCount || ""} onChange={(e) => editFact("contributedOutcomeCount", e.target.value)} /></label>

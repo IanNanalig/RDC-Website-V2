@@ -643,7 +643,9 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
                 else:
                     value["form_schema"] = {"key": "simplified-rdip", "version": 1, "legacy": True}
             else:
-                if isinstance(value.get("form_schema"), dict):
+                current_schema, _ = resolve_simplified_form_schema({})
+                has_catalogs = any(field.get("catalog") for field in schema_fields(current_schema))
+                if isinstance(value.get("form_schema"), dict) or has_catalogs:
                     # The version number is still selected by the server; the marker only signals
                     # that this client supports versioned contributor forms.
                     value["form_schema"] = {"key": "simplified-rdip"}
@@ -655,6 +657,7 @@ class ProjectSerializer(ContributorFormVersionStatusMixin, serializers.ModelSeri
                     value,
                     require_complete=False,
                     legacy_status=previous_status if str(simplified.get("status") or "").strip() == previous_status else None,
+                    previous_profile=self.instance.profile_data if self.instance else None,
                 )
             except FormSchemaError as exc:
                 raise serializers.ValidationError(str(exc)) from exc
@@ -1434,22 +1437,25 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         from .utils import format_project_locations
 
         sf = self._simplified(obj)
-        return format_project_locations(sf.get("location"))
+        snapshots = (obj.profile_data or {}).get("catalog_selections", {}).get("location", [])
+        labels = {row["value"]: row["label"] for row in snapshots}
+        location = sf.get("location")
+        if isinstance(location, list):
+            location = [labels.get(value, value) for value in location]
+        return format_project_locations(location)
 
     def get_lgu(self, obj):
         # Keep a primary LGU for backwards compatibility with older clients.
         try:
-            from .utils import derive_ncr_lgu
-
-            return derive_ncr_lgu(self.get_location_raw(obj))
+            return next(iter(self.get_lgus(obj)), None)
         except Exception:
             return None
 
     def get_lgus(self, obj):
         try:
-            from .utils import derive_ncr_lgus
+            from .form_catalogs import location_map_keys
 
-            return derive_ncr_lgus(self.get_location_raw(obj))
+            return location_map_keys(self._simplified(obj).get("location"))
         except Exception:
             return []
 

@@ -649,6 +649,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const userRaw = localStorage.getItem("user");
   const user = userRaw ? JSON.parse(userRaw) : null;
   const [form, setForm] = useState<SimplifiedForm>(initialForm);
+  const [catalogSelections, setCatalogSelections] = useState<Record<string, { value: string; label: string }[]>>({});
   const [savedProjectAgency, setSavedProjectAgency] = useState("");
   const [currentFundingYear, setCurrentFundingYear] = useState(manilaFundingYear);
   const [periodFundingNotice, setPeriodFundingNotice] = useState("");
@@ -961,6 +962,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
           return;
         }
         const simplified = (sourceData.simplified_form || sourceData) as Partial<SimplifiedForm> & Record<string, unknown>;
+        setCatalogSelections(sourceData.catalog_selections || {});
         const fundingRequirementByYear = normalizeFundingMap(
           simplified.fundingRequirementByYear,
           simplified,
@@ -1816,9 +1818,11 @@ const SimplifiedProjectSubmission: React.FC = () => {
     const editMeta = editMetaOf(trackingKey);
     const rawValue = configuredFieldValue(field);
     const value = Array.isArray(rawValue) ? rawValue : String(rawValue);
-    const fieldOptions = field.key === "collaboratingAgencies"
-      ? (field.options || []).filter((option) => option.value.toLowerCase() !== form.agencyName.toLowerCase())
-      : field.options || [];
+    const savedOptions = catalogSelections[field.key] || [];
+    const fieldOptions = (field.options || [])
+      .filter((option) => option.active !== false || savedOptions.some((saved) => saved.value === option.value))
+      .filter((option) => field.key !== "collaboratingAgencies" || (option.code || option.value).toLowerCase() !== form.agencyName.toLowerCase())
+      .map((option) => ({ ...option, label: savedOptions.find((saved) => saved.value === option.value)?.label || option.label }));
     const common = {
       label: field.label,
       required,

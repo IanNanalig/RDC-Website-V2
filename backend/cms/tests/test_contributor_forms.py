@@ -8,7 +8,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from cms.form_schema import (
-    FormSchemaError, PROTECTED_WORKFLOW_FIELD_KEYS, condition_group_applies,
+    FormSchemaError, PROTECTED_SECTION_KEYS, PROTECTED_WORKFLOW_FIELD_KEYS, condition_group_applies,
     default_simplified_form_schema, validate_simplified_answers,
 )
 from cms.models import CMSContributorForm
@@ -144,14 +144,11 @@ class ContributorFormWorkflowTests(APITestCase):
         original_version = self.form.current_published_version.version_number
         schema = deepcopy(self.form.draft_schema_json)
         schema["reset_from_scratch"] = True
-        preserved = {
-            "agencyName", "projectActivity", "startYear", "endYear",
-            "fundingRequirementByYear", "actualFundingByYear", "custom_supporting_documents",
-        }
+        preserved = PROTECTED_WORKFLOW_FIELD_KEYS
         for section in schema["sections"]:
             if section.get("admin_only"):
                 continue
-            keep_section = any(field["key"] in preserved for field in section["fields"])
+            keep_section = section["key"] in PROTECTED_SECTION_KEYS
             section["visible"] = keep_section
             for field in section["fields"]:
                 if keep_section and field["key"] in preserved:
@@ -180,7 +177,7 @@ class ContributorFormWorkflowTests(APITestCase):
         ]
 
         self.assertEqual(current.status_code, status.HTTP_200_OK)
-        self.assertEqual([section["key"] for section in visible_sections], ["project_information", "implementation_and_funding", "supporting_documents"])
+        self.assertEqual({section["key"] for section in visible_sections}, PROTECTED_SECTION_KEYS)
         self.assertEqual(
             {field["key"] for section in visible_sections for field in section["fields"] if field.get("visible", True)},
             preserved,
@@ -200,7 +197,7 @@ class ContributorFormWorkflowTests(APITestCase):
                 "startYear": "2027",
                 "endYear": "2028",
                 "fundingRequirementByYear": {"2027": "1000000", "2028": "1000000"},
-                "location": ["Quezon City"],
+                "location": ["lgu-quezon-city"],
                 "description": "Fictional beta-testing project.",
                 "objective": "Improve access to public health services.",
                 "custom_fields": {},
@@ -495,11 +492,11 @@ class ContributorFormWorkflowTests(APITestCase):
         original_version = self.form.current_published_version
         original_schema = deepcopy(original_version.schema_json)
         schema = deepcopy(self.form.draft_schema_json)
-        program_field = next(
+        accomplishment_field = next(
             field for section in schema["sections"] for field in section["fields"]
-            if field["key"] == "program"
+            if field["key"] == "physicalAccomplishment"
         )
-        program_field["type"] = "textarea"
+        accomplishment_field["type"] = "text"
 
         saved = self._save_draft(schema, edit_mode="change")
         self.assertEqual(saved.status_code, status.HTTP_200_OK, saved.data)
@@ -508,24 +505,24 @@ class ContributorFormWorkflowTests(APITestCase):
         published = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
         self.assertEqual(published.status_code, status.HTTP_200_OK, published.data)
         self.form.refresh_from_db()
-        published_program = next(
+        published_accomplishment = next(
             field for section in self.form.current_published_version.schema_json["sections"]
-            for field in section["fields"] if field["key"] == "program"
+            for field in section["fields"] if field["key"] == "physicalAccomplishment"
         )
-        original_program = next(
+        original_accomplishment = next(
             field for section in original_schema["sections"]
-            for field in section["fields"] if field["key"] == "program"
+            for field in section["fields"] if field["key"] == "physicalAccomplishment"
         )
-        self.assertEqual(published_program["type"], "textarea")
-        self.assertEqual(original_program["type"], "text")
+        self.assertEqual(published_accomplishment["type"], "text")
+        self.assertEqual(original_accomplishment["type"], "textarea")
 
     def test_update_mode_cannot_change_an_existing_field_type(self):
         schema = deepcopy(self.form.draft_schema_json)
-        program_field = next(
+        accomplishment_field = next(
             field for section in schema["sections"] for field in section["fields"]
-            if field["key"] == "program"
+            if field["key"] == "physicalAccomplishment"
         )
-        program_field["type"] = "textarea"
+        accomplishment_field["type"] = "text"
 
         response = self._save_draft(schema, edit_mode="update")
 
@@ -542,11 +539,8 @@ class ContributorFormWorkflowTests(APITestCase):
 
         response = self._save_draft(schema, edit_mode="change")
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.authenticate(self.admin)
-        rejected = self.client.post(f"/api/admin/cms/forms/{self.form.id}/publish/", {}, format="json")
-        self.assertEqual(rejected.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("managed by the system", str(rejected.data))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("managed by the system", str(response.data))
 
     def test_change_mode_can_change_other_workflow_field_types(self):
         schema = deepcopy(self.form.draft_schema_json)
@@ -567,7 +561,7 @@ class ContributorFormWorkflowTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
 
-    def test_location_is_an_admin_editable_multiselect_dropdown(self):
+    def test_location_options_must_be_managed_in_the_catalog(self):
         schema = deepcopy(self.form.draft_schema_json)
         location_field = next(
             field for section in schema["sections"] for field in section["fields"]
@@ -581,19 +575,8 @@ class ContributorFormWorkflowTests(APITestCase):
         location_field["options"].append({"value": "option_1", "label": "Region-wide"})
         response = self._save_draft(schema, edit_mode="change")
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
-        saved_location = next(
-            field for section in response.data["draft_schema_json"]["sections"]
-            for field in section["fields"] if field["key"] == "location"
-        )
-        self.assertEqual(saved_location["options"][0]["label"], "Caloocan City")
-        self.assertEqual(saved_location["options"][-1]["label"], "Region-wide")
-
-        sdg_field = next(
-            field for section in schema["sections"] for field in section["fields"]
-            if field["key"] == "sdgSelections"
-        )
-        self.assertEqual(sdg_field["type"], "multiselect")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.data)
+        self.assertIn("managed by its catalog", str(response.data))
 
     def test_current_location_field_requires_a_list_of_selected_values(self):
         self.form.refresh_from_db()
@@ -816,7 +799,10 @@ class ContributorFormWorkflowTests(APITestCase):
         self.assertEqual(reset.status_code, status.HTTP_200_OK)
         self.assertEqual(reset.data["status"], "published")
         self.assertFalse(reset.data["has_unpublished_changes"])
-        self.assertEqual(reset.data["draft_schema_json"], self.form.current_published_version.schema_json)
+        self.assertEqual(reset.data["draft_schema_json"]["title"], self.form.current_published_version.schema_json["title"])
+        self.assertNotIn("custom_test_field", {
+            field["key"] for section in reset.data["draft_schema_json"]["sections"] for field in section["fields"]
+        })
 
     def test_rejection_notifies_the_submitting_editor_with_notes(self):
         self.assertEqual(self._save_draft(self._draft_with_custom_field()).status_code, status.HTTP_200_OK)
@@ -1018,7 +1004,7 @@ class ContributorFormWorkflowTests(APITestCase):
             progress_draft.profile_data_snapshot["simplified_form"]["custom_fields"]["custom_historical_note"],
             "Preserve this draft answer",
         )
-        self.assertEqual(progress_draft.profile_data_snapshot["simplified_form"]["location"], ["Makati"])
+        self.assertEqual(progress_draft.profile_data_snapshot["simplified_form"]["location"], ["lgu-makati"])
         self.assertTrue(UserActivity.objects.filter(
             user=self.admin,
             project=project,
@@ -1148,10 +1134,12 @@ class ContributorFormWorkflowTests(APITestCase):
     def test_visible_condition_cannot_depend_on_hidden_source(self):
         schema = deepcopy(self.form.draft_schema_json)
         schema["sections"][0]["fields"].append({
-            "key": "custom_dependent", "label": "Dependent", "type": "text", "visible": True, "required": False,
-            "condition_group": {"match": "all", "conditions": [{"field": "program", "operator": "is_not_empty"}]},
+            "key": "custom_source", "label": "Source", "type": "text", "visible": False,
         })
-        next(field for field in schema["sections"][0]["fields"] if field["key"] == "program")["visible"] = False
+        schema["sections"][0]["fields"].append({
+            "key": "custom_dependent", "label": "Dependent", "type": "text", "visible": True, "required": False,
+            "condition_group": {"match": "all", "conditions": [{"field": "custom_source", "operator": "is_not_empty"}]},
+        })
         response = self._save_draft(schema, edit_mode="change")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.authenticate(self.admin)

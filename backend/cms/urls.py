@@ -30,6 +30,7 @@ from cms.views import (
     PublicCMSSiteSettingsView,
 )
 from projects.views import AdminEventViewSet, PublicEventViewSet
+from cms.form_catalog_views import CommitteeCatalogView, ContributorFormCatalogView, LocationCatalogView
 
 router = DefaultRouter()
 router.register("admin/cms/pages", AdminCMSPageViewSet, basename="admin-cms-pages")
@@ -46,6 +47,10 @@ router.register("admin/cms/settings", AdminCMSSiteSettingViewSet, basename="admi
 router.register("admin/cms/events", AdminEventViewSet, basename="admin-cms-events")
 
 urlpatterns = [
+    path("admin/contributor-form-catalogs/", ContributorFormCatalogView.as_view(), name="contributor-form-catalogs"),
+    path("admin/contributor-form-catalogs/locations/<slug:code>/", LocationCatalogView.as_view(), name="contributor-form-location"),
+    path("admin/contributor-form-catalogs/committees/", CommitteeCatalogView.as_view(), name="contributor-form-committees"),
+    path("admin/contributor-form-catalogs/committees/<slug:code>/", CommitteeCatalogView.as_view(), name="contributor-form-committee"),
     path("admin/cms/modules/", AdminCMSModuleListView.as_view(), name="admin-cms-modules"),
     path("admin/cms/modules/<slug:slug>/", AdminCMSModuleDetailView.as_view(), name="admin-cms-module-detail"),
     path("admin/cms/modules/<slug:slug>/<slug:operation>/", AdminCMSModuleActionView.as_view(), name="admin-cms-module-action"),

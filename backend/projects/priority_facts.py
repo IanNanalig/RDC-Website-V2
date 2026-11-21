@@ -6,6 +6,7 @@ from django.db import transaction
 
 from .models import Project, ProjectPriorityFacts, ProjectRevision
 from .priority_scoring import GAD, READINESS, REGIONAL_SPATIAL_LABELS, _fact_key
+from .form_catalogs import OUTCOME_GROUPS
 
 
 CHOICES = {
@@ -13,6 +14,7 @@ CHOICES = {
     "gadResponsiveness": GAD,
     "spatialCoverageScope": {"specific_lgus", "region_wide", "interregional", "none"},
     "sceeedTrack": {"economic", "environment"},
+    "outcomeTrack": OUTCOME_GROUPS,
     "regionalSpatialCategory": REGIONAL_SPATIAL_LABELS,
 }
 COUNTS = ("beneficiaryCount", "contributedOutcomeCount")
@@ -45,7 +47,7 @@ def lock_priority_scope(project, revision):
 
 
 @transaction.atomic
-def save_priority_facts(project, revision, validator, incoming, expected_version, applicable):
+def save_priority_facts(project, revision, validator, incoming, expected_version, applicable, outcome_context=None):
     scope = lock_priority_scope(project, revision)
     if scope.workflow_status != Project.WORKFLOW_PENDING:
         raise StalePriorityFacts("Priority decisions are locked after endorsement.")
@@ -66,6 +68,12 @@ def save_priority_facts(project, revision, validator, incoming, expected_version
             value = _fact_key(value)
             if value not in CHOICES[key]:
                 raise ValueError(f"Invalid Validator selection: {key}.")
+        if value and key in {"sceeedTrack", "outcomeTrack"} and outcome_context is not None:
+            expected_key = "sceeedTrack" if outcome_context["committee"] == "sceed" else "outcomeTrack"
+            if key != expected_key or value not in outcome_context["groups"]:
+                raise ValueError("Select an outcome group linked to this project's committee.")
+        if value and key == "outcomeTrack" and outcome_context is None:
+            raise ValueError("No committee outcome groups are available for this project.")
         if key in COUNTS and value:
             value = value.replace(",", "")
             if not re.fullmatch(r"[0-9]{1,12}", value):

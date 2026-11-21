@@ -47,6 +47,39 @@ class Agency(models.Model):
         return f"{self.code} - {self.name}"
 
 
+class ProjectLocation(models.Model):
+    code = models.SlugField(max_length=40, primary_key=True)
+    map_key = models.CharField(max_length=40, unique=True)
+    name = models.CharField(max_length=100)
+    kind = models.CharField(max_length=20, choices=[("city", "City"), ("municipality", "Municipality")])
+    region = models.CharField(max_length=20, default="NCR", editable=False)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name", "code"]
+        constraints = [models.UniqueConstraint(Lower("name"), name="unique_project_location_name_ci")]
+
+
+class SectoralCommittee(models.Model):
+    code = models.SlugField(max_length=40, primary_key=True)
+    acronym = models.CharField(max_length=30)
+    name = models.CharField(max_length=180)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["acronym", "code"]
+        constraints = [models.UniqueConstraint(Lower("acronym"), name="unique_committee_acronym_ci")]
+
+
+class CommitteeOutcomeGroup(models.Model):
+    committee = models.ForeignKey(SectoralCommittee, on_delete=models.PROTECT, related_name="outcome_links")
+    group = models.CharField(max_length=24)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["committee", "group"], name="unique_committee_outcome_group")]
+
+
 class UserManager(DjangoUserManager):
     """Keep the explicit account lifecycle aligned for ORM-created users."""
 

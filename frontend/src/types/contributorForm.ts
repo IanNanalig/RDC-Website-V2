@@ -13,7 +13,7 @@ export type ContributorFormFieldType =
   | "currency_by_year"
   | "document_upload";
 
-export type ContributorFormOption = { value: string; label: string };
+export type ContributorFormOption = { value: string; label: string; active?: boolean; code?: string };
 export type ContributorConditionOperator =
   | "equals" | "not_equals" | "one_of" | "not_one_of"
   | "contains" | "not_contains" | "contains_any"
@@ -50,6 +50,7 @@ export type ContributorFormField = {
   help_text?: string;
   placeholder?: string;
   options?: ContributorFormOption[];
+  catalog?: "agencies" | "locations" | "committees";
   condition?: { field: string; equals?: string; not_equals?: string; one_of?: string[]; not_one_of?: string[] };
   condition_group?: ContributorConditionGroup;
   condition_required?: boolean;

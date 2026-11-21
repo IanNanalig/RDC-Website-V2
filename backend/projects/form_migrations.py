@@ -13,6 +13,7 @@ from projects.models import Project, ProjectRevision
 from projects.public_summary import build_public_summary
 from projects.document_policy import document_policy_from_schema
 from projects.utils import derive_ncr_lgus
+from projects.form_catalogs import upgrade_catalog_answers
 
 
 ACTIVE_REVISION_STATES = ("draft", "submitted", "validator_draft", "reviewed")
@@ -81,7 +82,7 @@ def _normalize_location(profile_data, target_schema):
         ),
         None,
     )
-    if location_field is None:
+    if location_field is None or location_field.get("catalog"):
         return profile_data, ""
     simplified = profile_data.get("simplified_form")
     if not isinstance(simplified, dict):
@@ -160,7 +161,11 @@ def analyze_profile_migration(profile_data, *, version_cache=None):
         }
 
     migrated = deepcopy(profile_data)
-    migrated, location_error = _normalize_location(migrated, target.schema_json)
+    try:
+        migrated = upgrade_catalog_answers(migrated, target.schema_json)
+        migrated, location_error = _normalize_location(migrated, target.schema_json)
+    except ValueError as exc:
+        location_error = str(exc)
     if location_error:
         return {
             "compatible": False,
@@ -182,7 +187,7 @@ def analyze_profile_migration(profile_data, *, version_cache=None):
         ):
             attention.append(str(field.get("key") or ""))
     try:
-        validate_simplified_answers(migrated, require_complete=False, schema_version=target)
+        validate_simplified_answers(migrated, require_complete=False, schema_version=target, previous_profile=profile_data)
     except FormSchemaError as exc:
         return {
             "compatible": False,
@@ -276,7 +281,7 @@ def prepare_project_migration(project, *, user, trigger):
                 key: deepcopy(value) for key, value in migrated.items()
                 if key not in {"validator_review", "validator_revision_access", "contributor_snapshot", "public_summary", "public_summary_override", "simplified_form_meta"}
             }
-            migrated["public_summary"] = build_public_summary(migrated.get("simplified_form", {}))
+            migrated["public_summary"] = build_public_summary(migrated.get("simplified_form", {}), migrated.get("catalog_selections"))
             last_number = project.revisions.order_by("-revision_number").values_list("revision_number", flat=True).first() or 0
             history = ProjectRevision.objects.create(
                 project=project,
@@ -284,7 +289,7 @@ def prepare_project_migration(project, *, user, trigger):
                 revision_type="initial_submission",
                 state="superseded",
                 profile_data_snapshot=deepcopy(source_profile),
-                public_summary_snapshot=build_public_summary(source_profile.get("simplified_form", {})),
+                public_summary_snapshot=build_public_summary(source_profile.get("simplified_form", {}), source_profile.get("catalog_selections")),
                 form_migration=metadata,
                 created_by=user,
             )
@@ -315,7 +320,7 @@ def prepare_project_migration(project, *, user, trigger):
             ))
             migrated["validator_revision_access"] = access
             active.profile_data_snapshot = migrated
-            active.public_summary_snapshot = build_public_summary(migrated.get("simplified_form", {}))
+            active.public_summary_snapshot = build_public_summary(migrated.get("simplified_form", {}), migrated.get("catalog_selections"))
             active.form_migration = metadata
             active.save(update_fields=["profile_data_snapshot", "public_summary_snapshot", "form_migration", "updated_at"])
             return {"status": "prepared", "project": project, "revision": active, "form_migration": metadata, **result}
@@ -327,14 +332,14 @@ def prepare_project_migration(project, *, user, trigger):
                 revision_type="progress_update",
                 state="draft",
                 profile_data_snapshot=result["profile_data"],
-                public_summary_snapshot=build_public_summary(result["profile_data"].get("simplified_form", {})),
+                public_summary_snapshot=build_public_summary(result["profile_data"].get("simplified_form", {}), result["profile_data"].get("catalog_selections")),
                 changed_fields=[],
                 form_migration=metadata,
                 created_by=user,
             )
         else:
             active.profile_data_snapshot = result["profile_data"]
-            active.public_summary_snapshot = build_public_summary(result["profile_data"].get("simplified_form", {}))
+            active.public_summary_snapshot = build_public_summary(result["profile_data"].get("simplified_form", {}), result["profile_data"].get("catalog_selections"))
             active.form_migration = metadata
             active.save(update_fields=["profile_data_snapshot", "public_summary_snapshot", "form_migration", "updated_at"])
         return {"status": "prepared", "project": project, "revision": active, "form_migration": metadata, **result}

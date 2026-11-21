@@ -123,6 +123,7 @@ export type CMSContributorForm = {
   description: string;
   status: CMSStatus;
   draft_schema_json: ContributorFormSchema;
+  workflow_protection?: { sections: string[]; fields: string[] };
   current_published_version?: number | null;
   current_published_version_number?: number | null;
   has_unpublished_changes: boolean;

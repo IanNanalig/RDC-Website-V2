@@ -68,7 +68,7 @@ def _sum_year_map(raw: Any) -> float:
     return total
 
 
-def build_public_summary(simplified_form: Dict[str, Any]) -> Dict[str, Any]:
+def build_public_summary(simplified_form: Dict[str, Any], catalog_selections=None) -> Dict[str, Any]:
     """
     Deterministic, template-based summary used by the public dashboard.
 
@@ -77,18 +77,27 @@ def build_public_summary(simplified_form: Dict[str, Any]) -> Dict[str, Any]:
     - Caller is responsible for storing it in profile_data["public_summary"].
     """
     sf = simplified_form if isinstance(simplified_form, dict) else {}
+    catalog_selections = catalog_selections or {}
 
     agency = _safe_str(sf.get("agencyName"))
     program = _safe_str(sf.get("program"))
     activity = _safe_str(sf.get("projectActivity"))
-    location_raw = format_project_locations(sf.get("location"))
+    locations = sf.get("location")
+    location_labels = {row["value"]: row["label"] for row in catalog_selections.get("location", [])}
+    if isinstance(locations, list):
+        locations = [location_labels.get(value, value) for value in locations]
+    location_raw = format_project_locations(locations)
     objective = _safe_str(sf.get("objective"))
     description = _safe_str(sf.get("description"))
 
     start_year = _safe_str(sf.get("startYear"))
     end_year = _safe_str(sf.get("endYear"))
     status = _safe_str(sf.get("status"))
-    sector = _safe_str(sf.get("developmentSector"))
+    sector_value = sf.get("developmentSector")
+    sector = _safe_str(next((
+        row["label"] for row in catalog_selections.get("developmentSector", [])
+        if row["value"] == sector_value
+    ), sector_value))
     chapter = _safe_str(sf.get("rdpMainChapter"))
 
     sdgs = sf.get("sdgSelections") if isinstance(sf.get("sdgSelections"), list) else []

@@ -6,8 +6,11 @@ from rest_framework import serializers
 
 from cms.form_schema import (
     FormSchemaError,
+    PROTECTED_SECTION_KEYS,
+    PROTECTED_WORKFLOW_FIELD_KEYS,
     describe_form_error,
     normalize_system_managed_sections,
+    prepare_catalog_schema,
     validate_draft_schema,
     validate_update_mode,
 )
@@ -872,6 +875,20 @@ class CMSContributorFormSerializer(serializers.ModelSerializer):
     def get_current_published_schema_json(self, obj):
         return obj.current_published_version.schema_json if obj.current_published_version_id else None
 
+    def to_representation(self, instance):
+        from projects.form_catalogs import with_catalog_options
+
+        data = super().to_representation(instance)
+        schema = data.get("draft_schema_json")
+        if isinstance(schema, dict) and isinstance(schema.get("sections"), list):
+            schema = normalize_system_managed_sections(schema)
+            data["draft_schema_json"] = with_catalog_options(prepare_catalog_schema(schema, repair=True), for_editor=True)
+        data["workflow_protection"] = {
+            "sections": sorted(PROTECTED_SECTION_KEYS),
+            "fields": sorted(PROTECTED_WORKFLOW_FIELD_KEYS),
+        }
+        return data
+
     def get_versions_summary(self, obj):
         versions = getattr(obj, "cms_version_summaries", None)
         if versions is None:
@@ -889,9 +906,12 @@ class CMSContributorFormSerializer(serializers.ModelSerializer):
                 schema = normalize_system_managed_sections(schema, published_schema)
                 attrs["draft_schema_json"] = schema
             validate_draft_schema(schema)
+            schema = prepare_catalog_schema(schema, published_schema)
+            attrs["draft_schema_json"] = schema
             if self.instance and attrs.get("edit_mode", "update") == "update":
-                previous_schema = normalize_system_managed_sections(
-                    self.instance.draft_schema_json or {}, published_schema
+                previous_schema = prepare_catalog_schema(
+                    normalize_system_managed_sections(self.instance.draft_schema_json or {}, published_schema),
+                    repair=True,
                 )
                 validate_update_mode(previous_schema, schema)
         except FormSchemaError as exc:

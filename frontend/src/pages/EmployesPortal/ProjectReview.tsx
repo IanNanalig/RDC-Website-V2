@@ -147,6 +147,12 @@ const ProjectReview: React.FC = () => {
   }
 
   const simplified = project.profile_data?.simplified_form as Record<string, any> | undefined;
+  const catalogAnswer = (key: string) => {
+    const answer = simplified?.[key];
+    const selected = Array.isArray(answer) ? answer : [answer];
+    const options = project.profile_data?.catalog_selections?.[key] as { value: string; label: string }[] | undefined;
+    return selected.filter(Boolean).map((value) => options?.find((option) => option.value === value)?.label || value).join(", ") || "-";
+  };
   const validatorReview = getValidatorReview(project);
   const publicSummary = project.profile_data?.public_summary as Record<string, any> | undefined;
   const publicSummaryOverrideObj = project.profile_data?.public_summary_override as Record<string, any> | undefined;
@@ -345,12 +351,12 @@ const ProjectReview: React.FC = () => {
                   <div className="border rounded p-3"><p className="text-xs text-slate-500">Responsible Agency/LGU</p><p>{simplified?.agencyName || project.agency || "-"}</p></div>
                   <div className="border rounded p-3"><p className="text-xs text-slate-500">Program</p><p>{simplified?.program || "-"}</p></div>
                   <div className="border rounded p-3"><p className="text-xs text-slate-500">Project/Activity</p><p>{simplified?.projectActivity || project.title || "-"}</p></div>
-                  <div className="border rounded p-3"><p className="text-xs text-slate-500">Location</p><p>{simplified?.location || "-"}</p></div>
+                  <div className="border rounded p-3"><p className="text-xs text-slate-500">Location</p><p>{catalogAnswer("location")}</p></div>
                   <div className="border rounded p-3"><p className="text-xs text-slate-500">Implementation Period</p><p>{simplified?.startYear || "-"} to {simplified?.endYear || "-"}</p></div>
                   <div className="border rounded p-3"><p className="text-xs text-slate-500">Funding Source</p><p>{simplified?.fundingSource || "-"}</p></div>
                   <div className="border rounded p-3"><p className="text-xs text-slate-500">UACS Code</p><p>{simplified?.uacsCode || "-"}</p></div>
                   <div className="border rounded p-3"><p className="text-xs text-slate-500">Status</p><p>{simplified?.status || "-"}</p></div>
-                  <div className="border rounded p-3"><p className="text-xs text-slate-500">RDC-NCR Development Sector</p><p>{simplified?.developmentSector || "-"}</p></div>
+                  <div className="border rounded p-3"><p className="text-xs text-slate-500">RDC-NCR Development Sector</p><p>{catalogAnswer("developmentSector")}</p></div>
                   <div className="border rounded p-3"><p className="text-xs text-slate-500">RDP-NCR Main Chapter</p><p>{simplified?.rdpMainChapter || "-"}</p></div>
                 </div>
                 <div className="grid md:grid-cols-2 gap-3">

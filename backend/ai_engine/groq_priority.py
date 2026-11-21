@@ -57,6 +57,7 @@ def _project_payload(snapshot):
 
         schema, _version = resolve_simplified_form_schema(snapshot if isinstance(snapshot, dict) else {})
         applicable_field_keys_set = applicable_field_keys(schema, form)
+        selections = snapshot.get("catalog_selections", {}) if isinstance(snapshot, dict) else {}
         form_fields = []
         applicable_keys = set()
         for section in schema.get("sections", []):
@@ -75,6 +76,11 @@ def _project_payload(snapshot):
                     answer = facts.get(key.split(".", 1)[1])
                 else:
                     answer = form.get(key)
+                selected_labels = {row["value"]: row["label"] for row in selections.get(key, [])}
+                if selected_labels and isinstance(answer, list):
+                    answer = [{"id": value, "label": selected_labels.get(value, value)} for value in answer]
+                elif selected_labels and isinstance(answer, str) and answer in selected_labels:
+                    answer = {"id": answer, "label": selected_labels[answer]}
                 empty = answer in (None, "", [], {})
                 if applicable:
                     applicable_keys.add(key)

@@ -20,7 +20,8 @@ from ai_engine.models import AIModelVersion
 from ai_engine.serializers import AIModelVersionSerializer
 from ai_engine.services import get_active_model, sync_training_record, training_dataset_summary
 
-from cms.form_schema import FormSchemaError, SIMPLIFIED_FORM_KEY, default_simplified_form_schema, describe_form_error, validate_form_schema
+from cms.form_schema import FormSchemaError, SIMPLIFIED_FORM_KEY, default_simplified_form_schema, describe_form_error, prepare_catalog_schema, validate_draft_schema, validate_form_schema
+from projects.form_catalogs import validate_committee_links
 from cms.models import (
     CMSArticle,
     CMSCarouselItem,
@@ -1279,7 +1280,8 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
             published_schema,
         )
         try:
-            validate_form_schema(schema, published_schema=published_schema)
+            validate_draft_schema(schema)
+            validate_form_schema(prepare_catalog_schema(schema, published_schema), published_schema=published_schema)
         except FormSchemaError as exc:
             issue = {
                 "status": "incompatible", "field_key": "form", "field_label": "Contributor form",
@@ -1350,17 +1352,17 @@ class ContributorFormCurrentView(APIView):
             # appear to use an old form.
             raise Http404("Published contributor form not found.")
         version = form.current_published_version
-        from copy import deepcopy
         from projects.models import Agency
+        from projects.form_catalogs import with_catalog_options
 
-        schema = deepcopy(version.schema_json)
+        schema = with_catalog_options(version.schema_json)
         agency_options = [
             {"value": agency.code, "label": agency.name}
             for agency in Agency.objects.filter(is_active=True, system_key__isnull=True).order_by("name")
         ]
         for section in schema.get("sections", []):
             for field in section.get("fields", []):
-                if field.get("key") == "collaboratingAgencies":
+                if field.get("key") == "collaboratingAgencies" and not field.get("catalog"):
                     field["options"] = agency_options
         payload = {
             "key": form.key,
@@ -1376,6 +1378,8 @@ class ContributorFormVersionView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, key, version_number):
+        from projects.form_catalogs import with_catalog_options
+
         version = CMSContributorFormVersion.objects.select_related("form").filter(
             form__key=key, version_number=version_number,
         ).first()
@@ -1388,7 +1392,7 @@ class ContributorFormVersionView(APIView):
             "key": version.form.key,
             "name": version.form.name,
             "version": version.version_number,
-            "schema": version.schema_json,
+            "schema": with_catalog_options(version.schema_json, for_editor=True),
             "published_at": version.published_at,
         }
         return _with_private_cache(request, payload)
@@ -1697,6 +1701,7 @@ class AdminAIPriorityDraftPublishView(APIView):
             raise Http404("AI scoring draft not found.")
         try:
             config = validate_publication_config(rule_config_snapshot(draft))
+            validate_committee_links(config["sector_criteria"], lock=True)
             note = _priority_change_note(request, saved_note=draft.change_note)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -1836,6 +1841,7 @@ class AdminAIPriorityRestoreView(APIView):
         issues = []
         try:
             validated = validate_publication_config(raw)
+            validate_committee_links(validated["sector_criteria"], lock=True)
         except ValueError as exc:
             issues.append(str(exc))
         else:
@@ -1894,6 +1900,10 @@ class AdminAIPriorityCMSView(APIView):
         if expected is None:
             expected = get_active_priority_rule_set().pk
         previous_active = lock_active_rule_set()
+        try:
+            validate_committee_links(config["sector_criteria"], lock=True)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
         contract = contract_for_rule_set(previous_active)
         compatibility = form_compatibility_report(_current_priority_form_schema(), config, contract)
         if compatibility["status"] == "incompatible":

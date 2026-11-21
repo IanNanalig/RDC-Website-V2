@@ -19,7 +19,7 @@ from .scoring_contract import (
     runtime_input_report,
     scoring_text_field_keys,
 )
-from .utils import derive_ncr_lgus
+from .form_catalogs import location_map_keys, project_outcome_context
 
 
 RULE_VERSION = "rdc-priority-v1"
@@ -1020,7 +1020,7 @@ def _outcome_explanation(item, form):
 
 def _is_sceeed_sector(form):
     sector = str(form.get("developmentSector") or "").casefold()
-    return "sceeed" in sector or "economic and environment" in sector
+    return sector == "sceed" or "sceeed" in sector or "economic and environment" in sector
 
 
 def _merge_facts(form, supplements, *, use_saved_blanks=False):
@@ -1520,6 +1520,7 @@ def source_hash(
     project=None,
     revision=None,
     facts_version=None,
+    outcome_context=None,
 ):
     rules = rule_set or _active_ruleset()
     historical_dataset_version = ""
@@ -1559,6 +1560,8 @@ def source_hash(
     }
     if revision is not None:
         payload["revision_id"] = revision.pk
+    if outcome_context is not None:
+        payload["outcome_context"] = outcome_context
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -1631,7 +1634,11 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     if not regional_applicable:
         for key in REGIONAL_FACT_KEYS:
             supplements.pop(key, None)
-    digest = source_hash(snapshot, supplements, rules, project=project, revision=revision, facts_version=facts_version)
+    outcome_context = project_outcome_context(_scoring_form(snapshot))
+    digest = source_hash(
+        snapshot, supplements, rules, project=project, revision=revision,
+        facts_version=facts_version, outcome_context=outcome_context,
+    )
     existing = ProjectPriorityAnalysis.objects.filter(project=project, revision=revision, rule_set=rules, source_hash=digest).first() if persist else None
     if existing:
         existing = ensure_analysis_guidance(existing)
@@ -1706,7 +1713,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     # are evaluated and the result remains explicitly incomplete until the
     # Validator supplies the missing facts and reruns it.
     text = _normalized_text(form)
-    lgu_count = len(derive_ncr_lgus(form.get("location")))
+    lgu_count = len(location_map_keys(form.get("location")))
     missing = [str(item.get("field_label") or item.get("field_key")) for item in input_report["missing"]]
 
     readiness = _scale_rating(dictionaries["readiness"], facts.get("readinessLevel"))
@@ -1743,11 +1750,21 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     pap_total = _criterion_points(pap)
 
     track = _sector_track(form, facts, text)
-    if _is_sceeed_sector(form) and not facts.get("sceeedTrack"):
+    if outcome_context is not None:
+        groups = [group for group in outcome_context["groups"] if group in rule_config["sector_criteria"]]
+        selected = facts.get("sceeedTrack") if outcome_context["committee"] == "sceed" else facts.get("outcomeTrack")
+        if len(groups) == 1:
+            track = groups[0]
+        elif selected in groups:
+            track = selected
+        else:
+            track = None
+            missing.append("Select an applicable committee outcome track" if groups else "Committee has no linked outcome group")
+    elif _is_sceeed_sector(form) and not facts.get("sceeedTrack"):
         missing.append("SCEED Economic or Environment track confirmation")
     chapter = str(form.get("rdpMainChapter") or "").lower()
     outcomes = []
-    outcome_rules = dictionaries["common_outcomes"] + rule_config["sector_criteria"][track]
+    outcome_rules = dictionaries["common_outcomes"] + rule_config["sector_criteria"].get(track, [])
     for outcome_rule in outcome_rules:
         key = outcome_rule["key"]
         label = outcome_rule["label"]
@@ -1933,6 +1950,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         "base_total": base_score,
         "score_total_version": SCORE_TOTAL_VERSION,
         "facts_version": facts_version,
+        "outcome_context": outcome_context,
         "missing_facts": missing,
         "input_preflight": input_report,
         "criterion_coverage": {
