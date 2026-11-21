@@ -4648,7 +4648,7 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         except PriorityOutcomeError as exc:
             return Response({
                 "detail": str(exc), "code": "ai_outcome_unavailable", "reason": exc.reason,
-                "retry_available": exc.reason != "provider_auth",
+                "retry_available": exc.reason not in {"provider_auth", "provider_model"},
             }, status=502)
         except PriorityInputError as exc:
             missing_labels = [

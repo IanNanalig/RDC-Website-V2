@@ -1,4 +1,5 @@
 import io
+import json
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -30,7 +31,7 @@ from .models import (
     SystemSetting,
     User,
 )
-from .priority_scoring import confirm_analysis, has_matching_confirmation
+from .priority_scoring import confirm_analysis, default_priority_rule_config, has_matching_confirmation
 from .scoring_contract import runtime_input_report
 
 
@@ -860,13 +861,17 @@ class SupportingDocumentApiTests(TestCase):
         recent.refresh_from_db()
         self.assertEqual(recent.extraction_status, "not_processed")
 
-    @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
-    @patch("projects.views.analyze_project")
+    @override_settings(CELERY_TASK_ALWAYS_EAGER=True, GROQ_ENABLED=True, GROQ_API_KEY="test-key")
+    @patch("ai_engine.groq_priority.complete_json")
     @patch("projects.tasks.assess_project_documents")
-    def test_eager_ai_scorer_reads_documents_then_scores_project(self, assess_documents, analyze):
+    def test_eager_ai_scorer_reads_documents_then_scores_project(self, assess_documents, complete):
         self.project.status = "proposed"
         self.project.workflow_status = "pending_validation"
-        self.project.save(update_fields=["workflow_status", "status"])
+        self.project.profile_data["form_schema"]["legacy"] = True
+        self.project.profile_data["simplified_form"].update(
+            location=["Quezon City"], developmentSector="Sectoral Committee on Infrastructure Development (SCID)",
+        )
+        self.project.save(update_fields=["workflow_status", "status", "profile_data"])
         document = ProjectSupportingDocument.objects.create(
             project=self.project,
             original_filename="evidence.csv",
@@ -894,31 +899,56 @@ class SupportingDocumentApiTests(TestCase):
             "model": "test-model",
             "used_backup_model": False,
         }
-        rule_set = PriorityRuleSet.objects.create(version="combined-analysis-test", is_active=True)
-        analysis = ProjectPriorityAnalysis.objects.create(
-            project=self.project,
-            validator=self.validator,
-            rule_set=rule_set,
-            source_hash="6" * 64,
-            input_snapshot=profile(),
-            suggested_scores={"missing_facts": []},
-            suggested_priority="low",
-            base_score=25,
-        )
-        analyze.return_value = (analysis, False)
+        config = default_priority_rule_config()
+        rule_set = PriorityRuleSet.objects.create(version="combined-analysis-test", is_active=True, **config)
+        captured = []
+
+        def provider_response(messages, **options):
+            prompt = json.loads(messages[-1]["content"])
+            captured.append(prompt)
+            data = {
+                "outcome_assessments": [
+                    {"key": criterion["key"], "raw_score": 8, "explanation": "Documented project scope.", "evidence": ["River rehabilitation"]}
+                    for criterion in prompt["criteria"]
+                ],
+            }
+            self.assertTrue(options["validate"](data))
+            return GroqCompletion(data, "test-model", False, ("test-model",))
+
+        complete.side_effect = provider_response
         self.client.force_authenticate(self.validator)
-
-        response = self.client.post(
-            f"/api/validator/projects/{self.project.id}/priority-analysis/run/",
-            {"supplements": {}},
-            format="json",
-        )
-
+        base = f"/api/validator/projects/{self.project.id}/priority-analysis/"
+        response = self.client.post(base + "run/", {"supplements": {
+            "readinessLevel": "project_profile", "gadResponsiveness": "invisible",
+            "spatialCoverageScope": "specific_lgus", "regionalSpatialCategory": "single_city",
+            "beneficiaryCount": "12000", "contributedOutcomeCount": "1",
+        }}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(self.project.document_assessments.get().status, "pass")
-        evidence = analyze.call_args.args[3]["supporting_document_evidence"]
+        evidence = captured[0]["validator_facts"]["supporting_document_evidence"]
         self.assertEqual(evidence["status"], "pass")
         self.assertEqual(evidence["files"][0]["filename"], "evidence.csv")
+        first = ProjectPriorityAnalysis.objects.get(pk=response.data["analysis"]["id"])
+        self.assertEqual(first.rule_set, rule_set)
+        self.assertTrue(first.regional_scorecard["applicable"])
+        first_outcomes = first.suggested_scores["rdp_outcomes"]
+        self.assertTrue(all(outcome["raw"] == 8 for outcome in first_outcomes))
+
+        admin = User.objects.create_user(username="scoring-admin", role="admin")
+        self.client.force_authenticate(admin)
+        config["keyword_dictionaries"]["common_outcomes"][0]["label"] = "Updated integration criterion"
+        published = self.client.post("/api/admin/cms/ai-scoring/", {"config": config, "change_note": "Update the integration label."}, format="json")
+        self.assertEqual(published.status_code, 201, published.data)
+        self.client.force_authenticate(self.validator)
+        latest = self.client.get(base)
+        reanalyzed = self.client.post(base + "run/", {"facts_version": latest.data["facts_version"]}, format="json")
+        self.assertEqual(reanalyzed.status_code, 200, reanalyzed.data)
+        self.assertEqual(captured[-1]["criteria"][0]["label"], "Updated integration criterion")
+        self.assertEqual(len(reanalyzed.data["analysis"]["suggested_scores"]["rdp_outcomes"]), len(first_outcomes))
+        reopened = self.client.get(base)
+        self.assertEqual(reopened.data["current_analysis_id"], reanalyzed.data["analysis"]["id"])
+        first.refresh_from_db()
+        self.assertEqual(first.suggested_scores["rdp_outcomes"], first_outcomes)
 
 
 class DocumentAssessmentOverrideTests(TestCase):

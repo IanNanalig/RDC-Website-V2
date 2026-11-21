@@ -23,6 +23,10 @@ class InvalidGroqResponse(ValueError):
 # Structured output is opt-in for callers and limited to the configured model
 # families with strict JSON Schema support.
 STRICT_OUTPUT_MODELS = {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}
+CLASSIFICATION_ONLY_MODELS = {
+    "meta-llama/llama-prompt-guard-2-86m",
+    "meta-llama/llama-prompt-guard-2-22m",
+}
 
 
 @dataclass(frozen=True)
@@ -137,6 +141,10 @@ def complete_json(messages, *, temperature=0.1, max_completion_tokens=None, vali
     reasons = set()
     for index, model in enumerate(models):
         attempted.append(model)
+        if model in CLASSIFICATION_ONLY_MODELS:
+            reasons.add("provider_model")
+            failures.append(f"{model}: classification-only model cannot generate a scorecard")
+            continue
         try:
             data = _request(
                 model,

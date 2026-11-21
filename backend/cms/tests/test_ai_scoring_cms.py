@@ -90,7 +90,7 @@ class AIPriorityCMSTests(APITestCase):
         config["thresholds"]["high"] = 101
         self.assertEqual(self.client.post(url, {"config": config}, format="json").status_code, 400)
         config["thresholds"]["high"] = 100
-        saved = self.client.post(url, {"config": config}, format="json")
+        saved = self.client.post(url, {"config": config, "change_note": "Test a valid high threshold."}, format="json")
         self.assertEqual(saved.status_code, 201, saved.data)
         draft_id = saved.data["draft_rule_set"]["id"]
         config["thresholds"]["pap_weights"]["readiness"] = 101
@@ -104,6 +104,111 @@ class AIPriorityCMSTests(APITestCase):
             self.assertIn("High-priority threshold", result.data["detail"])
         self.rule_set.refresh_from_db()
         self.assertTrue(self.rule_set.is_active)
+
+    def test_whole_number_weights_and_required_notes_are_enforced_on_api(self):
+        self.client.force_authenticate(self.admin)
+        path = "/api/admin/cms/ai-scoring/"
+        config = default_priority_rule_config()
+        self.assertEqual(self.client.post(path + "drafts/", {"config": config, "change_note": " "}, format="json").status_code, 400)
+        for weight in (0, 0.5, 1.5, -1, 101):
+            invalid = deepcopy(config)
+            common = invalid["keyword_dictionaries"]["common_outcomes"]
+            common[1]["weight"] += common[0]["weight"] - weight
+            common[0]["weight"] = weight
+            for endpoint in (path, path + "drafts/"):
+                result = self.client.post(endpoint, {"config": invalid, "change_note": "Check weights."}, format="json")
+                self.assertEqual(result.status_code, 400, result.data)
+                self.assertIn("whole number from 1 to 100", result.data["detail"])
+        common = config["keyword_dictionaries"]["common_outcomes"]
+        common[1]["weight"] += common[0]["weight"] - 1
+        common[0]["weight"] = 1
+        saved = self.client.post(path + "drafts/", {"config": config, "change_note": "Set a whole-number weight."}, format="json")
+        self.assertEqual(saved.status_code, 201, saved.data)
+        draft_id = saved.data["draft_rule_set"]["id"]
+        activation = self.client.post(path + f"drafts/{draft_id}/publish/", {}, format="json")
+        self.assertEqual(activation.status_code, 200, activation.data)
+        self.assertEqual(activation.data["rule_versions"][0]["change_note"], "Set a whole-number weight.")
+
+    def test_history_compares_keyed_rules_and_restores_as_a_new_version(self):
+        self.client.force_authenticate(self.admin)
+        path = "/api/admin/cms/ai-scoring/"
+        original = deepcopy(self.rule_set.keyword_dictionaries)
+        config = default_priority_rule_config()
+        config["thresholds"]["high"] = 82
+        outcomes = config["keyword_dictionaries"]["common_outcomes"]
+        outcomes[0]["matching_guidance"] = "Preserve this custom evaluation instruction."
+        extra = deepcopy(outcomes[0])
+        extra.update(key="custom_review", label="Additional review", weight=1)
+        outcomes[0]["weight"] -= 1
+        outcomes.append(extra)
+        published = self.client.post(path, {"config": config, "change_note": "Changed the threshold and outcome guidance."}, format="json")
+        self.assertEqual(published.status_code, 201, published.data)
+        current = published.data["active_rule_set"]["id"]
+        self.assertEqual(published.data["active_rule_set"]["draft_config"]["keyword_dictionaries"]["common_outcomes"][0]["matching_guidance"], outcomes[0]["matching_guidance"])
+        versions = self.client.get(path + "versions/")
+        self.assertEqual(versions.status_code, 200)
+        self.assertEqual(versions.data["results"][0]["activated_by"], self.admin.username)
+        self.assertEqual(versions.data["results"][0]["change_note"], "Changed the threshold and outcome guidance.")
+        details = self.client.get(path + f"versions/{current}/")
+        changes = {tuple(change["path"]): change for change in details.data["changes"]}
+        self.assertEqual(changes["thresholds", "high"]["after"], 82)
+        self.assertEqual(changes["keyword_dictionaries", "common_outcomes", "custom_review"]["kind"], "added")
+        self.assertEqual(changes["keyword_dictionaries", "common_outcomes", outcomes[0]["key"], "matching_guidance"]["after"], outcomes[0]["matching_guidance"])
+        old_draft = self.client.post(path + "drafts/", {"config": config, "change_note": "Keep this draft."}, format="json").data["draft_rule_set"]["id"]
+        restore = path + f"versions/{self.rule_set.pk}/restore/"
+        payload = {"expected_active_id": current, "change_note": "Restore the original scoring rules."}
+        self.client.force_authenticate(self.editor)
+        self.assertEqual(self.client.post(restore, payload, format="json").status_code, 403)
+        self.client.force_authenticate(self.admin)
+        restored = self.client.post(restore, payload, format="json")
+        self.assertEqual(restored.status_code, 201, restored.data)
+        self.assertEqual(restored.data["result"], "restored")
+        new = PriorityRuleSet.objects.get(pk=restored.data["rule_set"]["id"])
+        self.assertEqual(new.restored_from_id, self.rule_set.pk)
+        self.assertEqual(new.based_on_id, current)
+        self.assertEqual(new.keyword_dictionaries, original)
+        self.assertEqual(PriorityRuleSet.objects.get(pk=old_draft).status, "draft")
+        self.assertEqual(self.client.post(path + f"drafts/{old_draft}/publish/", {}, format="json").status_code, 409)
+        draft_path = path + f"drafts/{old_draft}/"
+        self.assertEqual(self.client.patch(draft_path, {
+            "config": config, "change_note": "Stale active version.", "expected_active_id": current,
+        }, format="json").status_code, 409)
+        rebased = self.client.patch(draft_path, {
+            "config": config, "change_note": "Reviewed against the restored version.", "expected_active_id": new.pk,
+        }, format="json")
+        self.assertEqual(rebased.status_code, 200, rebased.data)
+        self.assertEqual(rebased.data["draft_rule_set"]["based_on"], new.pk)
+        self.assertEqual(self.client.post(restore, payload, format="json").status_code, 409)
+        self.analysis.refresh_from_db()
+        self.assertEqual(self.analysis.rule_set_id, self.rule_set.id)
+        self.assertEqual(self.confirmation.final_priority, "low")
+
+    def test_zero_weight_history_opens_repair_draft_without_activating(self):
+        self.client.force_authenticate(self.admin)
+        path = "/api/admin/cms/ai-scoring/"
+        config = default_priority_rule_config()
+        common = config["keyword_dictionaries"]["common_outcomes"]
+        common[1]["weight"] += common[0]["weight"]
+        common[0]["weight"] = 0
+        legacy = PriorityRuleSet.objects.create(version="legacy-zero", status="superseded", **config)
+        response = self.client.post(path + f"versions/{legacy.pk}/restore/", {
+            "expected_active_id": self.rule_set.pk, "change_note": "Review the old weighting.",
+        }, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["result"], "repair_draft")
+        self.assertIn("whole number from 1 to 100", response.data["issues"][0])
+        draft = PriorityRuleSet.objects.get(pk=response.data["rule_set"]["id"])
+        self.assertEqual(draft.restored_from, legacy)
+        self.assertEqual(draft.keyword_dictionaries, legacy.keyword_dictionaries)
+        self.assertEqual(get_active_priority_rule_set().pk, self.rule_set.pk)
+        self.assertEqual(self.client.post(path + f"drafts/{draft.pk}/publish/", {}, format="json").status_code, 400)
+        corrected = self.client.patch(path + f"drafts/{draft.pk}/", {
+            "config": default_priority_rule_config(), "change_note": "Correct the legacy weight.",
+        }, format="json")
+        self.assertEqual(corrected.status_code, 200, corrected.data)
+        self.assertEqual(self.client.post(path + f"drafts/{draft.pk}/publish/", {}, format="json").status_code, 200)
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.keyword_dictionaries["common_outcomes"][0]["weight"], 0)
 
     @override_settings(GROQ_ENABLED=False)
     def test_maximum_ai_score_rounds_the_total_once(self):
@@ -420,7 +525,7 @@ class AIPriorityCMSTests(APITestCase):
         spatial = regional["spatial_coverage"]["scores"]
         spatial["region_wide"] = 9
         config["keyword_dictionaries"]["readiness"].reverse()
-        saved = self.client.post(url, {"config": config}, format="json")
+        saved = self.client.post(url, {"config": config, "change_note": "Test valid rank ordering."}, format="json")
         self.assertEqual(saved.status_code, 201, saved.data)
         draft = PriorityRuleSet.objects.get(pk=saved.data["draft_rule_set"]["id"])
         self.assertEqual(draft.thresholds["regional_criteria"]["spatial_coverage"]["scores"]["region_wide"], 9)
@@ -462,7 +567,7 @@ class AIPriorityCMSTests(APITestCase):
         config = default_priority_rule_config()
         config["thresholds"]["regional_criteria"]["outcome_contribution"]["thresholds"]["at_least_7"] = 11
         url = "/api/admin/cms/ai-scoring/drafts/"
-        saved = self.client.post(url, {"config": config}, format="json")
+        saved = self.client.post(url, {"config": config, "change_note": "Test the updated outcome threshold."}, format="json")
         self.assertEqual(saved.status_code, 201, saved.data)
         draft_id = saved.data["draft_rule_set"]["id"]
         draft = self.client.get(f"{url}{draft_id}/")

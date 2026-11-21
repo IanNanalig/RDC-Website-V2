@@ -193,19 +193,65 @@ try {
       common_outcomes: [], negative_rules: [], guidelines: [],
       outcome_rating: { chapter_and_two_keywords: 10, chapter_or_three_keywords: 8, one_keyword: 5, no_keywords: 0 },
     },
-    sector_criteria: {},
+    sector_criteria: {
+      infrastructure: [{
+        key: "connectivity", label: "Connectivity", weight: 50, keywords: ["transport"],
+        match_mode: "contextual", context_phrases: ["improve access"],
+      }],
+      social: [{
+        key: "public_services", label: "Public services", weight: 50, keywords: ["access"],
+        match_mode: "contextual", context_phrases: ["improve access"],
+      }],
+    },
   };
+  const oldVersion = {
+    id: 1, version: "previous-scoring-rules", algorithm_version: "test", is_active: false,
+    analysis_count: 3, created_at: "2026-11-20T04:30:00Z", activated_by: "Test Administrator",
+    change_note: "Adjusted the high-priority threshold for review.",
+  };
+  const addedCriterion = {
+    key: "custom_common_outcomes_1795249380617", label: "Safe and reliable transport",
+    weight: 15, keywords: ["road", "bridge"], match_mode: "contextual",
+    matching_guidance: "Show how the project improves access.",
+  };
+  const removedCriterion = {
+    key: "accessibility", label: "Accessible public services",
+    weight: 20, context_phrases: ["accessible transport", "connect communities"],
+  };
+  let activeId = 2;
   await admin.route("**/api/**", (route) => {
+    const requestUrl = route.request().url();
     if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
-    if (route.request().url().includes("admin/cms/ai-scoring/")) return json(route, {
-      active_rule_set: { version: "test-rules", algorithm_version: "test", config: adminConfig },
-      historical_count: 0, historical_projects: [], rule_versions: [],
+    if (requestUrl.includes("ai-scoring/versions/1/restore/")) {
+      assert.deepEqual(JSON.parse(route.request().postData()), {
+        expected_active_id: 2, change_note: "Restore for the integration test.",
+      });
+      activeId = 3;
+      return json(route, { detail: "Restored as a new active version.", result: "restored", issues: [] });
+    }
+    if (requestUrl.includes("ai-scoring/versions/1/")) return json(route, {
+      ...oldVersion, previous_version: "baseline", input_contract: {},
+      config: {
+        ...adminConfig,
+        keyword_dictionaries: { ...adminConfig.keyword_dictionaries, common_outcomes: [addedCriterion] },
+      },
+      changes: [
+        { path: ["thresholds", "high"], kind: "changed", before: 80, after: 81 },
+        { path: ["keyword_dictionaries", "common_outcomes", addedCriterion.key], kind: "added", before: null, after: addedCriterion },
+        { path: ["sector_criteria", "infrastructure", removedCriterion.key], kind: "removed", before: removedCriterion, after: null },
+      ],
+    });
+    if (requestUrl.includes("admin/cms/ai-scoring/")) return json(route, {
+      active_rule_set: { id: activeId, version: activeId === 3 ? "restored-scoring-rules" : "test-rules", algorithm_version: "test", config: adminConfig },
+      historical_count: 0, historical_projects: [], rule_versions: [oldVersion],
     });
     return json(route, {});
   });
   await admin.goto(`http://127.0.0.1:${address.port}/admin/ai-scoring`, { waitUntil: "networkidle" });
   await admin.getByRole("heading", { name: "PAPs Criterion", exact: true }).waitFor();
   await admin.getByRole("heading", { name: "Regional Prioritization Criteria", exact: true }).waitFor();
+  await admin.getByRole("button", { name: "Create Draft", exact: true }).waitFor();
+  assert.equal(await admin.getByLabel("Preview project ID", { exact: true }).count(), 0);
   const papScore = admin.getByLabel("1–5 cities/municipalities", { exact: true });
   const regionalScore = admin.getByLabel("Single-city score", { exact: true });
   assert.equal(await papScore.inputValue(), "3");
@@ -213,7 +259,65 @@ try {
   assert.equal(await regionalScore.inputValue(), "4");
   await papScore.fill("6");
   await admin.getByText(/PAP Spatial Coverage scores:.*must be greater/).waitFor();
-  console.log("PASS Administrator groups, independent Spatial Coverage scales, and inline hierarchy validation");
+  await papScore.fill("3");
+  await admin.getByText("Required change note", { exact: true }).locator("..").locator("textarea").fill("Test active weights.");
+  const lowerCostBand = admin.getByRole("spinbutton", { name: /^More than PHP (500|100|200),000,000/ });
+  const costBandWarning = admin.getByText("Cost bands must be at least the regional eligibility cutoff of PHP 200,000,000.", { exact: true });
+  assert.equal(await lowerCostBand.getAttribute("min"), "200000000");
+  await lowerCostBand.fill("100000000");
+  await costBandWarning.waitFor();
+  assert.equal(await admin.getByRole("button", { name: "Create Draft" }).isDisabled(), true);
+  await lowerCostBand.fill("200000000");
+  await costBandWarning.waitFor({ state: "hidden" });
+  assert.equal(await admin.getByRole("button", { name: "Create Draft" }).isEnabled(), true);
+  const eligibilityCutoff = admin.getByRole("spinbutton", { name: /^Regional eligibility and automatic-Low cutoff/ });
+  await eligibilityCutoff.fill("300000000");
+  assert.equal(await lowerCostBand.getAttribute("min"), "300000000");
+  assert.equal(await admin.getByRole("button", { name: "Create Draft" }).isDisabled(), true);
+  await eligibilityCutoff.fill("200000000");
+  const readinessWeight = admin.getByRole("spinbutton", { name: /^Readiness weight/ });
+  assert.equal(await readinessWeight.getAttribute("min"), "1");
+  assert.equal(await readinessWeight.getAttribute("step"), "1");
+  await readinessWeight.fill("0");
+  const weightWarning = admin.getByText("Enter a whole-number weight from 1 to 100.", { exact: true });
+  await weightWarning.waitFor();
+  const priorityThresholds = admin.getByRole("heading", { name: "Priority thresholds", exact: true }).locator("..");
+  assert.equal(await priorityThresholds.getByText(/weight/i).count(), 0);
+  assert.equal(await weightWarning.locator("..").getByText("Enter a number from 0 to 100.", { exact: true }).count(), 0);
+  assert.equal(await admin.getByRole("button", { name: "Create Draft" }).isDisabled(), true);
+  await readinessWeight.fill("1.5");
+  assert.equal(await readinessWeight.getAttribute("aria-invalid"), "true");
+  await readinessWeight.fill("1");
+  assert.equal(await readinessWeight.getAttribute("aria-invalid"), "false");
+  const totalWarning = admin.getByText("Combined weights must total 100. Each sector currently totals 81.", { exact: true });
+  await totalWarning.waitFor();
+  const warningBelowHeading = admin.getByRole("heading", { name: "RDP outcome criteria and matching words", exact: true })
+    .locator("xpath=following-sibling::p[1]");
+  assert.match(await warningBelowHeading.innerText(), /Each sector currently totals 81/);
+  const committeeHeading = admin.getByRole("heading", { name: "Committee-specific outcome criteria", exact: true });
+  assert.match(await committeeHeading.locator("xpath=preceding-sibling::*[1]").locator("summary").innerText(), /Common outcomes/);
+  assert.match(await committeeHeading.locator("xpath=following-sibling::*[1]").locator("summary").innerText(), /Infrastructure outcomes/);
+  assert.equal(await admin.locator("summary").getByText(/Combined weights must total/).count(), 0);
+  assert.equal(await priorityThresholds.getByText(/weight/i).count(), 0);
+  assert.equal(await admin.getByRole("button", { name: "Create Draft" }).isDisabled(), true);
+  await admin.getByText(oldVersion.change_note, { exact: true }).waitFor();
+  await admin.getByRole("button", { name: "View version previous-scoring-rules" }).click();
+  await admin.getByText("Changes since baseline").waitFor();
+  await admin.getByText("Thresholds / High-priority cutoff", { exact: false }).waitFor();
+  const addedRow = admin.getByRole("row").filter({ hasText: "Scoring rules / Common outcomes / Safe and reliable transport" });
+  await addedRow.getByRole("cell").nth(2).getByText("road, bridge", { exact: true }).waitFor();
+  await addedRow.getByText("Contextual sentence matching", { exact: true }).waitFor();
+  assert.equal(await addedRow.getByText(addedCriterion.key, { exact: false }).count(), 0);
+  const removedRow = admin.getByRole("row").filter({ hasText: "Sector outcomes / Infrastructure / Accessible public services" });
+  await removedRow.getByRole("cell").nth(1).getByText("accessible transport, connect communities", { exact: true }).waitFor();
+  await admin.getByText("Configuration snapshot", { exact: true }).click();
+  assert.equal(await admin.getByText(/"key":|"matching_guidance":/).count(), 0);
+  await admin.getByLabel("Restore change note").fill("Restore for the integration test.");
+  admin.once("dialog", (dialog) => dialog.accept());
+  await admin.getByRole("button", { name: "Restore version", exact: true }).click();
+  await admin.getByText("Restored as a new active version.", { exact: true }).waitFor();
+  await admin.getByText("restored-scoring-rules", { exact: true }).waitFor();
+  console.log("PASS Administrator groups, independent Spatial Coverage, positive weights, version notes, differences, and restore");
 } finally {
   await context.close();
   await browser.close();

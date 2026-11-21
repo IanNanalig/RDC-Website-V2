@@ -4,7 +4,7 @@ import logging
 import math
 import re
 from copy import deepcopy
-from decimal import Decimal, ROUND_HALF_UP, localcontext
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 
 from django.conf import settings
 
@@ -328,6 +328,19 @@ def _number(value, label, minimum=0, maximum=None):
     return int(parsed) if parsed.is_integer() else parsed
 
 
+def _criterion_weight(value, label, *, strict):
+    if not strict:
+        return _number(value, label, 0, 100)
+    error = f"{label} must be a whole number from 1 to 100."
+    try:
+        weight = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ValueError(error) from exc
+    if not weight.is_finite() or not 1 <= weight <= 100 or weight != weight.to_integral_value():
+        raise ValueError(error)
+    return int(weight)
+
+
 def _rule_key(value, label):
     key = str(value or "").strip().lower()
     if not re.fullmatch(r"[a-z0-9_]+", key):
@@ -361,7 +374,7 @@ def _optional_keywords(value, label):
     return cleaned
 
 
-def _criterion_rules(value, label):
+def _criterion_rules(value, label, *, strict_weights=False):
     if not isinstance(value, list) or not value:
         raise ValueError(f"{label} must contain at least one criterion.")
     rows = []
@@ -394,7 +407,7 @@ def _criterion_rules(value, label):
         rows.append({
             "key": key,
             "label": title,
-            "weight": _number(item.get("weight"), f"{title} weight", 0, 100),
+            "weight": _criterion_weight(item.get("weight"), f"{title} weight", strict=strict_weights),
             "keywords": _keywords(item.get("keywords"), f"{title} keywords"),
             "description": description,
             "matching_guidance": matching_guidance,
@@ -566,7 +579,7 @@ def validate_priority_rule_config(config, *, enforce_current_high=False):
     if not isinstance(pap_weights_value, dict):
         raise ValueError("PAP criterion weights are required.")
     pap_weights = {
-        key: _number(pap_weights_value.get(key), f"{label} weight", 0, 100)
+        key: _criterion_weight(pap_weights_value.get(key), f"{label} weight", strict=enforce_current_high)
         for key, label in (
             ("readiness", "Readiness"),
             ("gad_responsiveness", "GAD responsiveness"),
@@ -583,11 +596,11 @@ def validate_priority_rule_config(config, *, enforce_current_high=False):
     }
     _validate_rank(pap_spatial_scores, PAP_SPATIAL_LABELS, "PAP Spatial Coverage scores", strict=True)
 
-    common = _criterion_rules(dictionaries.get("common_outcomes"), "Common outcomes")
+    common = _criterion_rules(dictionaries.get("common_outcomes"), "Common outcomes", strict_weights=enforce_current_high)
     normalized_sectors = {}
     all_keys = {row["key"] for row in common}
     for sector in SECTOR_OUTCOMES:
-        rows = _criterion_rules(sectors.get(sector), f"{sector.replace('_', ' ').title()} outcomes")
+        rows = _criterion_rules(sectors.get(sector), f"{sector.replace('_', ' ').title()} outcomes", strict_weights=enforce_current_high)
         duplicate = all_keys.intersection(row["key"] for row in rows)
         if duplicate:
             raise ValueError(f"Outcome criterion keys must be unique. Duplicate: {sorted(duplicate)[0]}.")
@@ -671,7 +684,7 @@ def validate_priority_rule_config(config, *, enforce_current_high=False):
     }
 
 
-def priority_rule_config(rule_set=None, *, strict=False):
+def priority_rule_config(rule_set=None, *, strict=False, fallback=True):
     config = default_priority_rule_config()
     if rule_set is None:
         return validate_priority_rule_config(config, enforce_current_high=strict)
@@ -698,6 +711,8 @@ def priority_rule_config(rule_set=None, *, strict=False):
     try:
         return validate_priority_rule_config(config)
     except ValueError:
+        if not fallback:
+            raise
         return validate_priority_rule_config(default_priority_rule_config())
 
 
@@ -708,10 +723,11 @@ def contextual_priority_rule_draft(rule_set=None):
     for sector_rules in config["sector_criteria"].values():
         outcome_rules.extend(sector_rules)
     for rule in outcome_rules:
+        if rule.get("match_mode") == "contextual":
+            continue
         rule["match_mode"] = "contextual"
         configured = OUTCOME_CONTEXT_RULES.get(rule["key"])
-        if configured:
-            rule["matching_guidance"] = configured["guidance"]
+        if configured and not rule.get("context_phrases"):
             rule["context_phrases"] = list(configured["phrases"])
     return validate_priority_rule_config(config)
 
@@ -1591,6 +1607,7 @@ class PriorityOutcomeError(ValueError):
         super().__init__({
             "rate_limited": "Groq is temporarily rate limiting scoring requests. Wait before retrying.",
             "provider_auth": "Groq rejected the scoring service credentials. Ask an administrator to check the provider configuration.",
+            "provider_model": "The configured Groq models classify input and cannot generate outcome scores. Ask an administrator to configure a scoring model.",
             "provider_timeout": "Groq timed out while scoring outcomes. Retry the scorer.",
             "provider_network": "The scoring service could not connect to Groq. Retry the scorer.",
             "provider_server_error": "Groq reported a server error while scoring outcomes. Retry the scorer.",

@@ -11,6 +11,19 @@ from .groq_priority import analyze_priority_with_groq
 
 class GroqClientTests(SimpleTestCase):
     @override_settings(
+        GROQ_ENABLED=True, GROQ_API_KEY="test-key",
+        GROQ_PRIMARY_MODEL="meta-llama/llama-prompt-guard-2-86m",
+        GROQ_BACKUP_MODEL="meta-llama/llama-prompt-guard-2-22m",
+    )
+    @patch("ai_engine.groq_client.urllib.request.urlopen")
+    def test_classification_only_models_fail_before_provider_request(self, urlopen):
+        with self.assertRaises(GroqUnavailable) as raised:
+            complete_json([])
+        self.assertEqual(raised.exception.reason, "provider_model")
+        self.assertIn("classification-only", str(raised.exception))
+        urlopen.assert_not_called()
+
+    @override_settings(
         GROQ_ENABLED=True,
         GROQ_API_KEY="test-key",
         GROQ_PRIMARY_MODEL="primary-model",

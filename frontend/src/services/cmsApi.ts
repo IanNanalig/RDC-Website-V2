@@ -376,17 +376,8 @@ export type CMSAIScoringWorkspace = {
     compatibility?: CMSCompatibilityReport;
   };
   draft_rule_set?: CMSAIRuleSet | null;
-  rule_versions: Array<{
-    id: number;
-    version: string;
-    algorithm_version: string;
-    is_active: boolean;
-    analysis_count: number;
-    created_at: string;
-    status?: "draft" | "active" | "superseded";
-    based_on?: number | null;
-    change_note?: string;
-  }>;
+  draft_rule_sets?: Array<{ id: number; version: string }>;
+  rule_versions: CMSAIRuleHistoryEntry[];
   historical_projects: CMSAIHistoricalProject[];
   historical_count: number;
   training_dataset?: CMSAITrainingDataset;
@@ -402,6 +393,10 @@ export type CMSAIRuleSet = {
   status: "draft" | "active" | "superseded";
   is_active: boolean;
   based_on?: number | null;
+  restored_from?: number | null;
+  restored_from_version?: string | null;
+  editor_error?: string;
+  raw_config?: unknown;
   change_note?: string;
   created_at: string;
   updated_at: string;
@@ -411,26 +406,24 @@ export type CMSAIRuleSet = {
   compatibility: CMSCompatibilityReport;
 };
 
-export type CMSAIPreview = {
-  preview: true;
-  status: "complete" | "incomplete";
-  form_inputs?: Array<{ key: string; label: string; answer_state: string; answer?: unknown }>;
-  hidden_fields?: string[];
-  criterion_coverage?: { covered_criteria: number; total_criteria: number; coverage_percent: number; covered_subtotal: number };
-  external_provider_expected?: boolean;
-  regional_outcome_bands?: Array<{ key: string; label: string; raw_score: number }>;
-  input_preflight?: {
-    status: "incomplete";
-    missing: Array<{ field_key: string; field_label: string; source: string; message: string }>;
-  };
-  result?: {
-    rule_version: string;
-    suggested_priority: string;
-    base_score: number;
-    summary: string;
-    suggested_scores: Record<string, unknown>;
-    flags: Record<string, unknown>;
-  };
+export type CMSAIRuleHistoryEntry = {
+  id: number;
+  version: string;
+  algorithm_version: string;
+  is_active: boolean;
+  analysis_count: number;
+  created_at: string;
+  published_at?: string;
+  activated_by?: string | null;
+  restored_from_version?: string | null;
+  change_note?: string;
+};
+
+export type CMSAIRuleHistoryDetail = CMSAIRuleHistoryEntry & {
+  previous_version: string | null;
+  config: unknown;
+  input_contract: unknown;
+  changes: Array<{ path: string[]; kind: "added" | "removed" | "changed"; before: unknown; after: unknown }>;
 };
 
 export type CMSArticleSnapshot = {
@@ -648,16 +641,21 @@ export const cmsApi = {
     api.patch(`admin/cms/settings/${key}/`, payload),
   getReviewQueue: () => api.get("admin/cms/review-queue/?view=summary") as Promise<CMSReviewQueue>,
   getAIScoringWorkspace: (limit = 50) => api.get(`admin/cms/ai-scoring/?limit=${limit}`) as Promise<CMSAIScoringWorkspace>,
+  getAIScoringDraft: (id: number) => api.get(`admin/cms/ai-scoring/drafts/${id}/`) as Promise<CMSAIRuleSet>,
+  getAIScoringVersions: (page: number) =>
+    api.get(`admin/cms/ai-scoring/versions/?page=${page}`) as Promise<{ next: string | null; results: CMSAIRuleHistoryEntry[] }>,
+  getAIScoringVersion: (id: number) => api.get(`admin/cms/ai-scoring/versions/${id}/`) as Promise<CMSAIRuleHistoryDetail>,
+  restoreAIScoringVersion: (id: number, activeId: number, changeNote: string) =>
+    api.post(`admin/cms/ai-scoring/versions/${id}/restore/`, { expected_active_id: activeId, change_note: changeNote }) as
+      Promise<{ detail: string; result: "restored" | "repair_draft"; issues: string[]; rule_set: CMSAIRuleSet }>,
   activateAIScoringRules: (config: CMSAIRuleConfig, changeNote: string) =>
     api.post("admin/cms/ai-scoring/", { config, change_note: changeNote }) as Promise<CMSAIScoringWorkspace>,
-  createAIScoringDraft: (config: CMSAIRuleConfig, changeNote: string) =>
-    api.post("admin/cms/ai-scoring/drafts/", { config, change_note: changeNote }) as Promise<{ detail: string; draft_rule_set: CMSAIRuleSet; compatibility: CMSCompatibilityReport }>,
-  updateAIScoringDraft: (id: number, config: CMSAIRuleConfig, changeNote: string) =>
-    api.patch(`admin/cms/ai-scoring/drafts/${id}/`, { config, change_note: changeNote }) as Promise<{ detail: string; draft_rule_set: CMSAIRuleSet; compatibility: CMSCompatibilityReport }>,
+  createAIScoringDraft: (config: CMSAIRuleConfig, changeNote: string, activeId: number) =>
+    api.post("admin/cms/ai-scoring/drafts/", { config, change_note: changeNote, expected_active_id: activeId }) as Promise<{ detail: string; draft_rule_set: CMSAIRuleSet; compatibility: CMSCompatibilityReport }>,
+  updateAIScoringDraft: (id: number, config: CMSAIRuleConfig, changeNote: string, activeId: number) =>
+    api.patch(`admin/cms/ai-scoring/drafts/${id}/`, { config, change_note: changeNote, expected_active_id: activeId }) as Promise<{ detail: string; draft_rule_set: CMSAIRuleSet; compatibility: CMSCompatibilityReport }>,
   publishAIScoringDraft: (id: number) =>
     api.post(`admin/cms/ai-scoring/drafts/${id}/publish/`, {}) as Promise<CMSAIScoringWorkspace>,
-  previewAIScoringDraft: (id: number, projectId: number, supplements: Record<string, unknown> = {}) =>
-    api.post(`admin/cms/ai-scoring/drafts/${id}/preview/`, { project_id: projectId, supplements }) as Promise<CMSAIPreview>,
   trainAIModel: () => api.post("admin/ai/models/train/", {}),
   updateAITrainingRecord: (id: number, isEligible: boolean, exclusionReason = "") =>
     api.patch(`admin/ai/training-data/${id}/`, {

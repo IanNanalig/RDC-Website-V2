@@ -7,19 +7,25 @@ from .priority_scoring import confirm_analysis, default_priority_rule_config, va
 
 
 class PriorityConfigurationTests(SimpleTestCase):
-    def test_fractional_weights_must_total_100_for_each_sector(self):
+    def test_whole_number_weights_must_total_100_for_each_sector(self):
+        config = default_priority_rule_config()
+        weights = config["thresholds"]["pap_weights"]
+        weights["readiness"] += 1
+        weights["gad_responsiveness"] -= 1
+        validate_priority_rule_config(config, enforce_current_high=True)
+        for offset in (-1, 1):
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, "must total 100"):
+                config["thresholds"]["pap_weights"] = {**weights, "readiness": weights["readiness"] + offset}
+                validate_priority_rule_config(config, enforce_current_high=True)
+
+    def test_fractional_weights_remain_readable_in_legacy_rules(self):
         config = default_priority_rule_config()
         weights = config["thresholds"]["pap_weights"]
         weights["readiness"] += 0.125
         weights["gad_responsiveness"] -= 0.125
-        validate_priority_rule_config(config, enforce_current_high=True)
-        for offset in (-0.001, 0.001):
-            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, "must total 100"):
-                weights["readiness"] += offset
-                try:
-                    validate_priority_rule_config(config, enforce_current_high=True)
-                finally:
-                    weights["readiness"] -= offset
+        self.assertEqual(validate_priority_rule_config(config)["thresholds"]["pap_weights"], weights)
+        with self.assertRaisesRegex(ValueError, "whole number from 1 to 100"):
+            validate_priority_rule_config(config, enforce_current_high=True)
 
     def test_non_finite_and_out_of_range_raw_ratings_are_rejected(self):
         for raw in (11, -1, float("nan"), float("inf")):
@@ -32,9 +38,15 @@ class PriorityConfigurationTests(SimpleTestCase):
         config = default_priority_rule_config()
         config["thresholds"]["high"] = 82
         self.assertEqual(validate_priority_rule_config(config, enforce_current_high=True)["thresholds"]["high"], 82)
-        config["thresholds"]["regional_criteria"]["cost"]["thresholds"]["over_500m"] = 1
+        cost_bands = config["thresholds"]["regional_criteria"]["cost"]["thresholds"]
+        cost_bands["over_500m"] = 100_000_000
         with self.assertRaisesRegex(ValueError, "eligibility cutoff"):
             validate_priority_rule_config(config)
+        cost_bands["over_500m"] = config["thresholds"]["regional_project_cost"]
+        self.assertEqual(
+            validate_priority_rule_config(config, enforce_current_high=True)["thresholds"]["regional_criteria"]["cost"]["thresholds"]["over_500m"],
+            200_000_000,
+        )
 
     def test_stale_sceeed_track_does_not_override_other_sector(self):
         self.assertEqual(_sector_track({"developmentSector": "Infrastructure"}, {"sceeedTrack": "economic"}, ""), "infrastructure")

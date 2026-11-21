@@ -629,6 +629,9 @@ class PriorityRuleSet(models.Model):
     based_on = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="derived_rule_sets"
     )
+    restored_from = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="restored_rule_sets"
+    )
     change_note = models.TextField(blank=True, default="")
     created_by = models.ForeignKey(
         "User", null=True, blank=True, on_delete=models.SET_NULL, related_name="created_priority_rule_sets"

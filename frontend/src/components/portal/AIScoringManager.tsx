@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import cmsApi, {
   type CMSAIOutcomeRule,
-  type CMSAIPreview,
   type CMSAIRuleConfig,
   type CMSAIRuleSet,
   type CMSAIScoringWorkspace,
 } from "../../services/cmsApi";
+import { AIScoringRuleHistory } from "./AIScoringRuleHistory";
 
 type Props = { mode: "admin" | "editor" };
 
@@ -144,6 +144,12 @@ const collectRankingErrors = (config: CMSAIRuleConfig) => {
     check(group, `${title} thresholds`, labels, regional[group].thresholds);
     check(group, `${title} scores`, { ...labels, otherwise: "Otherwise" }, regional[group].scores);
   }
+  const eligibilityCutoff = config.thresholds.regional_project_cost;
+  if (withinRange(eligibilityCutoff, 0) && Object.values(regional.cost.thresholds).some(
+    (threshold) => withinRange(threshold, 0) && threshold < eligibilityCutoff,
+  )) {
+    errors.cost.push(`Cost bands must be at least the regional eligibility cutoff of PHP ${regionalNumber.format(eligibilityCutoff)}.`);
+  }
   check("spatial_coverage", "Regional spatial coverage scores", spatialLabels, regional.spatial_coverage.scores);
   check("pap_spatial", "PAP Spatial Coverage scores", papSpatialLabels, config.thresholds.pap_spatial_scores || papSpatialDefaults);
   check("outcome_rating", "Text-matching scores", outcomeRatingLabels, rules.outcome_rating);
@@ -160,20 +166,9 @@ const collectRankingErrors = (config: CMSAIRuleConfig) => {
   return errors;
 };
 
-const weightsTotal100 = (weights: number[]) => {
-  if (!weights.every((weight) => withinRange(weight, 0, 100))) return false;
-  // Use decimal digits so fractional weights are checked without binary rounding.
-  const parts = weights.map((weight) => {
-    const [mantissa, exponent = "0"] = String(weight).split("e");
-    const [whole, fraction = ""] = mantissa.split(".");
-    return { digits: BigInt(whole + fraction), scale: fraction.length - Number(exponent) };
-  });
-  const scale = Math.max(0, ...parts.map((part) => part.scale));
-  return parts.reduce((sum, part) => sum + part.digits * 10n ** BigInt(scale - part.scale), 0n)
-    === 100n * 10n ** BigInt(scale);
-};
+const validWeight = (weight: number) => Number.isInteger(weight) && withinRange(weight, 1, 100);
 
-const scoringLimitErrors = (config: CMSAIRuleConfig) => {
+const scoringLimits = (config: CMSAIRuleConfig) => {
   const { thresholds, keyword_dictionaries: rules, sector_criteria: sectors } = config;
   const sharedWeights = [
     ...Object.values(thresholds.pap_weights),
@@ -185,19 +180,26 @@ const scoringLimitErrors = (config: CMSAIRuleConfig) => {
     ...[...rules.readiness, ...rules.gad].map((rule) => rule.raw),
     ...Object.values(thresholds.regional_criteria).flatMap((criterion) => Object.values(criterion.scores)),
   ];
-  const errors = [];
-  if (!withinRange(thresholds.high, 1, 100)) errors.push("The High-priority cutoff must be between 1 and 100.");
-  if (!rawScores.every((score) => withinRange(score, 0, 10))) errors.push("All raw ratings must be between 0 and 10.");
+  const sectorWeightTotals: Record<string, number> = {};
+  let invalid = !sharedWeights.every(validWeight)
+    || !withinRange(thresholds.high, 1, 100)
+    || !withinRange(thresholds.regional_project_cost, 0)
+    || !rawScores.every((score) => withinRange(score, 0, 10));
   for (const [sector, outcomes] of Object.entries(sectors)) {
-    if (!weightsTotal100([...sharedWeights, ...outcomes.map((rule) => rule.weight)])) {
-      errors.push(`${sector.replaceAll("_", " ")}: combined weights must total exactly 100, with each weight between 0 and 100.`);
+    const outcomeWeights = outcomes.map((rule) => rule.weight);
+    if (!outcomeWeights.every(validWeight)) invalid = true;
+    const weights = [...sharedWeights, ...outcomeWeights];
+    const total = weights.reduce((sum, weight) => sum + weight, 0);
+    if (weights.every(validWeight) && total !== 100) {
+      sectorWeightTotals[sector] = total;
+      invalid = true;
     }
   }
-  return errors;
+  return { invalid, sectorWeightTotals };
 };
 
 const hasScoringErrors = (config: CMSAIRuleConfig) =>
-  scoringLimitErrors(config).length > 0 || Object.values(collectRankingErrors(config)).some((errors) => errors.length > 0);
+  scoringLimits(config).invalid || Object.values(collectRankingErrors(config)).some((errors) => errors.length > 0);
 
 const CriterionWarnings = ({ errors }: { errors: string[] }) => errors.length ? (
   <ul className="mt-2 space-y-1 text-xs text-rose-700" aria-live="polite">
@@ -212,6 +214,7 @@ const NumberInput = ({
   onChange,
   min = 0,
   max,
+  wholeWeight = false,
 }: {
   label: string;
   value: number;
@@ -219,16 +222,17 @@ const NumberInput = ({
   onChange: (value: number) => void;
   min?: number;
   max?: number;
+  wholeWeight?: boolean;
 }) => {
-  const valid = withinRange(value, min, max);
+  const valid = wholeWeight ? validWeight(value) : withinRange(value, min, max);
   return (
     <label className="block">
       <span className="text-xs font-medium text-slate-600">{label}</span>
       <input
         type="number"
-        min={min}
-        max={max}
-        step="any"
+        min={wholeWeight ? 1 : min}
+        max={wholeWeight ? 100 : max}
+        step={wholeWeight ? 1 : "any"}
         disabled={disabled}
         aria-invalid={!valid}
         value={Number.isFinite(value) ? value : ""}
@@ -236,7 +240,9 @@ const NumberInput = ({
         className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
       />
       {!valid && <span className="mt-1 block text-xs text-rose-700">
-        {max === undefined ? `Enter a number of at least ${min}.` : `Enter a number from ${min} to ${max}.`}
+        {wholeWeight
+          ? "Enter a whole-number weight from 1 to 100."
+          : max === undefined ? `Enter a number of at least ${min}.` : `Enter a number from ${min} to ${max}.`}
       </span>}
     </label>
   );
@@ -273,6 +279,9 @@ const OutcomeRuleEditor = ({
     <details className="rounded-xl border border-slate-200 bg-white" open={title === "Common outcomes"}>
       <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-800">
         {title} <span className="font-normal text-slate-500">({rules.reduce((sum, rule) => sum + Number(rule.weight || 0), 0)} points)</span>
+        {rules.some((rule) => !validWeight(rule.weight)) && (
+          <span className="mt-1 block text-xs font-normal text-rose-700">Check the highlighted criterion weights.</span>
+        )}
       </summary>
       <div className="space-y-3 border-t border-slate-100 p-4">
         {rules.map((rule, index) => (
@@ -282,7 +291,7 @@ const OutcomeRuleEditor = ({
                 <span className="text-xs font-medium text-slate-600">Criterion label</span>
                 <input disabled={disabled} value={rule.label} onChange={(event) => update(index, { label: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100" />
               </label>
-              <NumberInput label="Weight" value={rule.weight} min={0} max={100} disabled={disabled} onChange={(weight) => update(index, { weight })} />
+              <NumberInput label="Weight" value={rule.weight} wholeWeight disabled={disabled} onChange={(weight) => update(index, { weight })} />
             </div>
             <div className="mt-3 grid gap-3 lg:grid-cols-2">
               <label className="block">
@@ -335,14 +344,12 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
   const [workspace, setWorkspace] = useState<CMSAIScoringWorkspace | null>(null);
   const [config, setConfig] = useState<CMSAIRuleConfig | null>(null);
   const [draft, setDraft] = useState<CMSAIRuleSet | null>(null);
+  const [rawDraftConfig, setRawDraftConfig] = useState("");
   const [changeNote, setChangeNote] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [historyLimit, setHistoryLimit] = useState(50);
   const [saving, setSaving] = useState(false);
-  const [previewing, setPreviewing] = useState(false);
-  const [previewProjectId, setPreviewProjectId] = useState("");
-  const [previewResult, setPreviewResult] = useState<CMSAIPreview | null>(null);
   const [training, setTraining] = useState(false);
   const [updatingRecordId, setUpdatingRecordId] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
@@ -354,6 +361,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
       setWorkspace(next);
       const nextDraft = next.draft_rule_set || null;
       setDraft(nextDraft);
+      setRawDraftConfig(nextDraft?.editor_error ? JSON.stringify(nextDraft.raw_config, null, 2) : "");
       setConfig(canEdit
         ? prepareContextualConfig(nextDraft?.config || next.active_rule_set.draft_config || next.active_rule_set.config)
         : cloneConfig(next.active_rule_set.config));
@@ -390,8 +398,8 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
   }, [search, workspace?.historical_projects]);
 
   const save = async () => {
-    if (!config || !canEdit) return;
-    if (hasScoringErrors(config)) {
+    if (!config || !canEdit || !workspace) return;
+    if (!draft?.editor_error && hasScoringErrors(config)) {
       setNotice("Correct the highlighted scoring settings before saving.");
       return;
     }
@@ -402,15 +410,22 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
     setSaving(true);
     setNotice("");
     try {
+      const submittedConfig = draft?.editor_error ? JSON.parse(rawDraftConfig) as CMSAIRuleConfig : config;
       const response = draft
-        ? await cmsApi.updateAIScoringDraft(draft.id, config, changeNote.trim())
-        : await cmsApi.createAIScoringDraft(config, changeNote.trim());
+        ? await cmsApi.updateAIScoringDraft(draft.id, submittedConfig, changeNote.trim(), workspace.active_rule_set.id)
+        : await cmsApi.createAIScoringDraft(submittedConfig, changeNote.trim(), workspace.active_rule_set.id);
       setDraft(response.draft_rule_set);
+      setWorkspace((previous) => previous && ({
+        ...previous, draft_rule_sets: [
+          { id: response.draft_rule_set.id, version: response.draft_rule_set.version },
+          ...(previous.draft_rule_sets || []).filter((item) => item.id !== response.draft_rule_set.id),
+        ],
+      }));
+      setRawDraftConfig("");
       setConfig(prepareContextualConfig(response.draft_rule_set.config));
-      setPreviewResult(null);
       setNotice(response.compatibility.status === "incompatible"
         ? "Draft saved, but it has blocking form compatibility errors."
-        : "AI scoring draft saved. Preview and activate it when ready.");
+        : "AI scoring draft saved. Activate it when ready.");
     } catch (error) {
       setNotice(errorDetail(error, "The AI scoring rules could not be activated."));
     } finally {
@@ -419,7 +434,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
   };
 
   const activateDraft = async () => {
-    if (!draft || !canEdit || !config || hasScoringErrors(config)) return;
+    if (!draft || !canEdit || !config || hasScoringErrors(config) || draftHasUnsavedChanges || draft.editor_error) return;
     if (!window.confirm("Activate this saved AI scoring draft? Existing analyses will remain unchanged.")) return;
     setSaving(true);
     setNotice("");
@@ -427,9 +442,9 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
       const next = await cmsApi.publishAIScoringDraft(draft.id);
       setWorkspace(next);
       setDraft(null);
+      setRawDraftConfig("");
       setConfig(prepareContextualConfig(next.active_rule_set.draft_config || next.active_rule_set.config));
       setChangeNote("");
-      setPreviewResult(null);
       setNotice(next.detail || "AI scoring draft activated as a new rule version.");
     } catch (error) {
       setNotice(errorDetail(error, "The AI scoring draft could not be activated."));
@@ -438,29 +453,20 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
     }
   };
 
-  const previewDraft = async () => {
-    if (!draft || !canEdit || !/^\d+$/.test(previewProjectId.trim())) {
-      setNotice("Enter an eligible existing project ID after saving the draft to run a preview.");
-      return;
-    }
-    setPreviewing(true);
-    setNotice("");
+  const openDraft = async (id: number) => {
+    if (id === draft?.id) return;
+    if (draftHasUnsavedChanges && !window.confirm("Open another draft and discard the unsaved edits on this screen?")) return;
+    setSaving(true);
     try {
-      const result = await cmsApi.previewAIScoringDraft(draft.id, Number(previewProjectId));
-      setPreviewResult(result);
-      setNotice(result.status === "complete" ? "Preview completed. No official analysis was saved." : "Preview is incomplete. No official analysis was saved.");
+      const next = await cmsApi.getAIScoringDraft(id);
+      setDraft(next);
+      setConfig(prepareContextualConfig(next.config));
+      setRawDraftConfig(next.editor_error ? JSON.stringify(next.raw_config, null, 2) : "");
+      setChangeNote(next.change_note || "");
     } catch (error) {
-      try {
-        const parsed = JSON.parse(error instanceof Error ? error.message : "{}") as CMSAIPreview;
-        if (parsed.preview) {
-          setPreviewResult(parsed);
-          setNotice("Preview is incomplete. No official analysis was saved.");
-          return;
-        }
-      } catch { /* Use standard API error below. */ }
-      setNotice(errorDetail(error, "The AI scoring preview could not be completed."));
+      setNotice(errorDetail(error, "The scoring draft could not be opened."));
     } finally {
-      setPreviewing(false);
+      setSaving(false);
     }
   };
 
@@ -511,9 +517,17 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
   if (loading && !workspace) return <div className="portal-card p-5 text-sm text-slate-600">Loading AI scoring rules and historical references...</div>;
   if (!workspace || !config) return <div className="portal-card p-5 text-sm text-rose-700">{notice || "AI scoring settings are unavailable."}</div>;
 
-  const limitErrors = scoringLimitErrors(config);
+  const limits = scoringLimits(config);
+  const invalidSectorTotals = Object.entries(limits.sectorWeightTotals);
+  const sharedInvalidTotal = invalidSectorTotals.length > 1
+    && invalidSectorTotals.length === Object.keys(config.sector_criteria).length
+    && invalidSectorTotals.every(([, total]) => total === invalidSectorTotals[0][1]);
   const rankingErrors = collectRankingErrors(config);
-  const hasInvalidScoring = limitErrors.length > 0 || Object.values(rankingErrors).some((errors) => errors.length > 0);
+  const regionalCostFloor = withinRange(config.thresholds.regional_project_cost, 0) ? config.thresholds.regional_project_cost : 0;
+  const hasInvalidScoring = limits.invalid || Object.values(rankingErrors).some((errors) => errors.length > 0);
+  const draftHasUnsavedChanges = Boolean(draft && (
+    JSON.stringify(config) !== JSON.stringify(draft.config) || changeNote.trim() !== (draft.change_note || "")
+  ));
   const papWeights = config.thresholds.pap_weights;
   const papTotal = Object.values(papWeights).reduce((sum, value) => sum + Number(value || 0), 0);
   const commonTotal = config.keyword_dictionaries.common_outcomes.reduce((sum, rule) => sum + Number(rule.weight || 0), 0);
@@ -589,6 +603,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
             <div className="grid gap-2 border-t border-slate-200 p-3 md:grid-cols-2">{(draft?.dependencies || workspace.active_rule_set.dependencies || []).map((dependency) => <div key={dependency.key} className="rounded-lg border border-slate-200 bg-white p-3"><p className="font-semibold text-slate-800">{dependency.label}</p><p className="font-mono text-xs text-slate-500">{dependency.key}</p><p className="mt-1 text-xs text-slate-600">{dependency.source} · {dependency.required_for_input ? "Required before evaluation" : "Optional context"}</p><p className="mt-1 text-xs text-slate-500">Used by: {(dependency.criterion_categories || []).map(criterionCategoryLabel).join(", ") || "System validation"}</p></div>)}</div>
           </details>
 
+          {!draft?.editor_error && <>
           <div>
             <h4 className="font-semibold text-slate-800">Priority thresholds</h4>
             <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -598,11 +613,6 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
               <NumberInput label="High-priority score starts at" value={config.thresholds.high} min={1} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.high = value; })} />
               <NumberInput label="Regional eligibility and automatic-Low cutoff (PHP)" value={config.thresholds.regional_project_cost} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_project_cost = value; })} />
             </div>
-            {limitErrors.length > 0 && (
-              <ul className="mt-2 space-y-1 text-xs text-rose-700">
-                {limitErrors.map((error) => <li key={error}>{error}</li>)}
-              </ul>
-            )}
             <p className="mt-1 text-xs text-slate-500">A project below the regional cutoff skips the regional scorecard and receives an automatic Low recommendation, even when its score reaches the configured High threshold. Validators may still override it with a rationale. Exactly the cutoff amount qualifies for regional scoring.</p>
           </div>
 
@@ -615,15 +625,15 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
               <div className="rounded-xl border border-slate-200 p-4">
                 <h5 className="font-semibold text-slate-800">Total Regional Project Cost</h5>
                 <CriterionWarnings errors={rankingErrors.cost} />
-                <p className="mt-1 text-xs text-slate-500">Cost band cutoffs (PHP) and raw scores.</p>
+                <p className="mt-1 text-xs text-slate-500">The Otherwise score applies to eligible projects at or below the lowest band's cutoff.</p>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <NumberInput label={regionalBandLabel("cost", "at_least_5b", config.thresholds.regional_criteria.cost.thresholds.at_least_5b)} value={config.thresholds.regional_criteria.cost.thresholds.at_least_5b} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.at_least_5b = value; })} />
+                  <NumberInput label={regionalBandLabel("cost", "at_least_5b", config.thresholds.regional_criteria.cost.thresholds.at_least_5b)} value={config.thresholds.regional_criteria.cost.thresholds.at_least_5b} min={regionalCostFloor} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.at_least_5b = value; })} />
                   <NumberInput label="Highest-band score" value={config.thresholds.regional_criteria.cost.scores.at_least_5b} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.at_least_5b = value; })} />
-                  <NumberInput label={regionalBandLabel("cost", "over_3b", config.thresholds.regional_criteria.cost.thresholds.over_3b)} value={config.thresholds.regional_criteria.cost.thresholds.over_3b} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_3b = value; })} />
+                  <NumberInput label={regionalBandLabel("cost", "over_3b", config.thresholds.regional_criteria.cost.thresholds.over_3b)} value={config.thresholds.regional_criteria.cost.thresholds.over_3b} min={regionalCostFloor} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_3b = value; })} />
                   <NumberInput label="Next-band score" value={config.thresholds.regional_criteria.cost.scores.over_3b} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.over_3b = value; })} />
-                  <NumberInput label={regionalBandLabel("cost", "over_1b", config.thresholds.regional_criteria.cost.thresholds.over_1b)} value={config.thresholds.regional_criteria.cost.thresholds.over_1b} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_1b = value; })} />
+                  <NumberInput label={regionalBandLabel("cost", "over_1b", config.thresholds.regional_criteria.cost.thresholds.over_1b)} value={config.thresholds.regional_criteria.cost.thresholds.over_1b} min={regionalCostFloor} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_1b = value; })} />
                   <NumberInput label="Middle-band score" value={config.thresholds.regional_criteria.cost.scores.over_1b} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.over_1b = value; })} />
-                  <NumberInput label={regionalBandLabel("cost", "over_500m", config.thresholds.regional_criteria.cost.thresholds.over_500m)} value={config.thresholds.regional_criteria.cost.thresholds.over_500m} min={0} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_500m = value; })} />
+                  <NumberInput label={regionalBandLabel("cost", "over_500m", config.thresholds.regional_criteria.cost.thresholds.over_500m)} value={config.thresholds.regional_criteria.cost.thresholds.over_500m} min={regionalCostFloor} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.thresholds.over_500m = value; })} />
                   <NumberInput label="Lower-band score" value={config.thresholds.regional_criteria.cost.scores.over_500m} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.over_500m = value; })} />
                   <NumberInput label="Otherwise score" value={config.thresholds.regional_criteria.cost.scores.otherwise} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.regional_criteria.cost.scores.otherwise = value; })} />
                 </div>
@@ -684,7 +694,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
                 <h4 className="font-semibold text-slate-800">{group === "readiness" ? "Readiness scoring" : "GAD responsiveness scoring"}</h4>
                 <CriterionWarnings errors={rankingErrors[group]} />
                 <div className="mt-3 space-y-3">
-                  <NumberInput label={group === "readiness" ? "Readiness weight" : "GAD responsiveness weight"} value={papWeights[group === "readiness" ? "readiness" : "gad_responsiveness"]} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights[group === "readiness" ? "readiness" : "gad_responsiveness"] = value; })} />
+                  <NumberInput label={group === "readiness" ? "Readiness weight" : "GAD responsiveness weight"} value={papWeights[group === "readiness" ? "readiness" : "gad_responsiveness"]} wholeWeight disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights[group === "readiness" ? "readiness" : "gad_responsiveness"] = value; })} />
                   {config.keyword_dictionaries[group].map((rule, index) => (
                     <div key={rule.key} className="grid gap-2 sm:grid-cols-[100px_1fr]">
                       <NumberInput label={`${rule.key.replaceAll("_", " ")} score`} value={rule.raw} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries[group][index].raw = value; })} />
@@ -699,7 +709,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
               <p className="mt-1 text-xs text-slate-500">Uses the PAP coverage scope and the project’s listed NCR locations.</p>
               <CriterionWarnings errors={rankingErrors.pap_spatial} />
               <div className="mt-3 space-y-3">
-                <NumberInput label="Spatial coverage weight" value={papWeights.spatial_coverage} min={0} max={100} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.spatial_coverage = value; })} />
+                <NumberInput label="Spatial coverage weight" value={papWeights.spatial_coverage} wholeWeight disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights.spatial_coverage = value; })} />
                 {(Object.keys(papSpatialLabels) as Array<keyof typeof papSpatialLabels>).map((key) => (
                   <NumberInput key={key} label={papSpatialLabels[key]} value={(config.thresholds.pap_spatial_scores || papSpatialDefaults)[key]} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => {
                     next.thresholds.pap_spatial_scores = { ...(next.thresholds.pap_spatial_scores || papSpatialDefaults), [key]: value };
@@ -723,8 +733,18 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
           </div>
 
           <div className="space-y-3">
-            <h4 className="font-semibold text-slate-800">RDP outcome criteria and matching words</h4>
+            <div>
+              <h4 className="font-semibold text-slate-800">RDP outcome criteria and matching words</h4>
+              {!!invalidSectorTotals.length && (
+                <p className="mt-1 text-xs text-rose-700" aria-live="polite">
+                  Combined weights must total 100. {sharedInvalidTotal
+                    ? `Each sector currently totals ${invalidSectorTotals[0][1]}.`
+                    : invalidSectorTotals.map(([sector, total]) => `${sectorLabels[sector] || sector} totals ${total}`).join(", ") + "."}
+                </p>
+              )}
+            </div>
             <OutcomeRuleEditor title="Common outcomes" rules={config.keyword_dictionaries.common_outcomes} disabled={!canEdit} onChange={(rules) => updateConfig((next) => { next.keyword_dictionaries.common_outcomes = rules; })} />
+            <h5 className="text-sm font-semibold text-slate-800">Committee-specific outcome criteria</h5>
             {Object.entries(config.sector_criteria).map(([sector, rules]) => (
               <OutcomeRuleEditor key={sector} title={`${sectorLabels[sector] || sector} outcomes`} rules={rules} disabled={!canEdit} onChange={(nextRules) => updateConfig((next) => { next.sector_criteria[sector] = nextRules; })} />
             ))}
@@ -751,25 +771,36 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
             <textarea disabled={!canEdit} rows={6} value={config.keyword_dictionaries.guidelines.join("\n")} onChange={(event) => updateConfig((next) => { next.keyword_dictionaries.guidelines = event.target.value.split("\n"); })} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100" />
           </label>
 
+          </>}
+          {draft?.editor_error && (
+            <label className="block text-sm font-semibold">Repair draft configuration
+              <span className="block text-rose-700">{draft.editor_error}</span>
+              <textarea rows={18} value={rawDraftConfig} onChange={(event) => setRawDraftConfig(event.target.value)} className="mt-2 w-full rounded border border-slate-300 p-3 font-mono text-xs" />
+            </label>
+          )}
           {canEdit && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-              <label className="block"><span className="text-sm font-semibold text-amber-950">Required change note</span><textarea rows={2} value={changeNote} onChange={(event) => setChangeNote(event.target.value)} className="mt-2 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" placeholder="Example: Updated thresholds based on the approved RDC scoring memorandum." /></label>
-              <div className="mt-3 flex flex-wrap items-end justify-between gap-3"><div className="min-w-[220px] flex-1"><label className="block"><span className="text-xs font-semibold text-amber-950">Preview project ID</span><input value={previewProjectId} onChange={(event) => setPreviewProjectId(event.target.value)} inputMode="numeric" className="mt-1 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" placeholder="Eligible project ID" /></label><p className="mt-1 text-xs text-amber-900">Preview is read-only and never saves an official analysis.</p></div><div className="flex flex-wrap gap-2"><button type="button" disabled={saving || hasInvalidScoring} onClick={() => void save()} className="portal-btn portal-btn-primary">{saving ? "Saving..." : draft ? "Save Draft" : "Create Draft"}</button>{draft && <button type="button" disabled={saving || previewing} onClick={() => void previewDraft()} className="portal-btn portal-btn-ghost">{previewing ? "Previewing..." : "Run Preview"}</button>}{draft && <button type="button" disabled={saving || hasInvalidScoring || draft.compatibility.status === "incompatible"} onClick={() => void activateDraft()} className="portal-btn portal-btn-primary">Activate Draft</button>}</div></div>
-              {previewResult && <div className={`mt-3 rounded-lg border p-3 text-sm ${previewResult.status === "complete" ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
-                <p className="font-semibold">Preview: {previewResult.result ? priorityLabel(previewResult.result.suggested_priority) : "Incomplete"}{previewResult.result ? ` · ${Number(previewResult.result.base_score).toFixed(2)}/100` : ""}</p>
-                {previewResult.result && <p className="mt-1">{previewResult.result.summary}</p>}
-                {!!previewResult.regional_outcome_bands?.length && (
-                  <div className="mt-2">
-                    <p className="font-semibold">RDP outcome thresholds in the saved draft</p>
-                    <ul className="ml-5 list-disc">
-                      {previewResult.regional_outcome_bands.map((band) => <li key={band.key}>{band.label} ({band.raw_score}/10)</li>)}
-                    </ul>
-                  </div>
+              {(workspace.draft_rule_sets || []).length > (draft ? 1 : 0) && (
+                <label className="mb-3 block text-sm font-semibold">Saved drafts
+                  <select value={draft?.id ?? ""} disabled={saving} onChange={(event) => void openDraft(Number(event.target.value))} className="ml-2 rounded border border-slate-300 p-1">
+                    <option value="" disabled>Select a draft</option>
+                    {workspace.draft_rule_sets?.map((item) => <option key={item.id} value={item.id}>{item.version}</option>)}
+                  </select>
+                </label>
+              )}
+              {draft?.restored_from_version && <p className="mb-2 text-sm">Repair draft from {draft.restored_from_version}</p>}
+              {draft?.based_on && draft.based_on !== workspace.active_rule_set.id && <p className="mb-2 text-sm">The active version changed. Review these settings and save the draft before activating it.</p>}
+              <label className="block"><span className="text-sm font-semibold text-amber-950">Required change note</span><textarea rows={2} maxLength={500} value={changeNote} onChange={(event) => setChangeNote(event.target.value)} className="mt-2 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm" placeholder="Example: Updated thresholds based on the approved RDC scoring memorandum." /></label>
+              <div className="mt-3 flex flex-wrap justify-end gap-2">
+                <button type="button" disabled={saving || !changeNote.trim() || (!draft?.editor_error && hasInvalidScoring)} onClick={() => void save()} className="portal-btn portal-btn-primary">
+                  {saving ? "Saving..." : draft ? "Save Draft" : "Create Draft"}
+                </button>
+                {draft && (
+                  <button type="button" disabled={saving || hasInvalidScoring || draftHasUnsavedChanges || !!draft.editor_error || draft.based_on !== workspace.active_rule_set.id || draft.compatibility.status === "incompatible"} onClick={() => void activateDraft()} className="portal-btn portal-btn-primary">
+                    Activate Draft
+                  </button>
                 )}
-                {previewResult.criterion_coverage && <p className="mt-2">Criteria covered: {previewResult.criterion_coverage.covered_criteria}/{previewResult.criterion_coverage.total_criteria} ({previewResult.criterion_coverage.coverage_percent}%). Supported subtotal: {previewResult.criterion_coverage.covered_subtotal.toFixed(2)}.</p>}
-                {previewResult.input_preflight?.missing?.length ? <ul className="mt-2 list-disc pl-5">{previewResult.input_preflight.missing.map((item) => <li key={item.field_key}>{item.field_label}: {item.message}</li>)}</ul> : null}
-                <p className="mt-2 text-xs">Applicable answers: {previewResult.form_inputs?.filter((item) => item.answer_state === "answered").length || 0}. Hidden fields: {previewResult.hidden_fields?.length || 0}. External provider {previewResult.external_provider_expected ? "may be used" : "is not configured"}.</p>
-              </div>}
+              </div>
             </div>
           )}
         </div>
@@ -830,17 +861,10 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
         </div>
       </section>
 
-      <section className="portal-card overflow-hidden">
-        <div className="portal-card-header"><h3 className="font-bold text-slate-900">Rule Version History</h3><p className="text-xs text-slate-500">Old versions remain attached to the analyses they produced.</p></div>
-        <div className="portal-card-body space-y-2">
-          {workspace.rule_versions.map((rule) => (
-            <div key={rule.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2 text-sm">
-              <div><p className="font-semibold text-slate-800">{rule.version} {rule.is_active && <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800">active</span>}</p><p className="text-xs text-slate-500">{rule.algorithm_version} · {formatDate(rule.created_at)}</p></div>
-              <span className="text-xs font-medium text-slate-600">{rule.analysis_count} analysis{rule.analysis_count === 1 ? "" : "es"}</span>
-            </div>
-          ))}
-        </div>
-      </section>
+      <AIScoringRuleHistory versions={workspace.rule_versions} activeId={workspace.active_rule_set.id} onRestored={async (result) => {
+        await load();
+        setNotice([result.detail, ...result.issues].join(" "));
+      }} />
 
       <section className="portal-card overflow-hidden">
         <div className="portal-card-header flex flex-wrap items-start justify-between gap-3">
