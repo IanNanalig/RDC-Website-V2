@@ -2,7 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom";
 import cmsApi, { type CMSArticleSnapshot, type CMSPageSnapshot } from "../services/cmsApi";
 import { getPublicProjects, getPublicProjectsStats } from "../services/publicProjectsApi";
-import { eventPillTone, eventTone, getEventTiming, PublicEventsCalendarContent, usePublicEvents } from "../components/PublicEventsCalendar";
+import { PublicEventsCalendarContent } from "../components/PublicEventsCalendar";
+import { usePublicEvents } from "../hooks/usePublicEvents";
+import { eventPillTone, eventTone, getEventTiming } from "../utils/publicEventDisplay";
 import type { PublicProjectsStats } from "../types/api";
 import {
   FaLeaf,
