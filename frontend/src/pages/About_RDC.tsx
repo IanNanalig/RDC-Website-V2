@@ -323,9 +323,11 @@ const CommitteeModal: React.FC<{
   );
 };
 
-export default function AboutRDC() {
-  const [aboutCmsPage, setAboutCmsPage] = useState<CMSPageSnapshot | null>(null);
-  const [aboutLoadState, setAboutLoadState] = useState<"loading" | "ready" | "error">("loading");
+export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPageSnapshot } = {}) {
+  const [publishedPage, setAboutCmsPage] = useState<CMSPageSnapshot | null>(null);
+  const aboutCmsPage = previewSnapshot ?? publishedPage;
+  const [publishedLoadState, setAboutLoadState] = useState<"loading" | "ready" | "error">("loading");
+  const aboutLoadState = previewSnapshot ? "ready" : publishedLoadState;
   const [selectedNode, setSelectedNode] = useState<string | null>(
     "chairperson",
   );
@@ -339,6 +341,7 @@ export default function AboutRDC() {
   const [downloadingDocumentId, setDownloadingDocumentId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (previewSnapshot) return;
     let active = true;
     cmsApi
       .getPublicPage("about-rdc")
@@ -357,7 +360,7 @@ export default function AboutRDC() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [previewSnapshot]);
 
   const heroContent = getAboutSection(aboutCmsPage, "about-hero");
   const legalContent = getAboutSection(aboutCmsPage, "legal-basis");

@@ -18,6 +18,11 @@ try {
     let homePublishAttempts = 0;
     const modulePublishes = [];
     const archivedCarouselItems = [];
+    let newsRestored = false;
+    const archivedNews = {
+      id: 51, title: "Archived release", summary: "A readable summary", archived_at: "2026-01-04T00:00:00Z",
+      archived_by_name: "Admin User",
+    };
     const mediaAssets = [
       {
         id: 1, file: "cms/manila.png", url: "data:image/png;base64,iVBORw0KGgo=", file_type: "image",
@@ -84,24 +89,24 @@ try {
         Object.assign(publicationSection, route.request().postDataJSON());
         return respond(route, publicationSection);
       }
+      const reviewMatch = path.match(/^\/api\/admin\/cms\/pages\/(1|3)\/preview\/$/);
+      if (reviewMatch) {
+        const row = reviewMatch[1] === "1" ? cmsPage : publicationPage;
+        const sections = row.sections.map((section) => ({
+          sectionKey: section.section_key, sectionType: section.section_type, order: section.order,
+          content: section.content_json,
+        }));
+        const unchanged = { sectionKey: "development-plans", sectionType: "document_group", order: 2, content: { title: "Development Plans", subtitle: "Unchanged copy" } };
+        if (row.slug === "home") sections.push(unchanged);
+        const draft = { slug: row.slug, title: row.title, sections };
+        const published = { ...draft, sections: sections.map((section) => section === unchanged
+          ? { ...section, content: { subtitle: "Unchanged copy", title: "Development Plans" } }
+          : { ...section, content: { ...section.content, subtitle: "Previous public copy" } }) };
+        return respond(route, { draft, published });
+      }
       if (path === "/api/admin/cms/pages/") return respond(route, { results: [{ ...cmsPage, sections: undefined, section_count: 1 }, { ...profilePage, sections: undefined, section_count: 1 }, { ...publicationPage, sections: undefined, section_count: 1 }], count: 3, next: null, total_pages: 1 });
       if (path === "/api/admin/cms/modules/home/publish/" && route.request().method() === "POST") {
         homePublishAttempts += 1;
-        if (homePublishAttempts === 1) {
-          return route.fulfill({
-            status: 400,
-            contentType: "application/json",
-            body: JSON.stringify({
-              detail: "Archive removed carousel items through its archive action before publishing: Strategic Development, NEW.",
-              code: "published_content_requires_archive",
-              content_type: "carousel items",
-              items: [
-                { id: "strategic-development", label: "Strategic Development" },
-                { id: "new", label: "NEW" },
-              ],
-            }),
-          });
-        }
         modulePublishes.push("home");
         Object.assign(cmsPage, { status: "published", has_unpublished_changes: false, published_at: "2026-01-03T00:00:00Z" });
         return respond(route, cmsPage);
@@ -142,7 +147,18 @@ try {
       if (path === "/api/admin/profiles/2/") return respond(route, { ...profile, id: 2, username: "other", first_name: "Other", last_name: "User" });
       if (path === "/api/profile/edit-requests/") return respond(route, [{ id: 3, status: "approved", expires_at: "2099-01-01T00:00:00Z" }]);
       if (path === "/api/admin/profile-edit-requests/") return respond(route, []);
-      if (path === "/api/admin/cms/articles/") return respond(route, { results: [], count: 0, next: null, total_pages: 1 });
+      if (path === "/api/admin/cms/articles/51/") return respond(route, {
+        ...archivedNews, storage_key: "private/storage/path",
+        published_snapshot_json: { title: "Previous title", summary: "<strong>Previous public summary</strong>", id: "internal-snapshot-id" },
+      });
+      if (path === "/api/admin/cms/articles/51/restore/" && route.request().method() === "POST") {
+        newsRestored = true;
+        return respond(route, { ...archivedNews, status: "draft" });
+      }
+      if (path === "/api/admin/cms/articles/") return respond(route, {
+        results: url.searchParams.get("archived") === "1" && !newsRestored ? [archivedNews] : [],
+        next: null, total_pages: 1,
+      });
       if (path === "/api/admin/cms/sections/" || path === "/api/admin/cms/forms/" || path === "/api/admin/cms/events/" || path === "/api/admin/cms/settings/") return respond(route, []);
       if (path === "/api/notifications/") return respond(route, { results: [], unread_count: 0 });
       return respond(route, []);
@@ -187,29 +203,37 @@ try {
     await page.getByText("Section updated. Publish the page when ready.", { exact: true }).waitFor();
     await page.locator('[data-cms-page-id="1"]').getByText("unpublished changes", { exact: true }).waitFor();
     await page.locator('[data-cms-page-id="1"]').getByRole("button", { name: "Publish", exact: true }).click();
-    await page.getByRole("heading", { name: "Review page draft: Home" }).waitFor();
-    const homeReviewDialog = page.getByRole("dialog", { name: /Review page draft: Home/ });
-    await homeReviewDialog.getByText("Preview Snapshot", { exact: true }).click();
-    await homeReviewDialog.getByText("Slides", { exact: true }).waitFor();
-    assert.equal(await homeReviewDialog.locator("pre").count(), 0, "Preview Snapshot renders readable content instead of raw JSON");
-    const homePublishDialogs = [];
-    const acceptHomePublishDialog = async (dialog) => {
-      homePublishDialogs.push(dialog.message());
-      await dialog.accept();
-    };
-    page.on("dialog", acceptHomePublishDialog);
-    await page.getByRole("button", { name: "Publish Page and Sections" }).click();
-    await page.getByText("Home: removed carousel slides archived and publish completed.", { exact: true }).waitFor();
-    page.off("dialog", acceptHomePublishDialog);
-    assert.equal(homePublishAttempts, 2, "Home publish retries after explicit removed-slide archival confirmation");
-    assert.deepEqual(archivedCarouselItems, [91, 92], "Every removed published slide is archived before retrying Home publish");
-    assert.ok(homePublishDialogs.some((message) => message.includes("Strategic Development") && message.includes("NEW")), "The archive confirmation names every removed slide");
+    const homeReviewDialog = page.getByRole("dialog", { name: "Home", exact: true });
+    await homeReviewDialog.getByText("Modified", { exact: false }).waitFor();
+    await homeReviewDialog.getByText("Unchanged sections (1)", { exact: true }).waitFor();
+    await homeReviewDialog.getByRole("button", { name: "Full-Page Preview" }).click();
+    await homeReviewDialog.getByRole("heading", { name: "Development Plans", exact: true }).waitFor();
+    await homeReviewDialog.getByRole("heading", { name: "Regional Development Dashboard", exact: true }).waitFor();
+    page.once("dialog", (dialog) => dialog.accept());
+    await homeReviewDialog.getByRole("button", { name: "Publish Page and Sections" }).click();
+    await page.getByText("Home: publish completed.", { exact: true }).waitFor();
+    assert.equal(homePublishAttempts, 1, "Home publishes the saved draft without an archive retry");
+    assert.deepEqual(archivedCarouselItems, []);
     assert.equal(await page.locator('[data-cms-page-id="1"]').getByText("unpublished changes", { exact: true }).count(), 0, "Publishing Home clears its unpublished indicator");
     await page.locator('[data-cms-page-id="1"]').getByText("Published", { exact: true }).waitFor();
+    await page.locator('[data-cms-page-id="3"]').getByRole("button", { name: "Preview Draft" }).click();
+    const publicationsPreview = page.getByRole("dialog", { name: "Publications", exact: true });
+    await publicationsPreview.getByRole("button", { name: "Full-Page Preview" }).click();
+    await publicationsPreview.getByRole("button", { name: /Regional Development Plans/ }).click();
+    await publicationsPreview.getByRole("heading", { name: "Published brochure", exact: true }).waitFor();
+    await publicationsPreview.getByRole("button", { name: "Close preview" }).click();
     await page.locator('[data-cms-page-id="3"]').getByRole("button", { name: "Manage Content" }).click();
     await page.locator('[data-cms-section-id="33"]').getByRole("button", { name: "Edit Content" }).click();
     const publicationEditor = page.locator("[data-section-editor]");
     assert.equal(await publicationEditor.getByRole("button", { name: "Recover missing published items" }).count(), 0);
+    const categorySummary = publicationEditor.locator("summary").filter({ hasText: "Regional Development Plans" });
+    const documentTitle = publicationEditor.locator('input[value="Published brochure"]');
+    await categorySummary.click();
+    await documentTitle.waitFor({ state: "visible" });
+    await categorySummary.click();
+    await documentTitle.waitFor({ state: "hidden" });
+    await categorySummary.click();
+    await documentTitle.waitFor({ state: "visible" });
     const removeCategory = publicationEditor.getByRole("button", { name: "Remove", exact: true }).first();
     page.once("dialog", (dialog) => dialog.dismiss());
     await removeCategory.click();
@@ -226,13 +250,30 @@ try {
     assert.deepEqual(publicationSection.content_json.categories, []);
     assert.equal("removedCategoryIds" in publicationSection.content_json, false);
     await page.locator('[data-cms-page-id="3"]').getByRole("button", { name: "Publish", exact: true }).click();
-    await page.getByRole("heading", { name: "Review page draft: Publications" }).waitFor();
+    await page.getByRole("dialog", { name: "Publications", exact: true }).waitFor();
     page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("button", { name: "Publish Page and Sections" }).click();
     await page.getByText("Publications: publish completed.", { exact: true }).waitFor();
     assert.deepEqual(modulePublishes, ["home", "publications"], "Fixed pages publish through the module workflow endpoint");
     await page.locator('[data-cms-page-id="3"]').getByText("Published", { exact: true }).waitFor();
     assert.equal(await page.locator('[data-cms-page-id="3"]').getByText("unpublished changes", { exact: true }).count(), 0, "Publishing Publications clears its unpublished indicator");
+    await page.getByRole("button", { name: "Archived", exact: true }).click();
+    const groups = page.getByRole("navigation", { name: "Archived content groups" });
+    await groups.waitFor();
+    assert.equal(await groups.getByRole("button").count(), 3);
+    await groups.getByRole("button", { name: /^Events/ }).click();
+    await page.getByText("No archived events.", { exact: true }).waitFor();
+    await groups.getByRole("button", { name: /^News/ }).click();
+    await page.getByRole("button", { name: "View details", exact: true }).click();
+    const archivedDialog = page.getByRole("dialog", { name: "Archived release" });
+    await archivedDialog.getByText("Previous title", { exact: true }).waitFor();
+    await archivedDialog.getByText("<strong>Previous public summary</strong>", { exact: true }).waitFor();
+    assert.equal(await archivedDialog.locator("pre").count(), 0);
+    assert.equal(await archivedDialog.getByText("private/storage/path").count(), 0);
+    assert.equal(await archivedDialog.getByText("internal-snapshot-id").count(), 0);
+    await archivedDialog.getByRole("button", { name: "Restore as Draft" }).click();
+    await page.getByText("No archived news.", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Content CMS", exact: true }).click();
     await page.locator('[data-cms-page-id="1"]').getByRole("button", { name: "Manage Content" }).click();
     await page.getByRole("heading", { name: /Sections for Page.*Home/ }).waitFor();
     await page.getByRole("button", { name: "Edit Content" }).click();

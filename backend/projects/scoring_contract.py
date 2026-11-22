@@ -17,14 +17,6 @@ from typing import Any
 CONTRACT_VERSION = 1
 
 
-class ScoringCompatibilityError(ValueError):
-    """Structured publish/activation failure safe to return to administrators."""
-
-    def __init__(self, report: dict[str, Any]):
-        super().__init__("The configuration has unresolved scoring compatibility errors.")
-        self.report = report
-
-
 def _dependency(
     key: str,
     label: str,
@@ -239,28 +231,7 @@ def contract_for_project_snapshot(
     contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve the immutable form version attached to a project snapshot."""
-    if not isinstance(snapshot, dict):
-        return normalize_scoring_input_contract(contract)
-    form = snapshot.get("simplified_form") if isinstance(snapshot.get("simplified_form"), dict) else snapshot
-    # Project profiles store the immutable form marker beside simplified_form.
-    # Some older snapshots embedded it inside simplified_form, so retain that
-    # fallback while preferring the current canonical location.
-    marker = snapshot.get("form_schema") if isinstance(snapshot.get("form_schema"), dict) else {}
-    if not marker and isinstance(form.get("form_schema"), dict):
-        marker = form.get("form_schema")
-    key = str(marker.get("key") or "")
-    version_number = marker.get("version")
-    if not key or not version_number:
-        return normalize_scoring_input_contract(contract)
-    try:
-        from cms.models import CMSContributorFormVersion
-
-        version = CMSContributorFormVersion.objects.filter(
-            form__key=key,
-            version_number=version_number,
-        ).only("schema_json").first()
-    except (TypeError, ValueError):
-        version = None
+    version = form_version_for_project_snapshot(snapshot)
     return contract_for_form_schema(version.schema_json, contract) if version else normalize_scoring_input_contract(contract)
 
 
@@ -445,6 +416,7 @@ def runtime_input_report(
     economic_environment_sector: bool,
     legacy_form: bool = False,
     contract: dict[str, Any] | None = None,
+    submitted_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate actual values before an AI request is made.
 
@@ -453,7 +425,25 @@ def runtime_input_report(
     non-persistent preview.
     """
     missing = []
-    for dependency in normalize_scoring_input_contract(contract)["dependencies"]:
+    dependencies = normalize_scoring_input_contract(contract)["dependencies"]
+    if submitted_schema is not None:
+        from cms.form_schema import applicable_field_keys
+
+        applicable = applicable_field_keys(submitted_schema, form)
+        dependencies = [item for item in dependencies if item["source"] != "contributor"]
+        for key, field in _schema_fields(submitted_schema).items():
+            if key not in applicable or not (field.get("required") or field.get("condition_required")):
+                continue
+            if key.startswith("priorityAnalysisFacts."):
+                continue
+            if field.get("type") == "document_upload" and key != "custom_supporting_documents":
+                continue
+            dependencies.append(_dependency(
+                key, str(field.get("label") or key), source="contributor",
+                expected_types=[str(field.get("type") or "text")], criteria=["outcome_rules"],
+                required_for_input=True,
+            ))
+    for dependency in dependencies:
         if not dependency.get("required_for_input"):
             continue
         condition = dependency.get("condition")
@@ -462,11 +452,8 @@ def runtime_input_report(
         if condition == "economic_environment_sector" and not economic_environment_sector:
             continue
         source = dependency.get("source")
-        # Historical submissions were created under older form versions. They
-        # must remain analyzable with their original input shape; current-form
-        # contributor requirements are enforced only for new/current forms.
-        # Validator facts remain required because the scorer cannot infer them
-        # safely from historical narrative text.
+        # Migrated legacy submissions may predate their recorded schema.
+        # Validator facts still apply even if original field requirements are unknown.
         if legacy_form and source == "contributor":
             continue
         key = dependency["key"]
@@ -475,6 +462,9 @@ def runtime_input_report(
             # verified boolean from the project's active document records.
             if key == "custom_supporting_documents":
                 value = facts.get("_supporting_documents_ready")
+            elif key.startswith("custom_"):
+                custom = form.get("custom_fields")
+                value = custom.get(key) if isinstance(custom, dict) else None
             else:
                 value = form.get(key)
         elif source == "validator":

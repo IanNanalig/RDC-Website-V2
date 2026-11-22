@@ -59,19 +59,6 @@ const priorityLabel = (value: string) => {
   return value || "Unknown";
 };
 
-const criterionCategoryLabel = (value: string) => ({
-  outcome_rules: "RDP outcome criteria and matching words",
-  readiness: "Readiness",
-  gad_responsiveness: "GAD responsiveness",
-  spatial_coverage: "Spatial coverage",
-  regional_eligibility: "Regional eligibility",
-  regional_spatial: "Regional spatial coverage",
-  regional_outcomes: "Regional outcome contribution",
-  regional_beneficiaries: "Regional beneficiaries",
-  supporting_documents: "Supporting documents",
-  risk_checks: "Risk checks",
-}[value] || value.replaceAll("_", " "));
-
 const withinRange = (value: number, min: number, max = Infinity) =>
   Number.isFinite(value) && value >= min && value <= max;
 
@@ -423,9 +410,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
       }));
       setRawDraftConfig("");
       setConfig(prepareContextualConfig(response.draft_rule_set.config));
-      setNotice(response.compatibility.status === "incompatible"
-        ? "Draft saved, but it has blocking form compatibility errors."
-        : "AI scoring draft saved. Activate it when ready.");
+      setNotice("AI scoring draft saved. Activate it when ready.");
     } catch (error) {
       setNotice(errorDetail(error, "The AI scoring rules could not be activated."));
     } finally {
@@ -593,16 +578,6 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
           {!canEdit && <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">Read only</span>}
         </div>
         <div className="portal-card-body space-y-5">
-          <div className={`rounded-xl border p-4 ${draft?.compatibility.status === "incompatible" ? "border-rose-200 bg-rose-50" : draft?.compatibility.status === "potential_issue" ? "border-amber-200 bg-amber-50" : "border-emerald-200 bg-emerald-50/40"}`}>
-            <div className="flex flex-wrap items-start justify-between gap-3"><div><h4 className="font-semibold text-slate-900">Form Input Compatibility</h4><p className="mt-1 text-xs text-slate-600">Scoring resolves stable contributor field keys, not field labels or screen order.</p></div><span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">{draft ? `${draft.status} draft` : "No saved draft"}</span></div>
-            {(draft?.compatibility.issues || workspace.active_rule_set.compatibility?.issues || []).length === 0 ? <p className="mt-3 text-sm text-emerald-800">All required active scoring inputs are compatible with the contributor form.</p> : <div className="mt-3 space-y-2">{(draft?.compatibility.issues || workspace.active_rule_set.compatibility?.issues || []).map((issue) => <div key={`${issue.status}-${issue.field_key}`} className="rounded-lg border border-current/10 bg-white/70 p-2 text-sm"><strong>{issue.field_label}</strong><p>{issue.message}</p><p className="mt-1 text-xs">{issue.recommendation}</p></div>)}</div>}
-          </div>
-
-          <details className="rounded-xl border border-slate-200 bg-slate-50" open>
-            <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-800">Criterion-to-field dependencies</summary>
-            <div className="grid gap-2 border-t border-slate-200 p-3 md:grid-cols-2">{(draft?.dependencies || workspace.active_rule_set.dependencies || []).map((dependency) => <div key={dependency.key} className="rounded-lg border border-slate-200 bg-white p-3"><p className="font-semibold text-slate-800">{dependency.label}</p><p className="font-mono text-xs text-slate-500">{dependency.key}</p><p className="mt-1 text-xs text-slate-600">{dependency.source} · {dependency.required_for_input ? "Required before evaluation" : "Optional context"}</p><p className="mt-1 text-xs text-slate-500">Used by: {(dependency.criterion_categories || []).map(criterionCategoryLabel).join(", ") || "System validation"}</p></div>)}</div>
-          </details>
-
           {!draft?.editor_error && <>
           <div>
             <h4 className="font-semibold text-slate-800">Priority thresholds</h4>
@@ -619,7 +594,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
           <div className="space-y-3">
             <div>
               <h4 className="font-semibold text-slate-800">Regional Prioritization Criteria</h4>
-              <p className="mt-1 text-xs text-slate-500">Four criteria contribute up to 25 points each. For eligible projects, this scorecard supplies half of the overall score.</p>
+              <p className="mt-1 text-xs text-slate-500">Four criteria contribute up to {workspace.scoring_formula?.regional_criterion_weight ?? 25} points each. For eligible projects, this scorecard supplies half of the overall score.</p>
             </div>
             <div className="grid gap-4 xl:grid-cols-2">
               <div className="rounded-xl border border-slate-200 p-4">
@@ -686,9 +661,16 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
           </div>
 
           <section className="space-y-3">
-          <h4 className="font-semibold text-slate-800">PAPs Criterion</h4>
+          <h4 className="font-semibold text-slate-800">PAPs Criteria</h4>
+          <div className="space-y-1 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+            <p>Each raw score is rated from 0 to {workspace.scoring_formula?.max_raw_score ?? 10}. The criterion weight is its maximum point contribution.</p>
+            <p>Weighted points = raw score × criterion weight ÷ {workspace.scoring_formula?.max_raw_score ?? 10}.</p>
+            <p>The base score adds PAP and RDP outcome points. The base and regional scores each range from 0 to 100.</p>
+            <p>At or above the regional cutoff, the final score = (base score + regional score) ÷ 2. Below the cutoff, the final score = base score and the system recommends Low. Final scores range from 0 to 100 and are rounded to two decimals.</p>
+            {workspace.scoring_formula && <p>For a base score of {workspace.scoring_formula.example.base} and a regional score of {workspace.scoring_formula.example.regional}, an eligible project scores {workspace.scoring_formula.example.eligible}. A project below the cutoff scores {workspace.scoring_formula.example.below_cutoff}.</p>}
+          </div>
           <p className="text-xs text-slate-500">PAP weight total: {papTotal}. PAP + common outcomes ({commonTotal}) + the selected sector outcomes must total 100.</p>
-          <div className="grid gap-4 xl:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
             {(["readiness", "gad"] as const).map((group) => (
               <div key={group} className="rounded-xl border border-slate-200 p-4">
                 <h4 className="font-semibold text-slate-800">{group === "readiness" ? "Readiness scoring" : "GAD responsiveness scoring"}</h4>
@@ -696,8 +678,8 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
                 <div className="mt-3 space-y-3">
                   <NumberInput label={group === "readiness" ? "Readiness weight" : "GAD responsiveness weight"} value={papWeights[group === "readiness" ? "readiness" : "gad_responsiveness"]} wholeWeight disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights[group === "readiness" ? "readiness" : "gad_responsiveness"] = value; })} />
                   {config.keyword_dictionaries[group].map((rule, index) => (
-                    <div key={rule.key} className="grid gap-2 sm:grid-cols-[100px_1fr]">
-                      <NumberInput label={`${rule.key.replaceAll("_", " ")} score`} value={rule.raw} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries[group][index].raw = value; })} />
+                    <div key={rule.key} className="grid gap-2 sm:grid-cols-[minmax(7rem,1fr)_minmax(0,2fr)]">
+                      <NumberInput label={`${rule.key.replaceAll("_", " ")} raw score`} value={rule.raw} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries[group][index].raw = value; })} />
                       <label className="block"><span className="text-xs font-medium text-slate-600">Guidance</span><input disabled={!canEdit} value={rule.guideline} onChange={(event) => updateConfig((next) => { next.keyword_dictionaries[group][index].guideline = event.target.value; })} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100" /></label>
                     </div>
                   ))}
@@ -748,6 +730,20 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
             {Object.entries(config.sector_criteria).map(([sector, rules]) => (
               <OutcomeRuleEditor key={sector} title={`${sectorLabels[sector] || sector} outcomes`} rules={rules} disabled={!canEdit} onChange={(nextRules) => updateConfig((next) => { next.sector_criteria[sector] = nextRules; })} />
             ))}
+            {!!workspace.committee_outcome_links?.length && (
+              <details className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
+                <summary className="cursor-pointer font-medium text-slate-800">Committee assignments</summary>
+                <ul className="mt-2 space-y-2 text-slate-600">
+                  {workspace.committee_outcome_links.map((committee) => (
+                    <li key={committee.code}>
+                      <span className="font-medium text-slate-800">{committee.name}</span>
+                      {!committee.is_active && <span className="ml-2 text-xs">Inactive</span>}
+                      <p>{committee.groups.map((group) => sectorLabels[group] || group).join(", ") || "No outcome groups assigned"}</p>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
           </div>
 
           <div className="rounded-xl border border-slate-200 p-4">
@@ -796,7 +792,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
                   {saving ? "Saving..." : draft ? "Save Draft" : "Create Draft"}
                 </button>
                 {draft && (
-                  <button type="button" disabled={saving || hasInvalidScoring || draftHasUnsavedChanges || !!draft.editor_error || draft.based_on !== workspace.active_rule_set.id || draft.compatibility.status === "incompatible"} onClick={() => void activateDraft()} className="portal-btn portal-btn-primary">
+                  <button type="button" disabled={saving || hasInvalidScoring || draftHasUnsavedChanges || !!draft.editor_error || draft.based_on !== workspace.active_rule_set.id} onClick={() => void activateDraft()} className="portal-btn portal-btn-primary">
                     Activate Draft
                   </button>
                 )}

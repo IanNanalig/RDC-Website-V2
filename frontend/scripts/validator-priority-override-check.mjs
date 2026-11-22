@@ -27,9 +27,11 @@ const analysis = {
     missing_facts: [],
     pap: [{ key: "readiness", criterion: "Readiness", raw: 5, weight: 40, score: 20, remarks: "AI evidence summary" }],
     pap_total: 20,
-    rdp_outcomes: [{ key: "outcome", criterion: "RDP Outcome", raw: 5, weight: 60, score: 30, remarks: "AI outcome summary" }],
+    rdp_outcomes: [{ key: "outcome", criterion: "RDP Outcome", raw: 5, weight: 60, score: 30, remarks: "AI outcome summary", ai_explanation: "The plan adds two accessible crossings.", evidence: ["two accessible crossings"] }],
     rdp_total: 30,
     base_total: 50,
+    recommendations: [{ key: "outcome", criterion: "RDP Outcome", recommendation: "Add supporting evidence." }],
+    revision_fields: [{ key: "objective", label: "Objective", source: "contributor" }],
   },
   regional_scorecard: { applicable: true, total: 8, criteria: [{ key: "cost", criterion: "Project Cost", raw: 4, weight: 20, score: 8, remarks: "AI cost summary" }] },
   flags: { negative_matches: [], risks: [] },
@@ -126,6 +128,10 @@ await page.route("**/api/**", async (route) => {
 try {
   await page.goto(`http://127.0.0.1:${address.port}/validator/projects/1/review/simplified`, { waitUntil: "networkidle" });
   const panel = page.locator(".portal-card").filter({ has: page.getByRole("heading", { name: "AI-Assisted Priority Scorer" }) }).first();
+  await panel.getByText("The plan adds two accessible crossings.", { exact: true }).waitFor();
+  await panel.getByText("Evidence: two accessible crossings", { exact: true }).waitFor();
+  assert.equal(await panel.getByText("Recommendations to Improve the Score", { exact: true }).count(), 0);
+  assert.equal(await panel.getByText("Fields Needing Review or Revision", { exact: true }).count(), 0);
   await panel.getByLabel("Readiness raw score").fill("9");
   await panel.getByLabel("RDP Outcome raw score").fill("8");
   await panel.getByLabel("Project Cost raw score").fill("10");
@@ -243,12 +249,31 @@ try {
     });
     if (requestUrl.includes("admin/cms/ai-scoring/")) return json(route, {
       active_rule_set: { id: activeId, version: activeId === 3 ? "restored-scoring-rules" : "test-rules", algorithm_version: "test", config: adminConfig },
+      scoring_formula: { max_raw_score: 10, regional_criterion_weight: 25, example: { base: 80, regional: 60, eligible: 70, below_cutoff: 80 } },
+      committee_outcome_links: [{ code: "sceed", name: "SCEED", is_active: true, groups: ["economic", "environment"] }],
       historical_count: 0, historical_projects: [], rule_versions: [oldVersion],
     });
     return json(route, {});
   });
   await admin.goto(`http://127.0.0.1:${address.port}/admin/ai-scoring`, { waitUntil: "networkidle" });
-  await admin.getByRole("heading", { name: "PAPs Criterion", exact: true }).waitFor();
+  await admin.getByRole("heading", { name: "PAPs Criteria", exact: true }).waitFor();
+  const configuration = admin.getByRole("button", { name: "Content & Configuration" });
+  assert.equal(await configuration.getAttribute("aria-expanded"), "true");
+  assert.equal(await admin.getByRole("link", { name: "A.I. and Project Criteria" }).getAttribute("aria-current"), "page");
+  const operations = admin.getByRole("button", { name: "Operations" });
+  assert.equal(await operations.getAttribute("aria-expanded"), "false");
+  await operations.press("Enter");
+  await admin.getByRole("link", { name: "Project Management" }).waitFor();
+  await admin.reload();
+  assert.equal(await operations.getAttribute("aria-expanded"), "true");
+  await operations.press("Space");
+  await admin.getByRole("link", { name: "Project Management" }).waitFor({ state: "hidden" });
+  assert.equal(await admin.getByText("Form Input Compatibility", { exact: true }).count(), 0);
+  assert.equal(await admin.getByText("Criterion-to-field dependencies", { exact: true }).count(), 0);
+  await admin.getByText(/Weighted points = raw score/).waitFor();
+  await admin.getByText(/an eligible project scores 70/).waitFor();
+  await admin.getByText("Committee assignments", { exact: true }).click();
+  await admin.getByText("Economic, Environment", { exact: true }).waitFor();
   await admin.getByRole("heading", { name: "Regional Prioritization Criteria", exact: true }).waitFor();
   await admin.getByRole("button", { name: "Create Draft", exact: true }).waitFor();
   assert.equal(await admin.getByLabel("Preview project ID", { exact: true }).count(), 0);

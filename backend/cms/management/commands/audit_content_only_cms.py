@@ -4,15 +4,20 @@ from cms.models import (
     CMSCarouselItem,
     CMSLegacyMigrationIssue,
     CMSPage,
+    CMSPageSection,
     CMSPublicationCategory,
     CMSPublicationDocument,
     CMSResolution,
 )
 from cms.registry import FIXED_CMS_PAGE_REGISTRY
+from cms.services.collections import publication_membership
 
 
 class Command(BaseCommand):
     help = "Read-only audit of fixed CMS modules and normalized legacy imports."
+
+    def add_arguments(self, parser):
+        parser.add_argument("--archive-inventory", action="store_true", help="Count historical records excluded from the general CMS Archive.")
 
     def handle(self, *args, **options):
         missing_pages = []
@@ -78,3 +83,35 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR("Fixed CMS registry is incomplete."))
         else:
             self.stdout.write(self.style.SUCCESS("Fixed CMS registry is complete."))
+        if options["archive_inventory"]:
+            self.report_archive_inventory()
+
+    def report_archive_inventory(self):
+        archived_documents = CMSPublicationDocument.objects.filter(status="archived")
+        for label, rows in (
+            ("Carousel items", CMSCarouselItem.objects.filter(status="archived")),
+            ("Publication categories", CMSPublicationCategory.objects.filter(status="archived")),
+            ("Publication documents", archived_documents),
+            ("Resolutions", CMSResolution.objects.filter(status="archived")),
+        ):
+            self.stdout.write(f"Historical archive records ({label}): {rows.count()}")
+        catalog = CMSPageSection.objects.filter(
+            page__slug="publications", section_key="publication-catalog",
+        ).values_list("content_json", flat=True).first() or {}
+        draft_categories = {code for code, _, _ in publication_membership(catalog)}
+        self.stdout.write(
+            f"Archived publication templates outside current draft categories: "
+            f"{archived_documents.exclude(category__code__in=draft_categories).count()}"
+        )
+        self.stdout.write(
+            f"Draft publication templates outside current draft categories: "
+            f"{CMSPublicationDocument.objects.filter(status='draft').exclude(category__code__in=draft_categories).count()}"
+        )
+        self.stdout.write(
+            f"Archived publication templates with archived media: "
+            f"{archived_documents.filter(attachment__is_archived=True).count()}"
+        )
+        self.stdout.write(
+            f"Archived publication templates without a media attachment or external URL: "
+            f"{archived_documents.filter(attachment__isnull=True, external_url='').count()}"
+        )

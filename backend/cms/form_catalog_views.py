@@ -8,6 +8,10 @@ from projects.form_catalogs import OUTCOME_GROUPS
 from projects.models import CommitteeOutcomeGroup, ProjectLocation, SectoralCommittee
 
 
+def can_manage_form_catalogs(user):
+    return getattr(user, "role", "") == "admin" and getattr(user, "is_superuser", False)
+
+
 class LocationSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProjectLocation
@@ -79,8 +83,8 @@ class ContributorFormCatalogView(APIView):
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
-        if getattr(request.user, "role", "") != "admin":
-            raise PermissionDenied("Only administrators can manage Contributor form catalogs.")
+        if not can_manage_form_catalogs(request.user):
+            raise PermissionDenied("Only technical administrators can manage location and development sector catalogs.")
 
     def get(self, request):
         return Response({

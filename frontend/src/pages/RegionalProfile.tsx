@@ -113,10 +113,12 @@ const citiesFromContent = (content: Record<string, unknown>): CityLink[] => {
   return items;
 };
 
-export default function RegionalProfile() {
-  const [cmsPage, setCmsPage] = useState<CMSPageSnapshot | null>(null);
+export default function RegionalProfile({ previewSnapshot }: { previewSnapshot?: CMSPageSnapshot } = {}) {
+  const [publishedPage, setCmsPage] = useState<CMSPageSnapshot | null>(null);
+  const cmsPage = previewSnapshot ?? publishedPage;
 
   useEffect(() => {
+    if (previewSnapshot) return;
     let mounted = true;
     cmsApi
       .getPublicPage("regional-profile")
@@ -129,12 +131,14 @@ export default function RegionalProfile() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [previewSnapshot]);
 
   const hero = asRecord(getRegionSection(cmsPage, "region-hero"));
   const overview = asRecord(getRegionSection(cmsPage, "regional-overview"));
+  const [failedMapUrl, setFailedMapUrl] = useState("");
   const coverage = asRecord(getRegionSection(cmsPage, "geographic-coverage"));
-  const mapImageUrl = coverage.mapAssetId ? asString(coverage.mapImageUrl) : "";
+  const selectedMapUrl = coverage.mapAssetId ? asString(coverage.mapImageUrl) : "";
+  const mapImageUrl = selectedMapUrl === failedMapUrl ? "" : selectedMapUrl;
   const lguDirectory = asRecord(getRegionSection(cmsPage, "lgu-directory"));
 
   const overviewParagraphs = useMemo(() => {
@@ -228,6 +232,7 @@ export default function RegionalProfile() {
                     {!mapImageUrl && <source type="image/webp" srcSet={`${ncrMapWebp768} 768w, ${ncrMapWebp1408} 1408w`} sizes="(min-width: 1024px) 50vw, 100vw" />}
                     <img
                       src={mapImageUrl || ncrMapWebp1408}
+                      onError={mapImageUrl ? () => setFailedMapUrl(mapImageUrl) : undefined}
                       alt="Metro Manila Map"
                       width={1408}
                       height={768}

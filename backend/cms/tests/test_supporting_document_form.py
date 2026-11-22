@@ -42,7 +42,7 @@ class SupportingDocumentSchemaTests(TestCase):
             for field in section["fields"]:
                 if field.get("type") == "document_upload":
                     field["visible"] = False
-        with self.assertRaisesMessage(FormSchemaError, "essential field"):
+        with self.assertRaisesMessage(FormSchemaError, "Essential field"):
             validate_form_schema(hidden, published_schema=published)
 
         removed = deepcopy(published)

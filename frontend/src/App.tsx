@@ -333,7 +333,7 @@ const AdminContributorFormsPage = () => (
 );
 
 const AdminAIScoringPage = () => (
-  <PortalLayout title="AI Scoring" subtitle="Manage priority scoring rules and review scoring history" role="admin" userName={adminDisplayName()}>
+  <PortalLayout title="A.I. and Project Criteria" subtitle="Manage priority scoring rules and review scoring history" role="admin" userName={adminDisplayName()}>
     <AIScoringManager mode="admin" />
   </PortalLayout>
 );

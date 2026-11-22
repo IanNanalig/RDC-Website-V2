@@ -27,7 +27,7 @@ class ContributorCatalogTests(APITestCase):
 
     @classmethod
     def setUpTestData(cls):
-        cls.admin = User.objects.create_user(username="catalog-admin", email="catalog-admin@example.com", role="admin")
+        cls.admin = User.objects.create_user(username="catalog-admin", email="catalog-admin@example.com", role="admin", is_superuser=True)
         cls.validator = User.objects.create_user(username="catalog-validator", email="catalog-validator@example.com", role="validator")
         cls.primary = Agency.objects.get_or_create(code="DOH", defaults={"name": "Department of Health"})[0]
         cls.collaborator = Agency.objects.get_or_create(code="DPWH", defaults={"name": "Department of Public Works and Highways"})[0]
@@ -102,6 +102,10 @@ class ContributorCatalogTests(APITestCase):
     def test_committee_activation_and_sceeed_links(self):
         self.client.force_authenticate(self.validator)
         self.assertEqual(self.client.get(self.endpoint).status_code, 403)
+        regular_admin = User.objects.create_user(username="ordinary-admin", email="ordinary-admin@example.com", role="admin")
+        self.client.force_authenticate(regular_admin)
+        self.assertEqual(self.client.get(self.endpoint).status_code, 403)
+        self.assertEqual(self.client.patch(self.endpoint + "locations/lgu-manila/", {"name": "Replacement"}, format="json").status_code, 403)
         self.client.force_authenticate(self.admin)
         response = self.client.get(self.endpoint)
         self.assertEqual(response.status_code, 200, response.data)

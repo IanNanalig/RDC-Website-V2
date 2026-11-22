@@ -203,3 +203,47 @@ class FormAIScoringCompatibilityTests(TestCase):
         self.assertEqual(fields["custom_public_benefit"]["answer_state"], "answered")
         self.assertEqual(fields["custom_completed_note"]["applicability"], "hidden_by_condition")
         self.assertIsNone(fields["custom_completed_note"]["answer"])
+        scoring_fields = {
+            item["key"]: item for item in _project_payload({
+                "form_schema": {"key": version.form.key, "version": version.version_number},
+                "simplified_form": {
+                    "status": "New",
+                    "custom_fields": {
+                        "custom_public_benefit": "Serves 20,000 residents",
+                        "custom_completed_note": "stale",
+                    },
+                },
+            }, scoring=True)["form_fields"]
+        }
+        self.assertIn("custom_public_benefit", scoring_fields)
+        self.assertNotIn("custom_completed_note", scoring_fields)
+
+    def test_scoring_requiredness_uses_only_applicable_submitted_fields(self):
+        schema = {"sections": [{"key": "test", "fields": [
+            {"key": "status", "type": "text", "required": False},
+            {
+                "key": "custom_completion", "label": "Completion evidence", "type": "text",
+                "condition_required": True,
+                "condition_group": {"match": "all", "conditions": [
+                    {"field": "status", "operator": "equals", "value": "Completed"},
+                ]},
+            },
+        ]}]}
+        facts = {
+            "readinessLevel": "completed_documents",
+            "gadResponsiveness": "gender_responsive",
+            "spatialCoverageScope": "region_wide",
+        }
+
+        def missing(form):
+            report = runtime_input_report(
+                form, facts, regional_project=False, economic_environment_sector=False,
+                submitted_schema=schema,
+            )
+            return [item["field_key"] for item in report["missing"]]
+
+        self.assertEqual(missing({"status": "New"}), [])
+        self.assertEqual(missing({"status": "Completed"}), ["custom_completion"])
+        self.assertEqual(missing({
+            "status": "Completed", "custom_fields": {"custom_completion": "Handed over"},
+        }), [])

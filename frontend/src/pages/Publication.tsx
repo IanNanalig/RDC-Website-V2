@@ -147,11 +147,12 @@ const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
   );
 };
 
-export default function Publications() {
+export default function Publications({ previewSnapshot }: { previewSnapshot?: CMSPageSnapshot } = {}) {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const categoryParam = searchParams.get("category");
-  const [cmsPage, setCmsPage] = useState<CMSPageSnapshot | null>(null);
+  const categoryParam = previewSnapshot ? null : searchParams.get("category");
+  const [publishedPage, setCmsPage] = useState<CMSPageSnapshot | null>(null);
+  const cmsPage = previewSnapshot ?? publishedPage;
   const [selectedCategory, setSelectedCategory] = useState<string | null>(
     categoryParam || null,
   );
@@ -176,6 +177,7 @@ export default function Publications() {
   }, [categoryParam]);
 
   useEffect(() => {
+    if (previewSnapshot) return;
     let cancelled = false;
 
     const loadCmsPage = async () => {
@@ -192,7 +194,7 @@ export default function Publications() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [previewSnapshot]);
 
   useEffect(() => {
     if (selectedCategory && !categories.some((category) => category.id === selectedCategory)) {
@@ -202,12 +204,12 @@ export default function Publications() {
 
   const handleCategorySelect = (categoryId: string) => {
     setSelectedCategory(categoryId);
-    navigate(`/publications?category=${categoryId}`);
+    if (!previewSnapshot) navigate(`/publications?category=${categoryId}`);
   };
 
   const handleBackToCategories = () => {
     setSelectedCategory(null);
-    navigate("/publications");
+    if (!previewSnapshot) navigate("/publications");
   };
 
   const handleDownload = async (document: DocumentItem) => {

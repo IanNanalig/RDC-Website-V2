@@ -108,7 +108,31 @@ Good practices:
 - Do not archive media that is still used by a page, section, or article.
 - For large PDFs, compress them before uploading when possible.
 
-The Media Library shows where a file is used. If a file is still connected to CMS content, the Archive action is disabled. Replace or remove that file from the related content first, save the draft, and publish if the public page needs to change.
+The Media Library shows where a file is used. The Archive action is disabled while CMS content or retained historical records still reference the file. Publication templates can reuse the same file from the Media Library.
+
+### Page removals and Archive
+
+Remove publication templates, categories, carousel slides, and resolution entries in their page editors. Save the draft, then have an Administrator publish it. Visitors continue seeing the published page until publication. Removing a template keeps its uploaded file available in the Media Library. Move a document to another category in the editor if it should remain on the page.
+
+The general Archive contains **News**, **Events**, and **Media**. News and events return as drafts when restored. Media files return to the active Media Library. Archive Details shows human-readable summaries and available previews. Old publication, carousel, and resolution archive records remain stored with their files and history. To display an attachment again, add a new template and select it from the Media Library.
+
+### Draft review and preview
+
+Use **Preview Draft** to inspect the saved draft. **Change Review** shows modified, added, and removed sections first. Unchanged sections are available in a collapsed group. **Full-Page Preview** uses the public page components, including interactive publication categories and resolution years. The Contact form is disabled in preview. Changes in an open section editor appear after you save them.
+
+### Archive and preview implementation report
+
+The former publication restore handler changed an item's status before checking whether its category existed in the draft. The old Archive Details printed record properties and saved JSON. Page Review compared raw serialization and rendered every section through a generic field display.
+
+| Area | Files |
+| --- | --- |
+| Archive and publication lifecycle | `backend/cms/views.py`, `backend/cms/services/collections.py`, `frontend/src/components/portal/ArchivedContent.tsx`, `frontend/src/components/portal/CmsManager.tsx` |
+| Saved draft preview and comparison | `backend/cms/services/snapshots.py`, `backend/cms/views.py`, `frontend/src/components/portal/CMSPageReview.tsx`, `frontend/src/services/cmsApi.ts`, and the Home, Publications, About RDC-NCR, Regional Profile, and Contact page components |
+| Inventory and regression tests | `backend/cms/management/commands/audit_content_only_cms.py`, `backend/cms/tests/test_content_only_cms.py`, `frontend/scripts/cms-profile-archive-check.mjs` |
+
+The local CMS suite, Vite production build, and desktop and mobile CMS browser checks passed. Tests covered the two CMS roles, the three supported archive and restore paths, publication template removal and reuse, carousel removal, and preview parity with the published Publications page. The standalone TypeScript check still reports two existing errors in `Footer.tsx` and `SimplifiedProjectSubmission.tsx`.
+
+Deploy the backend and frontend together. The current schema supports this change. Run `python manage.py audit_content_only_cms --archive-inventory` against the deployment's database before release. The audit reports historical archived rows, publication templates outside the current draft categories, and missing or archived attachment references recorded in the database. It performs read-only checks. The local database had zero historical archived rows in the excluded collections. The deployed database and storage remain unverified.
 
 Future storage note: the system is designed so media can later move to durable cloud storage such as Cloudflare R2 without changing the staff workflow.
 

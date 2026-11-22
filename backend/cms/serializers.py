@@ -27,6 +27,7 @@ from cms.models import (
     CMSResolution,
     CMSSiteSetting,
 )
+from cms.registry import SYSTEM_MANAGED_HOME_SECTIONS
 from cms.services.locking import lock_is_active
 from cms.services.media_usage import get_media_usage_map, get_media_usages
 from cms.services.media_validation import validate_media_upload
@@ -270,6 +271,8 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
                 value = {**value, "latitude": lat_value, "longitude": lng_value}
 
         if page_slug == "regional-profile" and section_key == "geographic-coverage":
+            if any(value.get(key) for key in ("embedHtml", "embed_html", "embedUrl", "embed_url", "apiKey", "api_key")):
+                raise serializers.ValidationError({"mapAssetId": "Choose an active image from the Media Library."})
             media_id = value.get("mapAssetId")
             if media_id:
                 try:
@@ -369,7 +372,7 @@ class CMSPageSectionSummarySerializer(serializers.ModelSerializer):
 
 
 class CMSPageSerializer(serializers.ModelSerializer):
-    sections = CMSPageSectionSerializer(many=True, read_only=True)
+    sections = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
     updated_by_name = serializers.SerializerMethodField()
     submitted_by_name = serializers.SerializerMethodField()
@@ -400,6 +403,12 @@ class CMSPageSerializer(serializers.ModelSerializer):
 
     def get_reviewed_by_name(self, obj):
         return _user_display(obj.reviewed_by)
+
+    def get_sections(self, obj):
+        sections = obj.sections.all()
+        if obj.slug == "home":
+            sections = [section for section in sections if section.section_key not in SYSTEM_MANAGED_HOME_SECTIONS]
+        return CMSPageSectionSerializer(sections, many=True, context=self.context).data
 
     def validate_slug(self, value):
         if self.instance and self.instance.published_at and value != self.instance.slug:
@@ -877,6 +886,7 @@ class CMSContributorFormSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         from projects.form_catalogs import with_catalog_options
+        from cms.form_catalog_views import can_manage_form_catalogs
 
         data = super().to_representation(instance)
         schema = data.get("draft_schema_json")
@@ -887,6 +897,7 @@ class CMSContributorFormSerializer(serializers.ModelSerializer):
             "sections": sorted(PROTECTED_SECTION_KEYS),
             "fields": sorted(PROTECTED_WORKFLOW_FIELD_KEYS),
         }
+        data["can_manage_form_catalogs"] = can_manage_form_catalogs(getattr(self.context.get("request"), "user", None))
         return data
 
     def get_versions_summary(self, obj):

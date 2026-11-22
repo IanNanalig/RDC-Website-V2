@@ -575,6 +575,7 @@ class CMSWorkflowTests(APITestCase):
         self.assertLessEqual(len(large_context), len(small_context) + 1)
 
     def test_event_workflow_only_exposes_published_events(self):
+        public_feed = "/api/public/cms/events/?include_past=1"
         start = timezone.now() + timedelta(days=2)
         end = start + timedelta(hours=2)
         self.authenticate(self.editor)
@@ -596,7 +597,7 @@ class CMSWorkflowTests(APITestCase):
         event_id = create_response.data["id"]
 
         self.client.force_authenticate(user=None)
-        public_response = self.client.get("/api/public/events/?include_past=1")
+        public_response = self.client.get(public_feed)
         self.assertFalse(any(row["id"] == event_id for row in public_response.data["results"]))
 
         self.authenticate(self.editor)
@@ -612,8 +613,21 @@ class CMSWorkflowTests(APITestCase):
             status.HTTP_200_OK,
         )
         self.client.force_authenticate(user=None)
-        public_response = self.client.get("/api/public/events/?include_past=1")
+        public_response = self.client.get(public_feed)
         self.assertTrue(any(row["id"] == event_id for row in public_response.data["results"]))
+
+        self.authenticate(self.admin)
+        updated = self.client.patch(f"/api/admin/events/{event_id}/", {
+            "location": "Taguig City",
+            "start_at": (start + timedelta(days=1)).isoformat(),
+            "end_at": (end + timedelta(days=1)).isoformat(),
+        }, format="json")
+        self.assertEqual(updated.status_code, 200, updated.data)
+        self.client.force_authenticate(user=None)
+        public_response = self.client.get(public_feed)
+        public_event = next(row for row in public_response.data["results"] if row["id"] == event_id)
+        self.assertEqual(public_event["location"], "Taguig City")
+        self.assertEqual(public_event["start_at"], updated.data["start_at"])
 
         self.authenticate(self.admin)
         self.assertEqual(
@@ -621,7 +635,7 @@ class CMSWorkflowTests(APITestCase):
             status.HTTP_200_OK,
         )
         self.client.force_authenticate(user=None)
-        public_response = self.client.get("/api/public/events/?include_past=1")
+        public_response = self.client.get(public_feed)
         self.assertFalse(any(row["id"] == event_id for row in public_response.data["results"]))
 
     def test_event_rejects_end_time_before_start(self):

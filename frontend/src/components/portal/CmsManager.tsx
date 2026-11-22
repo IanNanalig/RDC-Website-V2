@@ -1,3 +1,4 @@
+import CMSPageReview from "./CMSPageReview";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import cmsApi, {
@@ -412,97 +413,6 @@ const stringListToText = (value: unknown) =>
 const stringListFromText = (value: string) =>
   value.split(/\r?\n/);
 
-const snapshotHiddenFields = new Set([
-  "id", "key", "code", "stableKey", "stable_key", "sortOrder", "sort_order",
-  "mediaAssetId", "imageAssetId", "documentAssetId", "coverAssetId", "attachment",
-  "imageKey", "icon", "color", "replaceExisting",
-]);
-
-const snapshotFieldLabels: Record<string, string> = {
-  button1: "Primary Button",
-  button2: "Secondary Button",
-  categoryItems: "Category Summary",
-  coverAlt: "Cover Alt Text",
-  coverImage: "Cover Image",
-  externalUrl: "External Link",
-  fileSize: "File Size",
-  fileType: "File Type",
-  imageAlt: "Image Alt Text",
-  imageUrl: "Image",
-  legendItems: "Document Legend",
-  publicationDate: "Publication Date",
-  quickLinks: "Quick Links",
-  resolutionNumber: "Resolution Number",
-};
-
-const snapshotFieldLabel = (key: string) => snapshotFieldLabels[key] || key
-  .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-  .replace(/[-_]+/g, " ")
-  .replace(/\b\w/g, (character) => character.toUpperCase());
-
-const safeSnapshotLink = (value: string) => {
-  const link = value.trim();
-  return /^https?:\/\//i.test(link) || (link.startsWith("/") && !link.startsWith("//")) ? link : "";
-};
-
-const SnapshotValue = ({ value, fieldName = "", depth = 0 }: { value: unknown; fieldName?: string; depth?: number }) => {
-  if (value == null || value === "") return <span className="text-slate-400">Not provided</span>;
-  if (typeof value === "boolean") return <span>{value ? "Yes" : "No"}</span>;
-  if (typeof value === "number") return <span>{value}</span>;
-  if (typeof value === "string") {
-    const link = safeSnapshotLink(value);
-    const imageField = /image|thumbnail|cover/i.test(fieldName);
-    if (imageField && (link || value.startsWith("data:image/"))) {
-      return <img src={link || value} alt="CMS preview" className="max-h-48 w-full rounded-lg bg-slate-100 object-cover" />;
-    }
-    if (link) {
-      return <a href={link} target="_blank" rel="noopener noreferrer" className="break-all text-blue-700 underline">{value}</a>;
-    }
-    return <span className="whitespace-pre-wrap break-words">{value}</span>;
-  }
-  if (Array.isArray(value)) {
-    if (!value.length) return <span className="text-slate-400">No items</span>;
-    return (
-      <div className="grid gap-2 sm:grid-cols-2">
-        {value.map((item, index) => (
-          <div key={index} className="min-w-0 rounded-lg border border-slate-200 bg-white p-3">
-            <SnapshotValue value={item} depth={depth + 1} />
-          </div>
-        ))}
-      </div>
-    );
-  }
-  const record = parseRecord(value);
-  const heading = textValue(record.title || record.name || record.number || record.label);
-  const entries = Object.entries(record).filter(([key, entry]) => (
-    !snapshotHiddenFields.has(key)
-    && !(heading && ["title", "name", "number", "label"].includes(key))
-    && entry !== null
-    && entry !== undefined
-    && entry !== ""
-  ));
-  if (!entries.length) return heading ? <strong className="text-slate-800">{heading}</strong> : <span className="text-slate-400">No additional content</span>;
-  return (
-    <div className="min-w-0 space-y-2">
-      {heading && <h5 className="font-semibold text-slate-900">{heading}</h5>}
-      <dl className={`grid min-w-0 gap-2 ${depth < 2 ? "sm:grid-cols-2" : ""}`}>
-        {entries.map(([key, entry]) => (
-          <div key={key} className="min-w-0 rounded-lg bg-slate-50 p-2">
-            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">{snapshotFieldLabel(key)}</dt>
-            <dd className="mt-1 min-w-0 text-sm text-slate-700"><SnapshotValue value={entry} fieldName={key} depth={depth + 1} /></dd>
-          </div>
-        ))}
-      </dl>
-    </div>
-  );
-};
-
-const ContentPreviewSnapshot = ({ content }: { content: Record<string, unknown> }) => (
-  <div className="mt-2 max-h-96 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-3">
-    <SnapshotValue value={content} />
-  </div>
-);
-
 const statusClass = (status: string) => {
   if (status === "published") return "bg-emerald-100 text-emerald-700";
   if (status === "submitted") return "bg-blue-100 text-blue-700";
@@ -584,31 +494,6 @@ const getErrorDetail = (err: unknown, fallback: string) => {
   return fallback;
 };
 
-type CMSPublishedRemovalError = {
-  code: "published_content_requires_archive";
-  content_type: string;
-  detail?: string;
-  items: Array<{ id: string; label?: string }>;
-};
-
-const getPublishedRemovalError = (err: unknown): CMSPublishedRemovalError | null => {
-  if (!(err instanceof Error) || !err.message) return null;
-  try {
-    const parsed = JSON.parse(err.message) as Partial<CMSPublishedRemovalError>;
-    if (
-      parsed.code !== "published_content_requires_archive"
-      || typeof parsed.content_type !== "string"
-      || !Array.isArray(parsed.items)
-    ) return null;
-    const items = parsed.items
-      .filter((item): item is { id: string; label?: string } => Boolean(item && typeof item.id === "string" && item.id))
-      .map((item) => ({ id: item.id, label: typeof item.label === "string" ? item.label : item.id }));
-    return items.length ? { ...parsed, code: parsed.code, content_type: parsed.content_type, items } : null;
-  } catch {
-    return null;
-  }
-};
-
 const slugify = (value: string) =>
   value
     .toLowerCase()
@@ -624,12 +509,16 @@ const nextUniqueId = (values: unknown[], prefix: string) => {
 };
 
 const corePublicPages = [
-  { slug: "home", label: "Home", path: "/", scope: "Hero, public resource groups, dashboard teaser, latest news, and upcoming events" },
+  { slug: "home", label: "Home", path: "/", scope: "Hero and public resource groups" },
   { slug: "about-rdc", label: "About RDC", path: "/about", scope: "Hero, legal basis, committees, organization structure, and resolutions archive headings" },
   { slug: "regional-profile", label: "Region Profile", path: "/regional-profile", scope: "Hero, regional overview and statistics, geographic coverage, and LGU directory" },
   { slug: "publications", label: "Publications", path: "/publications", scope: "Page introduction, publication categories, documents, covers, and download links" },
   { slug: "contact", label: "Contact", path: "/contact", scope: "Hero, office details, location text, and public contact-form labels and messages" },
 ] as const;
+
+const systemManagedHomeSections = new Set(["dashboard-teaser", "latest-media", "upcoming-events"]);
+const isCmsEditableSection = (slug: string | undefined, key: string) =>
+  slug !== "home" || !systemManagedHomeSections.has(key);
 
 const corePageIndex = new Map<string, number>(
   corePublicPages.map((page, index) => [page.slug, index]),
@@ -713,7 +602,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const [settingDrafts, setSettingDrafts] = useState<Record<number, unknown>>({});
   const [settingSourceDrafts, setSettingSourceDrafts] = useState<Record<number, string>>({});
   const [reviewQueue, setReviewQueue] = useState<CMSReviewQueue>({ pages: [], sections: [], news: [], forms: [], events: [] });
-  const [pageReviewPreview, setPageReviewPreview] = useState<CMSPage | null>(null);
+  const [pageReviewPreview, setPageReviewPreview] = useState<{ page: CMSPage; preview: Awaited<ReturnType<typeof cmsApi.getPagePreview>> } | null>(null);
   const [articleReviewPreview, setArticleReviewPreview] = useState<CMSArticle | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<number | null>(null);
   const [openingPageId, setOpeningPageId] = useState<number | null>(null);
@@ -816,7 +705,9 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       }),
     [pages],
   );
-  const selectedPageSections = selectedPage?.sections || [];
+  const selectedPageSections = (selectedPage?.sections || []).filter((section) =>
+    isCmsEditableSection(selectedPage?.slug, section.section_key),
+  );
   const nextSectionKey = (sectionType: string) => {
     const base = slugify(sectionTypeLabels.get(sectionType) || sectionType || "section") || "section";
     const used = new Set(selectedPageSections.map((section) => section.section_key));
@@ -1303,7 +1194,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     setLoading(true);
     setNotice("");
     try {
-      setPageReviewPreview(await cmsApi.getPageReview(page.id));
+      setPageReviewPreview({ page, preview: await cmsApi.getPagePreview(page.id) });
     } catch (error) {
       setNotice(getErrorDetail(error, "Could not load the complete page draft for preview."));
     } finally {
@@ -1328,6 +1219,10 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   };
 
   const populateSectionForm = (section: CMSSection) => {
+    const content = { ...section.content_json };
+    if (section.section_key === "resolutions-archive" && Array.isArray(content.years)) {
+      content.years = content.years.map((entry) => ({ ...parseRecord(entry), editorRowId: crypto.randomUUID() }));
+    }
     const nextForm: SectionForm = {
       id: section.id,
       page: section.page,
@@ -1336,7 +1231,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       order: String(section.order),
       schema_version: String(section.schema_version),
       is_visible: section.is_visible,
-      content_json: JSON.stringify(section.content_json || {}, null, 2),
+      content_json: JSON.stringify(content, null, 2),
     };
     setSelectedPageId(section.page);
     setSectionForm(nextForm);
@@ -1412,6 +1307,13 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         throw new Error("Section content must be a JSON object.");
       }
       parsedContent = parsed as Record<string, unknown>;
+      if (sectionForm.section_key === "resolutions-archive" && Array.isArray(parsedContent.years)) {
+        parsedContent.years = parsedContent.years.map((entry) => {
+          const year = { ...parseRecord(entry) };
+          delete year.editorRowId;
+          return year;
+        });
+      }
     } catch {
       showSectionError("content", "Section content must be valid JSON.");
       return;
@@ -1666,7 +1568,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     const workflowPage = kind === "page"
       ? pages.find((page) => page.id === id)
         || reviewQueue.pages.find((page) => page.id === id)
-        || (pageReviewPreview?.id === id ? pageReviewPreview : null)
+        || (pageReviewPreview?.page.id === id ? pageReviewPreview.page : null)
       : null;
     if (kind === "page" && !workflowPage?.slug) {
       setNotice(`Could not identify the fixed module for ${label}. Refresh Content Management and try again.`);
@@ -1738,41 +1640,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         }));
       }
     } catch (error) {
-      const removal = getPublishedRemovalError(error);
-      if (
-        kind === "page"
-        && action === "publish"
-        && isAdmin
-        && workflowPage?.slug === "home"
-        && removal?.content_type === "carousel items"
-      ) {
-        const itemLabels = removal.items.map((item) => item.label || item.id).join(", ");
-        const confirmed = window.confirm(
-          `These previously published carousel slides were removed from the Home draft:\n\n${itemLabels}\n\nArchive them and continue publishing Home? Archived slides remain recoverable from Archived Content.`,
-        );
-        if (!confirmed) {
-          setNotice(`Publishing paused. Archive the removed carousel slides before publishing: ${itemLabels}.`);
-          return;
-        }
-        try {
-          for (const item of removal.items) {
-            const rows = await cmsApi.listManagedCollection("carousel-items", item.id);
-            const row = rows.find((candidate) => candidate.stable_key === item.id);
-            if (!row) throw new Error(`The removed carousel slide "${item.label || item.id}" could not be found.`);
-            await cmsApi.archiveManagedCollection("carousel-items", row.id);
-          }
-          const publishedModule = await publishFixedModule();
-          mergePage(publishedModule);
-          setReviewQueue((current) => ({
-            ...current,
-            pages: current.pages.filter((item) => item.id !== id),
-          }));
-          setNotice(`${label}: removed carousel slides archived and publish completed.`);
-        } catch (recoveryError) {
-          setNotice(getErrorDetail(recoveryError, `The removed carousel slides could not be archived, so ${label} was not published.`));
-        }
-        return;
-      }
       setNotice(getErrorDetail(error, `Failed to ${action} ${label}.`));
     } finally {
       setLoading(false);
@@ -1811,53 +1678,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       setNotice(`Setting "${row.key}" updated. Upload policy changes take effect immediately.`);
     } catch (error) {
       setNotice(getErrorDetail(error, "This setting could not be saved. Check the fields and try again."));
-    }
-  };
-
-  const removeManagedCollectionItem = async (
-    kind: "carousel-items" | "publication-categories" | "publication-documents" | "resolutions",
-    stableKey: string,
-    label: string,
-    removeFromEditor: () => void,
-  ) => {
-    if (!stableKey) {
-      removeFromEditor();
-      return;
-    }
-    setLoading(true);
-    setNotice("");
-    try {
-      const rows = await cmsApi.listManagedCollection(kind, stableKey);
-      const row = rows.find((item) => (item.stable_key || item.code) === stableKey);
-      if (!row || !row.published_at) {
-        removeFromEditor();
-        return;
-      }
-      if (!isAdmin) {
-        setNotice(`"${label}" has already been published. Ask an Administrator to archive it before removing it.`);
-        return;
-      }
-      const payload: Record<string, unknown> = {};
-      if (kind === "publication-categories") {
-        const dependencies = await cmsApi.getPublicationCategoryDependencies(row.id);
-        const documentCount = dependencies.documents
-          .filter((entry) => entry.status !== "archived")
-          .reduce((total, entry) => total + Number(entry.count || 0), 0);
-        if (documentCount > 0) {
-          const archiveDocuments = window.confirm(`"${label}" contains ${documentCount} active document${documentCount === 1 ? "" : "s"}. Archive the category and those documents together?`);
-          if (!archiveDocuments) return;
-          payload.document_resolution = "archive_documents";
-        }
-      }
-      if (!window.confirm(`Archive "${label}"? It remains recoverable from Archived Content.`)) return;
-      await cmsApi.archiveManagedCollection(kind, row.id, payload);
-      removeFromEditor();
-      if (selectedPageId) markPageUnpublished(selectedPageId);
-      setNotice(`${label} archived. Save and publish the page draft when ready.`);
-    } catch (error) {
-      setNotice(getErrorDetail(error, `Could not archive ${label}.`));
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -1902,12 +1722,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     <button
                       type="button"
                       className="text-sm text-red-600"
-                      onClick={() => void removeManagedCollectionItem(
-                        "carousel-items",
-                        textValue(row.id || row.key),
-                        textValue(row.title) || `Slide ${originalIndex + 1}`,
-                        () => setSectionContent({ ...sectionContent, slides: slides.filter((_, slideIndex) => slideIndex !== originalIndex) }),
-                      )}
+                      onClick={() => setSectionContent({ ...sectionContent, slides: slides.filter((_, slideIndex) => slideIndex !== originalIndex) })}
                     >
                       Remove
                     </button>
@@ -2088,7 +1903,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   ...sectionContent,
                   years: [
                     ...years,
-                    { year: nextResolutionYear(), replaceExisting: false, resolutions: [] },
+                    { year: nextResolutionYear(), replaceExisting: false, resolutions: [], editorRowId: crypto.randomUUID() },
                   ],
                 })}
               >
@@ -2112,7 +1927,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               .map((resolutionValue, originalResolutionIndex) => ({ resolutionValue, originalResolutionIndex }))
               .reverse();
             return (
-              <div key={yearIndex} className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+              <details key={textValue(year.editorRowId) || yearIndex} className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+                <summary className="cursor-pointer font-semibold text-slate-800">{String(year.year || "Resolution year")} ({resolutions.length})</summary>
                 <div className="flex flex-wrap items-end justify-between gap-3">
                   <div className="min-w-[220px] flex-1">
                     <Field label="Resolution Year (YYYY)" value={String(year.year ?? "")} onChange={(value) => updateYear(yearIndex, { ...year, year: value })} helper="Use a four-digit year, such as 2026." />
@@ -2153,19 +1969,14 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                       <div className="grid min-w-0 gap-3 md:grid-cols-2">
                         <div className="md:col-span-2"><Area label={`Resolution ${resolutionIndex + 1} Title`} value={textValue(resolution.title)} onChange={(value) => updateResolution({ ...resolution, title: value })} rows={2} /></div>
                         <div className="md:col-span-2"><Area label="Description (optional)" value={textValue(resolution.description)} onChange={(value) => updateResolution({ ...resolution, description: value })} rows={3} /></div>
-                        <button type="button" className="justify-self-start text-sm font-semibold text-red-600 md:col-span-2" onClick={() => void removeManagedCollectionItem(
-                          "resolutions",
-                          textValue(resolution.id),
-                          textValue(resolution.title || resolution.number) || `Resolution ${resolutionIndex + 1}`,
-                          () => updateYear(yearIndex, { ...year, resolutions: resolutions.filter((_, index) => index !== resolutionIndex) }),
-                        )}>
+                        <button type="button" className="justify-self-start text-sm font-semibold text-red-600 md:col-span-2" onClick={() => updateYear(yearIndex, { ...year, resolutions: resolutions.filter((_, index) => index !== resolutionIndex) })}>
                           Remove
                         </button>
                       </div>
                     </div>
                   );
                 })}
-              </div>
+              </details>
             );
           })}
         </div>
@@ -2401,7 +2212,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               Array.isArray(category.documents) ? category.documents : [],
             );
             return (
-              <div key={textValue(category.code || category.id) || `category-${category.categoryNumber}`} className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+              <details key={textValue(category.code || category.id) || `category-${category.categoryNumber}`} className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+                <summary className="cursor-pointer font-semibold text-slate-800">{textValue(category.title) || `Category ${category.categoryNumber}`} ({documents.length})</summary>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <strong className="text-sm text-slate-800">Category {textValue(category.categoryNumber)}</strong>
                   <button
@@ -2415,16 +2227,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                   >
                     Remove
                   </button>
-                  {isAdmin && textValue(category.code || category.id) && <button
-                    type="button"
-                    className="text-sm text-red-600"
-                    onClick={() => void removeManagedCollectionItem(
-                      "publication-categories",
-                      textValue(category.code || category.id),
-                      textValue(category.title) || "Publication category",
-                      () => setSectionContent({ ...sectionContent, categories: categories.filter((_, index) => index !== categoryIndex) }),
-                    )}
-                  >Archive</button>}
                 </div>
                 <div className="grid min-w-0 gap-3 md:grid-cols-2">
                   <Field label="Title" value={textValue(category.title)} onChange={(value) => updateCategory(categoryIndex, { ...category, title: value })} />
@@ -2516,10 +2318,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                         >
                           Remove
                         </button>
-                        {isAdmin && textValue(document.id) && <button type="button" className="text-sm text-red-600" onClick={() => void removeManagedCollectionItem(
-                          "publication-documents", textValue(document.id), textValue(document.title) || "Document",
-                          () => updateCategory(categoryIndex, { ...category, documents: (Array.isArray(category.documents) ? category.documents : []).filter((_, index) => index !== documentIndex) }),
-                        )}>Archive</button>}
                       </div>
                       <div className="mb-3 grid gap-2 md:grid-cols-2">
                         <div className="rounded-lg border border-blue-100 bg-white px-3 py-2 text-xs text-blue-800">
@@ -2544,8 +2342,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                             }) });
                           }} />}
                         <Field label="Year" value={textValue(document.year)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, year: value })} />
-                        <Field label="File Type" value={textValue(document.fileType)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, fileType: value })} />
-                        <Field label="File Size" value={textValue(document.fileSize)} onChange={(value) => updatePublicationDocument(categoryIndex, documentIndex, { ...document, fileSize: value })} />
                         <Select
                           label="Visibility"
                           value={document.isVisible === false ? "false" : "true"}
@@ -2604,7 +2400,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     </div>
                   );
                 })}
-              </div>
+              </details>
             );
           })}
         </div>
@@ -2745,8 +2541,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                     onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, mediaAssetId: "", documentAssetId: "", url: value, link: value }))}
                     helper="Use for downloadable legal documents, external files, or page links."
                   />
-                  <Field label="File Type (optional)" value={textValue(row.fileType)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, fileType: value }))} />
-                  <Field label="File Size (optional)" value={textValue(row.fileSize)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, fileSize: value }))} />
                   <Field label="Pages (optional)" value={row.pages == null ? "" : String(row.pages)} onChange={(value) => updateDocumentItem(index, (current) => ({ ...current, pages: value }))} />
                   <Select
                     label="Card Visibility"
@@ -2998,7 +2792,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               assets={media.filter((item) => item.file_type === "image")}
               value={stringValue(sectionContent.mapAssetId)}
               onChange={(value) => setSectionContent({ ...sectionContent, mapAssetId: value, mapImageUrl: "" })}
-              helper="Choose an image from the Media Library. The built-in map is used when no image is selected."
+              helper="Choose an image from the Media Library, save the section, then publish the page. Clear the selection to restore the built-in map after publishing."
             />
           )}
           <Field label="Badge Label" value={textValue(sectionContent.badgeLabel)} onChange={(value) => updateSectionContent("badgeLabel", value)} />
@@ -3234,6 +3028,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                               {openingPageId === page.id ? "Opening..." : "Manage Content"}
                             </button>
                           )}
+                          {page.status !== "archived" && <button type="button" className="text-sm text-blue-600" onClick={() => void openPageReviewPreview(page)}>Preview Draft</button>}
                           {page.published_at && <button
                             type="button"
                             className="text-sm text-slate-600"
@@ -3342,6 +3137,11 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                 <h3 className="font-bold text-slate-900">Sections for Page {selectedPage ? `— ${selectedPage.title}` : ""}</h3>
               </div>
               <div className="portal-card-body min-w-0 space-y-3">
+                {selectedPage?.slug === "home" && (
+                  <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
+                    Latest Media Releases, Regional Development Dashboard, and Upcoming Events update automatically from News, Project Management, and Events. Manage their content in those modules.
+                  </p>
+                )}
                 {!selectedPage ? (
                   <p className="text-sm text-slate-500">Select or create a page to manage sections.</p>
                 ) : selectedPageSections.length === 0 ? (
@@ -3822,7 +3622,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               {reviewQueue.pages.map((page) => (
                 <div key={`page-${page.id}`} className="rounded-xl border border-slate-200 p-3">
                   <strong>{page.title}</strong><p className="text-xs text-slate-500">Page submitted for review</p>
-                  {isAdmin && <div className="mt-2 flex gap-3 text-sm"><button className="text-blue-700" onClick={() => void openPageReviewPreview(page)}>Preview</button><button className="text-emerald-700" onClick={() => void openPageReviewPreview(page)}>Preview &amp; Publish</button></div>}
+                  <div className="mt-2 flex gap-3 text-sm"><button className="text-blue-700" onClick={() => void openPageReviewPreview(page)}>Preview</button>{isAdmin && <button className="text-emerald-700" onClick={() => void openPageReviewPreview(page)}>Preview &amp; Publish</button>}</div>
                 </div>
               ))}
             </div>
@@ -3864,38 +3664,20 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         </div>
       )}
       {pageReviewPreview && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-3 sm:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPageReviewPreview(null); }}>
-          <section role="dialog" aria-modal="true" aria-labelledby="cms-page-preview-title" className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-4 shadow-2xl sm:p-6">
-            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-4">
-              <div><h2 id="cms-page-preview-title" className="text-xl font-bold">Review page draft: {pageReviewPreview.title}</h2><p className="mt-1 text-sm text-slate-600">Page and all non-archived sections are reviewed and published together.</p></div>
-              <button type="button" className="portal-btn portal-btn-ghost" onClick={() => setPageReviewPreview(null)}>Close preview</button>
-            </div>
-            {(() => {
-              const liveSections = Array.isArray(pageReviewPreview.published_snapshot_json?.sections) ? pageReviewPreview.published_snapshot_json.sections as Array<Record<string, unknown>> : [];
-              const draftSections = (pageReviewPreview.sections || []).filter((section) => section.status !== "archived").sort((a, b) => a.order - b.order);
-              const liveByKey = new Map(liveSections.map((section) => [String(section.sectionKey || ""), section]));
-              const draftKeys = new Set(draftSections.map((section) => section.section_key));
-              const changes = draftSections.map((section) => {
-                const live = liveByKey.get(section.section_key);
-                const unchanged = Boolean(live && JSON.stringify(live.content || {}) === JSON.stringify(section.content_json || {}) && Number(live.order) === section.order && String(live.sectionType || "") === section.section_type);
-                return { key: section.section_key, label: !live ? "Added" : unchanged ? "Unchanged" : "Changed", visible: section.is_visible };
-              });
-              for (const live of liveSections) if (!draftKeys.has(String(live.sectionKey || ""))) changes.push({ key: String(live.sectionKey || "(unknown section)"), label: "Removed", visible: false });
-              return <>
-                <div className="my-4 rounded-xl border border-blue-100 bg-blue-50 p-3 text-sm"><strong>Page metadata draft:</strong> {pageReviewPreview.title} · /{pageReviewPreview.slug}<div className="mt-1 text-slate-600">Published version: {String(pageReviewPreview.published_snapshot_json?.title || "No published version")} · /{String(pageReviewPreview.published_snapshot_json?.slug || "—")}{pageReviewPreview.published_snapshot_json && (pageReviewPreview.published_snapshot_json.title !== pageReviewPreview.title || pageReviewPreview.published_snapshot_json.slug !== pageReviewPreview.slug) ? " · Page metadata changed" : ""}</div></div>
-                <div className="mb-4"><h3 className="font-semibold">Changes from published version</h3>{changes.length ? <ul className="mt-2 grid gap-2 sm:grid-cols-2">{changes.map((change) => <li key={change.key} className="rounded-lg border border-slate-200 px-3 py-2 text-sm"><strong>{change.label}</strong> · {change.key}{change.label !== "Removed" && <span className="text-slate-500"> · {change.visible ? "Visible" : "Hidden"}</span>}</li>)}</ul> : <p className="mt-2 text-sm text-slate-600">No sections in this draft.</p>}</div>
-                <h3 className="font-semibold">Read-only draft preview</h3>
-                <div className="mt-2 space-y-3">{draftSections.map((section) => {
-                  const content = section.content_json || {};
-                  const title = textValue(content.title) || sectionTypeLabels.get(section.section_type) || section.section_key;
-                  const summary = textValue(content.subtitle) || textValue(content.description) || textValue(content.body) || textValue(content.text);
-                  return <article key={section.id} className="rounded-xl border border-slate-200 p-4"><div className="flex flex-wrap items-center gap-2"><h4 className="font-semibold">{title}</h4><span className="rounded-full bg-slate-100 px-2 py-1 text-xs">{sectionTypeLabels.get(section.section_type) || section.section_type}</span><span className="text-xs text-slate-500">{section.is_visible ? "Visible" : "Hidden"}</span></div>{summary && <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">{summary}</p>}<details className="mt-3"><summary className="cursor-pointer text-sm text-blue-700">Preview Snapshot</summary><ContentPreviewSnapshot content={content} /></details></article>;
-                })}</div>
-              </>;
-            })()}
-            <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-4"><button type="button" className="portal-btn portal-btn-ghost" onClick={() => setPageReviewPreview(null)}>Cancel</button>{pageReviewPreview.status === "submitted" && <button type="button" className="portal-btn portal-btn-ghost" onClick={() => { const page = pageReviewPreview; setPageReviewPreview(null); void runWorkflowAction("page", page.id, "reject", page.title); }}>Reject Page</button>}<button type="button" className="portal-btn portal-btn-primary" disabled={loading} onClick={() => { const page = pageReviewPreview; setPageReviewPreview(null); void runWorkflowAction("page", page.id, "publish", page.title); }}>Publish Page and Sections</button></div>
-          </section>
-        </div>
+        <CMSPageReview
+          preview={pageReviewPreview.preview}
+          onClose={() => setPageReviewPreview(null)}
+          onPublish={isAdmin && !(sectionFormHasChanges && sectionForm.page === pageReviewPreview.page.id) ? () => {
+            const { page } = pageReviewPreview;
+            setPageReviewPreview(null);
+            void runWorkflowAction("page", page.id, "publish", page.title);
+          } : undefined}
+          onReject={isAdmin && pageReviewPreview.page.status === "submitted" ? () => {
+            const { page } = pageReviewPreview;
+            setPageReviewPreview(null);
+            void runWorkflowAction("page", page.id, "reject", page.title);
+          } : undefined}
+        />
       )}
 
       {activeTab === "settings" && (

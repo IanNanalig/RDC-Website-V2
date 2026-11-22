@@ -1,6 +1,7 @@
+import PublicEventsCalendar from "../components/PublicEventsCalendar";
 import { useEffect, useMemo, useState, type SyntheticEvent } from "react";
 import { Link } from "react-router-dom";
-import { useParams } from "react-router-dom";
+import { useLocation, useParams } from "react-router-dom";
 import cmsApi, {
   type CMSArticleSnapshot,
   type CMSPageSnapshot,
@@ -59,11 +60,12 @@ const asString = (value: unknown, fallback = "") =>
 
 const getPageSection = (page: CMSPageSnapshot | null, sectionKey: string) =>
   asRecord(
-    page?.sections.find((section) => section.sectionKey === sectionKey)?.content,
+    page?.sections?.find((section) => section.sectionKey === sectionKey)?.content,
   );
 
 export default function NewsPage() {
   const { slug } = useParams();
+  const { hash } = useLocation();
   const [cmsPage, setCmsPage] = useState<CMSPageSnapshot | null>(null);
   const [cmsNews, setCmsNews] = useState<NewsItem[]>([]);
   const [newsLoading, setNewsLoading] = useState(true);
@@ -72,6 +74,10 @@ export default function NewsPage() {
   const [selectedCategory, setSelectedCategory] = useState<string>("All");
   const [currentPage, setCurrentPage] = useState(1);
   const [showMobileFilters, setShowMobileFilters] = useState(false);
+
+  useEffect(() => {
+    if (!slug && hash === "#events") document.getElementById("events")?.scrollIntoView();
+  }, [hash, slug, newsLoading, cmsPage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -232,6 +238,7 @@ export default function NewsPage() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        {!slug && <a href="#events" className="mb-6 inline-block font-semibold text-blue-700 underline">Events calendar</a>}
         <section className="mb-8 rounded-2xl border border-blue-100 bg-white p-6 shadow-sm">
           <h2 className="text-2xl font-bold text-slate-900">
             {asString(listingContent.title, "Published News and Announcements")}
@@ -553,6 +560,7 @@ export default function NewsPage() {
             )}
           </section>
         </div>
+        {!slug && <PublicEventsCalendar />}
       </main>
     </div>
   );

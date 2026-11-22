@@ -38,10 +38,9 @@ const newSubmissionId = () => {
   });
 };
 
-const Contact: React.FC = () => {
-  const [contactCmsPage, setContactCmsPage] = useState<CMSPageSnapshot | null>(
-    null,
-  );
+const Contact: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnapshot }) => {
+  const [publishedPage, setContactCmsPage] = useState<CMSPageSnapshot | null>(null);
+  const contactCmsPage = previewSnapshot ?? publishedPage;
   const [inquiryForm, setInquiryForm] = useState<InquiryForm>({
     name: "",
     email: "",
@@ -57,6 +56,7 @@ const Contact: React.FC = () => {
   // feedback UI/logic was moved to `frontend/src/components/Feedback.tsx`
 
   useEffect(() => {
+    if (previewSnapshot) return;
     let active = true;
     cmsApi
       .getPublicPage("contact")
@@ -69,7 +69,7 @@ const Contact: React.FC = () => {
     return () => {
       active = false;
     };
-  }, []);
+  }, [previewSnapshot]);
 
   const heroContent = asRecord(getContactSection(contactCmsPage, "contact-hero"));
   const officeContent = asRecord(getContactSection(contactCmsPage, "main-office"));
@@ -83,6 +83,7 @@ const Contact: React.FC = () => {
 
   const handleInquirySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (previewSnapshot) return;
 
     if (
       !inquiryForm.name.trim() ||
@@ -384,7 +385,7 @@ const Contact: React.FC = () => {
                   </p>
                 </div>
               ) : (
-                <form onSubmit={handleInquirySubmit} className="space-y-6">
+                <form inert={Boolean(previewSnapshot)} onSubmit={handleInquirySubmit} className="space-y-6">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     {/* Name */}
                     <div>

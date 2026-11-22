@@ -23,14 +23,6 @@ from cms.services.snapshots import (
     build_article_snapshot,
     build_page_snapshot,
 )
-from projects.priority_scoring import get_active_priority_rule_set, priority_rule_config
-from projects.scoring_contract import (
-    ScoringCompatibilityError,
-    contract_for_rule_set,
-    form_compatibility_report,
-)
-
-
 def publish_page(page, user=None):
     page_id = page.pk if isinstance(page, CMSPage) else page
     with transaction.atomic():
@@ -123,14 +115,6 @@ def publish_contributor_form(form, user=None):
         validate_draft_schema(locked_form.draft_schema_json)
         schema = prepare_catalog_schema(locked_form.draft_schema_json, published_schema)
         schema = validate_form_schema(schema, published_schema=published_schema)
-        active_rules = get_active_priority_rule_set()
-        compatibility = form_compatibility_report(
-            schema,
-            priority_rule_config(active_rules),
-            contract_for_rule_set(active_rules),
-        )
-        if compatibility["status"] == "incompatible":
-            raise ScoringCompatibilityError(compatibility)
         next_number = (
             locked_form.versions.aggregate(max_version=Max("version_number"))["max_version"] or 0
         ) + 1

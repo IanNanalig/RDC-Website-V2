@@ -20,6 +20,7 @@ from ai_engine.models import AIModelVersion
 from ai_engine.serializers import AIModelVersionSerializer
 from ai_engine.services import get_active_model, sync_training_record, training_dataset_summary
 
+from cms.form_catalog_views import CommitteeSerializer
 from cms.form_schema import FormSchemaError, SIMPLIFIED_FORM_KEY, default_simplified_form_schema, describe_form_error, prepare_catalog_schema, validate_draft_schema, validate_form_schema
 from projects.form_catalogs import validate_committee_links
 from cms.models import (
@@ -57,6 +58,7 @@ from cms.serializers import (
 )
 from cms.registry import (
     EDITABLE_CMS_PAGE_REGISTRY,
+    SYSTEM_MANAGED_HOME_SECTIONS,
     FIXED_CMS_PAGE_REGISTRY,
     editable_page_definition,
     editable_section_definition,
@@ -88,6 +90,7 @@ from projects.models import (
     Project,
     ProjectPriorityConfirmation,
     PublicEvent,
+    SectoralCommittee,
     User,
     UserActivity,
 )
@@ -99,13 +102,13 @@ from projects.priority_scoring import (
     get_active_priority_rule_set,
     priority_rule_config,
     regional_scoring_bands,
+    scoring_formula_reference,
 )
 from projects.priority_rule_history import (
     lock_active_rule_set, published_rules, rule_changes, rule_config_snapshot,
     rule_history_entry, validate_publication_config,
 )
 from projects.scoring_contract import (
-    ScoringCompatibilityError,
     contract_for_rule_set,
     criterion_dependencies,
     form_compatibility_report,
@@ -186,6 +189,22 @@ def _log_cms_activity(request, event, details=None):
         ip_address=_client_ip(request),
         details=details or {},
     )
+
+
+def _add_archive_audit(response, content_type):
+    rows = response.data.get("results", []) if isinstance(response.data, dict) else response.data
+    archive_events = UserActivity.objects.filter(
+        event="cms_content_archived", details__content_type=content_type,
+        details__id__in=[row["id"] for row in rows],
+    ).select_related("user").order_by("-created_at", "-pk")
+    latest = {}
+    for entry in archive_events:
+        latest.setdefault(entry.details["id"], entry)
+    for row in rows:
+        if entry := latest.get(row["id"]):
+            row["archived_at"] = row.get("archived_at") or entry.created_at.isoformat()
+            name = entry.user.get_full_name() if entry.user else ""
+            row["archived_by_name"] = name or entry.actor_username
 
 
 def _notify_form_users(users, *, actor, form, event_type, title, message, dedupe_event):
@@ -458,7 +477,10 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
     def get_queryset(self):
         if self._summary_requested():
             queryset = CMSPage.objects.annotate(
-                section_count=Count("sections", distinct=True),
+                section_count=Count(
+                    "sections", distinct=True,
+                    filter=~Q(slug="home", sections__section_key__in=SYSTEM_MANAGED_HOME_SECTIONS),
+                ),
                 published_slug=KeyTextTransform("slug", "published_snapshot_json"),
             ).only(
                 "id", "title", "slug", "status", "has_unpublished_changes", "review_notes",
@@ -480,6 +502,16 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
         if search:
             queryset = queryset.filter(Q(title__icontains=search) | Q(slug__icontains=search))
         return queryset.order_by("slug")
+
+    @action(detail=True, methods=["get"])
+    def preview(self, request, pk=None):
+        from cms.services.snapshots import compose_public_page_snapshot
+
+        page = self.get_object()
+        return Response({
+            "draft": compose_public_page_snapshot(page, draft=True),
+            "published": compose_public_page_snapshot(page) or None,
+        }, headers={"Cache-Control": "private, no-store"})
 
     def create(self, request, *args, **kwargs):
         return Response({"detail": "Public pages are fixed by the application and cannot be created."}, status=405)
@@ -613,6 +645,7 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def unlock(self, request, pk=None):
+        self.get_object()
         section, released = release_section_lock(pk, request.user, force=getattr(request.user, "role", "") == "admin")
         if not released:
             return Response({"detail": "Only the lock owner or an administrator can release this lock."}, status=423)
@@ -621,6 +654,7 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def heartbeat(self, request, pk=None):
+        self.get_object()
         section, refreshed = heartbeat_section_lock(pk, request.user)
         if not refreshed:
             return Response({"detail": "The section lock is no longer owned by this user."}, status=409)
@@ -656,6 +690,12 @@ class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.Mod
     summary_serializer_class = CMSArticleSummarySerializer
     permission_classes = [permissions.IsAuthenticated, IsCMSUser]
     content_type_key = "article"
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        if request.query_params.get("archived") == "1":
+            _add_archive_audit(response, "article")
+        return response
 
     def get_serializer_class(self):
         if self.action != "list" and self.request.query_params.get("view") == "editor":
@@ -731,9 +771,6 @@ class AdminCMSArticleViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.Mod
 from cms.services.collections import (
     managed_content_snapshot,
     mark_managed_content_pages_changed,
-    reassign_publication_documents_in_draft,
-    remove_managed_content_from_draft,
-    restore_managed_content_to_draft,
     sync_resolution_to_draft,
 )
 
@@ -747,8 +784,9 @@ class CMSManagedContentViewSet(viewsets.ModelViewSet):
         queryset = super().get_queryset().select_related(
             "created_by", "updated_by", "submitted_by", "reviewed_by"
         )
-        if self.action == "list" and not self.request.query_params.get("status"):
-            queryset = queryset.filter(status="archived") if self.request.query_params.get("archived") == "1" else queryset.exclude(status="archived")
+        queryset = queryset.exclude(status="archived")
+        if self.request.query_params.get("archived") == "1":
+            return queryset.none()
         status_filter = str(self.request.query_params.get("status") or "").strip()
         if status_filter:
             queryset = queryset.filter(status=status_filter)
@@ -830,40 +868,16 @@ class CMSManagedContentViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
     def archive(self, request, pk=None):
-        obj = self.get_object()
-        if obj.status == "archived":
-            return Response({"detail": "Content is already archived."}, status=409)
-        obj.status = "archived"
-        obj.archived_at = timezone.now()
-        obj.reviewed_by = request.user
-        obj.save(update_fields=["status", "archived_at", "reviewed_by", "updated_at"])
-        remove_managed_content_from_draft(obj, request.user)
-        _log_cms_activity(request, "cms_content_archived", {"content_type": self.content_type_key, "id": obj.pk})
-        return Response(self.get_serializer(obj).data)
+        return Response({"detail": "Remove this item from its page draft."}, status=405)
 
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
     def restore(self, request, pk=None):
-        obj = self.get_queryset().model.objects.filter(pk=pk).first()
-        if not obj:
-            raise Http404("Content not found.")
-        if obj.status != "archived":
-            return Response({"detail": "Only archived content can be restored."}, status=409)
-        obj.status = "draft"
-        obj.archived_at = None
-        obj.has_unpublished_changes = True
-        obj.updated_by = request.user
-        obj.save(update_fields=["status", "archived_at", "has_unpublished_changes", "updated_by", "updated_at"])
-        restore_managed_content_to_draft(obj, request.user)
-        _log_cms_activity(request, "cms_content_restored", {"content_type": self.content_type_key, "id": obj.pk})
-        return Response(self.get_serializer(obj).data)
+        return Response({"detail": "Manage this content through its page editor."}, status=405)
 
 
 class AdminCMSCarouselItemViewSet(CMSManagedContentViewSet):
     queryset = CMSCarouselItem.objects.select_related("image")
     serializer_class = CMSCarouselItemSerializer
-    # Publishing validation identifies removed slides by their immutable key.
-    # Include it in collection search so the administrator recovery flow can
-    # find and archive a renamed slide before publishing Home.
     search_fields = ("stable_key", "title", "description")
     content_type_key = "carousel_item"
 
@@ -881,31 +895,6 @@ class AdminCMSPublicationCategoryViewSet(CMSManagedContentViewSet):
             "category": {"id": category.pk, "code": category.code, "name": category.name},
             "documents": category.documents.values("status").annotate(count=Count("id")).order_by("status"),
         })
-
-    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
-    def archive(self, request, pk=None):
-        category = self.get_object()
-        active_documents = category.documents.exclude(status="archived")
-        if active_documents.exists():
-            resolution = str(request.data.get("document_resolution") or "").strip()
-            if resolution == "reassign":
-                target = CMSPublicationCategory.objects.filter(
-                    code__iexact=str(request.data.get("target_category") or "").strip()
-                ).exclude(pk=category.pk).exclude(status="archived").first()
-                if not target:
-                    return Response({"detail": "Choose an active target category for the documents."}, status=409)
-                reassign_publication_documents_in_draft(category.code, target.code, request.user)
-                active_documents.update(category=target, updated_by=request.user, has_unpublished_changes=True)
-            elif resolution == "archive_documents":
-                active_documents.update(status="archived", archived_at=timezone.now(), reviewed_by=request.user)
-            else:
-                return Response({
-                    "detail": "Reassign or archive the associated documents before archiving this category.",
-                    "document_count": active_documents.count(),
-                }, status=409)
-
-        return super().archive(request, pk=pk)
-
 
 class AdminCMSPublicationDocumentViewSet(CMSManagedContentViewSet):
     queryset = CMSPublicationDocument.objects.select_related("category", "attachment")
@@ -985,7 +974,7 @@ class AdminCMSModuleDetailView(APIView):
         if not isinstance(sections_payload, dict) or not sections_payload:
             return Response({"sections": "Provide one or more fixed section content objects."}, status=400)
         definition = editable_page_definition(slug)
-        allowed = {item[0]: {"type": item[1], "order": index} for index, item in enumerate(definition["sections"], 1)}
+        allowed = {key: editable_section_definition(slug, key) for key, _ in definition["sections"]}
         unknown = sorted(set(sections_payload) - set(allowed))
         if unknown:
             return Response({"sections": f"Unknown fixed section keys: {', '.join(unknown)}"}, status=400)
@@ -1239,15 +1228,6 @@ class AdminCMSContributorFormViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
         editor_recipients = list(_form_editor_recipients(target))
         try:
             form = publish_contributor_form(target, user=request.user)
-        except ScoringCompatibilityError as exc:
-            return Response(
-                {
-                    "detail": str(exc),
-                    "code": "form_ai_incompatible",
-                    "compatibility": exc.report,
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
         except FormSchemaError as exc:
             return Response({"detail": describe_form_error(exc, target.draft_schema_json)}, status=400)
         _notify_form_users(
@@ -1584,6 +1564,10 @@ def _priority_reference_payload(limit=200):
                 _current_priority_form_schema(), priority_rule_config(active), contract_for_rule_set(active),
             ),
         },
+        "scoring_formula": scoring_formula_reference(),
+        "committee_outcome_links": CommitteeSerializer(
+            SectoralCommittee.objects.prefetch_related("outcome_links").order_by("name"), many=True,
+        ).data,
         "draft_rule_set": _priority_rule_payload(draft),
         "draft_rule_sets": [{"id": item.pk, "version": item.version} for item in drafts],
         "rule_versions": [rule_history_entry(rule) for rule in history],
@@ -1707,14 +1691,6 @@ class AdminAIPriorityDraftPublishView(APIView):
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         if draft.based_on_id != active.pk:
             return Response({"detail": "The active rule version changed. Review and save this draft against the current version before activating it.", "code": "ai_rule_stale"}, status=409)
-        compatibility = form_compatibility_report(
-            _current_priority_form_schema(), config, contract_for_rule_set(draft),
-        )
-        if compatibility["status"] == "incompatible":
-            return Response(
-                {"detail": "Resolve form compatibility errors before activating this draft.", "code": "ai_form_incompatible", "compatibility": compatibility},
-                status=status.HTTP_409_CONFLICT,
-            )
         PriorityRuleSet.objects.filter(is_active=True).update(is_active=False, status=PriorityRuleSet.STATUS_SUPERSEDED)
         draft.is_active = True
         draft.status = PriorityRuleSet.STATUS_ACTIVE
@@ -1844,11 +1820,6 @@ class AdminAIPriorityRestoreView(APIView):
             validate_committee_links(validated["sector_criteria"], lock=True)
         except ValueError as exc:
             issues.append(str(exc))
-        else:
-            compatibility = form_compatibility_report(_current_priority_form_schema(), validated, contract)
-            if compatibility["status"] == "incompatible":
-                issues.extend(item["message"] for item in compatibility["issues"])
-
         if not issues:
             PriorityRuleSet.objects.filter(is_active=True).update(is_active=False, status=PriorityRuleSet.STATUS_SUPERSEDED)
         new = PriorityRuleSet.objects.create(
@@ -1905,17 +1876,6 @@ class AdminAIPriorityCMSView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
         contract = contract_for_rule_set(previous_active)
-        compatibility = form_compatibility_report(_current_priority_form_schema(), config, contract)
-        if compatibility["status"] == "incompatible":
-            return Response(
-                {
-                    "detail": "Resolve form compatibility errors before activating new AI scoring rules.",
-                    "code": "ai_form_incompatible",
-                    "compatibility": compatibility,
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
-
         if expected != previous_active.pk:
             return Response({"detail": "The active rule version changed. Reload before publishing.", "code": "ai_rule_stale"}, status=409)
 
@@ -1962,6 +1922,12 @@ class AdminCMSMediaAssetViewSet(CMSSummaryListMixin, viewsets.ModelViewSet):
     summary_serializer_class = CMSMediaAssetSummarySerializer
     permission_classes = [permissions.IsAuthenticated, IsCMSUser]
     pagination_class = CMSMediaPagination
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        if request.query_params.get("archived") in {"1", "true", "yes"}:
+            _add_archive_audit(response, "media")
+        return response
 
     def get_queryset(self):
         queryset = CMSMediaAsset.objects.select_related("uploaded_by")
@@ -2081,7 +2047,10 @@ class AdminCMSReviewQueueView(APIView):
         articles = CMSArticle.objects.filter(status="submitted").select_related("thumbnail")
         if summary:
             pages = pages.annotate(
-                section_count=Count("sections", distinct=True),
+                section_count=Count(
+                    "sections", distinct=True,
+                    filter=~Q(slug="home", sections__section_key__in=SYSTEM_MANAGED_HOME_SECTIONS),
+                ),
                 published_slug=KeyTextTransform("slug", "published_snapshot_json"),
             )
             articles = articles.annotate(published_slug=KeyTextTransform("slug", "published_snapshot_json"))

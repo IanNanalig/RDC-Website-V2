@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../services/api";
 import RefreshButton from "./RefreshButton";
+import { resolveCmsMediaUrl } from "../../services/cmsApi";
 
 type ArchivedItem = { id: number; title?: string; name?: string; section_key?: string; key?: string; caption?: string; original_filename?: string; status?: string; [key: string]: unknown };
 type Group = { label: string; endpoint: string; detail: (id: number) => string; restore: (id: number) => string };
@@ -8,17 +9,38 @@ type Group = { label: string; endpoint: string; detail: (id: number) => string; 
 const ARCHIVED_PAGE_SIZE = 10;
 
 const groups: Group[] = [
-  { label: "Carousel Items", endpoint: "admin/cms/carousel-items/?archived=1", detail: (id) => `admin/cms/carousel-items/${id}/`, restore: (id) => `admin/cms/carousel-items/${id}/restore/` },
-  { label: "Publication Categories", endpoint: "admin/cms/publication-categories/?archived=1", detail: (id) => `admin/cms/publication-categories/${id}/`, restore: (id) => `admin/cms/publication-categories/${id}/restore/` },
-  { label: "Publication Documents", endpoint: "admin/cms/publication-documents/?archived=1", detail: (id) => `admin/cms/publication-documents/${id}/`, restore: (id) => `admin/cms/publication-documents/${id}/restore/` },
-  { label: "Resolutions", endpoint: "admin/cms/resolutions/?archived=1", detail: (id) => `admin/cms/resolutions/${id}/`, restore: (id) => `admin/cms/resolutions/${id}/restore/` },
   { label: "News", endpoint: "admin/cms/articles/?view=summary&archived=1", detail: (id) => `admin/cms/articles/${id}/`, restore: (id) => `admin/cms/articles/${id}/restore/` },
   { label: "Events", endpoint: "admin/cms/events/?archived=1", detail: (id) => `admin/cms/events/${id}/`, restore: (id) => `admin/cms/events/${id}/unarchive/` },
   { label: "Media", endpoint: "admin/cms/media/?view=summary&archived=1", detail: (id) => `admin/cms/media/${id}/`, restore: (id) => `admin/cms/media/${id}/restore/` },
 ];
 
 const display = (value: unknown) => typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : "";
-const niceLabel = (value: string) => value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+const titleFor = (item: ArchivedItem) => item.title || item.caption || item.original_filename || "Archived item";
+
+function archiveDate(value: unknown) {
+  if (typeof value !== "string" || !value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("en-PH", { dateStyle: "medium", timeZone: "Asia/Manila" });
+}
+
+function safeMedia(value: unknown) {
+  const url = resolveCmsMediaUrl(display(value));
+  return /^https?:\/\//i.test(url) || /^\/(?![/\\])/.test(url) ? url : "";
+}
+
+function contentSummary(item: ArchivedItem) {
+  return display(item.summary || item.description || item.caption || item.alt_text);
+}
+
+function typeLabel(group: Group, item: ArchivedItem) {
+  const kind = group.label === "Media" ? display(item.file_type) : group.label === "Events" ? display(item.event_type) : "News article";
+  return kind ? kind.charAt(0).toUpperCase() + kind.slice(1) : group.label;
+}
+
+function thumbnail(item: ArchivedItem) {
+  return safeMedia(item.thumbnail_url || (item.file_type === "image" ? item.url : ""));
+}
+
 
 async function fetchGroup(endpoint: string): Promise<ArchivedItem[]> {
   const rows: ArchivedItem[] = [];
@@ -34,6 +56,8 @@ async function fetchGroup(endpoint: string): Promise<ArchivedItem[]> {
 }
 
 export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
+  const [activeGroup, setActiveGroup] = useState(groups[0]);
+  const [notice, setNotice] = useState("");
   const [items, setItems] = useState<Record<string, ArchivedItem[]>>({});
   const [groupPages, setGroupPages] = useState<Record<string, number>>(
     () => Object.fromEntries(groups.map((group) => [group.label, 1])),
@@ -42,6 +66,12 @@ export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState("");
   const [selected, setSelected] = useState<{ group: Group; item: ArchivedItem; detail: ArchivedItem } | null>(null);
+  const detailsDialog = useRef<HTMLDialogElement>(null);
+  const detailsOpen = selected !== null;
+  useEffect(() => {
+    const dialog = detailsDialog.current;
+    if (detailsOpen && dialog && !dialog.open) dialog.showModal();
+  }, [detailsOpen]);
   const [detailLoading, setDetailLoading] = useState(false);
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -67,7 +97,11 @@ export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
     setError("");
     try {
       await api.post(group.restore(id), {});
-      await refresh();
+      setSelected(null);
+      setItems((current) => ({ ...current, [group.label]: (current[group.label] || []).filter((item) => item.id !== id) }));
+      setNotice(group.label === "Media" ? "File returned to the Media Library." : "Item returned to its module as a draft.");
+      const rows = await fetchGroup(group.endpoint);
+      setItems((current) => ({ ...current, [group.label]: rows }));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Restore failed.");
     } finally {
@@ -81,7 +115,7 @@ export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
     setError("");
     try {
       const detail = await api.get(group.detail(item.id)) as ArchivedItem;
-      setSelected({ group, item, detail });
+      setSelected((current) => current?.item === item ? { group, item, detail: { ...item, ...detail } } : current);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Archived item details could not be loaded.");
     } finally {
@@ -89,47 +123,107 @@ export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
     }
   };
 
-  return <div className="space-y-4">
-    <div className="portal-card"><div className="portal-card-header flex items-center justify-between gap-2"><div><h2 className="font-bold">Archived Content</h2><p className="text-sm text-slate-500">Restored items return as drafts and must be published again.</p></div><RefreshButton loading={loading} onClick={refresh} /></div></div>
-    {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
-    {loading ? <p className="text-sm text-slate-500">Loading archived content...</p> : groups.map((group) => {
-      const groupItems = items[group.label] || [];
-      const totalPages = Math.max(1, Math.ceil(groupItems.length / ARCHIVED_PAGE_SIZE));
-      const currentPage = Math.min(groupPages[group.label] || 1, totalPages);
-      const startIndex = (currentPage - 1) * ARCHIVED_PAGE_SIZE;
-      const visibleItems = groupItems.slice(startIndex, startIndex + ARCHIVED_PAGE_SIZE);
-      return <section key={group.label} className="portal-card">
-        <div className="portal-card-header"><h3 className="font-semibold">{group.label} ({groupItems.length})</h3></div>
-        <div className="portal-card-body space-y-2">
-          {!groupItems.length ? <p className="text-sm text-slate-500">No archived {group.label.toLowerCase()}.</p> : visibleItems.map((item) => <div key={item.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 p-3"><span className="min-w-0 break-words text-sm">{item.title || item.name || item.caption || item.original_filename || item.section_key || item.key || `#${item.id}`}</span><div className="flex flex-wrap items-center gap-3"><button type="button" onClick={() => void viewDetails(group, item)} className="text-sm font-semibold text-blue-700">View details</button>{isAdmin && <button type="button" disabled={busyId === `${group.label}-${item.id}`} onClick={() => void restore(group, item.id)} className="portal-btn portal-btn-ghost">Restore as Draft</button>}</div></div>)}
-          {totalPages > 1 && <nav aria-label={`${group.label} pagination`} className="flex flex-col gap-2 border-t border-slate-200 pt-3 text-sm text-slate-600 sm:flex-row sm:items-center sm:justify-between">
-            <span>Showing {startIndex + 1}–{Math.min(startIndex + ARCHIVED_PAGE_SIZE, groupItems.length)} of {groupItems.length}</span>
-            <div className="flex items-center gap-2">
-              <button type="button" className="portal-btn portal-btn-ghost" disabled={currentPage === 1} onClick={() => setGroupPages((current) => ({ ...current, [group.label]: currentPage - 1 }))}>Previous</button>
+  const groupItems = items[activeGroup.label] || [];
+  const totalPages = Math.max(1, Math.ceil(groupItems.length / ARCHIVED_PAGE_SIZE));
+  const currentPage = Math.min(groupPages[activeGroup.label] || 1, totalPages);
+  const start = (currentPage - 1) * ARCHIVED_PAGE_SIZE;
+  const visibleItems = groupItems.slice(start, start + ARCHIVED_PAGE_SIZE);
+  const archivedDetails = selected?.detail;
+  const fileUrl = safeMedia(archivedDetails?.url);
+  const savedSnapshot = archivedDetails?.published_snapshot_json;
+  const published = savedSnapshot && typeof savedSnapshot === "object" ? savedSnapshot as Record<string, unknown> : null;
+
+  return (
+    <div className="space-y-4">
+      <div className="portal-card">
+        <div className="portal-card-header flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-bold">Archived Content</h2>
+          <RefreshButton loading={loading} onClick={refresh} />
+        </div>
+        <nav aria-label="Archived content groups" className="flex flex-wrap gap-2 px-4 pb-4">
+          {groups.map((group) => (
+            <button key={group.label} type="button" aria-pressed={group === activeGroup}
+              className={group === activeGroup ? "portal-btn portal-btn-primary" : "portal-btn portal-btn-ghost"}
+              onClick={() => setActiveGroup(group)}>
+              {group.label} ({items[group.label]?.length || 0})
+            </button>
+          ))}
+        </nav>
+      </div>
+      {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
+      {notice && <p role="status" className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</p>}
+      {loading ? <p role="status">Loading archived content...</p> : (
+        <section aria-label={activeGroup.label} className="space-y-3">
+          {!visibleItems.length && <p className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600">No archived {activeGroup.label.toLowerCase()}.</p>}
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {visibleItems.map((item) => (
+              <article key={item.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                {thumbnail(item) ? <img src={thumbnail(item)} alt={display(item.alt_text)} loading="lazy" className="h-32 w-full bg-slate-100 object-cover" />
+                  : <div className="grid h-20 place-items-center bg-slate-100 text-sm font-semibold text-slate-600">{typeLabel(activeGroup, item)}</div>}
+                <div className="space-y-2 p-4">
+                  <h3 className="break-words font-semibold">{titleFor(item)}</h3>
+                  {archiveDate(item.archived_at) && <p className="text-xs text-slate-500">Archived {archiveDate(item.archived_at)}</p>}
+                  {contentSummary(item) && <p className="line-clamp-2 break-words text-sm text-slate-600">{contentSummary(item)}</p>}
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" className="portal-btn portal-btn-ghost" onClick={() => void viewDetails(activeGroup, item)}>View details</button>
+                    {isAdmin && <button type="button" disabled={Boolean(busyId)} className="portal-btn portal-btn-primary" onClick={() => void restore(activeGroup, item.id)}>
+                      {activeGroup.label === "Media" ? "Restore to Media Library" : "Restore as Draft"}
+                    </button>}
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+          {totalPages > 1 && (
+            <nav aria-label="Archived items pagination" className="flex flex-wrap items-center gap-3 text-sm">
+              <button type="button" className="portal-btn portal-btn-ghost" disabled={currentPage === 1} onClick={() => setGroupPages({ ...groupPages, [activeGroup.label]: currentPage - 1 })}>Previous</button>
               <span aria-live="polite">Page {currentPage} of {totalPages}</span>
-              <button type="button" className="portal-btn portal-btn-ghost" disabled={currentPage === totalPages} onClick={() => setGroupPages((current) => ({ ...current, [group.label]: currentPage + 1 }))}>Next</button>
-            </div>
-          </nav>}
-        </div>
-      </section>;
-    })}
-    {selected && <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-3 sm:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelected(null); }}>
-      <section role="dialog" aria-modal="true" aria-labelledby="archived-content-title" className="max-h-[92vh] w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4 sm:p-5"><div><h2 id="archived-content-title" className="text-lg font-bold">{selected.item.title || selected.item.name || selected.item.caption || selected.item.original_filename || selected.item.section_key || selected.item.key || "Archived item"}</h2><p className="text-sm text-slate-500">{selected.group.label} · archived content preview</p></div><button type="button" className="portal-btn portal-btn-ghost" onClick={() => setSelected(null)}>Close</button></div>
-        <div className="max-h-[calc(92vh-5rem)] overflow-y-auto p-4 sm:p-5">
-          {detailLoading ? <p className="text-sm text-slate-600">Loading item details…</p> : <div className="space-y-4">
-            {selected.detail.file_type === "image" && display(selected.detail.url) && <img src={display(selected.detail.url)} alt={display(selected.detail.alt_text || selected.detail.caption)} className="max-h-80 max-w-full rounded-xl border border-slate-200 object-contain" />}
-            {selected.detail.file_type === "video" && display(selected.detail.url) && <video controls preload="metadata" src={display(selected.detail.url)} className="max-h-80 max-w-full rounded-xl" />}
-            {selected.detail.file_type === "audio" && display(selected.detail.url) && <audio controls preload="metadata" src={display(selected.detail.url)} className="w-full" />}
-            {selected.detail.file_type === "document" && display(selected.detail.url) && <a className="portal-btn portal-btn-ghost" href={display(selected.detail.url)} target="_blank" rel="noreferrer">Open archived document</a>}
-            {Object.entries(selected.detail).filter(([key, value]) => !["sections", "published_snapshot_json", "draft_schema_json", "current_published_schema_json", "url", "file", "id"].includes(key) && value !== null && value !== "").map(([key, value]) => <div key={key} className="grid gap-1 border-b border-slate-100 pb-2 sm:grid-cols-[12rem_minmax(0,1fr)]"><strong className="text-sm text-slate-700">{niceLabel(key)}</strong><span className="break-words text-sm text-slate-600">{display(value) || (typeof value === "object" ? JSON.stringify(value) : "—")}</span></div>)}
-            {typeof selected.detail.body === "string" && <section><h3 className="font-semibold">Article content</h3><p className="mt-2 whitespace-pre-wrap rounded-lg border border-slate-200 p-3 text-sm">{selected.detail.body}</p></section>}
-            {typeof selected.detail.description === "string" && selected.group.label === "Events" && <section><h3 className="font-semibold">Description</h3><p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{selected.detail.description}</p></section>}
-            {selected.detail.draft_schema_json != null && <section><h3 className="font-semibold">Form schema</h3><pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 p-3 text-xs">{JSON.stringify(selected.detail.draft_schema_json, null, 2)}</pre></section>}
-            {selected.detail.published_snapshot_json != null && <details className="rounded-lg border border-slate-200 p-3"><summary className="cursor-pointer font-semibold">Last published snapshot</summary><pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 p-3 text-xs">{JSON.stringify(selected.detail.published_snapshot_json, null, 2)}</pre></details>}
-          </div>}
-        </div>
-      </section>
-    </div>}
-  </div>;
+              <button type="button" className="portal-btn portal-btn-ghost" disabled={currentPage === totalPages} onClick={() => setGroupPages({ ...groupPages, [activeGroup.label]: currentPage + 1 })}>Next</button>
+            </nav>
+          )}
+        </section>
+      )}
+      {selected && archivedDetails && (
+        <dialog ref={detailsDialog} onClose={() => setSelected(null)} aria-labelledby="archived-title"
+          className="m-auto max-h-[90vh] w-[min(92vw,42rem)] space-y-4 overflow-auto rounded-xl bg-white p-5 shadow-xl backdrop:bg-slate-950/50">
+            <header className="flex flex-wrap items-start justify-between gap-2">
+              <h2 id="archived-title" className="break-words text-xl font-bold">{titleFor(archivedDetails)}</h2>
+              <form method="dialog"><button type="submit" className="portal-btn portal-btn-ghost" autoFocus>Close</button></form>
+            </header>
+            {detailLoading && <p role="status">Loading item details...</p>}
+            {thumbnail(archivedDetails) && <img src={thumbnail(archivedDetails)} alt={display(archivedDetails.alt_text)} className="max-h-64 rounded-lg object-contain" />}
+            <dl className="grid gap-3 text-sm sm:grid-cols-2">
+              {[
+                ["Content type", typeLabel(selected.group, archivedDetails)],
+                ["Original module", selected.group.label === "Media" ? "Media Library" : selected.group.label],
+                ["Date archived", archiveDate(archivedDetails.archived_at)],
+                ["Archived by", display(archivedDetails.archived_by_name || (selected.group.label === "Events" ? archivedDetails.reviewed_by_name : ""))],
+                ["Original publication date", archiveDate(published?.publicationDate || archivedDetails.published_at)],
+                ["Event date", archiveDate(archivedDetails.start_at)],
+                ["Location", display(archivedDetails.location)],
+                ["File name", display(archivedDetails.original_filename)],
+              ].filter(([, value]) => value).map(([name, value]) => (
+                <div key={name}><dt className="font-semibold">{name}</dt><dd className="break-words text-slate-600">{value}</dd></div>
+              ))}
+            </dl>
+            {contentSummary(archivedDetails) && <p className="whitespace-pre-wrap break-words text-sm">{contentSummary(archivedDetails)}</p>}
+            {selected.group.label === "News" && published && (published.title || published.summary) ? (
+              <section className="space-y-1 rounded-lg bg-slate-50 p-3 text-sm">
+                <h3 className="font-semibold">Last published content</h3>
+                <p className="break-words">{display(published.title)}</p>
+                <p className="break-words text-slate-600">{display(published.summary)}</p>
+              </section>
+            ) : null}
+            {selected.group.label === "Media" && fileUrl && archivedDetails.file_type === "video" && <video controls preload="metadata" src={fileUrl} className="max-h-64 max-w-full rounded-lg" />}
+            {selected.group.label === "Media" && fileUrl && archivedDetails.file_type === "audio" && <audio controls preload="metadata" src={fileUrl} className="w-full" />}
+            {selected.group.label === "Media" && fileUrl && !["image", "audio", "video"].includes(display(archivedDetails.file_type)) && (
+              <a className="portal-btn portal-btn-ghost" href={fileUrl} target="_blank" rel="noopener noreferrer">Open file</a>
+            )}
+            {isAdmin && <button type="button" className="portal-btn portal-btn-primary" disabled={Boolean(busyId)} onClick={() => void restore(selected.group, selected.item.id)}>
+              {selected.group.label === "Media" ? "Restore to Media Library" : "Restore as Draft"}
+            </button>}
+        </dialog>
+      )}
+    </div>
+  );
 }

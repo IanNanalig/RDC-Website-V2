@@ -24,14 +24,14 @@ HOME_SECTIONS = [
                     "title": "Building a Better Future",
                     "subtitle": "Collaborative governance for Metro Manila's growth",
                     "imageKey": "photo2",
-                    "button1": {"text": "View Projects", "link": "/Projects"},
+                    "button1": {"text": "View Projects", "link": "/projects"},
                     "button2": {"text": "Read News", "link": "/news"},
                 },
                 {
                     "title": "Strategic Development",
                     "subtitle": "Empowering communities through effective planning",
                     "imageKey": "photo3",
-                    "button1": {"text": "View Dashboard", "link": "/Projects"},
+                    "button1": {"text": "View Dashboard", "link": "/projects"},
                     "button2": {"text": "About RDC", "link": "/about"},
                 },
             ]
@@ -73,7 +73,7 @@ HOME_SECTIONS = [
             "title": "Investment Programming",
             "quickLinks": [
                 {"label": "RDIP DOCUMENTS", "link": "/publications?category=rdip"},
-                {"label": "RDIP DASHBOARD", "link": "/Projects"},
+                {"label": "RDIP DASHBOARD", "link": "/projects"},
             ],
             "items": [
                 {
@@ -114,7 +114,7 @@ HOME_SECTIONS = [
         "content_json": {
             "title": "Regional Development Dashboard",
             "buttonLabel": "View Full Dashboard ->",
-            "buttonLink": "/Projects",
+            "buttonLink": "/projects",
         },
     },
     {

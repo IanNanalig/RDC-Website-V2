@@ -106,16 +106,6 @@ export type CMSSiteSetting = {
   updated_at: string;
 };
 
-export type CMSManagedCollectionItem = {
-  id: number;
-  status: CMSStatus;
-  stable_key?: string;
-  code?: string;
-  title?: string;
-  name?: string;
-  published_at?: string | null;
-};
-
 export type CMSContributorForm = {
   id: number;
   key: string;
@@ -124,6 +114,7 @@ export type CMSContributorForm = {
   status: CMSStatus;
   draft_schema_json: ContributorFormSchema;
   workflow_protection?: { sections: string[]; fields: string[] };
+  can_manage_form_catalogs?: boolean;
   current_published_version?: number | null;
   current_published_version_number?: number | null;
   has_unpublished_changes: boolean;
@@ -363,6 +354,17 @@ export type CMSAIScoringWorkspace = {
       description: string;
     }>;
   };
+  scoring_formula?: {
+    max_raw_score: number;
+    regional_criterion_weight: number;
+    example: { base: number; regional: number; eligible: number; below_cutoff: number };
+  };
+  committee_outcome_links?: Array<{
+    code: string;
+    name: string;
+    is_active: boolean;
+    groups: string[];
+  }>;
   active_rule_set: {
     id: number;
     version: string;
@@ -515,7 +517,7 @@ export const cmsApi = {
   listPages: async (search = "", page = 1) =>
     listFromResponse<CMSPage>(await api.get(`admin/cms/pages/?${summaryQuery({ q: search, page })}`)),
   getPage: (id: number) => api.get(`admin/cms/pages/${id}/?view=editor`) as Promise<CMSPage>,
-  getPageReview: (id: number) => api.get(`admin/cms/pages/${id}/`) as Promise<CMSPage>,
+  getPagePreview: (id: number) => api.get(`admin/cms/pages/${id}/preview/`) as Promise<{ draft: CMSPageSnapshot; published: CMSPageSnapshot | null }>,
   getModule: (slug: string) => api.get(`admin/cms/modules/${slug}/`) as Promise<CMSPage>,
   createPage: (payload: Pick<CMSPage, "title" | "slug">) => api.post("admin/cms/pages/?view=editor", payload),
   updatePage: (id: number, payload: Pick<CMSPage, "title" | "slug">) =>
@@ -623,19 +625,6 @@ export const cmsApi = {
   uploadMedia: (formData: FormData) => api.postForm("admin/cms/media/", formData),
   archiveMedia: (id: number) => api.post(`admin/cms/media/${id}/archive/`),
   restoreMedia: (id: number) => api.post(`admin/cms/media/${id}/restore/`),
-
-  listManagedCollection: async (
-    kind: "carousel-items" | "publication-categories" | "publication-documents" | "resolutions",
-    search: string,
-  ) => listFromResponse<CMSManagedCollectionItem>(await api.get(`admin/cms/${kind}/?q=${encodeURIComponent(search)}&page_size=100`)),
-  archiveManagedCollection: (
-    kind: "carousel-items" | "publication-categories" | "publication-documents" | "resolutions",
-    id: number,
-    payload: Record<string, unknown> = {},
-  ) => api.post(`admin/cms/${kind}/${id}/archive/`, payload),
-  getPublicationCategoryDependencies: (id: number) => api.get(`admin/cms/publication-categories/${id}/dependencies/`) as Promise<{
-    documents: Array<{ status: CMSStatus; count: number }>;
-  }>,
 
   listSettings: async () => listFromResponse<CMSSiteSetting>(await api.get("admin/cms/settings/")),
   updateSetting: (key: string, payload: Pick<CMSSiteSetting, "value_json" | "description">) =>

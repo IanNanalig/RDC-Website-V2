@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { BrainCircuit, ChevronDown, ClipboardList, FileDown, Files, FolderKanban, LayoutDashboard, ListChecks, Newspaper, UsersRound, type LucideIcon } from "lucide-react";
 import { useEncodingWindow } from "../../hooks/useEncodingWindow";
 import { api, logoutPortalSession } from "../../services/api";
 
@@ -14,7 +15,7 @@ type Props = {
   topActions?: React.ReactNode;
 };
 
-type NavItem = { label: string; to: string; activePrefixes?: string[] };
+type NavItem = { label: string; to: string; activePrefixes?: string[]; icon?: LucideIcon };
 
 type StoredPortalUser = {
   agency?: string | null;
@@ -55,22 +56,31 @@ const roleAccent: Record<Role, string> = {
   content_editor: "portal-chip-validator",
 };
 
+const adminGroups: { id: string; title: string; items: NavItem[] }[] = [
+  { id: "overview", title: "Overview", items: [
+    { label: "Dashboard", to: "/admin/dashboard", icon: LayoutDashboard },
+  ] },
+  { id: "operations", title: "Operations", items: [
+    { label: "Project Management", to: "/admin/projects", icon: FolderKanban,
+      activePrefixes: ["/admin/projects", "/admin/project-update-period", "/admin/project-concerns", "/admin/archived"] },
+    { label: "Validator Tracker", to: "/admin/validator-diffs", icon: ListChecks },
+    { label: "Data Exports", to: "/admin/exports", icon: FileDown },
+  ] },
+  { id: "configuration", title: "Content & Configuration", items: [
+    { label: "Content Management", to: "/admin/content", icon: Newspaper },
+    { label: "Contributor Forms", to: "/admin/forms", icon: Files },
+    { label: "A.I. and Project Criteria", to: "/admin/ai-scoring", icon: BrainCircuit },
+  ] },
+  { id: "administration", title: "Administration", items: [
+    { label: "Users & Access", to: "/admin/users", icon: UsersRound,
+      activePrefixes: ["/admin/users", "/admin/profiles"] },
+    { label: "Audit Log", to: "/admin/audit-log", icon: ClipboardList },
+  ] },
+];
+const sidebarPreferenceKey = "rdc.admin.sidebar.expanded";
+
 const navByRole: Record<Role, NavItem[]> = {
-  admin: [
-    { label: "Dashboard", to: "/admin/dashboard" },
-    {
-      label: "Project Management",
-      to: "/admin/projects",
-      activePrefixes: ["/admin/projects", "/admin/project-update-period", "/admin/project-concerns"],
-    },
-    { label: "Data Exports", to: "/admin/exports" },
-    { label: "Validator Tracker", to: "/admin/validator-diffs" },
-    { label: "Content Management", to: "/admin/content" },
-    { label: "Contributor Forms", to: "/admin/forms" },
-    { label: "AI Scoring", to: "/admin/ai-scoring" },
-    { label: "Users & Access", to: "/admin/users" },
-    { label: "Audit Log", to: "/admin/audit-log" },
-  ],
+  admin: adminGroups.flatMap((group) => group.items),
   validator: [
     { label: "Dashboard", to: "/validator/dashboard" },
     { label: "Review Queue", to: "/validator/projects" },
@@ -120,6 +130,14 @@ const iconFor = (label: string) => {
 
 const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, children, topActions }) => {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<string[]>(() => {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem(sidebarPreferenceKey) || "[]");
+      return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : [];
+    } catch {
+      return [];
+    }
+  });
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<PortalNotification[]>([]);
   const [expandedNotificationId, setExpandedNotificationId] = useState<number | null>(null);
@@ -236,9 +254,10 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
         const focusable = sidebarRef.current?.querySelectorAll<HTMLElement>(
           'a[href]:not([aria-disabled="true"]), button:not([disabled])',
         );
-        if (!focusable?.length) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
+        const visible = Array.from(focusable || []).filter((item) => item.getClientRects().length > 0);
+        if (!visible.length) return;
+        const first = visible[0];
+        const last = visible[visible.length - 1];
         if (event.shiftKey && document.activeElement === first) {
           event.preventDefault();
           last.focus();
@@ -285,6 +304,38 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
     }
   };
 
+  const toggleGroup = (id: string) => {
+    const next = expandedGroups.includes(id) ? expandedGroups.filter((group) => group !== id) : [...expandedGroups, id];
+    setExpandedGroups(next);
+    try { localStorage.setItem(sidebarPreferenceKey, JSON.stringify(next)); } catch { /* Keep the in-memory preference. */ }
+  };
+
+  const renderNavItem = (item: NavItem) => {
+    const Icon = item.icon;
+    const active = item.to === activeNavPath;
+    const encodingDisabled =
+      role === "employee" && item.to === "/employee/projects/new" && !encodingWindow.can_encode;
+    return (
+      <Link
+        key={item.to}
+        to={encodingDisabled ? "#" : item.to}
+        aria-disabled={encodingDisabled || undefined}
+        aria-current={active ? "page" : undefined}
+        title={encodingDisabled ? encodingWindow.message : undefined}
+        className={`portal-nav-item ${active ? "portal-nav-item-active" : ""} ${
+          encodingDisabled ? "opacity-50 cursor-not-allowed" : ""
+        }`}
+        onClick={(event) => {
+          if (encodingDisabled) event.preventDefault();
+          else setMobileOpen(false);
+        }}
+      >
+        <span className="portal-nav-icon">{Icon ? <Icon className="h-4 w-4" aria-hidden="true" /> : iconFor(item.label)}</span>
+        <span>{item.label}</span>
+      </Link>
+    );
+  };
+
   return (
     <div className="portal-bg min-h-screen">
       <div className="portal-shell w-full mx-auto p-2 md:p-4 xl:p-5">
@@ -319,31 +370,29 @@ const PortalLayout: React.FC<Props> = ({ title, subtitle, role, userName, childr
               </button>
             </div>
 
-            <p className="portal-side-label">Navigation</p>
+            {role !== "admin" && <p className="portal-side-label">Navigation</p>}
             <nav className="space-y-1">
-              {navItems.map((item) => {
-                const active = item.to === activeNavPath;
-                const encodingDisabled =
-                  role === "employee" && item.to === "/employee/projects/new" && !encodingWindow.can_encode;
+              {role === "admin" ? adminGroups.map((group) => {
+                const current = group.items.some((item) => item.to === activeNavPath);
+                const overview = group.id === "overview";
+                const open = overview || current || expandedGroups.includes(group.id);
                 return (
-                  <Link
-                    key={item.to}
-                    to={encodingDisabled ? "#" : item.to}
-                    aria-disabled={encodingDisabled}
-                    title={encodingDisabled ? encodingWindow.message : undefined}
-                    className={`portal-nav-item ${active ? "portal-nav-item-active" : ""} ${
-                      encodingDisabled ? "opacity-50 cursor-not-allowed" : ""
-                    }`}
-                    onClick={(event) => {
-                      if (encodingDisabled) event.preventDefault();
-                      else setMobileOpen(false);
-                    }}
-                  >
-                    <span className="portal-nav-icon">{iconFor(item.label)}</span>
-                    <span>{item.label}</span>
-                  </Link>
+                  <div key={group.id} className="pb-2">
+                    {overview ? <p className="portal-side-label">{group.title}</p> : (
+                      <button type="button" aria-expanded={open} aria-controls={`admin-nav-${group.id}`}
+                        disabled={current}
+                        onClick={() => toggleGroup(group.id)}
+                        className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-300 ${current ? "text-blue-200" : "text-slate-200 hover:bg-white/10"}`}>
+                        {group.title}
+                        <ChevronDown className={`h-4 w-4 shrink-0 motion-safe:transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
+                      </button>
+                    )}
+                    <div id={`admin-nav-${group.id}`} hidden={!open} className="space-y-1">
+                      {group.items.map(renderNavItem)}
+                    </div>
+                  </div>
                 );
-              })}
+              }) : navItems.map(renderNavItem)}
             </nav>
 
             <div className="mt-auto pt-6">

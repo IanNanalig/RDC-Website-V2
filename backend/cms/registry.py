@@ -72,8 +72,15 @@ EDITABLE_CMS_PAGE_SLUGS = (
     "about-rdc",
     "contact",
 )
+SYSTEM_MANAGED_HOME_SECTIONS = frozenset({"dashboard-teaser", "latest-media", "upcoming-events"})
 EDITABLE_CMS_PAGE_REGISTRY = {
-    slug: PUBLIC_CMS_PAGE_REGISTRY[slug]
+    slug: {
+        **PUBLIC_CMS_PAGE_REGISTRY[slug],
+        "sections": tuple(
+            section for section in PUBLIC_CMS_PAGE_REGISTRY[slug]["sections"]
+            if slug != "home" or section[0] not in SYSTEM_MANAGED_HOME_SECTIONS
+        ),
+    }
     for slug in EDITABLE_CMS_PAGE_SLUGS
 }
 
@@ -102,10 +109,7 @@ def fixed_section_definition(page_slug, section_key):
 
 def editable_section_definition(page_slug, section_key):
     page = editable_page_definition(page_slug)
-    if not page:
-        return None
-    for order, (key, section_type) in enumerate(page["sections"], start=1):
-        if key == section_key:
-            return {"key": key, "type": section_type, "order": order}
+    if page and any(key == section_key for key, _ in page["sections"]):
+        return fixed_section_definition(page_slug, section_key)
     return None
 

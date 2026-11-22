@@ -1,14 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import {
-  getPublicProjects,
-  getPublicProjectsStats,
-} from "../services/publicProjectsApi";
-import { getPublicEvents, type PublicEvent } from "../services/publicEventsApi";
-import cmsApi, {
-  type CMSArticleSnapshot,
-  type CMSPageSnapshot,
-} from "../services/cmsApi";
+import cmsApi, { type CMSArticleSnapshot, type CMSPageSnapshot } from "../services/cmsApi";
+import { getPublicProjects, getPublicProjectsStats } from "../services/publicProjectsApi";
+import { eventPillTone, eventTone, getEventTiming, PublicEventsCalendarContent, usePublicEvents } from "../components/PublicEventsCalendar";
 import type { PublicProjectsStats } from "../types/api";
 import {
   FaLeaf,
@@ -111,7 +105,7 @@ const mapCmsDocItems = (
   sourceItems.forEach((item) => {
     const row = asRecord(item);
     const title = asString(row.title);
-    const link = asString(row.url || row.link);
+    const link = normalizeQuickLink(asString(row.url || row.link));
     if (!title && !link) return;
     const matchIndex = result.findIndex(
       (candidate) =>
@@ -140,13 +134,24 @@ const mapCmsDocItems = (
       quickLinks: quickLinks.length ? quickLinks : undefined,
     };
 
-    if (!nextItem.link) return;
     if (matchIndex >= 0) result[matchIndex] = nextItem;
     else result.push(nextItem);
   });
 
   return result;
 };
+
+function normalizeQuickLink(value: string) {
+  const link = value.trim().replace(/^\/Projects(?=[?#]|$)/, "/projects");
+  if (/^\/(?:about|publications|regional-profile|contact|report-project|(?:news|projects|documents)(?:\/[^/?#]+)?)(?:[?#]|$)/.test(link)) return link;
+  if (/^\/(?:media|static)\/[^/\\]/.test(link)) return link;
+  if (!/^https?:\/\//i.test(link)) return "";
+  try {
+    return new URL(link).href;
+  } catch {
+    return "";
+  }
+}
 
 const formatArticleDate = (value: string) => {
   const date = new Date(value);
@@ -168,132 +173,29 @@ const mapHomeArticle = (article: CMSArticleSnapshot): HomeNewsArticle => ({
   slug: article.slug,
 });
 
-const EVENT_TIME_ZONE = "Asia/Manila";
-
-const eventDayKey = (date: Date) =>
-  new Intl.DateTimeFormat("en-CA", {
-    timeZone: EVENT_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
-
-const formatEventMoment = (date: Date, now: Date) => {
-  const time = date.toLocaleTimeString("en-US", {
-    timeZone: EVENT_TIME_ZONE,
-    hour: "numeric",
-    minute: "2-digit",
-  });
-  const todayKey = eventDayKey(now);
-  const dateKey = eventDayKey(date);
-  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-
-  if (dateKey === todayKey) return `today at ${time}`;
-  if (dateKey === eventDayKey(tomorrow)) return `tomorrow at ${time}`;
-
-  const day = date.toLocaleDateString("en-US", {
-    timeZone: EVENT_TIME_ZONE,
-    month: "short",
-    day: "numeric",
-    year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
-  });
-  return `${day} at ${time}`;
-};
-
-const formatTimeRemaining = (milliseconds: number) => {
-  const totalMinutes = Math.max(1, Math.ceil(milliseconds / 60_000));
-  const days = Math.floor(totalMinutes / 1440);
-  const hours = Math.floor((totalMinutes % 1440) / 60);
-  const minutes = totalMinutes % 60;
-
-  if (days > 0) {
-    return `${days} day${days === 1 ? "" : "s"}${hours ? ` ${hours} hr` : ""}`;
-  }
-  if (hours > 0) {
-    return `${hours} hr${minutes ? ` ${minutes} min` : ""}`;
-  }
-  return `${minutes} min`;
-};
-
-const getEventTiming = (event: PublicEvent) => {
-  const start = new Date(event.start_at);
-  const end = event.end_at
-    ? new Date(event.end_at)
-    : new Date(start.getTime() + 2 * 60 * 60 * 1000);
-  const now = new Date();
-
-  if (Number.isNaN(start.getTime())) {
-    return {
-      rank: 1,
-      label: "Scheduled",
-      message: "This event is scheduled.",
-      className: "bg-blue-50 text-blue-700 ring-1 ring-blue-100",
-      messageClassName: "border-blue-100 bg-blue-50 text-blue-700",
-    };
-  }
-
-  if (now >= start && now < end) {
-    return {
-      rank: 0,
-      label: "Happening now",
-      message: `Ends ${formatEventMoment(end, now)} · ${formatTimeRemaining(end.getTime() - now.getTime())} remaining.`,
-      className: "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200",
-      messageClassName: "border-emerald-100 bg-emerald-50 text-emerald-800",
-    };
-  }
-
-  if (now >= end) {
-    return {
-      rank: 2,
-      label: "Ended",
-      message: `Ended ${formatEventMoment(end, now)}.`,
-      className: "bg-slate-100 text-slate-600 ring-1 ring-slate-200",
-      messageClassName: "border-slate-200 bg-slate-50 text-slate-600",
-    };
-  }
-
-  return {
-    rank: 1,
-    label: "Upcoming",
-    message: `Starts ${formatEventMoment(start, now)} · Ends ${formatEventMoment(end, now)}.`,
-    className: "bg-blue-50 text-blue-700 ring-1 ring-blue-100",
-    messageClassName: "border-blue-100 bg-blue-50 text-blue-700",
-  };
-};
-
-const sortEventsForDisplay = (events: PublicEvent[]) =>
-  [...events].sort((a, b) => {
-    const aTiming = getEventTiming(a);
-    const bTiming = getEventTiming(b);
-    if (aTiming.rank !== bTiming.rank) return aTiming.rank - bTiming.rank;
-    const aStart = new Date(a.start_at).getTime() || 0;
-    const bStart = new Date(b.start_at).getTime() || 0;
-    if (aTiming.rank === 2) return bStart - aStart;
-    return aStart - bStart;
-  });
-
-const HOME_EVENT_PREVIEW_LIMIT = 3;
-
-const Home: React.FC = () => {
+const Home: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnapshot }) => {
   const [currentSlide, setCurrentSlide] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
-  const [upcomingEvents, setUpcomingEvents] = useState<PublicEvent[]>([]);
-  const [calendarEvents, setCalendarEvents] = useState<PublicEvent[]>([]);
-  const [eventsLoading, setEventsLoading] = useState(true);
-  const [eventsError, setEventsError] = useState("");
+  const [publishedPage, setHomeCmsPage] = useState<CMSPageSnapshot | null>(null);
+  const homeCmsPage = previewSnapshot ?? publishedPage;
+  const [homeCmsError, setHomeCmsError] = useState("");
+  const [homeAnnouncement, setHomeAnnouncement] = useState<Record<string, unknown> | null>(null);
   const [showCalendar, setShowCalendar] = useState(false);
-  const [calendarFilter, setCalendarFilter] = useState("all");
+  const calendarDialog = useRef<HTMLDialogElement>(null);
+  const [loadBelowFold, setLoadBelowFold] = useState(false);
+  const belowFoldRef = useRef<HTMLDivElement>(null);
+  const [newsArticles, setCmsNewsArticles] = useState<HomeNewsArticle[]>([]);
+  const [newsLoading, setNewsLoading] = useState(true);
+  const [newsError, setNewsError] = useState(false);
+  const events = usePublicEvents(loadBelowFold);
+  const { calendarEvents, eventsLoading, eventsError } = events;
+  const upcomingEvents = calendarEvents.filter((event) => getEventTiming(event).rank < 2).slice(0, 3);
+  const remainingEventCount = calendarEvents.length - upcomingEvents.length;
+
   const [publicStats, setPublicStats] = useState<PublicProjectsStats | null>(
     null,
   );
   const [publicStatsError, setPublicStatsError] = useState<string>("");
-  const [homeCmsPage, setHomeCmsPage] = useState<CMSPageSnapshot | null>(null);
-  const [homeCmsError, setHomeCmsError] = useState("");
-  const [cmsNewsArticles, setCmsNewsArticles] = useState<HomeNewsArticle[]>([]);
-  const [homeAnnouncement, setHomeAnnouncement] = useState<Record<string, unknown> | null>(null);
-  const [loadBelowFold, setLoadBelowFold] = useState(false);
-  const belowFoldRef = useRef<HTMLDivElement>(null);
-
   const buildStatsFromProjects = useCallback(
     (
       projects: Awaited<ReturnType<typeof getPublicProjects>>,
@@ -374,7 +276,7 @@ const Home: React.FC = () => {
   }, [heroSection]);
 
 
-  const newsArticles = cmsNewsArticles;
+
 
 
   const developmentPlansSection = getHomeSection(
@@ -413,13 +315,10 @@ const Home: React.FC = () => {
     dashboardSection?.buttonLabel,
     "View Full Dashboard ->",
   );
-  const dashboardButtonLink = asString(
-    dashboardSection?.buttonLink,
-    "/Projects",
-  );
-  const latestMediaTitle = asString(latestMediaSection?.title);
-  const latestMediaViewAllLabel = asString(latestMediaSection?.viewAllLabel);
-  const latestMediaViewAllLink = asString(latestMediaSection?.viewAllLink);
+  const dashboardButtonLink = normalizeQuickLink(asString(dashboardSection?.buttonLink)) || "/projects";
+  const latestMediaTitle = asString(latestMediaSection?.title, "Latest Media Releases");
+  const latestMediaViewAllLabel = asString(latestMediaSection?.viewAllLabel, "View all");
+  const latestMediaViewAllLink = normalizeQuickLink(asString(latestMediaSection?.viewAllLink)) || "/news";
   const upcomingEventsTitle = asString(
     upcomingEventsSection?.title,
     "Upcoming Events",
@@ -452,8 +351,15 @@ const Home: React.FC = () => {
         return label && link ? { label, link } : null;
       })
       .filter(Boolean) as Array<{ label: string; link: string }>;
-    if (sectionLinks.length) return sectionLinks;
-    return investmentProgramming.flatMap((card) => card.quickLinks || []);
+    const destinations = new Set<string>();
+    const validLinks = (links: Array<{ label: string; link: string }>) => links.flatMap(({ label, link }) => {
+      const destination = normalizeQuickLink(link);
+      if (!label.trim() || !destination || destinations.has(destination)) return [];
+      destinations.add(destination);
+      return [{ label, link: destination }];
+    });
+    const configuredLinks = validLinks(sectionLinks);
+    return configuredLinks.length ? configuredLinks : validLinks(investmentProgramming.flatMap((card) => card.quickLinks || []));
   })();
   const monitoringEvaluation = mapCmsDocItems(monitoringEvaluationSection);
 
@@ -578,39 +484,6 @@ const Home: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
 
-    const loadHomeCmsPage = async () => {
-      try {
-        setHomeCmsError("");
-        const page = await cmsApi.getPublicPage("home");
-        if (!cancelled) setHomeCmsPage(page);
-      } catch (error) {
-        console.error(error);
-        if (!cancelled) {
-          setHomeCmsPage(null);
-          setHomeCmsError("Home content could not be loaded. Please refresh the page and try again.");
-        }
-      }
-    };
-
-    loadHomeCmsPage();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    cmsApi.getPublicSettings().then((data) => {
-      if (cancelled || !data || typeof data !== "object") return;
-      const value = (data as Record<string, unknown>)["homepage-announcement-banner"];
-      setHomeAnnouncement(asRecord(value));
-    }).catch(() => undefined);
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
     const loadPublicStats = async () => {
       try {
         setPublicStatsError("");
@@ -675,9 +548,9 @@ const Home: React.FC = () => {
         }
       } catch (error) {
         console.error(error);
-        if (!cancelled) {
-          setCmsNewsArticles([]);
-        }
+        if (!cancelled) setNewsError(true);
+      } finally {
+        if (!cancelled) setNewsLoading(false);
       }
     };
     loadCmsNews();
@@ -685,6 +558,45 @@ const Home: React.FC = () => {
       cancelled = true;
     };
   }, [loadBelowFold]);
+
+  useEffect(() => {
+    const dialog = calendarDialog.current;
+    if (showCalendar && dialog && !dialog.open) dialog.showModal();
+  }, [showCalendar]);
+
+  useEffect(() => {
+    if (previewSnapshot) return;
+    let cancelled = false;
+
+    const loadHomeCmsPage = async () => {
+      try {
+        setHomeCmsError("");
+        const page = await cmsApi.getPublicPage("home");
+        if (!cancelled) setHomeCmsPage(page);
+      } catch (error) {
+        console.error(error);
+        if (!cancelled) {
+          setHomeCmsPage(null);
+          setHomeCmsError("Home content could not be loaded. Please refresh the page and try again.");
+        }
+      }
+    };
+
+    loadHomeCmsPage();
+    return () => {
+      cancelled = true;
+    };
+  }, [previewSnapshot]);
+
+  useEffect(() => {
+    let cancelled = false;
+    cmsApi.getPublicSettings().then((data) => {
+      if (cancelled || !data || typeof data !== "object") return;
+      const value = (data as Record<string, unknown>)["homepage-announcement-banner"];
+      setHomeAnnouncement(asRecord(value));
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (isPaused || carouselImages.length < 2) return;
@@ -705,81 +617,18 @@ const Home: React.FC = () => {
       image.decoding = "async";
       image.src = next.preloadSrc || next.src;
     };
-    if ("requestIdleCallback" in window) {
+    const supportsIdleCallback = typeof window.requestIdleCallback === "function";
+    if (supportsIdleCallback) {
       idleId = window.requestIdleCallback(preload, { timeout: 1500 });
     } else {
-      idleId = globalThis.setTimeout(preload, 0);
+      idleId = window.setTimeout(preload, 0);
     }
     return () => {
       if (idleId === undefined) return;
-      if ("cancelIdleCallback" in window) window.cancelIdleCallback(idleId);
-      else globalThis.clearTimeout(idleId);
+      if (supportsIdleCallback) window.cancelIdleCallback(idleId);
+      else window.clearTimeout(idleId);
     };
   }, [carouselImages, currentSlide]);
-
-  useEffect(() => {
-    if (!loadBelowFold) return;
-    let cancelled = false;
-
-    const loadEvents = async () => {
-      try {
-        setEventsLoading(true);
-        setEventsError("");
-        const fullRows = await getPublicEvents({
-          limit: 50,
-          includePast: true,
-        });
-        const displayRows = sortEventsForDisplay(fullRows);
-        if (!cancelled) {
-          setUpcomingEvents(displayRows.slice(0, HOME_EVENT_PREVIEW_LIMIT));
-          setCalendarEvents(displayRows);
-        }
-      } catch (error) {
-        console.error(error);
-        if (!cancelled) {
-          setUpcomingEvents([]);
-          setCalendarEvents([]);
-          setEventsError("Events calendar is temporarily unavailable.");
-        }
-      } finally {
-        if (!cancelled) setEventsLoading(false);
-      }
-    };
-
-    loadEvents();
-    return () => {
-      cancelled = true;
-    };
-  }, [loadBelowFold]);
-
-  const eventTone = (type: string) => {
-    if (type === "meeting") return "bg-blue-100 text-blue-700";
-    if (type === "forum" || type === "consultation")
-      return "bg-green-100 text-green-700";
-    if (type === "deadline") return "bg-amber-100 text-amber-700";
-    return "bg-purple-100 text-purple-700";
-  };
-
-  const eventPillTone = (type: string) => {
-    if (type === "meeting") return "bg-blue-50 text-blue-600";
-    if (type === "forum" || type === "consultation")
-      return "bg-green-50 text-green-600";
-    if (type === "deadline") return "bg-amber-50 text-amber-700";
-    return "bg-purple-50 text-purple-600";
-  };
-
-  const filteredCalendarEvents = useMemo(
-    () =>
-      calendarEvents.filter((event) =>
-        calendarFilter === "all" ? true : event.event_type === calendarFilter,
-      ),
-    [calendarEvents, calendarFilter],
-  );
-
-  const remainingEventCount = Math.max(
-    0,
-    calendarEvents.length - upcomingEvents.length,
-  );
 
   const goToSlide = (index: number) => {
     setCurrentSlide(index);
@@ -797,44 +646,47 @@ const Home: React.FC = () => {
     );
   };
 
-  const renderDocumentCard = (doc: DocCard) => (
-    <a
-      key={doc.title}
-      href={doc.link}
-      className="bg-white rounded-lg border border-gray-200 hover:border-green-500 hover:shadow-lg transition-all duration-300 group cursor-pointer"
-    >
-      <div className="p-5">
-        <div className="flex items-start gap-4">
-          <div className="text-3xl mt-1">{doc.icon}</div>
-          <div className="flex-1">
-            <span className="inline-block px-3 py-1 bg-gray-100 text-gray-700 text-xs font-medium rounded-full mb-3">
-              {doc.category}
-            </span>
-            <h4 className="font-bold text-gray-800 text-lg group-hover:text-green-700 transition-colors">
-              {doc.title}
-            </h4>
-            {doc.description && <p className="mt-2 text-sm text-gray-600">{doc.description}</p>}
-            <div className="inline-flex items-center gap-2 text-green-600 hover:text-green-800 font-medium mt-4 transition-colors">
-              View Details
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9 5l7 7-7 7"
-                />
-              </svg>
+  const renderDocumentCard = (doc: DocCard) => {
+    const Card = doc.link ? "a" : "article";
+    return (
+      <Card
+        key={doc.title}
+        href={doc.link || undefined}
+        className={`bg-white rounded-lg border border-gray-200 ${doc.link ? "hover:border-green-500 hover:shadow-lg transition-all duration-300 group" : ""}`}
+      >
+        <div className="p-5">
+          <div className="flex items-start gap-4">
+            <div className="text-3xl mt-1">{doc.icon}</div>
+            <div className="flex-1">
+              <span className="inline-block px-3 py-1 bg-gray-100 text-gray-700 text-xs font-medium rounded-full mb-3">
+                {doc.category}
+              </span>
+              <h4 className="font-bold text-gray-800 text-lg group-hover:text-green-700 transition-colors">
+                {doc.title}
+              </h4>
+              {doc.description && <p className="mt-2 text-sm text-gray-600">{doc.description}</p>}
+              {doc.link && <div className="inline-flex items-center gap-2 text-green-600 hover:text-green-800 font-medium mt-4 transition-colors">
+                View Details
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M9 5l7 7-7 7"
+                  />
+                </svg>
+              </div>}
             </div>
           </div>
         </div>
-      </div>
-    </a>
-  );
+      </Card>
+    );
+  };
 
   type StatProps = {
     label: string;
@@ -1068,44 +920,7 @@ const Home: React.FC = () => {
                 </h2>
               </div>
               <div className="p-5 space-y-5">
-                {investmentProgramming.map((doc, index) => (
-                  <a
-                    key={index}
-                    href={doc.link}
-                    className="bg-white rounded-lg border border-gray-200 hover:border-green-500 hover:shadow-lg transition-all duration-300 group cursor-pointer"
-                  >
-                    <div className="p-5">
-                      <div className="flex items-start gap-4">
-                        <div className="text-3xl mt-1">{doc.icon}</div>
-                        <div className="flex-1">
-                          <span className="inline-block px-3 py-1 bg-gray-100 text-gray-700 text-xs font-medium rounded-full mb-3">
-                            {doc.category}
-                          </span>
-                          <h4 className="font-bold text-gray-800 text-lg group-hover:text-green-700 transition-colors">
-                            {doc.title}
-                          </h4>
-                          {doc.description && <p className="mt-2 text-sm text-gray-600">{doc.description}</p>}
-                          <div className="inline-flex items-center gap-2 text-green-600 hover:text-green-800 font-medium mt-4 transition-colors">
-                            View Details
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M9 5l7 7-7 7"
-                              />
-                            </svg>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </a>
-                ))}
+                {investmentProgramming.map(renderDocumentCard)}
                 {investmentProgramming.length === 0 && <p className="text-sm text-slate-500">No published investment-programming links are configured.</p>}
                 {investmentQuickLinks.length > 0 && (
                   <div className="border-t pt-5">
@@ -1148,7 +963,7 @@ const Home: React.FC = () => {
         <section className="mb-8">
           <div className="bg-white rounded-xl shadow-lg overflow-hidden">
             <div className="bg-gradient-to-r from-gray-900 to-black text-white px-6 py-4">
-              <div className="flex justify-between items-center">
+              <div className="flex flex-wrap justify-between items-center gap-3">
                 <h2 className="text-2xl font-bold">{dashboardTitle}</h2>
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-gray-300">
@@ -1370,7 +1185,9 @@ const Home: React.FC = () => {
                       </div>
                     </article>
                   ))}
-                  {newsArticles.length === 0 && <p className="col-span-full text-center text-sm text-slate-500">No published news articles are available.</p>}
+                  {newsArticles.length === 0 && <p className="col-span-full text-center text-sm text-slate-500">
+                    {newsLoading ? "Loading media releases..." : newsError ? "Media releases are temporarily unavailable." : "No published news articles are available."}
+                  </p>}
                 </div>
               </div>
             </section>
@@ -1380,7 +1197,7 @@ const Home: React.FC = () => {
           <aside>
             <div className="bg-white rounded-xl shadow-md overflow-hidden h-full">
               <div className="bg-gradient-to-r from-purple-600 to-purple-700 text-white px-5 py-4">
-                <h3 className="text-lg font-bold">{upcomingEventsTitle}</h3>
+                <h2 className="text-lg font-bold">{upcomingEventsTitle}</h2>
                 <p className="text-sm opacity-90 mt-0.5">
                   {upcomingEventsSubtitle}
                 </p>
@@ -1481,133 +1298,23 @@ const Home: React.FC = () => {
         </div>
       </main>
       {showCalendar && (
-        <div className="fixed inset-0 z-50 overflow-hidden">
-          <button
-            type="button"
-            className="absolute inset-0 h-full w-full bg-slate-950/60"
-            aria-label="Close calendar"
-            onClick={() => setShowCalendar(false)}
-          />
-          <section className="relative ml-auto flex h-full w-full max-w-4xl flex-col bg-white shadow-2xl">
-            <div className="border-b border-slate-200 bg-gradient-to-r from-purple-700 to-fuchsia-600 px-5 py-5 text-white">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.25em] text-purple-100">
-                    RDC-NCR Calendar
-                  </p>
-                  <h2 className="mt-1 text-2xl font-black">{calendarTitle}</h2>
-                  <p className="mt-1 text-sm text-purple-50">
-                    {calendarSubtitle}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowCalendar(false)}
-                  className="rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white hover:bg-white/25"
-                >
-                  Close
-                </button>
-              </div>
+        <dialog
+          ref={calendarDialog}
+          aria-labelledby="home-calendar-title"
+          onClose={() => setShowCalendar(false)}
+          className="fixed inset-y-0 right-0 left-auto m-0 h-full max-h-none w-full max-w-4xl bg-white shadow-2xl backdrop:bg-slate-950/60"
+        >
+          <div className="sticky top-0 z-10 flex items-start justify-between gap-4 bg-gradient-to-r from-purple-700 to-fuchsia-600 px-5 py-5 text-white">
+            <div>
+              <h2 id="home-calendar-title" className="text-2xl font-black">{calendarTitle}</h2>
+              <p className="mt-1 text-sm text-purple-50">{calendarSubtitle}</p>
             </div>
-            <div className="border-b border-slate-200 bg-white px-5 py-4">
-              <label className="block text-sm font-semibold text-slate-700">
-                Filter by event type
-              </label>
-              <select
-                value={calendarFilter}
-                onChange={(event) => setCalendarFilter(event.target.value)}
-                className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm sm:max-w-xs"
-              >
-                <option value="all">All events</option>
-                <option value="meeting">Meetings</option>
-                <option value="forum">Forums</option>
-                <option value="consultation">Consultations</option>
-                <option value="deadline">Deadlines</option>
-                <option value="summit">Summits</option>
-                <option value="other">Other</option>
-              </select>
-            </div>
-            <div className="flex-1 overflow-y-auto bg-slate-50 p-5">
-              {filteredCalendarEvents.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-slate-600">
-                  No events match this filter.
-                </div>
-              ) : (
-                <div className="grid gap-4">
-                  {filteredCalendarEvents.map((event) => {
-                    const timing = getEventTiming(event);
-                    return (
-                      <article
-                        key={event.id}
-                        className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-                      >
-                        <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-                          <div
-                            className={`${eventTone(event.event_type)} rounded-2xl px-4 py-3 text-center sm:w-24`}
-                          >
-                            <div className="text-2xl font-black">
-                              {event.day}
-                            </div>
-                            <div className="text-xs font-bold uppercase tracking-wide">
-                              {event.month}
-                            </div>
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span
-                                className={`rounded-full px-2.5 py-1 text-xs font-semibold ${eventPillTone(event.event_type)}`}
-                              >
-                                {event.event_type}
-                              </span>
-                              <span
-                                className={`rounded-full px-2.5 py-1 text-xs font-semibold ${timing.className}`}
-                              >
-                                {timing.label}
-                              </span>
-                              <span className="text-xs text-slate-500">
-                                {event.time}
-                                {event.end_time ? ` - ${event.end_time}` : ""}
-                              </span>
-                            </div>
-                            <h3 className="mt-2 text-lg font-black text-slate-900">
-                              {event.title}
-                            </h3>
-                            <p className="mt-1 text-sm font-medium text-slate-600">
-                              {event.location ||
-                                (event.is_virtual
-                                  ? "Virtual event"
-                                  : "Location to be announced")}
-                            </p>
-                            <p
-                              className={`mt-3 rounded-lg border px-3 py-2 text-sm font-semibold ${timing.messageClassName || "border-slate-200 bg-slate-50 text-slate-600"}`}
-                            >
-                              {timing.message}
-                            </p>
-                            {event.description && (
-                              <p className="mt-3 text-sm leading-6 text-slate-600">
-                                {event.description}
-                              </p>
-                            )}
-                            {event.meeting_link && (
-                              <a
-                                href={event.meeting_link}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="mt-3 inline-flex rounded-full bg-purple-600 px-4 py-2 text-sm font-semibold text-white hover:bg-purple-700"
-                              >
-                                Open event link
-                              </a>
-                            )}
-                          </div>
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </section>
-        </div>
+            <form method="dialog">
+              <button type="submit" autoFocus className="rounded-full bg-white/15 px-4 py-2 text-sm font-semibold hover:bg-white/25">Close</button>
+            </form>
+          </div>
+          <PublicEventsCalendarContent {...events} />
+        </dialog>
       )}
     </div>
   );

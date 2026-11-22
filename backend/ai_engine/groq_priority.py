@@ -8,7 +8,7 @@ from .features import FEATURE_SCHEMA_VERSION, normalized_project_text
 from .groq_client import GroqUnavailable, complete_json, is_groq_enabled
 from .models import AIModelVersion, AITrainingRecord
 from .similarity import find_similar_projects
-from projects.scoring_contract import scoring_text_field_keys
+from projects.scoring_contract import form_version_for_project_snapshot, scoring_text_field_keys
 
 
 # This local UTF-8 request budget controls how much optional history we
@@ -49,15 +49,26 @@ def _form(snapshot):
     return simplified if isinstance(simplified, dict) else snapshot
 
 
-def _project_payload(snapshot):
+PRIVATE_FIELD_PATTERN = re.compile(
+    r"password|secret|token|credential|audit.?log|e.?mail|phone|mobile|telephone|contact.?person|"
+    r"personal.?address|user.?id|signature|tax.?id|government.?id|date.?of.?birth|"
+    r" first name| last name| full name",
+    re.IGNORECASE,
+)
+PRIVATE_VALUE_PATTERN = re.compile(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?:\+?63|0)9\d{9}", re.I)
+
+
+def _project_payload(snapshot, *, scoring=False):
     form = _form(snapshot)
     payload = {}
     try:
-        from cms.form_schema import applicable_field_keys, resolve_simplified_form_schema
+        from cms.form_schema import applicable_field_keys, default_simplified_form_schema, field_condition_group
 
-        schema, _version = resolve_simplified_form_schema(snapshot if isinstance(snapshot, dict) else {})
+        version = form_version_for_project_snapshot(snapshot)
+        schema = version.schema_json if version else default_simplified_form_schema()
         applicable_field_keys_set = applicable_field_keys(schema, form)
-        selections = snapshot.get("catalog_selections", {}) if isinstance(snapshot, dict) else {}
+        selections = snapshot.get("catalog_selections") if isinstance(snapshot, dict) else {}
+        selections = selections if isinstance(selections, dict) else {}
         form_fields = []
         applicable_keys = set()
         for section in schema.get("sections", []):
@@ -67,7 +78,12 @@ def _project_payload(snapshot):
                 if not isinstance(field, dict) or field.get("visible") is False or field.get("type") == "document_upload":
                     continue
                 key = str(field.get("key") or "")
+                label = str(field.get("label") or key)
+                if scoring and (key.startswith("priorityAnalysisFacts.") or PRIVATE_FIELD_PATTERN.search(f" {key} {label}")):
+                    continue
                 applicable = key in applicable_field_keys_set
+                if scoring and not applicable:
+                    continue
                 if key.startswith("custom_"):
                     custom = form.get("custom_fields") if isinstance(form.get("custom_fields"), dict) else {}
                     answer = custom.get(key)
@@ -76,17 +92,33 @@ def _project_payload(snapshot):
                     answer = facts.get(key.split(".", 1)[1])
                 else:
                     answer = form.get(key)
-                selected_labels = {row["value"]: row["label"] for row in selections.get(key, [])}
-                if selected_labels and isinstance(answer, list):
-                    answer = [{"id": value, "label": selected_labels.get(value, value)} for value in answer]
-                elif selected_labels and isinstance(answer, str) and answer in selected_labels:
-                    answer = {"id": answer, "label": selected_labels[answer]}
+                selected_labels = {
+                    str(row["value"]): row["label"]
+                    for row in (field.get("options") or []) if isinstance(row, dict) and "value" in row and "label" in row
+                }
+                selected_labels.update({
+                    str(row["value"]): row["label"]
+                    for row in (selections.get(key) or []) if isinstance(row, dict) and "value" in row and "label" in row
+                })
+                if selected_labels and isinstance(answer, list) and all(isinstance(value, (str, int)) for value in answer):
+                    answer = [{"id": value, "label": selected_labels.get(str(value), value)} for value in answer]
+                elif selected_labels and isinstance(answer, (str, int)) and str(answer) in selected_labels:
+                    answer = {"id": answer, "label": selected_labels[str(answer)]}
                 empty = answer in (None, "", [], {})
                 if applicable:
                     applicable_keys.add(key)
+                if scoring and empty:
+                    continue
+                condition = field_condition_group(field) if scoring else None
+                if condition and any(
+                    PRIVATE_FIELD_PATTERN.search(str(rule.get("field") or ""))
+                    or PRIVATE_VALUE_PATTERN.search(str(rule.get("values") or rule.get("value") or ""))
+                    for rule in condition.get("conditions", []) if isinstance(rule, dict)
+                ):
+                    condition = None
                 form_fields.append({
                     "key": key,
-                    "label": str(field.get("label") or key),
+                    "label": label,
                     "help_text": str(field.get("help_text") or ""),
                     "type": str(field.get("type") or "text"),
                     "required": bool(field.get("required") or field.get("condition_required")),
@@ -97,9 +129,10 @@ def _project_payload(snapshot):
                         "optional_empty" if empty else "answered"
                     ),
                     "answer": answer if applicable and not empty else None,
+                    **({"condition": condition} if condition else {}),
                     "options": [
                         {"value": option.get("value"), "label": option.get("label")}
-                        for option in field.get("options", []) if isinstance(option, dict)
+                        for option in (field.get("options") or []) if isinstance(option, dict)
                     ],
                 })
         for key in PROJECT_CONTEXT_FIELDS:
@@ -434,6 +467,34 @@ def _compact_scoring_payload(payload):
     return compact
 
 
+def _scoring_validator_context(supplements):
+    from projects.priority_facts import FACT_KEYS
+
+    if not isinstance(supplements, dict):
+        return {}
+    context = {key: supplements[key] for key in FACT_KEYS if key in supplements}
+    if isinstance(context.get("readinessNotes"), str):
+        context["readinessNotes"] = PRIVATE_VALUE_PATTERN.sub("[redacted]", context["readinessNotes"])
+    assessment = supplements.get("supporting_document_evidence")
+    if isinstance(assessment, dict):
+        summary = _clean_text(assessment.get("summary"), 450)
+        evidence = {"status": assessment.get("status"), "summary": PRIVATE_VALUE_PATTERN.sub("[redacted]", summary)}
+        if "collective_sufficient" in assessment:
+            evidence["collective_sufficient"] = bool(assessment["collective_sufficient"])
+        citations = []
+        for file in (assessment.get("files") or [])[:3]:
+            if not isinstance(file, dict) or file.get("related") is not True:
+                continue
+            citations.extend(
+                text for text in _text_list(file.get("citations"), limit=2)
+                if not PRIVATE_FIELD_PATTERN.search(text) and not PRIVATE_VALUE_PATTERN.search(text)
+            )
+        if citations:
+            evidence["citations"] = citations
+        context["supporting_document_evidence"] = evidence
+    return context
+
+
 def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector, guidelines, *, regional_context=None):
     if not is_groq_enabled():
         return None
@@ -442,7 +503,7 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
         sector,
         exclude_project_id=getattr(project, "pk", None),
     )
-    project_payload = _project_payload(snapshot)
+    project_payload = _project_payload(snapshot, scoring=True)
     # Scoring needs the selected answers and their labels. Full dropdown
     # catalogs are useful in the admin preview, but inflate provider requests.
     for field in project_payload.get("form_fields", []):
@@ -482,6 +543,8 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
         "objects containing key, raw_score, explanation, evidence, recommendation, revision_fields. Evidence must quote "
         "short exact phrases from the supplied project. Return exactly one assessment for every supplied criterion key, "
         "including a zero with an explanation and an empty evidence array when there is no qualifying evidence. "
+        "For every criterion, explain how the quoted project answer or supporting-document excerpt supports the assigned "
+        "score and identify any material gap in evidence. Do not elevate unrelated submitted fields into scoring criteria. "
         "Use empty arrays for risks or revision_fields when none apply. revision_fields may contain only supplied project field names. "
         "If useful historical examples are available, historical_prediction includes priority (low or high), confidence (0 to 1), and explanation. "
         "Otherwise use empty strings for historical priority and explanation and zero confidence. "
@@ -489,7 +552,7 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
     )
     user_payload = {
         "project": project_payload,
-        "validator_facts": supplements if isinstance(supplements, dict) else {},
+        "validator_facts": _scoring_validator_context(supplements),
         "selected_sector_track": sector,
         "criteria": criteria_payload,
         "employee_guidelines": list(guidelines or []),

@@ -70,6 +70,22 @@ const publicPage = {
 try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
+  const homeSections = [
+    { id: 11, section_key: "development-plans", section_type: "document_group", order: 2, content_json: {} },
+    { id: 12, section_key: "dashboard-teaser" },
+    { id: 13, section_key: "latest-media" },
+    { id: 14, section_key: "upcoming-events" },
+  ].map((section) => ({ page: 1, status: "published", ...section }));
+  const homePage = { id: 1, title: "Home", slug: "home", status: "published", sections: homeSections };
+  let updatedFeeds = false;
+  let eventRequests = 0;
+  const upcomingForum = {
+    id: 7, event_type: "forum", title: "Public test forum", location: "Manila",
+    start_at: new Date(Date.now() + 86400000).toISOString(), day: 30, month: "Nov", time: "9:00 AM",
+  };
+  const pastForum = { ...upcomingForum, id: 8, title: "Previously held forum", start_at: "2020-01-02T09:00:00+08:00" };
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.addInitScript(() => {
     localStorage.setItem("user", JSON.stringify({ id: 1, username: "admin", role: "admin" }));
     localStorage.setItem("isLoggedIn", "true");
@@ -79,8 +95,45 @@ try {
     const url = new URL(route.request().url());
     const path = url.pathname;
     if (path === "/api/public/cms/pages/about-rdc/") return respond(route, publicPage);
+    if (path === "/api/public/cms/pages/news/") return respond(route, { slug: "news", sections: [] });
+    if (path === "/api/public/cms/pages/home/") return respond(route, {
+      slug: "home", sections: [
+        { sectionKey: "investment-programming", content: {
+          title: "Investment Programming", items: [{ title: "Resource retained", link: "#" }],
+          quickLinks: [
+            { label: "Project dashboard", link: "/Projects" },
+            { label: "RDIP publications", link: "/publications?category=rdip" },
+            { label: "Broken quick link", link: "/no-such-public-page" },
+          ],
+        } },
+      ],
+    });
+    if (path === "/api/public/cms/events/") {
+      eventRequests += 1;
+      const forum = updatedFeeds ? { ...upcomingForum, title: "Updated public forum", location: "Taguig" } : upcomingForum;
+      return respond(route, { results: [pastForum, forum] });
+    }
+    if (path === "/api/public/cms/news/") {
+      const release = { slug: "test-release", title: "Published test release", summary: "Public release summary", category: "Media Releases" };
+      return respond(route, { results: [updatedFeeds ? { ...release, slug: "updated-release", title: "Updated published release" } : release] });
+    }
+    if (path === "/api/public/projects/stats/") {
+      const ongoing = updatedFeeds ? 23 : 17;
+      return respond(route, {
+        total_projects: ongoing + 2, total_budget: 250000000, by_status: { Ongoing: ongoing, Completed: 2 },
+        by_agency: { DPWH: ongoing + 2 }, by_year: { 2026: ongoing + 2 }, by_lgu: { Manila: ongoing + 2 },
+      });
+    }
+    if (path === "/api/public/cms/pages/regional-profile/") return respond(route, {
+      slug: "regional-profile", sections: [
+        { sectionKey: "geographic-coverage", content: { mapAssetId: 99, mapImageUrl: "/missing-custom-map.png" } },
+      ],
+    });
     if (path === "/api/admin/cms/pages/4/" || path === "/api/admin/cms/modules/about-rdc/") return respond(route, aboutPage);
-    if (path === "/api/admin/cms/pages/") return respond(route, { results: [{ ...aboutPage, sections: undefined }], count: 1, next: null, total_pages: 1 });
+    if (path === "/api/admin/cms/pages/1/" || path === "/api/admin/cms/modules/home/") return respond(route, homePage);
+    if (path === "/api/admin/cms/pages/") return respond(route, {
+      results: [homePage, aboutPage].map(({ sections, ...summary }) => summary), count: 2, next: null, total_pages: 1,
+    });
     const lockMatch = path.match(/^\/api\/admin\/cms\/sections\/(\d+)\/(lock|unlock|heartbeat)\/$/);
     if (lockMatch) {
       const section = sections.find((row) => row.id === Number(lockMatch[1]));
@@ -99,6 +152,10 @@ try {
   });
 
   await page.goto(`${origin}/employee/cms/pages`);
+  await page.locator('[data-cms-page-id="1"]').getByRole("button", { name: "Manage Content" }).click();
+  await page.getByText(/Latest Media Releases, Regional Development Dashboard, and Upcoming Events update automatically/).waitFor();
+  await page.locator('[data-cms-section-id="11"]').getByRole("button", { name: "Edit Content" }).waitFor();
+  assert.equal(await page.locator('[data-cms-section-id="12"], [data-cms-section-id="13"], [data-cms-section-id="14"]').count(), 0);
   await page.locator('[data-cms-page-id="4"]').getByRole("button", { name: "Manage Content" }).click();
   await page.locator('[data-cms-section-id="44"]').getByRole("button", { name: "Edit Content" }).click();
   const childLabels = page.getByLabel("Child Labels (one per line)").first();
@@ -115,6 +172,17 @@ try {
   await functions.fill("");
   await functions.pressSequentially("Plan and coordinate regional work");
   assert.equal(await functions.inputValue(), "Plan and coordinate regional work", "spaces remain while typing committee functions");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await page.locator('[data-cms-section-id="45"]').getByRole("button", { name: "Edit Content" }).click();
+  const year = page.locator("[data-section-editor] summary").filter({ hasText: "2025 (1)" });
+  await year.press("Enter");
+  const resolutionTitle = page.getByLabel("Resolution 1 Title");
+  await resolutionTitle.fill("Draft title retained while collapsed");
+  await year.press("Enter");
+  await resolutionTitle.waitFor({ state: "hidden" });
+  await year.press("Enter");
+  assert.equal(await resolutionTitle.inputValue(), "Draft title retained while collapsed");
 
   await page.goto(`${origin}/about`);
   await page.getByRole("heading", { name: "CMS About RDC" }).waitFor();
@@ -131,6 +199,57 @@ try {
   await page.getByText("CMS Resolution Type", { exact: true }).waitFor();
   await page.getByText("CMS category description", { exact: true }).waitFor();
   assert.equal(await page.getByText("-Infinity", { exact: true }).count(), 0, "resolution statistics never show -Infinity");
+
+  await page.goto(`${origin}/`);
+  await page.getByRole("heading", { name: "Resource retained" }).waitFor();
+  assert.equal(await page.getByRole("link", { name: "Project dashboard", exact: true }).getAttribute("href"), "/projects");
+  assert.equal(await page.getByRole("link", { name: "RDIP publications", exact: true }).getAttribute("href"), "/publications?category=rdip");
+  assert.equal(await page.getByRole("link", { name: "Broken quick link", exact: true }).count(), 0);
+  await page.getByRole("heading", { name: "Regional Development Dashboard" }).waitFor();
+  const ongoingStat = page.getByText("Ongoing Projects", { exact: true }).locator("..");
+  await ongoingStat.getByText("17", { exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Latest Media Releases" }).scrollIntoViewIfNeeded();
+  const release = page.locator("article").filter({ has: page.getByRole("heading", { name: "Published test release" }) });
+  assert.equal(await release.getByRole("link", { name: "Read more" }).getAttribute("href"), "/news/test-release");
+  await page.getByRole("heading", { name: "Upcoming Events" }).waitFor();
+  await page.getByText("Public test forum", { exact: true }).waitFor();
+  assert.equal(await page.getByText("Previously held forum", { exact: true }).count(), 0);
+  const previewRequests = eventRequests;
+  await page.getByRole("button", { name: "View Full Calendar" }).click();
+  await page.getByRole("dialog").getByRole("heading", { name: "Previously held forum" }).waitFor();
+  assert.equal(eventRequests, previewRequests, "Home preview and calendar share one request");
+  await page.keyboard.press("Escape");
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  await page.goto(`${origin}/news#events`);
+  const calendar = page.locator("#events");
+  try {
+    await calendar.getByRole("heading", { name: "Public test forum" }).waitFor({ timeout: 5000 });
+    await calendar.getByRole("combobox", { name: "Filter by event type" }).selectOption("meeting", { timeout: 5000 });
+    await calendar.getByText("No events match this filter.").waitFor({ timeout: 5000 });
+  } catch (error) {
+    throw new Error(`Calendar check at ${page.url()}. Errors: ${pageErrors.join("; ")}. Calendar: ${await calendar.allInnerTexts()}`, { cause: error });
+  }
+
+  let mapRequests = 0;
+  await page.route("**/missing-custom-map.png", (route) => {
+    mapRequests += 1;
+    return route.fulfill({ status: 404 });
+  });
+  await page.goto(`${origin}/regional-profile`);
+  await page.getByAltText("Metro Manila Map").scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => document.querySelector('img[alt="Metro Manila Map"]')?.currentSrc.includes("ncr-map-"));
+  assert.equal(mapRequests, 1);
+
+  updatedFeeds = true;
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${origin}/`);
+  await page.getByRole("heading", { name: "Latest Media Releases" }).scrollIntoViewIfNeeded();
+  await page.getByRole("heading", { name: "Updated published release" }).waitFor();
+  await ongoingStat.getByText("23", { exact: true }).waitFor();
+  await page.getByText("Updated public forum", { exact: true }).waitFor();
+  assert.equal(await page.getByText("Public test forum", { exact: true }).count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "Published test release" }).count(), 0);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
 
   await context.close();
   console.log("PASS About RDC CMS typing, fixed structure, and public rendering checks");

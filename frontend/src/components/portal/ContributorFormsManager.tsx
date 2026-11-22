@@ -997,10 +997,10 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
 
   return (
     <div className="space-y-4">
-      {isAdmin && <button type="button" className="portal-btn portal-btn-ghost" aria-expanded={showCatalogs} onClick={() => setShowCatalogs(!showCatalogs)}>
+      {selected.can_manage_form_catalogs && <button type="button" className="portal-btn portal-btn-ghost" aria-expanded={showCatalogs} onClick={() => setShowCatalogs(!showCatalogs)}>
         {showCatalogs ? "Hide form catalogs" : "Manage form catalogs"}
       </button>}
-      {showCatalogs && isAdmin && <ContributorFormCatalogs onUpdated={() => { if (!editMode) void load(); }} />}
+      {showCatalogs && selected.can_manage_form_catalogs && <ContributorFormCatalogs onUpdated={() => { if (!editMode) void load(); }} />}
       {notice && <div role={noticeTone === "error" ? "alert" : "status"} aria-live="polite" className={`portal-card p-3 text-sm ${noticeClasses}`}>{notice}</div>}
       <div className="portal-card overflow-hidden" data-cms-contributor-form-key={selected.key}>
         <div className="portal-card-header flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1143,10 +1143,14 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
                             <label className="block"><span className="text-xs font-semibold text-slate-600">AI sufficiency instructions</span><textarea rows={3} maxLength={4000} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm" value={item.ai_sufficiency_instructions || ""} onChange={(event) => updateField(sectionIndex, fieldIndex, (value) => ({ ...value, ai_sufficiency_instructions: event.target.value }))} /></label>
                           </div>}
                           {catalogName && <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
-                            <p className="font-semibold">Options managed by {catalogName}</p>
+                            <p className="font-semibold">{item.key === "collaboratingAgencies"
+                              ? "This field is managed through the Agency Catalog."
+                              : item.key === "developmentSector"
+                                ? "This field and its available sectoral committees are managed through the RDC-NCR Development Sector configuration."
+                                : `Options managed by ${catalogName}`}</p>
                             {item.key === "collaboratingAgencies"
                               ? <Link className="text-blue-700" to="/admin/users">Open agency management</Link>
-                              : isAdmin && <button type="button" className="text-blue-700" onClick={() => setShowCatalogs(true)}>Open form catalogs</button>}
+                              : selected.can_manage_form_catalogs ? <button type="button" className="text-blue-700" onClick={() => setShowCatalogs(true)}>Open form catalogs</button> : <p>Contact a technical administrator to change the available options.</p>}
                           </div>}
                           {!optionsAreProtected && item.options && <div className="mt-3 space-y-2"><div className="grid gap-2 sm:grid-cols-2">{item.options.map((option, optionIndex) => {
                             const canChangeOptionOrder = !optionsAreProtected && (editMode === "change" || !baselineFieldKeys.has(item.key));

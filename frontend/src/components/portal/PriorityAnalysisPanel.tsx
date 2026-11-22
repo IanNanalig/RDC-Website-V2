@@ -8,6 +8,7 @@ type Criterion = {
   weight: number;
   score: number;
   remarks: string;
+  ai_explanation?: string;
   evidence?: string[];
 };
 
@@ -346,8 +347,8 @@ const CriteriaTable: React.FC<{ title: string; group: string; criteria?: Criteri
             <td className="px-3 py-2">{item.weight}%</td>
             <td className="px-3 py-2">{Number((adjusted[`${group}:${item.key}`] ?? item.raw) * item.weight / 10).toFixed(2)}</td>
             <td className="px-3 py-2 text-slate-600">
-              {plainLanguageExplanation(item.remarks)}
-              {item.evidence?.length ? ` Matching words: ${item.evidence.join(", ")}` : ""}
+              <p>{plainLanguageExplanation(item.ai_explanation || item.remarks)}</p>
+              {item.evidence?.length ? <p className="mt-1 text-xs">Evidence: {item.evidence.join(" · ")}</p> : null}
               {adjustable && <textarea aria-label={`${item.criterion} validator remarks`} value={remarks[`${group}:${item.key}`] || ""} onChange={(event) => onRemark?.(`${group}:${item.key}`, event.target.value)} maxLength={2000} rows={2} placeholder="Validator remarks" className="mt-2 w-full rounded border border-slate-200 p-2" />}
               {!adjustable && remarks[`${group}:${item.key}`] && <p className="mt-2 font-medium text-slate-800">Validator: {remarks[`${group}:${item.key}`]}</p>}
             </td>
@@ -784,7 +785,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
                 </div>
               </details>
             )}
-            {scoreRecommendations.length > 0 && (
+            {role === "admin" && scoreRecommendations.length > 0 && (
               <details className="group rounded-xl border border-emerald-200 bg-emerald-50/40 p-4">
                 <summary className="flex cursor-pointer list-none items-center justify-between font-semibold text-emerald-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-600 [&::-webkit-details-marker]:hidden">Recommendations to Improve the Score <span className="text-emerald-700 transition-transform group-open:rotate-180" aria-hidden="true">⌄</span></summary>
                 <p className="mt-1 text-xs text-emerald-800">Only update information that is accurate and supported by project evidence.</p>
@@ -811,7 +812,7 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
                 </div>
               </details>
             )}
-            {revisionFields.length > 0 && (
+            {role === "admin" && revisionFields.length > 0 && (
               <details className="group rounded-xl border border-amber-200 bg-amber-50/50 p-4">
                 <summary className="flex cursor-pointer list-none items-center justify-between font-semibold text-amber-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-600 [&::-webkit-details-marker]:hidden">Fields Needing Review or Revision <span className="text-amber-700 transition-transform group-open:rotate-180" aria-hidden="true">⌄</span></summary>
                 <p className="mt-1 text-xs text-amber-800">These fields support incomplete, low-scoring, or flagged criteria. Validator inputs are not contributor-editable fields.</p>

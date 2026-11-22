@@ -927,12 +927,14 @@ class SupportingDocumentApiTests(TestCase):
         self.assertEqual(self.project.document_assessments.get().status, "pass")
         evidence = captured[0]["validator_facts"]["supporting_document_evidence"]
         self.assertEqual(evidence["status"], "pass")
-        self.assertEqual(evidence["files"][0]["filename"], "evidence.csv")
+        self.assertEqual(evidence["citations"], ["River rehabilitation budget evidence"])
+        self.assertNotIn("files", evidence)
         first = ProjectPriorityAnalysis.objects.get(pk=response.data["analysis"]["id"])
         self.assertEqual(first.rule_set, rule_set)
         self.assertTrue(first.regional_scorecard["applicable"])
         first_outcomes = first.suggested_scores["rdp_outcomes"]
         self.assertTrue(all(outcome["raw"] == 8 for outcome in first_outcomes))
+        self.assertTrue(all(outcome["remarks"] == "Documented project scope." for outcome in first_outcomes))
 
         admin = User.objects.create_user(username="scoring-admin", role="admin")
         self.client.force_authenticate(admin)

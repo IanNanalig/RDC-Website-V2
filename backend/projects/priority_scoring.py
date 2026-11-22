@@ -12,7 +12,7 @@ from .document_policy import active_project_documents, documents_for_revision
 from .models import PriorityRuleSet, Project, ProjectPriorityAnalysis, ProjectPriorityConfirmation
 from .scoring_contract import (
     apply_scoring_mappings,
-    contract_for_project_snapshot,
+    form_version_for_project_snapshot,
     contract_for_rule_set,
     default_scoring_input_contract,
     form_version_for_project_snapshot,
@@ -1051,8 +1051,12 @@ def _fact_key(value):
     }.get(key, key)
 
 
+RAW_SCORE_MAX = 10
+REGIONAL_CRITERION_WEIGHT = 25
+
+
 def weighted_points(raw, weight):
-    return Decimal(str(raw)) * Decimal(str(weight)) / Decimal("10")
+    return Decimal(str(raw)) * Decimal(str(weight)) / RAW_SCORE_MAX
 
 
 def bounded_score(points):
@@ -1064,6 +1068,19 @@ def overall_score(pap, rdp, regional, *, include_regional=False):
     if include_regional:
         base = (base + min(Decimal("100"), max(Decimal("0"), regional))) / 2
     return bounded_score(base)
+
+
+def scoring_formula_reference():
+    return {
+        "max_raw_score": RAW_SCORE_MAX,
+        "regional_criterion_weight": REGIONAL_CRITERION_WEIGHT,
+        "example": {
+            "base": 80,
+            "regional": 60,
+            "eligible": float(overall_score(Decimal(80), Decimal(0), Decimal(60), include_regional=True)),
+            "below_cutoff": float(overall_score(Decimal(80), Decimal(0), Decimal(60))),
+        },
+    }
 
 
 def _criterion_points(criteria):
@@ -1647,13 +1664,12 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         return existing, True
 
     base_contract = contract_for_rule_set(rules)
-    effective_contract = contract_for_project_snapshot(snapshot, base_contract)
+    form_version = form_version_for_project_snapshot(snapshot)
     form = deepcopy(_scoring_form(snapshot))
-    marker = snapshot.get("form_schema") if isinstance(snapshot, dict) else None
-    if isinstance(marker, dict) and marker.get("version"):
-        from cms.form_schema import applicable_field_keys, resolve_simplified_form_schema
+    if form_version:
+        from cms.form_schema import applicable_field_keys
 
-        schema, _ = resolve_simplified_form_schema(snapshot)
+        schema = form_version.schema_json
         applicable = applicable_field_keys(schema, form)
         for section in schema.get("sections", []):
             for field in section.get("fields", []):
@@ -1669,17 +1685,6 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         # The published form version owns these mappings. Labels may change,
         # while stable keys keep historical analyses reproducible.
         form = apply_scoring_mappings(form, schema, applicable, base_contract)
-    enabled_contributor_keys = {
-        dependency["key"]
-        for dependency in effective_contract["dependencies"]
-        if dependency.get("source") == "contributor"
-    }
-    for dependency in base_contract["dependencies"]:
-        if (
-            dependency.get("source") == "contributor"
-            and dependency["key"] not in enabled_contributor_keys
-        ):
-            form.pop(dependency["key"], None)
     if not regional_applicable:
         for key in REGIONAL_FACT_KEYS:
             form.pop(key, None)
@@ -1696,18 +1701,19 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
     # The form answer intentionally contains no document binary or metadata.
     # Resolve this gate from the authoritative active-document relation so a
     # preview cannot treat an absent upload as a scored zero or a valid input.
-    facts["_supporting_documents_ready"] = bool(
-        (documents_for_revision(revision) if revision else active_project_documents(project)).exists()
+    documents = documents_for_revision(revision) if revision else active_project_documents(project)
+    facts["_supporting_documents_ready"] = documents.exists()
+    form_marker = snapshot.get("form_schema") or form.get("form_schema")
+    is_legacy_form = isinstance(form_marker, dict) and (
+        form_marker.get("legacy") is True or bool(form_marker.get("version") and form_version is None)
     )
-    form_marker = snapshot.get("form_schema") if isinstance(snapshot, dict) else {}
-    is_legacy_form = isinstance(form_marker, dict) and form_marker.get("legacy") is True
     input_report = runtime_input_report(
         form,
         facts,
         regional_project=regional_applicable,
         economic_environment_sector=_is_sceeed_sector(form),
         legacy_form=is_legacy_form,
-        contract=effective_contract,
+        submitted_schema=form_version.schema_json if form_version else None,
     )
     # Missing evidence no longer blocks the whole analysis. Supported criteria
     # are evaluated and the result remains explicitly incomplete until the
@@ -1836,7 +1842,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
             outcome["score"] = float(
                 weighted_points(raw, outcome["weight"]).quantize(Decimal("0.01"))
             )
-            outcome["remarks"] = "Groq evaluated the project narrative against the active CMS criterion guidance."
+            outcome["remarks"] = assessment.get("explanation") or outcome["remarks"]
             outcome["evidence"] = assessment.get("evidence") or []
             outcome["evidence_sources"] = []
             outcome["match_mode"] = "groq_contextual"
@@ -1874,12 +1880,12 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         beneficiary_band = _matching_band(regional_bands["beneficiaries"], beneficiary_count or 0)
         spatial_raw = regional_rules["spatial_coverage"]["scores"].get(regional_scope, 0)
         regional["criteria"] = [
-            _criterion("regional_cost", "Total Regional Project Cost", cost_band["raw_score"], 25,
+            _criterion("regional_cost", "Total Regional Project Cost", cost_band["raw_score"], REGIONAL_CRITERION_WEIGHT,
                        f"Funding requirement: PHP {funding_total:,}. Applied band: {cost_band['label']}."),
-            _criterion("regional_spatial", "Regional Spatial Coverage", spatial_raw, 25, "Validator-confirmed regional spatial category."),
-            _criterion("regional_outcomes", "RDP Sectoral Outcome Contribution", outcome_band["raw_score"], 25,
+            _criterion("regional_spatial", "Regional Spatial Coverage", spatial_raw, REGIONAL_CRITERION_WEIGHT, "Validator-confirmed regional spatial category."),
+            _criterion("regional_outcomes", "RDP Sectoral Outcome Contribution", outcome_band["raw_score"], REGIONAL_CRITERION_WEIGHT,
                        f"{contributed_outcomes or 0} contributed outcomes. Applied band: {outcome_band['label']}."),
-            _criterion("regional_beneficiaries", "Magnitude of Beneficiaries", beneficiary_band["raw_score"], 25,
+            _criterion("regional_beneficiaries", "Magnitude of Beneficiaries", beneficiary_band["raw_score"], REGIONAL_CRITERION_WEIGHT,
                        f"{beneficiary_count or 0:,} estimated beneficiaries. Applied band: {beneficiary_band['label']}."),
         ]
         regional["total"] = float(bounded_score(_criterion_points(regional["criteria"])))

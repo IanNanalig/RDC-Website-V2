@@ -57,12 +57,24 @@ def _year_date(value):
     return date(int(raw), 1, 1) if raw.isdigit() and 1900 <= int(raw) <= 2200 else None
 
 
+def _publication_file_metadata(attachment):
+    size = attachment.size or 0
+    if size >= 1024 * 1024:
+        display_size = f"{size / (1024 * 1024):.1f} MB"
+    elif size:
+        display_size = f"{max(1, round(size / 1024))} KB"
+    else:
+        display_size = ""
+    display_type = "PDF" if attachment.mime_type == "application/pdf" else "Document" if attachment.mime_type else ""
+    return display_type, display_size
+
+
 def _upsert(model, lookup, defaults, user=None):
     obj = model.objects.filter(**lookup).first()
     if obj and obj.status == "archived":
         raise serializers.ValidationError({
-            "detail": f'"{obj}" is archived. Restore it from Archived Content before adding it again.',
-            "code": "archived_content_requires_restore",
+            "detail": f'"{obj}" belongs to historical records. Add a new item in the page editor.',
+            "code": "historical_content_not_editable",
         })
     obj, created = model.objects.update_or_create(defaults=defaults, **lookup)
     if created and user:
@@ -165,134 +177,6 @@ def mark_managed_content_pages_changed(obj, user=None):
         page.save(update_fields=["status", "has_unpublished_changes", "updated_by", "updated_at"])
 
 
-def remove_managed_content_from_draft(obj, user=None):
-    """Remove an explicitly archived normalized item from its owning draft JSON."""
-    target = None
-    if isinstance(obj, CMSCarouselItem):
-        target = ("home", "hero-carousel")
-    elif isinstance(obj, (CMSPublicationCategory, CMSPublicationDocument)):
-        target = ("publications", "publication-catalog")
-    elif isinstance(obj, CMSResolution):
-        target = ("about-rdc", "resolutions-archive")
-    if not target:
-        return
-    section = _page_sections(target[0]).filter(section_key=target[1]).first()
-    if not section:
-        return
-    content = dict(section.content_json or {})
-    changed = False
-    if isinstance(obj, CMSCarouselItem):
-        rows = list(content.get("slides") or [])
-        kept = [
-            row for index, row in enumerate(rows, 1)
-            if not isinstance(row, dict)
-            or _stable_key(row.get("id") or row.get("key") or row.get("title"), f"slide-{index}") != obj.stable_key
-        ]
-        changed = len(kept) != len(rows)
-        content["slides"] = kept
-    elif isinstance(obj, CMSPublicationCategory):
-        rows = list(content.get("categories") or [])
-        kept = [
-            row for index, row in enumerate(rows, 1)
-            if not isinstance(row, dict)
-            or _stable_key(row.get("code") or row.get("id") or row.get("title"), f"category-{index}") != obj.code
-        ]
-        changed = len(kept) != len(rows)
-        content["categories"] = kept
-    elif isinstance(obj, CMSPublicationDocument):
-        categories = list(content.get("categories") or [])
-        for category_index, category_row in enumerate(categories, 1):
-            if not isinstance(category_row, dict):
-                continue
-            code = _stable_key(
-                category_row.get("code") or category_row.get("id") or category_row.get("title"),
-                f"category-{category_index}",
-            )
-            documents = list(category_row.get("documents") or [])
-            kept = [
-                row for document_index, row in enumerate(documents, 1)
-                if not isinstance(row, dict)
-                or _document_reference_key(code, row, document_index) != obj.stable_key
-            ]
-            if len(kept) != len(documents):
-                category_row["documents"] = kept
-                changed = True
-        content["categories"] = categories
-    elif isinstance(obj, CMSResolution):
-        years = list(content.get("years") or [])
-        for year_row in years:
-            if not isinstance(year_row, dict):
-                continue
-            key = "resolutions" if isinstance(year_row.get("resolutions"), list) else (
-                "items" if isinstance(year_row.get("items"), list) else "documents"
-            )
-            rows = list(year_row.get(key) or [])
-            kept = [
-                row for index, row in enumerate(rows, 1)
-                if not isinstance(row, dict)
-                or _stable_key(
-                    row.get("id") or f"{obj.year}-{row.get('number') or row.get('resolutionNumber') or row.get('title') or index}",
-                    f"resolution-{obj.year}-{index}",
-                ) != obj.stable_key
-            ]
-            if len(kept) != len(rows):
-                year_row[key] = kept
-                changed = True
-        content["years"] = years
-    if changed:
-        section.content_json = content
-        section.status = "draft"
-        section.save(update_fields=["content_json", "status", "updated_at"])
-    mark_managed_content_pages_changed(obj, user)
-
-
-def restore_managed_content_to_draft(obj, user=None):
-    """Restore archived content to a safe draft position without deleting history."""
-    snapshot = managed_content_snapshot(obj)
-    if isinstance(obj, CMSCarouselItem):
-        section = _page_sections("home").filter(section_key="hero-carousel").first()
-        if section:
-            content = dict(section.content_json or {})
-            rows = list(content.get("slides") or [])
-            if not any(isinstance(row, dict) and row.get("id") == obj.stable_key for row in rows):
-                rows.append(snapshot)
-                content["slides"] = rows
-                section.content_json = content
-                section.status = "draft"
-                section.save(update_fields=["content_json", "status", "updated_at"])
-    elif isinstance(obj, CMSPublicationCategory):
-        section = _page_sections("publications").filter(section_key="publication-catalog").first()
-        if section:
-            content = dict(section.content_json or {})
-            rows = list(content.get("categories") or [])
-            if not any(isinstance(row, dict) and (row.get("code") or row.get("id")) == obj.code for row in rows):
-                snapshot["documents"] = []
-                rows.append(snapshot)
-                content["categories"] = rows
-                section.content_json = content
-                section.status = "draft"
-                section.save(update_fields=["content_json", "status", "updated_at"])
-    elif isinstance(obj, CMSPublicationDocument):
-        section = _page_sections("publications").filter(section_key="publication-catalog").first()
-        if section:
-            content = dict(section.content_json or {})
-            rows = list(content.get("categories") or [])
-            for category in rows:
-                if isinstance(category, dict) and (category.get("code") or category.get("id")) == obj.category.code:
-                    documents = list(category.get("documents") or [])
-                    if not any(isinstance(row, dict) and row.get("id") == obj.stable_key for row in documents):
-                        documents.append(snapshot)
-                        category["documents"] = documents
-                        section.content_json = content
-                        section.status = "draft"
-                        section.save(update_fields=["content_json", "status", "updated_at"])
-                    break
-    elif isinstance(obj, CMSResolution):
-        sync_resolution_to_draft(obj, user)
-        return
-    mark_managed_content_pages_changed(obj, user)
-
-
 def sync_resolution_to_draft(obj, user=None):
     """Mirror one normalized resolution into the fixed About RDC draft."""
     if not isinstance(obj, CMSResolution):
@@ -328,37 +212,6 @@ def sync_resolution_to_draft(obj, user=None):
     section.status = "draft"
     section.save(update_fields=["content_json", "status", "updated_at"])
     mark_managed_content_pages_changed(obj, user)
-
-
-def reassign_publication_documents_in_draft(source_code, target_code, user=None):
-    section = _page_sections("publications").filter(section_key="publication-catalog").first()
-    if not section:
-        return
-    content = dict(section.content_json or {})
-    categories = list(content.get("categories") or [])
-    source = next((row for row in categories if isinstance(row, dict) and (row.get("code") or row.get("id")) == source_code), None)
-    target = next((row for row in categories if isinstance(row, dict) and (row.get("code") or row.get("id")) == target_code), None)
-    if not source or not target:
-        return
-    existing_ids = {
-        str(row.get("id")) for row in (target.get("documents") or []) if isinstance(row, dict)
-    }
-    moved = [
-        row for row in (source.get("documents") or [])
-        if not isinstance(row, dict) or str(row.get("id")) not in existing_ids
-    ]
-    target["documents"] = list(target.get("documents") or []) + moved
-    source["documents"] = []
-    content["categories"] = categories
-    section.content_json = content
-    section.status = "draft"
-    section.save(update_fields=["content_json", "status", "updated_at"])
-    page = section.page
-    page.status = "draft"
-    page.has_unpublished_changes = True
-    if user and getattr(user, "is_authenticated", False):
-        page.updated_by = user
-    page.save(update_fields=["status", "has_unpublished_changes", "updated_by", "updated_at"])
 
 
 def sync_normalized_section_draft(section, user=None):
@@ -483,7 +336,7 @@ def sync_normalized_section_draft(section, user=None):
                 if raw_id:
                     document_ids.add(raw_id)
                     if CMSPublicationDocument.objects.filter(stable_key=raw_id, status="archived").exists():
-                        raise serializers.ValidationError({"detail": "Restore the archived publication document before adding it to the draft.", "code": "archived_content_requires_restore"})
+                        raise serializers.ValidationError({"detail": "Add a new publication template and select its attachment from the Media Library.", "code": "historical_content_not_editable"})
                 legacy_item_key = _stable_key(item.get("title"), f"document-{document_index}")
                 composite = (
                     raw_id
@@ -519,6 +372,8 @@ def sync_normalized_section_draft(section, user=None):
                 except (TypeError, ValueError):
                     document_cover = None
                 attachment_fields = {}
+                file_type = str(item.get("fileType") or "PDF")
+                file_size = str(item.get("fileSize") or "")
                 if "mediaAssetId" in item:
                     media_id = item["mediaAssetId"]
                     attachment = None
@@ -532,6 +387,10 @@ def sync_normalized_section_draft(section, user=None):
                         if not attachment:
                             raise serializers.ValidationError({"detail": "Choose an active publication document from the Media Library."})
                     attachment_fields["attachment"] = attachment
+                    if attachment:
+                        media_type, media_size = _publication_file_metadata(attachment)
+                        file_type = media_type or file_type
+                        file_size = media_size or file_size
                 _upsert(
                     CMSPublicationDocument, {"stable_key": key}, {
                         **common,
@@ -540,11 +399,11 @@ def sync_normalized_section_draft(section, user=None):
                         "title": str(item.get("title") or "Untitled publication"),
                         "description": str(item.get("description") or ""),
                         "publication_date": publication_date,
-                        "document_type": str(item.get("fileType") or "PDF"),
+                        "document_type": file_type,
                         "cover_image": document_cover,
                         "cover_alt_text": str(item.get("coverAlt") or "").strip(),
                         "external_url": _safe_url(item.get("url")),
-                        "legacy_file_size": str(item.get("fileSize") or ""),
+                        "legacy_file_size": file_size,
                         "sort_order": document_index,
                     }, user,
                 )
@@ -720,66 +579,31 @@ def _referenced_keys(page, published=False):
 
 
 def submit_normalized_page_content(page, user=None):
-    models = []
+    referenced = _referenced_keys(page)
+    for model, key_field, keys in _managed_page_groups(page, referenced):
+        model.objects.filter(
+            **{f"{key_field}__in": keys}, has_unpublished_changes=True,
+        ).exclude(status="archived").update(status="submitted", submitted_by=user, review_notes="")
+
+
+def _managed_page_groups(page, referenced):
     if page.slug == "home":
-        models = [CMSCarouselItem]
-    elif page.slug == "publications":
-        models = [CMSPublicationCategory, CMSPublicationDocument]
-    elif page.slug == "about-rdc":
-        models = [CMSResolution]
-    for model in models:
-        model.objects.filter(has_unpublished_changes=True).exclude(status="archived").update(
-            status="submitted", submitted_by=user, review_notes=""
-        )
-
-
-def _retire_omitted_legacy_rows(omitted, user, now):
-    """Archive migrated hardcoded rows omitted from the new CMS-owned draft.
-
-    Rows created through the CMS always have ``created_by`` and still require
-    the explicit archive workflow. Migrated legacy rows have no creator and are
-    retired as part of publishing the replacement draft. They must not remain
-    active as a hidden fallback or a cross-page dependency.
-    """
-    legacy = omitted.filter(created_by__isnull=True)
-    legacy.update(
-        status="archived",
-        has_unpublished_changes=False,
-        archived_at=now,
-        reviewed_by=user,
-        updated_by=user,
-        updated_at=now,
-        review_notes="Retired automatically after removal from the CMS draft.",
-    )
+        return [(CMSCarouselItem, "stable_key", referenced["carousel"])]
+    if page.slug == "publications":
+        return [
+            (CMSPublicationCategory, "code", referenced["categories"]),
+            (CMSPublicationDocument, "stable_key", referenced["documents"]),
+        ]
+    if page.slug == "about-rdc":
+        return [(CMSResolution, "stable_key", referenced["resolutions"])]
+    return []
 
 
 def publish_normalized_page_content(page, user=None):
     referenced = _referenced_keys(page)
-    previously_published = _referenced_keys(page, published=True)
     now = timezone.now()
-    groups = []
-    if page.slug == "home":
-        groups = [(
-            CMSCarouselItem, "stable_key", referenced["carousel"],
-            previously_published["carousel"], "carousel items",
-        )]
-    elif page.slug == "publications":
-        groups = [
-            (
-                CMSPublicationCategory, "code", referenced["categories"],
-                previously_published["categories"], "publication categories",
-            ),
-            (
-                CMSPublicationDocument, "stable_key", referenced["documents"],
-                previously_published["documents"], "publication documents",
-            ),
-        ]
-    elif page.slug == "about-rdc":
-        groups = [(
-            CMSResolution, "stable_key", referenced["resolutions"],
-            previously_published["resolutions"], "resolutions",
-        )]
-    for model, key_field, keys, previous_keys, content_type in groups:
+    for model, key_field, keys in _managed_page_groups(page, referenced):
+        content_type = model._meta.verbose_name_plural
         queryset = model.objects.select_for_update()
         available_keys = set(
             queryset.filter(**{f"{key_field}__in": keys})
@@ -793,32 +617,6 @@ def publish_normalized_page_content(page, user=None):
                 "code": "normalized_content_missing",
                 "content_type": content_type,
                 "items": [{"id": key, "label": key} for key in missing_keys[:20]],
-            })
-        # Retire every imported row omitted by the current CMS draft, including
-        # stale normalized rows that were never part of the latest snapshot.
-        # CMS-created rows keep the explicit Administrator archive safeguard.
-        if page.slug != "publications":
-            legacy_omissions = queryset.filter(created_by__isnull=True).exclude(
-                **{f"{key_field}__in": keys}
-            ).exclude(status="archived")
-            _retire_omitted_legacy_rows(legacy_omissions, user, now)
-        removed_keys = previous_keys - keys if page.slug != "publications" else set()
-        manually_managed_omissions = queryset.filter(
-            **{f"{key_field}__in": removed_keys},
-            created_by__isnull=False,
-            published_at__isnull=False,
-        ).exclude(status="archived")
-        if manually_managed_omissions.exists():
-            rows = list(manually_managed_omissions[:20])
-            labels = ", ".join(str(item) for item in rows[:5])
-            raise serializers.ValidationError({
-                "detail": f"Previously published {content_type} are still active but missing from this draft: {labels}. Restore them to the draft, or archive them through the active content list before publishing.",
-                "code": "published_content_requires_archive",
-                "content_type": content_type,
-                "items": [
-                    {"id": getattr(item, key_field), "label": str(item)}
-                    for item in rows
-                ],
             })
         for obj in queryset.filter(**{f"{key_field}__in": keys}).exclude(status="archived"):
             obj.published_snapshot_json = managed_content_snapshot(obj)

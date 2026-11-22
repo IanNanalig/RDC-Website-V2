@@ -38,10 +38,11 @@ def _portable_media_references(value):
     return value
 
 
-def build_page_snapshot(page):
-    published_at = timezone.now()
+def build_page_snapshot(page, *, draft=False):
     sections = []
-    for section in page.sections.filter(status="published", is_visible=True).order_by("order", "id"):
+    visible = page.sections.filter(is_visible=True)
+    visible = visible.exclude(status="archived") if draft else visible.filter(status="published")
+    for section in visible.order_by("order", "id"):
         content = dict(section.content_json or {})
         if page.slug == "publications" and section.section_key == "publication-catalog":
             content.pop("removedCategoryIds", None)
@@ -59,7 +60,7 @@ def build_page_snapshot(page):
     return {
         "title": sanitize_public_text(page.title),
         "slug": page.slug,
-        "publishedAt": published_at.isoformat(),
+        "publishedAt": "" if draft else timezone.now().isoformat(),
         "sections": sections,
     }
 
@@ -119,8 +120,8 @@ def build_article_draft_snapshot(article):
     }
 
 
-def compose_public_page_snapshot(page):
-    """Overlay normalized published collections onto a fixed page snapshot."""
+def compose_public_page_snapshot(page, *, draft=False):
+    """Apply public presentation rules to saved draft or published section membership."""
     from cms.models import (
         CMSCarouselItem,
         CMSLegacyMigrationIssue,
@@ -129,9 +130,16 @@ def compose_public_page_snapshot(page):
         CMSPublicationDocument,
         CMSResolution,
     )
-    from cms.services.collections import _referenced_keys, publication_membership
+    from cms.services.collections import _referenced_keys, _stable_key, managed_content_snapshot, publication_membership
 
-    snapshot = deepcopy(page.published_snapshot_json or {})
+    def collection_snapshot(record):
+        if not record or record.status == "archived":
+            return None
+        if not draft:
+            return record.published_snapshot_json if record.published_at else None
+        return _portable_media_references(sanitize_public_structure(managed_content_snapshot(record)))
+
+    snapshot = build_page_snapshot(page, draft=True) if draft else deepcopy(page.published_snapshot_json or {})
     sections = snapshot.get("sections")
     if not isinstance(sections, list):
         return snapshot
@@ -146,7 +154,7 @@ def compose_public_page_snapshot(page):
             resolved_at__isnull=True,
         ).values_list("section_key", flat=True)
     )
-    published_references = _referenced_keys(page, published=True)
+    references = _referenced_keys(page, published=not draft)
 
     if page.slug == "regional-profile" and "geographic-coverage" in by_key:
         content = by_key["geographic-coverage"]["content"]
@@ -169,37 +177,42 @@ def compose_public_page_snapshot(page):
             if section:
                 section["content"].pop("featuredCategoryCode", None)
                 section["content"].pop("featuredCategory", None)
-        carousel = list(
-            CMSCarouselItem.objects.filter(
-                published_at__isnull=False,
-                stable_key__in=published_references["carousel"],
-            )
-            .exclude(status="archived")
-            .order_by("sort_order", "id")
-            .values_list("published_snapshot_json", flat=True)
-        )
-        if carousel and "hero-carousel" in by_key and "hero-carousel" not in unresolved_sections:
-            by_key["hero-carousel"]["content"]["slides"] = [row for row in carousel if row]
+        if "hero-carousel" in by_key:
+            hero = by_key["hero-carousel"]["content"]
+            carousel = CMSCarouselItem.objects.filter(
+                stable_key__in=references["carousel"],
+            ).select_related("image").in_bulk(field_name="stable_key")
+            use_normalized = draft or "hero-carousel" not in unresolved_sections
+            slides = []
+            for index, slide in enumerate(hero.get("slides") or [], 1):
+                if not isinstance(slide, dict):
+                    continue
+                key = _stable_key(slide.get("id") or slide.get("key") or slide.get("title"), f"slide-{index}")
+                record = carousel.get(key)
+                if record and record.status == "archived":
+                    continue
+                slides.append((collection_snapshot(record) if use_normalized else None) or slide)
+            hero["slides"] = slides
 
     if page.slug == "publications" and "publication-catalog" in by_key:
         catalog = by_key["publication-catalog"]["content"]
         catalog.pop("removedCategoryIds", None)
         catalog.pop("removedDocumentIds", None)
         document_records = CMSPublicationDocument.objects.filter(
-            stable_key__in=published_references["documents"],
-        ).in_bulk(field_name="stable_key")
+            stable_key__in=references["documents"],
+        ).select_related("attachment", "cover_image", "category").in_bulk(field_name="stable_key")
         category_records = CMSPublicationCategory.objects.filter(
-            code__in=published_references["categories"],
-        ).in_bulk(field_name="code")
-        use_normalized = "publication-catalog" not in unresolved_sections
+            code__in=references["categories"],
+        ).select_related("cover_image").in_bulk(field_name="code")
+        use_normalized = draft or "publication-catalog" not in unresolved_sections
         categories = []
         for code, published_category, members in publication_membership(catalog):
             record = category_records.get(code)
             if record and record.status == "archived":
                 continue
             category = dict(published_category)
-            if use_normalized and record and record.published_at and record.published_snapshot_json:
-                category = dict(record.published_snapshot_json)
+            if use_normalized and (normalized := collection_snapshot(record)):
+                category = dict(normalized)
                 category.update({key: published_category[key] for key in ("visible", "isVisible") if key in published_category})
             documents = []
             for key, published_document in members.items():
@@ -207,8 +220,8 @@ def compose_public_page_snapshot(page):
                 if record and record.status == "archived":
                     continue
                 document = dict(published_document)
-                if use_normalized and record and record.published_at and record.published_snapshot_json:
-                    document = dict(record.published_snapshot_json)
+                if use_normalized and (normalized := collection_snapshot(record)):
+                    document = dict(normalized)
                     document.update({field: published_document[field] for field in ("visible", "isVisible") if field in published_document})
                 document["categoryCode"] = code
                 documents.append(document)
@@ -219,23 +232,18 @@ def compose_public_page_snapshot(page):
     if (
         page.slug == "about-rdc"
         and "resolutions-archive" in by_key
-        and "resolutions-archive" not in unresolved_sections
+        and (draft or "resolutions-archive" not in unresolved_sections)
     ):
         archive_content = by_key["resolutions-archive"]["content"]
         referenced_rows = list(CMSResolution.objects.filter(
-            stable_key__in=published_references["resolutions"],
-        ))
+            stable_key__in=references["resolutions"],
+        ).select_related("attachment"))
         archived_keys = {
             row.stable_key for row in referenced_rows if row.status == "archived"
         }
-        normalized_rows = [
-            row for row in referenced_rows
-            if row.published_at is not None and row.status != "archived"
-        ]
         normalized_by_key = {
-            row.stable_key: row.published_snapshot_json
-            for row in normalized_rows
-            if row.published_snapshot_json
+            row.stable_key: value for row in referenced_rows
+            if (value := collection_snapshot(row))
         }
         # The fixed page snapshot is the authoritative list. A normalized row
         # enriches its matching entry, but a missing/stale normalized row must
