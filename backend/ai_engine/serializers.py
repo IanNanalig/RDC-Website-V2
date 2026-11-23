@@ -65,6 +65,8 @@ def serialize_learning_assessment(assessment):
     if not assessment:
         return None
     similar = []
+    explanation = assessment.explanation if isinstance(assessment.explanation, dict) else {}
+    review = {item["training_record_id"]: item for item in explanation.get("duplicate_review", [])}
     for match in assessment.similar_projects.all():
         record = match.training_record
         similar.append({
@@ -74,11 +76,12 @@ def serialize_learning_assessment(assessment):
             "final_priority": record.target_priority,
             "similarity": round(float(match.similarity_score), 4),
             "shared_features": match.shared_features,
+            "category": review.get(record.pk, {}).get("category"),
+            "differences": review.get(record.pk, {}).get("differences", []),
             "confirmed_at": record.confirmation.created_at,
             "validator_name": _user_name(record.confirmation.validator),
         })
     model = assessment.model_version
-    explanation = assessment.explanation if isinstance(assessment.explanation, dict) else {}
     return {
         "status": assessment.status,
         "advisory": True,

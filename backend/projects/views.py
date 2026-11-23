@@ -371,7 +371,7 @@ PUBLIC_CHAT_DIRECT_CONFIDENCE = 0.62
 PUBLIC_CHAT_RELATED_CONFIDENCE = 0.60
 PUBLIC_PROJECTS_CACHE_TTL_SECONDS = 3600
 PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL = "public, no-cache, must-revalidate"
-PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 6
+PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 7
 PUBLIC_PROJECTS_CACHE_VERSION_KEY = "public_projects:version"
 
 
@@ -3492,6 +3492,8 @@ def _apply_revision_to_project(revision, user):
     revision.save(
         update_fields=[
             "profile_data_snapshot",
+            "public_note",
+            "approved_public_note",
             "public_summary_snapshot",
             "state",
             "workflow_status",
@@ -4380,6 +4382,8 @@ class BaseProjectViewSet(viewsets.ModelViewSet):
         project.save(update_fields=list(dict.fromkeys(update_fields)))
         if review_state == "endorsed":
             _ensure_public_revision(project, request.user)
+            from ai_engine.historical_index import queue_historical_reference
+            queue_historical_reference(project.pk, eligibility.get("confirmation_id"))
         details = {
             "status": project.status,
             "workflow_status": project.workflow_status,
@@ -5736,7 +5740,13 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
         revision.profile_data_snapshot = edited_profile
         revision.public_summary_snapshot = _project_public_summary(edited_profile)
         revision.changed_fields = _safe_revision_changes(base_profile, edited_profile)
-        revision.public_note = str(request.data.get("public_note") or request.data.get("notes") or "").strip()
+        if "notes" in request.data or "public_note" in request.data:
+            revision.public_note = str(request.data.get("notes", request.data.get("public_note")) or "").strip()
+        if "approved_public_note" in request.data:
+            approved_note = request.data["approved_public_note"]
+            if not isinstance(approved_note, str) or len(approved_note.strip()) > 1000:
+                return Response({"approved_public_note": "Enter up to 1,000 characters."}, status=400)
+            revision.approved_public_note = approved_note.strip()
         revision.reviewed_by = request.user
         revision.reviewed_at = timezone.now()
 
@@ -5749,20 +5759,22 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
             revision.workflow_status = Project.WORKFLOW_NEEDS_REVISION
             event = "project_revision_reviewed"
         elif action_value in ("endorse", "validate", "approve"):
-            if revision.revision_type == "progress_update" and revision.project.priority_analysis_eligible:
+            requires_confirmation = revision.revision_type == "progress_update" and revision.project.priority_analysis_eligible
+            if requires_confirmation:
                 eligibility = confirmation_eligibility(
                     revision.project, _validator_review_source(edited_profile), revision=revision,
                 )
                 if not eligibility["eligible"]:
                     return Response({"detail": eligibility["detail"], "code": eligibility["code"], "validation_eligibility": eligibility}, status=409)
             _apply_revision_to_project(revision, request.user)
-            if revision.revision_type == "progress_update":
-                confirmed = ProjectPriorityConfirmation.objects.filter(
-                    analysis__revision=revision,
-                ).order_by("-created_at").first()
-                if confirmed:
-                    from ai_engine.services import sync_training_record
-                    sync_training_record(confirmed)
+            if requires_confirmation:
+                from ai_engine.historical_index import queue_historical_reference
+                from ai_engine.services import sync_training_record
+
+                confirmation_id = eligibility.get("confirmation_id")
+                if confirmation_id:
+                    sync_training_record(ProjectPriorityConfirmation.objects.get(pk=confirmation_id))
+                    queue_historical_reference(revision.project_id, confirmation_id)
             event = "project_revision_endorsed"
         elif action_value == "reject":
             return Response({"detail": "Request Revision instead of rejecting a project update."}, status=400)
@@ -5776,6 +5788,7 @@ class ProjectRevisionViewSet(viewsets.ModelViewSet):
                     "public_summary_snapshot",
                     "changed_fields",
                     "public_note",
+                    "approved_public_note",
                     "reviewed_by",
                     "reviewed_at",
                     "state",
@@ -8087,9 +8100,19 @@ class AgencyActivityView(APIView):
         return response
 
 
-def _get_public_projects_cache_version() -> str:
+def _public_archive_projects():
+    return Project.objects.filter(
+        archived=True, validated=True,
+    ).exclude(workflow_status__in=(Project.WORKFLOW_DRAFT, "rejected")).filter(
+        Q(workflow_status=Project.WORKFLOW_VALIDATED)
+        | Q(revisions__state="endorsed", revisions__is_public_current=True)
+    ).distinct()
+
+
+def _get_public_projects_cache_version(archived=False) -> str:
     """Database-derived version so every web worker observes a publish immediately."""
-    state = Project.objects.filter(validated=True, archived=False, is_active=True).aggregate(
+    queryset = _public_archive_projects() if archived else Project.objects.filter(validated=True, archived=False, is_active=True)
+    state = queryset.aggregate(
         count=Count("id"),
         updated_at=Max("updated_at"),
     )
@@ -8202,13 +8225,18 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
     authentication_classes = []  # Don't attempt JWT auth; avoids 401 on invalid Authorization header.
     serializer_class = PublicProjectSerializer
 
-    def _base_queryset(self):
+    def _base_queryset(self, *, archived=False, include_archived=False):
         endorsed_revisions = ProjectRevision.objects.filter(state="endorsed").order_by(
             "-endorsed_at", "-revision_number"
         )
-        qs = Project.objects.filter(validated=True, archived=False, is_active=True).select_related(
-            "primary_agency"
-        ).prefetch_related("collaborating_agency_links__agency")
+        active = Project.objects.filter(validated=True, archived=False, is_active=True)
+        if archived:
+            qs = _public_archive_projects()
+        elif include_archived:
+            qs = active | Project.objects.filter(pk__in=_public_archive_projects().values("pk"))
+        else:
+            qs = active
+        qs = qs.select_related("primary_agency").prefetch_related("collaborating_agency_links__agency")
         if getattr(self, "action", "") == "list" and self.request.query_params.get("view") == "summary":
             latest_progress = endorsed_revisions.filter(revision_type="progress_update")[:1]
             return qs.annotate(
@@ -8238,7 +8266,8 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
         ).data
 
     def list(self, request, *args, **kwargs):
-        version = _get_public_projects_cache_version()
+        archived = request.query_params.get("archive_state") == "archived"
+        version = _get_public_projects_cache_version(archived)
         params = dict(request.query_params)
         cache_key = f"public_projects:list:v{PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION}:{version}:{_hash_query(params)}"
         etag_seed = f"projects-list:{PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION}:{version}:{_hash_query(params)}"
@@ -8248,7 +8277,7 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
         if cached is not None:
             return _conditional_public_response(request, cached, etag_seed=etag_seed)
 
-        qs = self._base_queryset().order_by("-updated_at")
+        qs = self._base_queryset(archived=archived).order_by("-updated_at", "-pk")
 
         qs = _filter_public_project_queryset(qs, request.query_params)
 
@@ -8282,7 +8311,7 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
         return _conditional_public_response(request, payload, etag_seed=etag_seed)
 
     def retrieve(self, request, *args, **kwargs):
-        project = self._base_queryset().filter(pk=kwargs.get("pk")).first()
+        project = self._base_queryset(include_archived=True).filter(pk=kwargs.get("pk")).first()
         if not project:
             return Response({"detail": "Not found."}, status=404)
         payload = self._project_to_public_payload(project)

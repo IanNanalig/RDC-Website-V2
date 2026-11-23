@@ -767,7 +767,8 @@ class AdminExportPreviewView(APIView):
                     "status": "Active" if record.is_active else "Inactive",
                 })
         return Response({
-            "count": count, "page": page, "has_next": offset + EXPORT_PREVIEW_PAGE_SIZE < count,
+            "count": count, "page": page, "total_pages": (count + EXPORT_PREVIEW_PAGE_SIZE - 1) // EXPORT_PREVIEW_PAGE_SIZE,
+            "has_next": offset + EXPORT_PREVIEW_PAGE_SIZE < count,
             "results": results, "preview_token": digest.hexdigest(),
         }, headers={"Cache-Control": "no-store, private"})
 

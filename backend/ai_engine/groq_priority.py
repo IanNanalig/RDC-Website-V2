@@ -1,13 +1,12 @@
 import hashlib
 import json
 import math
+import logging
 import re
 from copy import deepcopy
 
-from .features import FEATURE_SCHEMA_VERSION, normalized_project_text
+from .historical_index import find_historical_matches, retry_historical_references
 from .groq_client import GroqUnavailable, complete_json, is_groq_enabled
-from .models import AIModelVersion, AITrainingRecord
-from .similarity import find_similar_projects
 from projects.scoring_contract import form_version_for_project_snapshot, scoring_text_field_keys
 
 
@@ -158,148 +157,39 @@ def _project_payload(snapshot, *, scoring=False):
     return compact
 
 
-def _active_reference_model():
-    return AIModelVersion.objects.filter(
-        status="active",
-        feature_schema_version=FEATURE_SCHEMA_VERSION,
-    ).order_by("-created_at", "-id").first()
-
-
-def _latest_eligible_records(exclude_project_id=None, limit=200):
-    active_model = _active_reference_model()
-    queryset = AITrainingRecord.objects.all()
-    if active_model:
-        # The active model's membership is also the administrator-approved RAG snapshot.
-        # Newly confirmed/included projects enter retrieval only after an explicit rebuild.
-        queryset = queryset.filter(model_memberships__model_version=active_model)
-    else:
-        # Backward-compatible bootstrap behavior until an administrator creates the
-        # first versioned snapshot.
-        queryset = queryset.filter(is_eligible=True)
-    queryset = queryset.select_related(
-        "project",
-        "confirmation__validator",
-        "confirmation__analysis__rule_set",
-    ).order_by("-confirmation__created_at", "-id")[:limit]
-    records = []
-    seen = set()
-    for record in queryset:
-        if exclude_project_id and record.project_id == exclude_project_id:
-            continue
-        if record.project_id in seen:
-            continue
-        seen.add(record.project_id)
-        records.append(record)
-    return records
+logger = logging.getLogger(__name__)
 
 
 def _historical_context(snapshot, sector, exclude_project_id=None, limit=6):
-    active_model = _active_reference_model()
-    records = _latest_eligible_records(exclude_project_id=exclude_project_id)
-    if not records:
-        return [], [], "empty", {
-            "version": active_model.version if active_model else "",
-            "algorithm": active_model.algorithm if active_model else "",
-            "sample_count": active_model.sample_count if active_model else 0,
-            "dataset_version": active_model.dataset_version if active_model else "empty",
-            "status": active_model.status if active_model else "untrained",
-        }
-    query = {
-        "text": normalized_project_text(snapshot),
-        "context": {"sector": sector},
-    }
-    matches = find_similar_projects(query, records, limit=limit)
-    selected = [match["record"] for match in matches]
-    selected_ids = {record.pk for record in selected}
-    for record in records:
-        if len(selected) >= limit:
-            break
-        if record.pk not in selected_ids:
-            selected.append(record)
-            selected_ids.add(record.pk)
-    match_by_id = {match["record"].pk: match for match in matches}
+    try:
+        retry_historical_references()
+        matches = find_historical_matches(snapshot, sector, exclude_project_id, limit)
+    except Exception:
+        logger.exception("Historical retrieval failed for project %s", exclude_project_id)
+        return [], [], "unavailable", {"status": "unavailable", "algorithm": "TF-IDF"}
     examples = []
-    for record in selected:
-        match = match_by_id.get(record.pk, {})
-        analysis = record.confirmation.analysis
-        suggested_scores = analysis.suggested_scores if isinstance(analysis.suggested_scores, dict) else {}
-        outcome_scores = []
-        for outcome in suggested_scores.get("rdp_outcomes") or []:
-            if not isinstance(outcome, dict):
-                continue
-            outcome_scores.append(
-                {
-                    "key": str(outcome.get("key") or "")[:120],
-                    "raw_score": _number(outcome.get("raw_score")),
-                    "weighted_score": _number(outcome.get("weighted_score")),
-                    "explanation": _clean_text(outcome.get("explanation") or outcome.get("remark"), 500),
-                }
-            )
-            if len(outcome_scores) >= 12:
-                break
-        examples.append(
-            {
-                "project_id": record.project_id,
-                "title": record.project.name,
-                "agency": record.project.agency or record.project.implementing_agency,
-                "rule_base_score": round(float(analysis.base_score), 2),
-                "rule_suggested_priority": analysis.suggested_priority,
-                "validator_final_priority": record.target_priority,
-                "validator_adjusted_scores": (
-                    record.confirmation.adjusted_scores
-                    if isinstance(record.confirmation.adjusted_scores, dict)
-                    else {}
-                ),
-                "validator_override_rationale": _clean_text(record.confirmation.override_rationale, 1000),
-                "rule_version": analysis.rule_set.version,
-                "criterion_scores": outcome_scores,
-                "project_text": str(record.normalized_text or "")[:1800],
-                "similarity": round(float(match.get("score") or 0), 4),
-                "shared_features": list(match.get("shared_features") or [])[:8],
-            }
-        )
-    dataset_payload = [
-        [record.pk, record.source_hash, record.target_priority, record.updated_at.isoformat()]
-        for record in records
-    ]
-    live_dataset_version = hashlib.sha256(
-        json.dumps(dataset_payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-    ).hexdigest()
-    dataset_version = active_model.dataset_version if active_model else live_dataset_version
-    calibration_weights = [max(float(item.get("similarity") or 0), 0.05) for item in examples]
-    calibration_weight_total = sum(calibration_weights) or 1.0
-    weighted_base_score = sum(
-        float(item.get("rule_base_score") or 0) * weight
-        for item, weight in zip(examples, calibration_weights)
-    ) / calibration_weight_total
-    weighted_high_share = sum(
-        weight
-        for item, weight in zip(examples, calibration_weights)
-        if item.get("validator_final_priority") == "high"
-    ) / calibration_weight_total
-    reference_model = {
-        "version": active_model.version if active_model else "live-unversioned",
-        "algorithm": active_model.algorithm if active_model else "retrieval-only",
-        "sample_count": active_model.sample_count if active_model else len(records),
-        "dataset_version": dataset_version,
-        "status": active_model.status if active_model else "unversioned",
-        "metrics": {
-            key: active_model.metrics.get(key)
-            for key in ("accuracy", "evaluation_scope", "label_counts", "warning")
-            if active_model and key in active_model.metrics
-        },
-        "retrieval_calibration": {
-            "method": "similarity_weighted_validator_outcomes",
-            "reference_count": len(examples),
-            "weighted_average_rule_score": round(weighted_base_score, 2),
-            "weighted_high_priority_share": round(weighted_high_share, 4),
-            "final_priority_counts": {
-                "low": sum(1 for item in examples if item.get("validator_final_priority") == "low"),
-                "high": sum(1 for item in examples if item.get("validator_final_priority") == "high"),
-            },
-        },
+    for match in matches:
+        record = match["record"]
+        metadata = match["reference_metadata"]
+        examples.append({
+            "project_id": record.project_id,
+            "confirmation_id": record.confirmation_id,
+            "title": metadata["title"],
+            "agency": metadata["agency"],
+            "validator_final_priority": record.target_priority,
+            "rule_base_score": float(record.confirmation.analysis.base_score),
+            "rule_version": record.rule_set.version,
+            "project_text": metadata.get("provider_text", "")[:1800],
+            "similarity": round(float(match["score"]), 4),
+            "shared_features": match["shared_features"],
+        })
+    version = hashlib.sha256(json.dumps([
+        [item["confirmation_id"], item["rule_version"]] for item in examples
+    ]).encode()).hexdigest() if examples else "empty"
+    return examples, matches, version, {
+        "version": "live-reference-index", "algorithm": "TF-IDF",
+        "sample_count": len(examples), "dataset_version": version, "status": "ready" if examples else "empty",
     }
-    return examples, matches, dataset_version, reference_model
 
 
 def _clean_text(value, limit=3000):
@@ -498,7 +388,7 @@ def _scoring_validator_context(supplements):
 def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector, guidelines, *, regional_context=None):
     if not is_groq_enabled():
         return None
-    historical, _matches, dataset_version, reference_model = _historical_context(
+    historical, matches, dataset_version, reference_model = _historical_context(
         snapshot,
         sector,
         exclude_project_id=getattr(project, "pk", None),
@@ -656,7 +546,7 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
         raise GroqUnavailable(
             f"Scoring response did not match the active outcome criteria. {validation_issue}.", reason="invalid_response",
         )
-    return _normalize_result(
+    result = _normalize_result(
         completion.data,
         criteria_payload,
         field_keys,
@@ -665,3 +555,11 @@ def analyze_priority_with_groq(project, snapshot, supplements, criteria, sector,
         dataset_version,
         reference_model,
     )
+    sent = user_payload["validator_confirmed_historical_examples"]
+    result["provider"]["historical_reference_ids"] = [entry["confirmation_id"] for entry in sent if "confirmation_id" in entry]
+    result["provider"]["historical_status"] = "omitted_for_input_budget" if historical and not sent else reference_model.get("status", "empty")
+    result["historical_matches"] = [{
+        "training_record_id": item["record"].pk, "score": item["score"], "category": item["category"],
+        "shared_features": item["shared_features"], "differences": item["differences"],
+    } for item in matches]
+    return result

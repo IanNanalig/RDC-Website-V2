@@ -377,7 +377,8 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
   };
 
   const activeRuleId = workspace?.active_rule_set.id;
-  const referenceVersion = workspace?.rag_pipeline?.reference_model_version;
+  const referenceVersion = workspace?.historical_index?.available;
+  const [indexRefresh, setIndexRefresh] = useState(0);
   useEffect(() => {
     if (activeRuleId === undefined) return;
     let current = true;
@@ -395,7 +396,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
         .finally(() => { if (current) setHistoryLoading(false); });
     }, 250);
     return () => { current = false; window.clearTimeout(timer); };
-  }, [activeRuleId, historyPage, referenceVersion, search]);
+  }, [activeRuleId, historyPage, referenceVersion, indexRefresh, search]);
 
   const filteredHistory = historical?.results || [];
   const historicalCount = !historyLoading && historical ? historical.count : search.trim() ? null : workspace?.historical_count;
@@ -471,15 +472,21 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
     }
   };
 
-  const trainModel = async () => {
-    if (!canEdit || !workspace?.training_dataset?.ready_to_train) return;
-    if (!window.confirm("Rebuild and activate the historical reference context from the currently eligible validator-confirmed projects? This creates a new versioned RAG dataset and local calibration model. It does not fine-tune Groq, change the approved scoring rules, or alter previous analyses.")) return;
+  const rebuildIndex = async () => {
+    if (!canEdit || !window.confirm("Rebuild the searchable index of validated projects?")) return;
     setTraining(true);
     setNotice("");
     try {
-      const response = await cmsApi.trainAIModel() as { detail?: string };
-      setNotice(response?.detail || "The rebuilt historical reference context is active.");
+      let cursor: number | null = 0;
+      let scheduled = 0;
+      while (cursor !== null) {
+        const batch = await cmsApi.rebuildAIHistoricalReferences(cursor);
+        scheduled += batch.scheduled;
+        cursor = batch.next;
+      }
       await load();
+      setIndexRefresh((value) => value + 1);
+      setNotice(`Historical index rebuild processed ${scheduled} eligible project${scheduled === 1 ? "" : "s"}.`);
     } catch (error) {
       setNotice(errorDetail(error, "The historical reference context could not be rebuilt."));
     } finally {
@@ -488,6 +495,20 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
   };
 
 
+
+  const trainLocalModel = async () => {
+    if (!canEdit || !window.confirm("Train the local advisory model with eligible confirmed projects?")) return;
+    setTraining(true);
+    try {
+      const result = await cmsApi.trainAIModel() as { detail?: string };
+      setNotice(result.detail || "The local advisory model is active.");
+      await load();
+    } catch (error) {
+      setNotice(errorDetail(error, "The local advisory model could not be trained."));
+    } finally {
+      setTraining(false);
+    }
+  };
 
   if (loading && !workspace) return <div className="portal-card p-5 text-sm text-slate-600">Loading AI scoring rules and historical references...</div>;
   if (!workspace || !config) return <div className="portal-card p-5 text-sm text-rose-700">{notice || "AI scoring settings are unavailable."}</div>;
@@ -506,23 +527,11 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
   const papWeights = config.thresholds.pap_weights;
   const papTotal = Object.values(papWeights).reduce((sum, value) => sum + Number(value || 0), 0);
   const commonTotal = config.keyword_dictionaries.common_outcomes.reduce((sum, rule) => sum + Number(rule.weight || 0), 0);
-  const trainingDataset = workspace.training_dataset || {
-    candidate_count: workspace.historical_count,
-    eligible_project_count: 0,
-    excluded_count: 0,
-    label_counts: { low: 0, high: 0 },
-    minimum_projects: 2,
-    required_labels: ["low", "high"],
-    ready_to_train: false,
-  };
-  const modelVersions = workspace.model_versions || [];
   const groqEnabled = workspace.ai_provider?.name === "groq" && workspace.ai_provider.enabled;
-  const referenceContextCurrent = trainingDataset.is_current ?? false;
-  const requiresReferenceRebuild = trainingDataset.requires_retraining ?? !referenceContextCurrent;
+  const index = workspace.historical_index;
   const ragSteps = workspace.rag_pipeline?.steps || [
     { key: "confirm", title: "Human-confirmed projects", description: "Validator-confirmed outcomes become candidates." },
-    { key: "curate", title: "Administrator curation", description: "Include reliable records and exclude unsuitable ones." },
-    { key: "rebuild", title: "Versioned rebuild", description: "Snapshot the references and train local calibration." },
+    { key: "index", title: "Automatic indexing", description: "Index eligible projects when validation completes." },
     { key: "retrieve", title: "Similarity retrieval", description: "Find the most comparable approved projects." },
     { key: "analyze", title: "Rules-first analysis", description: "Use history as secondary context, never as the rule." },
     { key: "decide", title: "Validator decision", description: "A human remains responsible for the final result." },
@@ -795,12 +804,12 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
       <section className="portal-card overflow-hidden border-violet-200">
         <div className="portal-card-header flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 className="font-bold text-slate-900">Historical Project Context and RAG Training</h3>
-            <p className="text-xs text-slate-500">Administrators control the reference dataset. Approved rules stay primary; previous scores provide secondary calibration for nuanced proposals.</p>
+            <h3 className="font-bold text-slate-900">Historical Project Context</h3>
+            <p className="text-xs text-slate-500">Validated projects are indexed automatically for comparison in new analyses.</p>
           </div>
           {canEdit && (
-            <button type="button" className="portal-btn portal-btn-primary" disabled={training || !trainingDataset.ready_to_train || !requiresReferenceRebuild} onClick={() => void trainModel()}>
-              {training ? "Rebuilding..." : !trainingDataset.ready_to_train ? "More Confirmed Projects Needed" : referenceContextCurrent ? "Historical Context Is Current" : "Retrain Historical Context"}
+            <button type="button" className="portal-btn portal-btn-primary" disabled={training} onClick={() => void rebuildIndex()}>
+              {training ? "Rebuilding..." : "Rebuild Historical Index"}
             </button>
           )}
         </div>
@@ -809,7 +818,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-sm font-bold text-indigo-950">How this RAG mini-system works</p>
-                <p className="mt-1 max-w-4xl text-xs text-indigo-900">This operation rebuilds a controlled reference collection and a local advisory calibration model. It does not modify or fine-tune the hosted Groq model. During analysis, Groq receives only the most similar approved references, including their rule score, final validator priority, and rationale.</p>
+                <p className="mt-1 max-w-4xl text-xs text-indigo-900">Historical matches provide secondary context for scoring and help validators review potentially overlapping projects.</p>
               </div>
               <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-indigo-800 ring-1 ring-indigo-200">Rules remain primary</span>
             </div>
@@ -823,26 +832,13 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
               ))}
             </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            <div className="rounded-xl border border-slate-200 p-3"><p className="text-xs uppercase text-slate-500">Eligible projects</p><p className="mt-1 text-xl font-bold">{trainingDataset.eligible_project_count}</p></div>
-            <div className="rounded-xl border border-rose-200 bg-rose-50/40 p-3"><p className="text-xs uppercase text-rose-700">Low priority</p><p className="mt-1 text-xl font-bold">{trainingDataset.label_counts.low || 0}</p></div>
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-3"><p className="text-xs uppercase text-emerald-700">High priority</p><p className="mt-1 text-xl font-bold">{trainingDataset.label_counts.high || 0}</p></div>
-            <div className={`rounded-xl border p-3 ${referenceContextCurrent ? "border-emerald-200 bg-emerald-50/40" : "border-amber-200 bg-amber-50/50"}`}><p className="text-xs uppercase text-slate-500">Reference status</p><p className="mt-1 text-base font-bold">{referenceContextCurrent ? "Current" : trainingDataset.ready_to_train ? "Rebuild needed" : "Not ready"}</p><p className="mt-1 text-xs text-slate-500">{trainingDataset.active_model_version || "No active version"}</p></div>
-            <div className="rounded-xl border border-slate-200 p-3"><p className="text-xs uppercase text-slate-500">Excluded records</p><p className="mt-1 text-xl font-bold">{trainingDataset.excluded_count}</p></div>
-          </div>
-          {!trainingDataset.ready_to_train && <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">A rebuild requires at least one eligible validator-confirmed project in each category: low and high priority.</p>}
-          {trainingDataset.ready_to_train && requiresReferenceRebuild && <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">The eligible records have changed since the active reference version. Rebuild the historical context before expecting those changes to affect new analyses.</p>}
-          {groqEnabled && referenceContextCurrent && <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-900">New analyses retrieve up to {workspace.rag_pipeline?.retrieval_limit || 6} similar projects from this active version. Historical results can refine comparisons, but cannot override the active rules or make the validator's decision.</p>}
-          {modelVersions.length > 0 && (
-            <div className="space-y-2">
-              <h4 className="text-sm font-semibold text-slate-800">Historical Reference Version History</h4>
-              {modelVersions.map((model) => (
-                <div key={model.id} className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2 text-sm">
-                  <div><p className="font-semibold text-slate-800">{model.version} {model.status === "active" && <span className="ml-2 rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-800">active</span>}</p><p className="text-xs text-slate-500">{model.algorithm} · {model.sample_count} projects · {formatDate(model.created_at)}</p>{model.metrics.warning && <p className="mt-1 text-xs text-amber-700">{model.metrics.warning}</p>}</div>
-                  <span className="text-xs font-medium text-slate-600">{model.metrics.accuracy === null || model.metrics.accuracy === undefined ? "Not evaluated" : `${(model.metrics.accuracy * 100).toFixed(1)}% measured accuracy`}</span>
-                </div>
-              ))}
-            </div>
+          {index && <p className="text-sm text-slate-600">
+            {index.available} searchable · {index.pending || 0} pending · {index.failed || 0} failed
+          </p>}
+          {!groqEnabled && canEdit && workspace.training_dataset?.ready_to_train && workspace.training_dataset.requires_retraining && (
+            <button type="button" className="portal-btn portal-btn-ghost" disabled={training} onClick={() => void trainLocalModel()}>
+              Train Local Advisory Model
+            </button>
           )}
         </div>
       </section>
@@ -863,7 +859,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
             <div className="overflow-x-auto rounded-xl border border-slate-200">
               <table className="w-full min-w-[1120px] text-left text-xs">
                 <thead className="bg-slate-50 text-slate-700"><tr><th className="px-3 py-2">Project</th><th className="px-3 py-2">Agency / Sector</th><th className="px-3 py-2">Score</th><th className="px-3 py-2">Suggested</th><th className="px-3 py-2">Final</th><th className="px-3 py-2">Rule version</th><th className="px-3 py-2">Confirmed by</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">AI reference use</th></tr></thead>
-                <tbody>{filteredHistory.map((row) => <tr key={row.confirmation_id} className="border-t border-slate-100 align-top"><td className="px-3 py-2"><p className="font-semibold text-slate-800">{row.project_title}</p><p className="text-slate-500">{row.submission_type} · {row.project_status}</p>{row.override_rationale && <p className="mt-1 text-amber-700">Override: {row.override_rationale}</p>}</td><td className="px-3 py-2">{row.agency || "-"}<br /><span className="text-slate-500">{row.sector || "Unspecified"}</span></td><td className="px-3 py-2">{Number(row.base_score).toFixed(2)}</td><td className="px-3 py-2">{priorityLabel(row.suggested_priority)}</td><td className="px-3 py-2 font-semibold">{priorityLabel(row.final_priority)}</td><td className="px-3 py-2">{row.rule_version}</td><td className="px-3 py-2">{row.validator_name || "-"}</td><td className="px-3 py-2">{formatDate(row.confirmed_at)}</td><td className="px-3 py-2"><span className={`rounded-full px-2 py-1 font-semibold ${row.training_eligible ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>{row.training_eligible ? "Eligible" : "Excluded"}</span><p className={`mt-1 text-[11px] font-medium ${row.in_active_reference && !row.training_eligible ? "text-amber-700" : "text-slate-500"}`}>{row.in_active_reference ? row.training_eligible ? "In active reference version" : "Remains active until rebuild" : row.training_eligible ? "Pending next rebuild" : "Not in active version"}</p>{row.exclusion_reason && <p className="mt-1 max-w-[220px] text-slate-500">{row.exclusion_reason}</p>}</td></tr>)}</tbody>
+                <tbody>{filteredHistory.map((row) => <tr key={row.confirmation_id} className="border-t border-slate-100 align-top"><td className="px-3 py-2"><p className="font-semibold text-slate-800">{row.project_title}</p><p className="text-slate-500">{row.submission_type} · {row.project_status}</p>{row.override_rationale && <p className="mt-1 text-amber-700">Override: {row.override_rationale}</p>}</td><td className="px-3 py-2">{row.agency || "-"}<br /><span className="text-slate-500">{row.sector || "Unspecified"}</span></td><td className="px-3 py-2">{Number(row.base_score).toFixed(2)}</td><td className="px-3 py-2">{priorityLabel(row.suggested_priority)}</td><td className="px-3 py-2 font-semibold">{priorityLabel(row.final_priority)}</td><td className="px-3 py-2">{row.rule_version}</td><td className="px-3 py-2">{row.validator_name || "-"}</td><td className="px-3 py-2">{formatDate(row.confirmed_at)}</td><td className="px-3 py-2">{row.index_status === "indexed" ? "Indexed" : row.index_status === "pending" ? "Pending" : row.index_status === "failed" ? "Indexing failed" : "Not indexed"}</td></tr>)}</tbody>
               </table>
             </div>
           )}

@@ -9,7 +9,7 @@ type Option = { value: string; label: string };
 type ExportOptions = Record<string, Option[]>;
 type Filters = Record<string, string>;
 type ExportPreview = {
-  count: number; page: number; has_next: boolean; preview_token: string;
+  count: number; page: number; total_pages: number; has_next: boolean; preview_token: string;
   results: { id: number; name: string; agency: string; status: string; role?: string }[];
 };
 
@@ -23,9 +23,6 @@ const projectDefaults: Filters = {
   workflow_status: "",
   implementation_status: "",
   development_sector: "",
-  convergence_program: "",
-  funding_source: "",
-  rdp_main_chapter: "",
   archive_state: "active",
 };
 
@@ -46,9 +43,6 @@ const filterLabels: Record<string, string> = {
   workflow_status: "Workflow Status",
   implementation_status: "Implementation Status",
   development_sector: "Development Sector",
-  convergence_program: "Convergence Program",
-  funding_source: "Funding Source",
-  rdp_main_chapter: "RDP-NCR Main Chapter",
   archive_state: "Archive State",
   role: "Role",
   account_status: "Account Status",
@@ -59,9 +53,6 @@ const optionGroupByFilter: Record<string, string> = {
   workflow_status: "workflow_statuses",
   implementation_status: "implementation_statuses",
   development_sector: "development_sectors",
-  convergence_program: "convergence_programs",
-  funding_source: "funding_sources",
-  rdp_main_chapter: "rdp_main_chapters",
   archive_state: "archive_states",
   role: "roles",
   account_status: "account_statuses",
@@ -338,9 +329,6 @@ const AdminDataExports: React.FC = () => {
                 <SelectFilter label="Workflow Status" value={filters.workflow_status} options={selectOptions("workflow_statuses")} onChange={(value) => setFilter("workflow_status", value)} allLabel="All workflow statuses" />
                 <SelectFilter label="Implementation Status" value={filters.implementation_status} options={selectOptions("implementation_statuses")} onChange={(value) => setFilter("implementation_status", value)} allLabel="All implementation statuses" />
                 <SelectFilter label="Development Sector" value={filters.development_sector} options={selectOptions("development_sectors")} onChange={(value) => setFilter("development_sector", value)} allLabel="All development sectors" />
-                <SelectFilter label="Convergence Program" value={filters.convergence_program} options={selectOptions("convergence_programs")} onChange={(value) => setFilter("convergence_program", value)} allLabel="All convergence programs" />
-                <SelectFilter label="Funding Source" value={filters.funding_source} options={selectOptions("funding_sources")} onChange={(value) => setFilter("funding_source", value)} allLabel="All funding sources" />
-                <SelectFilter label="RDP-NCR Main Chapter" value={filters.rdp_main_chapter} options={selectOptions("rdp_main_chapters")} onChange={(value) => setFilter("rdp_main_chapter", value)} allLabel="All chapters" />
               </> : <>
                 <SelectFilter label="Role" value={filters.role} options={selectOptions("roles")} onChange={(value) => setFilter("role", value)} allLabel="All roles" />
                 <SelectFilter label="Account Status" value={filters.account_status} options={selectOptions("account_statuses")} onChange={(value) => setFilter("account_status", value)} allLabel="All account statuses" />
@@ -382,11 +370,11 @@ const AdminDataExports: React.FC = () => {
                   <tbody>{currentPreview.results.map((row) => <tr key={row.id} className="border-t border-slate-200"><td className="py-2 pr-2">{row.name}</td><td className="pr-2">{row.agency || "-"}</td>{category === "users" && <td className="pr-2">{row.role}</td>}<td>{row.status}</td></tr>)}</tbody>
                 </table>
               </div>}
-              {(currentPreview.page > 1 || currentPreview.has_next) && <nav aria-label="Export preview pages" className="flex items-center gap-3">
+              <nav aria-label="Export preview pages" className="flex items-center gap-3">
                 <button type="button" className="portal-btn portal-btn-ghost" disabled={previewLoading || currentPreview.page === 1} onClick={() => void loadPreview(currentPreview.page - 1)}>Previous</button>
-                <span>Page {currentPreview.page}</span>
+                <span>Page {currentPreview.page} of {Math.max(1, currentPreview.total_pages)}</span>
                 <button type="button" className="portal-btn portal-btn-ghost" disabled={previewLoading || !currentPreview.has_next} onClick={() => void loadPreview(currentPreview.page + 1)}>Next</button>
-              </nav>}
+              </nav>
             </>}
           </section>
           <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(260px,auto)] md:items-end">

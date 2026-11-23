@@ -1203,6 +1203,8 @@ class PortalWorkflowTests(APITestCase):
 
     @override_settings(GROQ_ENABLED=True, GROQ_API_KEY="")
     def test_confirmed_priority_can_immediately_validate_and_endorse_same_copy(self):
+        from ai_engine.models import HistoricalProjectReference
+
         profile = {
             "submission_type": "simplified",
             "form_schema": {"key": "simplified-rdip", "version": 1, "legacy": True},
@@ -1279,14 +1281,19 @@ class PortalWorkflowTests(APITestCase):
         )
         confirm_analysis(other_analysis, self.validator, {}, "low", "", [])
 
-        endorsed = self.client.post(
-            f"/api/validator/projects/{project.id}/validate/",
-            {"action": "endorse", "editable_fields": []},
-            format="json",
-        )
+        self.assertFalse(HistoricalProjectReference.objects.filter(project=project).exists())
+        with self.captureOnCommitCallbacks(execute=True):
+            endorsed = self.client.post(
+                f"/api/validator/projects/{project.id}/validate/",
+                {"action": "endorse", "editable_fields": []},
+                format="json",
+            )
 
         self.assertEqual(endorsed.status_code, status.HTTP_200_OK, endorsed.data)
         self.assertEqual(endorsed.data["workflow_status"], "validated")
+        reference = HistoricalProjectReference.objects.get(project=project)
+        self.assertEqual(reference.state, "ready")
+        self.assertEqual(reference.indexed_record.confirmation.analysis_id, analysis["id"])
 
     def test_validator_cannot_run_priority_analysis_for_detailed_form(self):
         detailed_profile = {
@@ -1974,8 +1981,13 @@ class PerformanceApiTests(APITestCase):
         ProjectRevision.objects.create(
             project=project, revision_number=2, revision_type="progress_update",
             state="endorsed", endorsed_at=base_time - timedelta(days=1),
-            public_note="Approved public progress note",
-            public_summary_snapshot={"key_facts": {"status": "Completed"}},
+            public_note="Legacy private validator note",
+            approved_public_note="Approved public progress note",
+            public_summary_snapshot={"key_facts": {"status": "Completed", "validator_notes": "Private generated note"}},
+            changed_fields=[
+                {"field": "validatorNotes", "before": None, "after": "Private changed note"},
+                {"field": "location", "before": "Manila", "after": [{"comment": "Private nested note"}]},
+            ],
         )
         ProjectRevision.objects.create(
             project=project, revision_number=3, revision_type="progress_update",
@@ -1988,3 +2000,29 @@ class PerformanceApiTests(APITestCase):
         self.assertEqual([entry["revision_number"] for entry in history], [2, 1])
         self.assertEqual(history[0]["public_note"], "Approved public progress note")
         self.assertNotIn("Private pending review note", json.dumps(detail.data, default=str))
+        self.assertNotIn("Legacy private validator note", json.dumps(detail.data, default=str))
+        self.assertNotIn("Private changed note", json.dumps(detail.data, default=str))
+        self.assertNotIn("Private nested note", json.dumps(detail.data, default=str))
+        self.assertNotIn("Private generated note", json.dumps(detail.data, default=str))
+
+    def test_archived_scope_only_shows_public_eligible_projects_and_keeps_active_totals(self):
+        active = self._project(validated=True)
+        archived = self._project(index=2, validated=True)
+        archived.archived = True
+        archived.is_active = False
+        archived.workflow_status = Project.WORKFLOW_VALIDATED
+        archived.save()
+        private = self._project(index=3)
+        private.archived = True
+        private.is_active = False
+        private.save()
+        base = "/api/public/projects/"
+        for view in ("summary", "detail"):
+            rows = self.client.get(base, {"archive_state": "archived", "view": view})
+            self.assertEqual([row["id"] for row in rows.data], [archived.pk])
+            self.assertIs(rows.data[0]["archived"], True)
+        detail = self.client.get(f"{base}{archived.pk}/")
+        self.assertIs(detail.data["archived"], True)
+        self.assertEqual(self.client.get(f"{base}{private.pk}/").status_code, 404)
+        self.assertEqual([row["id"] for row in self.client.get(base, {"view": "summary"}).data], [active.pk])
+        self.assertEqual(self.client.get(base + "stats/").data["total_projects"], 1)

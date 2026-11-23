@@ -678,6 +678,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
   const [lastLocalSaveAt, setLastLocalSaveAt] = useState("");
   const [serverUpdatedAt, setServerUpdatedAt] = useState<string | null>(null);
   const [validatorNotes, setValidatorNotes] = useState("");
+  const [approvedPublicNote, setApprovedPublicNote] = useState("");
   const [editableFields, setEditableFields] = useState<string[]>([]);
   const [diffMap, setDiffMap] = useState<Record<string, DiffField>>({});
   const [fieldEditMeta, setFieldEditMeta] = useState<Record<string, EditMeta>>({});
@@ -1032,6 +1033,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
         }
         if (isRevisionMode && isValidator) {
           setValidatorNotes(String(data?.public_note || ""));
+          setApprovedPublicNote(String(data?.approved_public_note || ""));
         } else if (isValidator && validatorReview) {
           setValidatorNotes(String(validatorReview.review_notes || ""));
         }
@@ -1674,7 +1676,7 @@ const SimplifiedProjectSubmission: React.FC = () => {
           {
           action: validatorAction,
           notes: validatorNotes,
-          public_note: validatorNotes,
+          approved_public_note: approvedPublicNote,
           editable_fields: editableFields,
           },
         );
@@ -2522,6 +2524,12 @@ const SimplifiedProjectSubmission: React.FC = () => {
                   placeholder="Required when requesting revisions"
                 />
               </label>
+              {isRevisionMode && <label className="block">
+                <span className="text-sm text-slate-700">Public update summary (optional)</span>
+                <textarea className="mt-1 w-full border rounded p-2" rows={2} maxLength={1000}
+                  value={approvedPublicNote} onChange={(event) => setApprovedPublicNote(event.target.value)}
+                  placeholder="Shown publicly after endorsement. Enter only information approved for public disclosure." />
+              </label>}
             </div>
           )}
 

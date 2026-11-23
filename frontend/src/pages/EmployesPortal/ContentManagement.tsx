@@ -16,6 +16,7 @@ type PortalUser = {
 
 const ContentManagement = () => {
   const location = useLocation();
+  const pageSlug = location.pathname.match(/\/cms\/pages\/([a-z0-9-]+)\/?$/i)?.[1];
   const routeTab = useMemo(() => {
     const path = location.pathname.toLowerCase();
     if (path.includes("/events")) return "events";
@@ -65,7 +66,7 @@ const ContentManagement = () => {
 
       <Suspense fallback={<div className="portal-card p-5 text-sm text-slate-600">Loading content workspace...</div>}>
         {activeTab === "cms" ? (
-          <CmsManager mode={role === "admin" ? "admin" : "editor"} initialTab={cmsInitialTab} />
+          <CmsManager key={pageSlug || "cms"} initialPageSlug={pageSlug} mode={role === "admin" ? "admin" : "editor"} initialTab={cmsInitialTab} />
         ) : activeTab === "events" ? (
           <PublicEventsManager mode={role === "admin" ? "admin" : "editor"} />
         ) : (

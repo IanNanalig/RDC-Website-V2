@@ -22,6 +22,7 @@ type PaginatedResourceTab = "pages" | "news" | "media";
 const CMS_LIST_PAGE_SIZE = 30;
 
 type Props = {
+  initialPageSlug?: string;
   mode: "admin" | "editor";
   initialTab?: ResourceTab;
 };
@@ -573,7 +574,7 @@ const absolutePublicUrl = (path: string) => {
   return `${window.location.origin}${path}`;
 };
 
-const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
+const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages", initialPageSlug }) => {
   const [activeTab, setActiveTab] = useState<ResourceTab>(initialTab);
   const [pages, setPages] = useState<CMSPage[]>([]);
   const [articles, setArticles] = useState<CMSArticle[]>([]);
@@ -597,6 +598,10 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const [sectionForm, setSectionForm] = useState<SectionForm>(emptySectionForm);
   const [sectionEditorTab, setSectionEditorTab] = useState<"basics" | "content" | "advanced">("content");
   const [sectionErrors, setSectionErrors] = useState<Record<string, string>>({});
+  const [sectionLease, setSectionLease] = useState<{ id: number; token: string; version: string; contentRevision: string } | null>(null);
+  const leaseRef = useRef(sectionLease);
+  const sectionOpenRequest = useRef(0);
+  useEffect(() => { leaseRef.current = sectionLease; }, [sectionLease]);
   const [sectionReadOnly, setSectionReadOnly] = useState(false);
   const [articleForm, setArticleForm] = useState<ArticleForm>(emptyArticleForm);
   const [mediaFiles, setMediaFiles] = useState<QueuedMediaFile[]>([]);
@@ -955,6 +960,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
         setListPages((current) => ({ ...current, pages: 1 }));
         setHasMoreRows((current) => ({ ...current, pages: pageRows.length === CMS_LIST_PAGE_SIZE }));
         const initialPage = pageRows.find((page) => page.id === selectedPageIdRef.current)
+          || pageRows.find((page) => page.slug === initialPageSlug)
           || pageRows.find((page) => page.slug === "home") || pageRows[0];
         if (initialPage) {
           setSelectedPageId((current) => current && pageRows.some((page) => page.id === current) ? current : initialPage.id);
@@ -991,7 +997,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     } finally {
       if (tabLoadRequestRef.current === requestId) setLoading(false);
     }
-  }, [loadPageDetail, loadSettings]);
+  }, [initialPageSlug, loadPageDetail, loadSettings]);
 
   const updateSearch = (value: string) => {
     setSearchText(value);
@@ -1001,12 +1007,20 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     }, 300);
   };
 
+  const clearSectionLease = () => {
+    sectionOpenRequest.current += 1;
+    const current = leaseRef.current;
+    leaseRef.current = null;
+    setSectionLease(null);
+    return current;
+  };
+
   const changeActiveTab = (tab: ResourceTab) => {
     if (tab === activeTab) return;
     if (hasUnsavedChanges && !window.confirm("Discard unsaved CMS changes and switch workspaces?")) return;
-    const sectionId = sectionForm.id;
-    if (sectionId && !sectionReadOnly) {
-      void cmsApi.unlockSection(sectionId).catch(() => undefined);
+    const lease = clearSectionLease();
+    if (lease) {
+      void cmsApi.unlockSection(lease.id, lease.token).catch(() => undefined);
     }
     setPageForm(emptyPageForm);
     setPageFormBaseline(JSON.stringify(emptyPageForm));
@@ -1060,15 +1074,60 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   }, [activeTab, loadTab]);
 
   useEffect(() => {
-    if (!sectionForm.id || sectionReadOnly) return;
+    if (!sectionLease || sectionLease.id !== sectionForm.id || sectionReadOnly) return;
     const timer = window.setInterval(() => {
-      cmsApi.heartbeatSection(sectionForm.id!).catch(() => {
-        setSectionReadOnly(true);
-        setNotice("Your section editing lock expired or is no longer available. Reopen the section to continue.");
-      });
+      if (!document.hidden) void cmsApi.heartbeatSection(sectionLease.id, sectionLease.token).catch(() => undefined);
     }, 120_000);
     return () => window.clearInterval(timer);
-  }, [sectionForm.id, sectionReadOnly]);
+  }, [sectionForm.id, sectionLease, sectionReadOnly]);
+
+  useEffect(() => {
+    if (activeTab !== "pages" || !selectedPageId) return;
+    let stopped = false;
+    let pending = false;
+    let revision = "";
+    const poll = async () => {
+      if (stopped || pending || document.hidden) return;
+      pending = true;
+      const leaseAtRequest = leaseRef.current;
+      try {
+        const result = await cmsApi.getSectionLocks(selectedPageId, revision);
+        if (stopped) return;
+        revision = result.revision;
+        if (!result.locks) return;
+        const metadata = new Map(result.locks.map((lock) => [lock.id, lock]));
+        setPages((current) => current.map((page) => page.id !== selectedPageId ? page : {
+          ...page,
+          sections: page.sections.map((section) => ({ ...section, ...metadata.get(section.id) })),
+        }));
+        const lease = leaseRef.current;
+        const held = lease && metadata.get(lease.id);
+        if (held && lease === leaseAtRequest && (!held.locked_by_me || held.lock_version !== lease.version)) {
+          leaseRef.current = null;
+          setSectionLease(null);
+          setSectionReadOnly(true);
+          setNotice("Your editing lock changed or expired. Your unsaved changes are still here.");
+        }
+      } catch {
+        // A temporary network failure leaves the current view in place.
+      } finally {
+        pending = false;
+      }
+    };
+    const interval = window.setInterval(() => void poll(), 10_000);
+    const refresh = () => { revision = ""; void poll(); };
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("cms:locks-changed", refresh);
+    void poll();
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("cms:locks-changed", refresh);
+    };
+  }, [activeTab, selectedPageId]);
 
   const editPage = async (page: CMSPage) => {
     if (pageFormHasChanges && pageForm.id !== page.id && !window.confirm("Discard the unsaved page changes and open another page?")) return;
@@ -1094,8 +1153,6 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     } finally {
       if (pageOpenRequestRef.current === requestId) setOpeningPageId(null);
     }
-    const previousSectionId = changingPage ? sectionForm.id : undefined;
-    const previousSectionWasWritable = changingPage && !sectionReadOnly;
     mergePage(fullPage);
     const nextForm = { id: fullPage.id, title: fullPage.title, slug: fullPage.slug };
     setPageForm(nextForm);
@@ -1106,8 +1163,9 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       setSectionForm(nextSectionForm);
       setSectionFormBaseline(canonicalSectionForm(nextSectionForm));
       setSectionReadOnly(false);
-      if (previousSectionId && previousSectionWasWritable) {
-        void cmsApi.unlockSection(previousSectionId).then((unlocked) => mergeSection(unlocked as CMSSection)).catch(() => undefined);
+      const previousLease = clearSectionLease();
+      if (previousLease) {
+        void cmsApi.unlockSection(previousLease.id, previousLease.token).then(mergeSection).catch(() => undefined);
       }
     }
   };
@@ -1179,7 +1237,9 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
     }
   };
 
+  const sectionEditorRevision = useRef("");
   const populateSectionForm = (section: CMSSection) => {
+    sectionEditorRevision.current = section.updated_at;
     const content = { ...section.content_json };
     if (section.section_key === "resolutions-archive" && Array.isArray(content.years)) {
       content.years = content.years.map((entry) => ({ ...parseRecord(entry), editorRowId: crypto.randomUUID() }));
@@ -1200,31 +1260,51 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   };
 
   const editSection = async (section: CMSSection) => {
-    if (sectionForm.id === section.id && sectionFormHasChanges) {
+    const sameSection = sectionForm.id === section.id;
+    if (sameSection && !sectionReadOnly) {
       document.querySelector("[data-section-editor]")?.scrollIntoView({ block: "nearest" });
       return;
     }
-    if (sectionFormHasChanges && sectionForm.id !== section.id && !window.confirm("Discard the unsaved section changes and open another section?")) return;
-    populateSectionForm(section);
+    if (sectionFormHasChanges && !sameSection && !window.confirm("Discard the unsaved section changes and open another section?")) return;
+    const reservedForMe = section.locked_by_me && section.lock_reserved;
+    const override = Boolean(section.is_locked && section.lock_version && !reservedForMe && (isAdmin || section.locked_by_me));
+    if (override && !window.confirm(`Replace the editing session held by ${section.lock_owner_name || "the current editor"}?`)) return;
+    const requestId = ++sectionOpenRequest.current;
+    const oldLease = leaseRef.current;
+    if (!sameSection) {
+      if (oldLease) void cmsApi.unlockSection(oldLease.id, oldLease.token).catch(() => undefined);
+      leaseRef.current = null;
+      setSectionLease(null);
+    }
+    setSectionReadOnly(true);
     if (section.is_locked && !section.locked_by_me && !isAdmin) {
-      setSectionReadOnly(true);
+      if (!sameSection) populateSectionForm(section);
       setNotice(`Currently being edited by ${section.lock_owner_name || "another editor"}. This section is read-only.`);
       return;
     }
     try {
-      const overrideConfirmed = Boolean(isAdmin && section.is_locked && !section.locked_by_me);
-      if (overrideConfirmed && !window.confirm(`This section is currently locked by ${section.lock_owner_name || "another editor"}. Take over the edit lock? The previous editor will become read-only.`)) {
-        setSectionReadOnly(true);
+      const { edit_lease: token, ...locked } = await cmsApi.lockSection(section.id, override, section.lock_version);
+      if (requestId !== sectionOpenRequest.current) {
+        void cmsApi.unlockSection(section.id, token).catch(() => undefined);
         return;
       }
-      const locked = (await cmsApi.lockSection(section.id, overrideConfirmed)) as CMSSection;
+      const contentRevision = sameSection && sectionFormHasChanges ? sectionEditorRevision.current : locked.updated_at;
+      const lease = { id: section.id, token, version: locked.lock_version || "", contentRevision };
+      leaseRef.current = lease;
+      setSectionLease(lease);
       mergeSection(locked);
-      setSectionReadOnly(false);
-      setNotice(overrideConfirmed ? `Edit lock taken over from ${section.lock_owner_name || "the previous editor"}.` : "Section lock acquired for 10 minutes. It will stay active while this editor is open.");
+      if (!sameSection || !sectionFormHasChanges) populateSectionForm(locked);
+      if (contentRevision !== locked.updated_at) {
+        setNotice("This section changed while you were editing. Copy your unsaved text or discard it and reopen the section.");
+      } else {
+        setSectionReadOnly(false);
+        setNotice("Section editing lock acquired.");
+      }
+      window.dispatchEvent(new Event("cms:locks-changed"));
     } catch (error) {
-      setSectionReadOnly(true);
+      if (requestId !== sectionOpenRequest.current) return;
+      if (!sameSection) populateSectionForm(section);
       setNotice(getErrorDetail(error, "This section is currently locked by another editor."));
-      await loadTab("pages", true);
     }
   };
 
@@ -1235,6 +1315,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       const restored = await cmsApi.discardPageDraft(page.id, page.updated_at);
       mergePage(restored);
       if (Number(sectionForm.page) === page.id) {
+        clearSectionLease();
         const nextForm = { ...emptySectionForm, page: page.id };
         setSectionForm(nextForm);
         setSectionFormBaseline(canonicalSectionForm(nextForm));
@@ -1250,14 +1331,14 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
 
   const closeSectionEditor = async () => {
     if (sectionFormHasChanges && !window.confirm("Discard the unsaved changes in this section?")) return;
-    const sectionId = sectionForm.id;
+    const lease = clearSectionLease();
     const nextForm: SectionForm = { ...emptySectionForm, page: selectedPageId ?? "" };
     setSectionForm(nextForm);
     setSectionFormBaseline(canonicalSectionForm(nextForm));
     setSectionReadOnly(false);
-    if (sectionId && !sectionReadOnly) {
+    if (lease) {
       try {
-        mergeSection(await cmsApi.unlockSection(sectionId) as CMSSection);
+        mergeSection(await cmsApi.unlockSection(lease.id, lease.token));
       } catch {
         // An expired lock is already effectively released.
       }
@@ -1273,7 +1354,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       window.requestAnimationFrame(() => Array.from(document.querySelectorAll<HTMLElement>('[data-section-editor] input:not([type="hidden"]), [data-section-editor] select, [data-section-editor] textarea')).find((field) => field.offsetParent !== null)?.focus());
     };
     if (sectionReadOnly) {
-      setNotice("This section is read-only while another editor holds the lock.");
+      setNotice("Acquire the current editing lock before saving this section.");
       return;
     }
     if (!sectionForm.page || !sectionForm.section_type.trim()) {
@@ -1318,7 +1399,10 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
       };
       let saved: CMSSectionSaveResult;
       if (sectionForm.id) {
-        saved = await cmsApi.updateSection(sectionForm.id, payload);
+        saved = await cmsApi.updateSection(sectionForm.id, { ...payload, edit_lease: sectionLease?.token, expected_updated_at: sectionLease?.contentRevision });
+        leaseRef.current = null;
+        setSectionLease(null);
+        window.dispatchEvent(new Event("cms:locks-changed"));
         setNotice("Section updated. Publish the page when ready.");
       } else {
         saved = await cmsApi.createSection(payload) as CMSSection;
@@ -1637,24 +1721,49 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
   const requestSectionAccess = async (section: CMSSection) => {
     try {
       await cmsApi.requestSectionAccess(section.id);
-      setNotice(`Access request sent to ${section.lock_owner_name || "the current editor"}.`);
+      setNotice("Access request sent to the current editor and Administrators.");
     } catch (error) {
       setNotice(getErrorDetail(error, "Failed to request access."));
     }
   };
 
-  const releaseOwnSectionLock = async (section: CMSSection) => {
+  const manageSectionLock = async (section: CMSSection, request?: { id: number; name: string }) => {
+    const action = request ? `Transfer this editing lock to ${request.name}?` : "Release this editing lock?";
+    if (!window.confirm(action)) return;
     try {
-      mergeSection(await cmsApi.unlockSection(section.id) as CMSSection);
+      const updated = isAdmin && section.lock_version
+        ? await cmsApi.manageSectionLock(section.id, section.lock_version, request ? "transfer" : "release", request?.id)
+        : await cmsApi.unlockSection(section.id, leaseRef.current?.token || "") as CMSSection;
+      mergeSection({ ...updated, access_requests: [] });
       if (sectionForm.id === section.id) {
-        setSectionForm({ ...emptySectionForm, page: selectedPageId || "" });
-        setSectionReadOnly(false);
+        leaseRef.current = null;
+        setSectionLease(null);
+        setSectionReadOnly(true);
       }
-      setNotice(`Editing lock released for ${section.section_key}.`);
+      setNotice(request ? `Editing access granted to ${request.name}.` : "Editing lock released.");
     } catch (error) {
-      setNotice(getErrorDetail(error, "Failed to release the section lock."));
+      setNotice(getErrorDetail(error, "Failed to change the section lock."));
+    } finally {
+      window.dispatchEvent(new Event("cms:locks-changed"));
     }
   };
+
+  const sectionLockControls = (section: CMSSection, editLabel: string) => (
+    <div className="flex flex-wrap gap-2 text-sm">
+      <button type="button" className="text-blue-600" onClick={() => void editSection(section)}>
+        {section.is_locked && !section.locked_by_me ? (isAdmin ? "Take Over & Edit" : "View") : editLabel}
+      </button>
+      {section.is_locked && !section.locked_by_me && !isAdmin && (
+        <button type="button" className="text-amber-700" onClick={() => void requestSectionAccess(section)}>Request Access</button>
+      )}
+      {section.is_locked && (isAdmin || leaseRef.current?.id === section.id) && (
+        <button type="button" className="text-amber-700" onClick={() => void manageSectionLock(section)}>Release Edit Lock</button>
+      )}
+      {isAdmin && section.access_requests?.map((request) => (
+        <button key={request.id} type="button" className="text-blue-700" onClick={() => void manageSectionLock(section, request)}>Transfer to {request.name}</button>
+      ))}
+    </div>
+  );
 
   const saveSetting = async (row: CMSSiteSetting) => {
     if (!isAdmin) return;
@@ -3031,7 +3140,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
               </div>
               {sectionReadOnly && (
                 <div className="border-b border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-800">
-                  Another editor currently holds this section lock. Fields are read-only until the lock is released or expires.
+                  This editing session does not currently hold the lock. Open Edit Content again when access is available.
                 </div>
               )}
               <div className="flex flex-wrap gap-2 border-b border-slate-200 px-5 py-3" role="tablist" aria-label="Section editor">
@@ -3098,7 +3207,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                 )}
                 {pageHeaderSection && <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3">
                   <div><h4 className="font-semibold text-slate-900">Page title and description</h4><p className="text-xs text-slate-500">Edit the text shown at the top of the public page.</p></div>
-                  <button type="button" className="text-sm text-blue-600" onClick={() => void editSection(pageHeaderSection)}>Edit Page Header</button>
+                  {sectionLockControls(pageHeaderSection, "Edit Page Header")}
                 </div>}
                 {!selectedPage ? (
                   <p className="text-sm text-slate-500">Select or create a page to manage sections.</p>
@@ -3123,21 +3232,11 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages" }) => {
                             <p className="text-xs text-slate-500">{sectionContentSummary(section)} · Updated {formatDate(section.updated_at)}</p>
                             {section.is_locked && !section.locked_by_me && (
                               <p className="text-xs font-semibold text-amber-700">
-                                Editing locked by {section.lock_owner_name || "another editor"}
+                                Editing locked by {section.lock_owner_name || "another editor"} · Expires {formatDate(section.lock_expires_at)}
                               </p>
                             )}
                           </div>
-                          <div className="flex flex-wrap gap-2 text-sm">
-                            <button type="button" className="text-blue-600" onClick={() => editSection(section)}>
-                              {section.is_locked && !section.locked_by_me ? (isAdmin ? "Take Over & Edit" : "View") : "Edit Content"}
-                            </button>
-                            {section.is_locked && !section.locked_by_me && !isAdmin && (
-                              <button type="button" className="text-amber-700" onClick={() => requestSectionAccess(section)}>Request Access</button>
-                            )}
-                            {section.is_locked && section.locked_by_me && (
-                              <button type="button" className="text-amber-700" onClick={() => releaseOwnSectionLock(section)}>Release Edit Lock</button>
-                            )}
-                          </div>
+                          {sectionLockControls(section, "Edit Content")}
                         </div>
                       </div>
                     ))

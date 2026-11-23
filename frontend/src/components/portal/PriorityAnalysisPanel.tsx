@@ -104,6 +104,8 @@ type LearningResult = {
     final_priority: "high" | "medium" | "low";
     similarity: number;
     shared_features?: string[];
+    category?: "potential_duplicate" | "possible_continuation" | "similar_project";
+    differences?: string[];
     confirmed_at?: string;
     validator_name?: string;
   }>;
@@ -739,7 +741,18 @@ const PriorityAnalysisPanel: React.FC<Props> = ({ projectId, revisionId, locked 
                   <div className="mt-4">
                     <h4 className="text-sm font-semibold text-slate-800">Most similar validator-confirmed projects</h4>
                     <div className="mt-2 grid gap-2 lg:grid-cols-3">
-                      {(learning.similar_projects || []).map((item) => <div key={item.project_id} className="rounded-lg border border-violet-100 bg-white p-3 text-sm"><div className="flex items-start justify-between gap-2"><p className="font-semibold text-slate-800">{item.project_title}</p><span className="shrink-0 text-xs font-semibold text-violet-700">{(item.similarity * 100).toFixed(1)}%</span></div><p className="mt-1 text-xs text-slate-500">{item.agency || "Agency unavailable"} · Confirmed {priorityLabel(item.final_priority)}</p>{(item.shared_features || []).length > 0 && <p className="mt-2 text-xs text-slate-600">Shared evidence: {(item.shared_features || []).join(", ")}</p>}</div>)}
+                      {(learning.similar_projects || []).map((item) => (
+                        <div key={item.project_id} className="rounded-lg border border-violet-100 bg-white p-3 text-sm">
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="font-semibold text-slate-800">{item.project_title}</p>
+                            <span className="shrink-0 text-xs font-semibold text-violet-700">{(item.similarity * 100).toFixed(1)}% similarity</span>
+                          </div>
+                          <p className="mt-1 text-xs font-semibold text-slate-700">{item.category === "potential_duplicate" ? "Potential duplicate" : item.category === "possible_continuation" ? "Possible continuation" : "Similar project"}</p>
+                          <p className="mt-1 text-xs text-slate-500">{item.agency || "Agency unavailable"} · Confirmed {priorityLabel(item.final_priority)} · Project #{item.project_id}</p>
+                          {!!item.shared_features?.length && <p className="mt-2 text-xs text-slate-600">Shared: {item.shared_features.join(", ")}</p>}
+                          {!!item.differences?.length && <p className="mt-1 text-xs text-slate-600">Differences: {item.differences.join(", ")}</p>}
+                        </div>
+                      ))}
                     </div>
                     <p className="mt-2 text-xs text-slate-500">Similarity provides context and does not prove that this project should receive the same priority.</p>
                   </div>

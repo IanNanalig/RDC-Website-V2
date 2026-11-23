@@ -73,7 +73,7 @@ async function configure(page, role = "admin") {
         && url.searchParams.get("budget_min") === "50000000"
         && url.searchParams.get("start_year") === "2022";
       const validatorOnly = category === "users" && url.searchParams.get("role") === "validator";
-      const count = noMatch ? 0 : projectCombination ? 2 : validatorOnly ? 3 : category === "users" ? 7 : 13;
+      const count = noMatch ? 0 : projectCombination ? 21 : validatorOnly ? 3 : category === "users" ? 7 : 13;
       return route.fulfill({
         status: 200, headers: cors, contentType: "application/json",
         body: JSON.stringify({ category, count }),
@@ -83,10 +83,11 @@ async function configure(page, role = "admin") {
       assert.equal(url.searchParams.get("agency"), "DENR");
       assert.equal(url.searchParams.get("budget_min"), "50000000");
       assert.equal(url.searchParams.get("start_year"), "2022");
+      const page = Number(url.searchParams.get("page") || 1);
       return route.fulfill({
         status: 200, headers: cors, contentType: "application/json",
-        body: JSON.stringify({ count: 2, page: 1, has_next: false, preview_token: "verified-token",
-          results: [{ id: 1, name: "Preview project", agency: "DENR", status: "Validated" }] }),
+        body: JSON.stringify({ count: 21, page, total_pages: 2, has_next: page === 1, preview_token: "verified-token",
+          results: [{ id: page, name: page === 1 ? "Preview project" : "Second page project", agency: "DENR", status: "Validated" }] }),
       });
     }
     if (path.endsWith("/admin/exports/download/")) {
@@ -117,11 +118,14 @@ try {
   assert.ok(await page.getByRole("link", { name: "Data Exports" }).isVisible(), "Admin sidebar contains Data Exports");
   await page.getByText("13", { exact: true }).waitFor();
   assert.equal(await page.getByLabel("Archive State").inputValue(), "active", "Active projects is the default scope");
+  for (const label of ["Convergence Program", "Funding Source", "RDP-NCR Main Chapter"]) {
+    assert.equal(await page.getByLabel(label, { exact: false }).count(), 0);
+  }
 
   await page.getByLabel("Agency").selectOption("DENR");
   await page.getByLabel("Minimum Budget").fill("50000000");
   await page.getByLabel("Start Year").fill("2022");
-  await page.getByText("2", { exact: true }).waitFor();
+  await page.getByText("21", { exact: true }).waitFor();
   await page.getByText("Agency: DENR").waitFor();
   await page.getByText("Minimum Budget: 50000000").waitFor();
   await page.getByText("Start Year: 2022").waitFor();
@@ -129,6 +133,10 @@ try {
   assert.ok(await page.getByRole("button", { name: "Generate CSV" }).isDisabled());
   await page.getByRole("button", { name: "Preview Results" }).click();
   await page.getByRole("cell", { name: "Preview project" }).waitFor();
+  await page.getByText("Page 1 of 2").waitFor();
+  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByRole("cell", { name: "Second page project" }).waitFor();
+  await page.getByText("Page 2 of 2").waitFor();
   const csvPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "Generate CSV" }).click();
   assert.equal((await csvPromise).suggestedFilename(), "rdc-ncr-projects-20261026-120000.csv");

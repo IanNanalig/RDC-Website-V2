@@ -75,6 +75,7 @@ class AdminExportTests(TestCase):
         second = self.client.get(preview_url, {**params, "page": 2})
         self.assertEqual(second.status_code, 200, second.data)
         self.assertEqual(first.data["count"], 21)
+        self.assertEqual(first.data["total_pages"], 2)
         self.assertEqual(len(first.data["results"]), 20)
         self.assertEqual(second.data["results"][0]["id"], projects[0].pk)
         self.assertEqual(first.data["preview_token"], second.data["preview_token"])
@@ -261,6 +262,24 @@ class AdminExportTests(TestCase):
         self.assertNotIn("SECRET-IP-203.0.113.9", data)
         self.assertNotIn("SECRET-SESSION-AGENT", data)
         self.assertNotIn("session_version", data)
+
+    def test_users_preview_is_paginated_and_download_includes_all_matching_rows(self):
+        User.objects.bulk_create([
+            User(username=f"preview-account-{index:02d}", email=f"preview-account-{index:02d}@example.test", role="staff")
+            for index in range(21)
+        ])
+        self.authenticate()
+        params = {"category": "users", "search": "preview-account-"}
+        first = self.client.get("/api/admin/exports/preview/", params)
+        second = self.client.get("/api/admin/exports/preview/", {**params, "page": 2})
+        self.assertEqual(first.data["total_pages"], 2)
+        self.assertEqual(len(first.data["results"]), 20)
+        self.assertEqual(len(second.data["results"]), 1)
+        response = self.client.get("/api/admin/exports/download/", {
+            **params, "file_format": "csv", "preview_token": second.data["preview_token"],
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.csv_rows(response)), 22)
 
     def test_pdf_is_readable_and_spans_multiple_pages(self):
         for index in range(45):

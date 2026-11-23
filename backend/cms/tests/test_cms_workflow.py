@@ -12,6 +12,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
+from cms.tests.clients import SectionEditingClient
 from PIL import Image
 
 from cms.models import CMSArticle, CMSMediaAsset, CMSPage, CMSPageSection
@@ -42,6 +43,7 @@ class CMSMediaRoutingTests(SimpleTestCase):
 
 
 class CMSWorkflowTests(APITestCase):
+    client_class = SectionEditingClient
     def setUp(self):
         self.media_root = tempfile.mkdtemp(prefix="rdc-cms-tests-")
         self.settings_override = override_settings(MEDIA_ROOT=self.media_root)

@@ -1979,6 +1979,7 @@ def analyze_project(project, validator, snapshot, supplements=None, *, rule_set=
         suggested_scores["ai_provider"] = groq_analysis.get("provider") or {"name": "groq"}
         suggested_scores["groq_analysis"] = {
             "historical_prediction": groq_analysis.get("historical_prediction") or {},
+            "historical_matches": groq_analysis.get("historical_matches") or [],
         }
     else:
         suggested_scores["ai_provider"] = {

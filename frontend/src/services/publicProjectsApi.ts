@@ -3,6 +3,7 @@ import type { PublicProject, PublicProjectsFilters, PublicProjectsStats } from "
 
 function buildQuery(filters: PublicProjectsFilters) {
   const params = new URLSearchParams();
+  if (filters.archive_state === "archived") params.set("archive_state", "archived");
   if (filters.q) params.set("q", filters.q);
   if (filters.agency && filters.agency !== "all") params.set("agency", filters.agency);
   if (filters.lgu && filters.lgu !== "all") params.set("lgu", filters.lgu);

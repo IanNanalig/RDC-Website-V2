@@ -5,6 +5,7 @@ from django.test import override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from ai_engine.services import sync_training_record
 from projects.models import (
     PriorityRuleSet,
     Project,
@@ -82,6 +83,7 @@ class AIPriorityCMSTests(APITestCase):
             validator=self.validator,
             final_priority="low",
         )
+        sync_training_record(self.confirmation)
 
     def test_historical_references_search_is_paginated_and_admin_only(self):
         url = "/api/admin/cms/ai-scoring/historical-references/"
@@ -441,11 +443,12 @@ class AIPriorityCMSTests(APITestCase):
             suggested_priority="high",
             base_score=91,
         )
-        ProjectPriorityConfirmation.objects.create(
+        high_confirmation = ProjectPriorityConfirmation.objects.create(
             analysis=high_analysis,
             validator=self.validator,
             final_priority="high",
         )
+        sync_training_record(high_confirmation)
         self.client.force_authenticate(self.admin)
 
         workspace = self.client.get("/api/admin/cms/ai-scoring/")
@@ -457,7 +460,7 @@ class AIPriorityCMSTests(APITestCase):
         self.assertEqual(workspace.data["ai_provider"]["name"], "groq")
         self.assertEqual(workspace.data["ai_provider"]["primary_model"], "llama-3.1-8b-instant")
         self.assertEqual(workspace.data["ai_provider"]["backup_model"], "llama-3.3-70b-versatile")
-        self.assertEqual(workspace.data["ai_provider"]["historical_mode"], "versioned_rag_calibration")
+        self.assertEqual(workspace.data["ai_provider"]["historical_mode"], "automatic_historical_index")
         self.assertTrue(workspace.data["rag_pipeline"]["rules_primary"])
         self.assertFalse(workspace.data["rag_pipeline"]["hosted_model_fine_tuned"])
         self.assertTrue(

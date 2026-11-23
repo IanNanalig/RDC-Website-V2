@@ -55,7 +55,7 @@ def find_similar_projects(query_features, records, limit=3):
     query_context = query_features.get("context") if isinstance(query_features.get("context"), dict) else {}
     matches = []
     for record, vector in zip(records, record_vectors):
-        score = _cosine(query_vector, vector)
+        text_score = score = _cosine(query_vector, vector)
         context = record.feature_snapshot.get("context") if isinstance(record.feature_snapshot, dict) else {}
         context = context if isinstance(context, dict) else {}
         shared = sorted(
@@ -69,6 +69,6 @@ def find_similar_projects(query_features, records, limit=3):
         if query_context.get("agency") and str(query_context.get("agency")).casefold() == str(context.get("agency")).casefold():
             score = min(1.0, score + 0.03)
             shared.insert(0, f"Same agency: {query_context['agency']}")
-        matches.append({"record": record, "score": score, "shared_features": shared[:10]})
+        matches.append({"record": record, "score": score, "text_score": text_score, "shared_features": shared[:10]})
     matches.sort(key=lambda item: (-item["score"], -item["record"].id))
     return [item for item in matches[:limit] if item["score"] > 0]

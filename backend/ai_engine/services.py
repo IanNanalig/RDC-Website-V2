@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 from collections import Counter
 
 from django.db import transaction
@@ -16,11 +17,11 @@ from .models import (
     AISimilarProject,
     AITrainingRecord,
 )
-from .similarity import find_similar_projects
 
 
 PRIORITY_CLASSES = ["low", "high"]
 MINIMUM_TRAINING_PROJECTS = 2
+logger = logging.getLogger(__name__)
 
 
 def sync_training_record(confirmation):
@@ -288,9 +289,22 @@ def set_training_record_eligibility(record, user, is_eligible, reason=""):
     return record
 
 
+def _save_historical_matches(assessment, matches):
+    AISimilarProject.objects.bulk_create([
+        AISimilarProject(analysis=assessment, training_record=match["record"], rank=index,
+                         similarity_score=round(match["score"], 6), shared_features=match["shared_features"])
+        for index, match in enumerate(matches, start=1)
+    ])
+
+
+def _duplicate_review(matches):
+    return [{
+        "training_record_id": item["record"].pk, "category": item["category"], "differences": item["differences"],
+    } for item in matches if item.get("category")]
+
+
 def ensure_learning_assessment(priority_analysis):
     features = extract_feature_snapshot(priority_analysis)
-    candidates = [record for record in _latest_eligible_records() if record.project_id != priority_analysis.project_id]
     scores = priority_analysis.suggested_scores if isinstance(priority_analysis.suggested_scores, dict) else {}
     provider = scores.get("ai_provider") if isinstance(scores.get("ai_provider"), dict) else {}
     groq_analysis = scores.get("groq_analysis") if isinstance(scores.get("groq_analysis"), dict) else {}
@@ -303,14 +317,12 @@ def ensure_learning_assessment(priority_analysis):
         reference_model = AIModelVersion.objects.filter(
             version=str(provider.get("reference_model_version") or ""),
         ).first()
-        if reference_model:
-            candidates = list(
-                AITrainingRecord.objects.filter(
-                    model_memberships__model_version=reference_model,
-                ).exclude(project_id=priority_analysis.project_id).select_related(
-                    "project", "confirmation__validator", "confirmation__analysis", "rule_set"
-                ).order_by("-confirmation__created_at", "-id")
-            )
+        recorded_matches = groq_analysis.get("historical_matches") or []
+        records = AITrainingRecord.objects.select_related("project", "confirmation__validator").in_bulk(
+            [item["training_record_id"] for item in recorded_matches],
+        )
+        matches = [{**item, "record": records[item["training_record_id"]]} for item in recorded_matches
+                   if item["training_record_id"] in records]
         dataset_version = str(provider.get("dataset_version") or "empty")
         inference_version = (
             f"groq-{provider['model']}-{dataset_version}-{priority_analysis.source_hash[:10]}"
@@ -341,18 +353,27 @@ def ensure_learning_assessment(priority_analysis):
                 "Groq reviewed the project, but its historical priority prediction is withheld until the required "
                 "validator facts are complete."
             )
-        elif not candidates:
+        elif provider.get("historical_status") == "unavailable":
+            status = "untrained"
+            predicted = ""
+            confidence = 0.0
+            summary = "Historical retrieval was unavailable for this analysis."
+        elif provider.get("historical_status") == "omitted_for_input_budget":
+            status = "untrained"
+            predicted = ""
+            confidence = 0.0
+            summary = "Historical examples were omitted to fit the scoring request."
+        elif not provider.get("historical_project_count"):
             status = "untrained"
             predicted = ""
             confidence = 0.0
             summary = (
-                "Groq is active, but no eligible validator-confirmed historical projects are available yet. "
-                "Confirm projects and keep suitable records eligible in the AI Scoring CMS."
+                "The historical index returned no relevant validator-confirmed projects for this analysis."
             )
         elif predicted:
             status = "ready"
             summary = str(groq_prediction.get("explanation") or "").strip() or (
-                f"Groq compared this project with {len(candidates)} eligible validator-confirmed projects and "
+                f"Groq compared this project with {provider.get('historical_project_count', 0)} eligible validator-confirmed projects and "
                 f"suggested {predicted.title()} Priority as advisory historical context."
             )
         else:
@@ -367,7 +388,7 @@ def ensure_learning_assessment(priority_analysis):
             "influential_features": [],
             "limitations": [
                 "The approved scoring rules and current project evidence remain the primary basis for scoring.",
-                "The administrator rebuilds a versioned reference dataset and local calibration model; this does not fine-tune the hosted Groq model.",
+                "The historical index supplies comparisons from validator-confirmed projects.",
                 "The prediction is advisory and cannot validate, endorse, reject, or change the project.",
                 "The validator must verify all cited evidence and make the final decision.",
             ],
@@ -375,7 +396,10 @@ def ensure_learning_assessment(priority_analysis):
             "provider_model": provider.get("model"),
             "used_backup": bool(provider.get("used_backup")),
             "dataset_version": dataset_version,
-            "sample_count": len(candidates),
+            "sample_count": provider.get("historical_project_count", 0),
+            "historical_status": provider.get("historical_status"),
+            "historical_reference_ids": provider.get("historical_reference_ids", []),
+            "duplicate_review": _duplicate_review(matches),
             "reference_model_version": reference_model.version if reference_model else "live-unversioned",
         }
         assessment = AIProjectAnalysis.objects.create(
@@ -391,19 +415,21 @@ def ensure_learning_assessment(priority_analysis):
             class_probabilities=probabilities,
             explanation=explanation,
         )
-        matches = find_similar_projects(features, candidates, limit=3)
-        AISimilarProject.objects.bulk_create([
-            AISimilarProject(
-                analysis=assessment,
-                training_record=match["record"],
-                rank=index,
-                similarity_score=round(match["score"], 6),
-                shared_features=match["shared_features"],
-            )
-            for index, match in enumerate(matches, start=1)
-        ])
+        _save_historical_matches(assessment, matches)
         return assessment
 
+    from .historical_index import find_historical_matches, retry_historical_references
+    try:
+        retry_historical_references()
+        matches = find_historical_matches(
+            priority_analysis.input_snapshot, features.get("context", {}).get("sector", ""), priority_analysis.project_id, limit=6,
+        )
+        historical_status = "ready" if matches else "empty"
+    except Exception:
+        logger.exception("Historical retrieval failed for project %s", priority_analysis.project_id)
+        matches = []
+        historical_status = "unavailable"
+    candidates = [item["record"] for item in matches]
     model = get_active_model()
     if model:
         inference_version = model.version
@@ -475,6 +501,7 @@ def ensure_learning_assessment(priority_analysis):
         }
         status = "untrained"
 
+    explanation.update(duplicate_review=_duplicate_review(matches), historical_status=historical_status)
     assessment = AIProjectAnalysis.objects.create(
         priority_analysis=priority_analysis,
         guideline_rule_set=priority_analysis.rule_set,
@@ -488,15 +515,5 @@ def ensure_learning_assessment(priority_analysis):
         class_probabilities={key: round(value, 6) for key, value in probabilities.items()},
         explanation=explanation,
     )
-    matches = find_similar_projects(features, candidates, limit=3)
-    AISimilarProject.objects.bulk_create([
-        AISimilarProject(
-            analysis=assessment,
-            training_record=match["record"],
-            rank=index,
-            similarity_score=round(match["score"], 6),
-            shared_features=match["shared_features"],
-        )
-        for index, match in enumerate(matches, start=1)
-    ])
+    _save_historical_matches(assessment, matches)
     return assessment

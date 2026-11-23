@@ -1226,6 +1226,7 @@ class ProjectRevisionSerializer(ContributorFormVersionStatusMixin, serializers.M
             "changed_fields",
             "form_migration",
             "public_note",
+            "approved_public_note",
             "is_public_current",
             "created_by_name",
             "submitted_by_name",
@@ -1316,7 +1317,8 @@ class ProjectRevisionSummarySerializer(ProjectRevisionSerializer):
 
 class PublicProjectSerializer(serializers.ModelSerializer):
     # Public-safe projection for the public website dashboard.
-    title = serializers.CharField(source="name", read_only=True)
+    title = serializers.SerializerMethodField()
+    budget = serializers.SerializerMethodField()
     agency = serializers.SerializerMethodField()
     primary_agency = serializers.SerializerMethodField()
     collaborating_agencies = serializers.SerializerMethodField()
@@ -1343,6 +1345,7 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "title",
+            "archived",
             "agency",
             "primary_agency",
             "collaborating_agencies",
@@ -1368,8 +1371,27 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+    def _public_profile(self, obj):
+        if obj.archived:
+            revisions = self._endorsed_revisions(obj)
+            if revisions:
+                profile = revisions[0].profile_data_snapshot
+                return profile if isinstance(profile, dict) else {}
+        profile = obj.profile_data
+        return profile if isinstance(profile, dict) else {}
+
+    def get_title(self, obj):
+        if obj.archived:
+            return str(self._simplified(obj).get("projectActivity") or obj.name)
+        return obj.name
+
+    def get_budget(self, obj):
+        if obj.archived:
+            return self.get_public_key_facts(obj).get("funding_requirement_total", obj.budget)
+        return obj.budget
+
     def _simplified(self, obj) -> dict:
-        pd = getattr(obj, "profile_data", None)
+        pd = self._public_profile(obj)
         if isinstance(pd, dict):
             sf = pd.get("simplified_form")
             if isinstance(sf, dict):
@@ -1410,7 +1432,7 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         sf = self._simplified(obj)
         value = str(sf.get("status") or "").strip()
         if value:
-            profile = getattr(obj, "profile_data", None)
+            profile = self._public_profile(obj)
             marker = profile.get("form_schema") if isinstance(profile, dict) and isinstance(profile.get("form_schema"), dict) else None
             return display_implementation_status(value, marker)
         return str(getattr(obj, "status", "") or "").strip()
@@ -1437,8 +1459,9 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         from .utils import format_project_locations
 
         sf = self._simplified(obj)
-        snapshots = (obj.profile_data or {}).get("catalog_selections", {}).get("location", [])
-        labels = {row["value"]: row["label"] for row in snapshots}
+        catalog = self._public_profile(obj).get("catalog_selections")
+        snapshots = catalog.get("location", []) if isinstance(catalog, dict) else []
+        labels = {row["value"]: row["label"] for row in snapshots if isinstance(row, dict) and "value" in row and "label" in row}
         location = sf.get("location")
         if isinstance(location, list):
             location = [labels.get(value, value) for value in location]
@@ -1460,7 +1483,7 @@ class PublicProjectSerializer(serializers.ModelSerializer):
             return []
 
     def _public_summary_payload(self, obj) -> dict:
-        pd = getattr(obj, "profile_data", None)
+        pd = self._public_profile(obj)
         if isinstance(pd, dict):
             # Prefer override for text, but still expose bullets/key facts from the generated summary.
             override = pd.get("public_summary_override")
@@ -1484,15 +1507,16 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         payload = self._public_summary_payload(obj)
         raw = payload.get("bullets")
         if isinstance(raw, list):
-            return [str(v) for v in raw if str(v).strip()]
+            return [v for v in raw if isinstance(v, str) and v.strip()]
         return []
 
     def get_public_key_facts(self, obj):
         payload = self._public_summary_payload(obj)
         raw = payload.get("key_facts")
-        if isinstance(raw, dict):
-            return raw
-        return {}
+        keys = {"agency", "location", "objective", "start_year", "end_year", "status",
+                "development_sector", "rdp_main_chapter", "sdg_count", "funding_requirement_total",
+                "actual_approved_total"}
+        return {key: value for key, value in raw.items() if key in keys and isinstance(value, (str, int, float))} if isinstance(raw, dict) else {}
 
     def _endorsed_revisions(self, obj):
         cached = getattr(obj, "_serializer_endorsed_revisions", None)
@@ -1575,7 +1599,22 @@ class PublicProjectSerializer(serializers.ModelSerializer):
             if not isinstance(change, dict):
                 continue
             field = str(change.get("field") or "").strip()
-            if not field or field in {"public_summary", "public_summary_override", "validator_review", "contributor_snapshot"}:
+            allowed = {"status", "location", "sdgSelections", "physicalAccomplishment",
+                       "financialAccomplishment", "description", "objective", "program", "projectActivity",
+                       "developmentSector", "rdpMainChapter", "startYear", "endYear", "fundingSource"}
+            root, _, year = field.partition(".")
+            if field not in allowed and not (
+                root in {"fundingRequirementByYear", "actualFundingByYear"}
+                and (year == "2022_prior" or len(year) == 4 and year.isascii() and year.isdecimal())
+            ):
+                continue
+            values = (change.get("before"), change.get("after"))
+            if any(
+                value is not None and not isinstance(value, (str, int, float))
+                and not (field in {"location", "sdgSelections"} and isinstance(value, list)
+                         and all(isinstance(entry, (str, int, float)) for entry in value))
+                for value in values
+            ):
                 continue
             public_changes.append(
                 {
@@ -1604,7 +1643,7 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         return seen[:5]
 
     def _update_headline(self, revision):
-        note = str(revision.public_note or "").strip()
+        note = str(revision.approved_public_note or "").strip()
         if note:
             return note if len(note) <= 180 else f"{note[:177].rstrip()}..."
         badges = self._update_badges(revision)
@@ -1624,13 +1663,13 @@ class PublicProjectSerializer(serializers.ModelSerializer):
             "revision_number": revision.revision_number,
             "revision_type": revision.revision_type,
             "endorsed_at": revision.endorsed_at.isoformat() if revision.endorsed_at else None,
-            "status": key_facts.get("status", ""),
-            "budget": key_facts.get("funding_requirement_total", ""),
-            "location": key_facts.get("location", ""),
+            "status": key_facts.get("status", "") if isinstance(key_facts.get("status"), (str, int, float)) else "",
+            "budget": key_facts.get("funding_requirement_total", "") if isinstance(key_facts.get("funding_requirement_total"), (str, int, float)) else "",
+            "location": key_facts.get("location", "") if isinstance(key_facts.get("location"), (str, int, float)) else "",
             "changed_fields": changed_fields,
             "change_badges": self._update_badges(revision),
             "headline": self._update_headline(revision),
-            "public_note": revision.public_note,
+            "public_note": revision.approved_public_note,
         }
 
     def get_last_endorsed_update_at(self, obj):
@@ -1675,11 +1714,11 @@ class PublicProjectSummarySerializer(PublicProjectSerializer):
         fields = [
             "id",
             "title",
+            "archived",
             "agency",
             "primary_agency",
             "collaborating_agencies",
             "implementation_status",
-            "budget",
             "budget",
             "year",
             "lgu",

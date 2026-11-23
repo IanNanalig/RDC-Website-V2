@@ -6,6 +6,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
+from cms.tests.clients import SectionEditingClient
 
 from cms.models import (
     CMSCarouselItem,
@@ -22,6 +23,7 @@ from projects.models import PublicEvent, User, UserActivity
 
 
 class ContentOnlyCMSTests(APITestCase):
+    client_class = SectionEditingClient
     def setUp(self):
         self.admin = User.objects.create_user(
             username="fixed-admin", email="fixed-admin@example.com", password="StrongTest123!", role="admin",
@@ -176,8 +178,10 @@ class ContentOnlyCMSTests(APITestCase):
                           .values_list("stable_key", "updated_at"))
 
         rows[0]["legendItems"] = [{"label": "Sectoral Committee", "color": "emerald"}]
+        opened = self.client.post(f"{archive_url}lock/")
+        self.assertEqual(opened.status_code, 200)
         with CaptureQueriesContext(connection) as captured:
-            saved = self.client.patch(archive_url, {"content_json": content}, format="json")
+            saved = self.client.patch(archive_url, {"content_json": content, "edit_lease": opened.data["edit_lease"]}, format="json")
         self.assertEqual(saved.status_code, 200, saved.data)
         self.assertEqual(sum('FROM "cms_cmsmediaasset"' in query["sql"] for query in captured), 1)
         self.assertEqual(sum('UPDATE "cms_cmsresolution"' in query["sql"] for query in captured), 0)

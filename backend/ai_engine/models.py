@@ -40,6 +40,33 @@ class AITrainingRecord(models.Model):
         return f"Training record {self.pk}: {self.project_id} -> {self.target_priority}"
 
 
+class HistoricalProjectReference(models.Model):
+    project = models.OneToOneField("projects.Project", on_delete=models.CASCADE, related_name="historical_reference")
+    requested_confirmation = models.ForeignKey("projects.ProjectPriorityConfirmation", on_delete=models.CASCADE, related_name="+")
+    indexed_record = models.ForeignKey(AITrainingRecord, null=True, on_delete=models.SET_NULL, related_name="+")
+    state = models.CharField(max_length=12, default="pending", db_index=True)
+    attempts = models.PositiveIntegerField(default=0)
+    retry_after = models.DateTimeField(null=True)
+    last_error = models.CharField(max_length=120, blank=True)
+    normalized_text = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict)
+    indexed_at = models.DateTimeField(null=True)
+
+    @property
+    def feature_snapshot(self):
+        return {"context": self.metadata}
+
+
+class HistoricalReferenceTerm(models.Model):
+    reference = models.ForeignKey(HistoricalProjectReference, on_delete=models.CASCADE, related_name="terms")
+    term = models.CharField(max_length=48, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["reference", "term"], name="unique_historical_reference_term"),
+        ]
+
+
 class AIModelVersion(models.Model):
     STATUS_CHOICES = [
         ("active", "Active"),

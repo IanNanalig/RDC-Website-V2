@@ -20,7 +20,7 @@ from rest_framework.views import APIView
 
 from ai_engine.models import AIModelVersion
 from ai_engine.serializers import AIModelVersionSerializer
-from ai_engine.services import get_active_model, sync_training_record, training_dataset_summary
+from ai_engine.services import get_active_model, training_dataset_summary
 
 from cms.form_catalog_views import CommitteeSerializer
 from cms.form_schema import FormSchemaError, SIMPLIFIED_FORM_KEY, default_simplified_form_schema, describe_form_error, prepare_catalog_schema, validate_draft_schema, validate_form_schema
@@ -71,6 +71,9 @@ from cms.services.locking import (
     heartbeat_form_lock,
     heartbeat_section_lock,
     lock_is_active,
+    lock_timeout,
+    owns_section_lease,
+    section_lock_version,
     release_form_lock,
     release_section_lock,
 )
@@ -591,7 +594,8 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
                 section.is_visible = True
                 section.lock_owner = None
                 section.lock_acquired_at = None
-                section.save(update_fields=["content_json", "status", "is_visible", "lock_owner", "lock_acquired_at", "updated_at"])
+                section.edit_lease = None
+                section.save(update_fields=["content_json", "status", "is_visible", "lock_owner", "lock_acquired_at", "edit_lease", "updated_at"])
                 sync_normalized_section_draft(section, request.user, restoring=True)
         page.status = "published"
         page.has_unpublished_changes = False
@@ -684,11 +688,21 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
             raise PermissionDenied("Sections in a submitted page can only be changed after the page is returned for revision.")
         if section.status == "submitted" and getattr(request.user, "role", "") != "admin":
             raise PermissionDenied("Submitted sections can only be changed by an administrator.")
-        if lock_is_active(section) and section.lock_owner_id != request.user.id:
+        if not owns_section_lease(section, request.user, request.data.get("edit_lease")):
             return Response(
-                {"detail": f"Currently being edited by {section.lock_owner.get_full_name() or section.lock_owner.username}.", "lock_owner": section.lock_owner_id},
+                {"detail": "Acquire the current editing lease before saving this section."},
                 status=423,
             )
+        expected = request.data.get("expected_updated_at")
+        if expected is not None:
+            try:
+                expected_revision = parse_datetime(str(expected))
+            except ValueError:
+                expected_revision = None
+            if expected_revision is None:
+                return Response({"detail": "Supply a valid section revision."}, status=400)
+            if expected_revision != section.updated_at:
+                return Response({"detail": "This section changed since it was opened. Reload it before saving."}, status=409)
         serializer = self.get_serializer(section, data=request.data, partial=kwargs.get("partial", False))
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
@@ -699,7 +713,7 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
         }})
 
     def perform_update(self, serializer):
-        section = serializer.save(status="draft", lock_owner=None, lock_acquired_at=None)
+        section = serializer.save(status="draft", lock_owner=None, lock_acquired_at=None, edit_lease=None)
         from cms.services.collections import sync_normalized_section_draft
         sync_normalized_section_draft(
             section, self.request.user,
@@ -719,64 +733,149 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
     def restore(self, request, pk=None):
         return Response({"detail": "Fixed page sections cannot be restored or replaced."}, status=405)
 
+    @action(detail=False, methods=["get"])
+    def locks(self, request):
+        if not str(request.query_params.get("page") or "").isdigit():
+            return Response({"detail": "Select a CMS page."}, status=400)
+        sections = list(self.get_queryset().exclude(status="archived").defer("content_json").select_related("lock_owner"))
+        versions = {section.pk: section_lock_version(section) for section in sections}
+        requests_by_prefix = {}
+        if request.user.role == "admin" and any(versions.values()):
+            condition = Q()
+            for pk, version in versions.items():
+                if version:
+                    condition |= Q(dedupe_key__startswith=f"cms-section-access-{pk}-{version}-")
+            requests = Notification.objects.filter(
+                condition, recipient=request.user, event_type="cms_section_access_requested",
+                actor__role="content_editor", actor__is_active=True,
+            ).select_related("actor")
+            for access in requests:
+                prefix = access.dedupe_key.rsplit("-", 2)[0]
+                requests_by_prefix.setdefault(prefix, []).append({
+                    "id": access.pk, "name": access.actor.get_full_name() or access.actor.username,
+                })
+        rows = []
+        for section in sections:
+            version = versions[section.pk]
+            owner = section.lock_owner if version else None
+            rows.append({
+                "id": section.pk,
+                "is_locked": bool(version),
+                "lock_version": version,
+                "lock_reserved": bool(version and section.edit_lease is None),
+                "lock_owner": owner.pk if owner else None,
+                "lock_owner_name": (owner.get_full_name() or owner.username) if owner else "",
+                "lock_acquired_at": section.lock_acquired_at.isoformat() if version else None,
+                "lock_expires_at": (section.lock_acquired_at + lock_timeout()).isoformat() if version else None,
+                "locked_by_me": bool(owner and owner.pk == request.user.pk),
+                "access_requests": requests_by_prefix.get(f"cms-section-access-{section.pk}-{version}", []),
+            })
+        revision = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+        payload = {"revision": revision}
+        if request.query_params.get("revision") != revision:
+            payload["locks"] = rows
+        return Response(payload, headers={"Cache-Control": "private, no-store"})
+
     @action(detail=True, methods=["post"])
     def lock(self, request, pk=None):
-        section = self.get_object()
-        old_owner_id = section.lock_owner_id if lock_is_active(section) else None
-        old_owner_name = (section.lock_owner.get_full_name() or section.lock_owner.username) if old_owner_id and section.lock_owner else ""
-        is_admin = getattr(request.user, "role", "") == "admin"
-        if old_owner_id and old_owner_id != request.user.id and is_admin and not request.data.get("override_confirmed"):
-            return Response({"detail": "Confirm the section lock override before taking over this section."}, status=409)
-        section, acquired = acquire_section_lock(pk, request.user, force=is_admin)
-        event = "cms_section_lock_overridden" if acquired and old_owner_id and old_owner_id != request.user.id else (
+        previous = self.get_object()
+        section, result = acquire_section_lock(
+            pk, previous.page_id, request.user, override=request.data.get("override_confirmed") is True,
+            expected_version=request.data.get("lock_version") or "",
+        )
+        if result == "unavailable":
+            raise PermissionDenied("This section is unavailable for editing.")
+        acquired = result == "acquired"
+        event = "cms_section_lock_overridden" if acquired and section_lock_version(previous) else (
             "cms_section_lock_acquired" if acquired else "cms_section_lock_blocked"
         )
-        _log_cms_activity(
-            request, event,
-            {
-                "section_id": section.pk,
-                "lock_owner": section.lock_owner_id,
-                "previous_lock_owner": old_owner_id,
-                "previous_lock_owner_name": old_owner_name,
-            },
-        )
-        return Response(self.get_serializer(section).data, status=200 if acquired else 423)
+        _log_cms_activity(request, event, {"section_id": section.pk, "lock_owner": section.lock_owner_id, "previous_lock_owner": previous.lock_owner_id})
+        if not acquired:
+            return Response({"detail": "The lock changed or is already held by another editing session."}, status=423)
+        return Response({**self.get_serializer(section).data, "edit_lease": str(section.edit_lease)})
 
     @action(detail=True, methods=["post"])
     def unlock(self, request, pk=None):
         self.get_object()
-        section, released = release_section_lock(pk, request.user, force=getattr(request.user, "role", "") == "admin")
+        section, released = release_section_lock(pk, request.user, lease=request.data.get("edit_lease"))
         if not released:
-            return Response({"detail": "Only the lock owner or an administrator can release this lock."}, status=423)
+            return Response({"detail": "Only the current editing session can release this lock."}, status=423)
         _log_cms_activity(request, "cms_section_lock_released", {"section_id": section.pk})
         return Response(self.get_serializer(section).data)
 
     @action(detail=True, methods=["post"])
     def heartbeat(self, request, pk=None):
         self.get_object()
-        section, refreshed = heartbeat_section_lock(pk, request.user)
+        section, refreshed = heartbeat_section_lock(pk, request.user, request.data.get("edit_lease"))
         if not refreshed:
-            return Response({"detail": "The section lock is no longer owned by this user."}, status=409)
+            return Response({"detail": "The section editing lease has changed or expired."}, status=409)
+        return Response({"lock_version": section_lock_version(section)})
+
+    @action(detail=True, methods=["post"], url_path="manage-lock", permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
+    @transaction.atomic
+    def manage_lock(self, request, pk=None):
+        current = self.get_object()
+        page = CMSPage.objects.select_for_update().get(pk=current.page_id)
+        section = CMSPageSection.objects.select_for_update().get(pk=pk)
+        section.page = page
+        version = section_lock_version(section)
+        if request.data.get("confirmed") is not True or not version or request.data.get("lock_version") != version:
+            return Response({"detail": "The editing lock changed. Review its current owner and confirm again."}, status=409)
+        operation = request.data.get("operation")
+        previous_owner = section.lock_owner_id
+        recipient = None
+        if operation == "transfer":
+            if section.page.status == "submitted" or section.status in {"archived", "submitted"}:
+                return Response({"detail": "Return this section to editing before transferring the lock."}, status=409)
+            try:
+                request_id = int(request.data.get("request_id"))
+            except (TypeError, ValueError, OverflowError):
+                request_id = None
+            access = Notification.objects.filter(
+                pk=request_id, recipient=request.user, event_type="cms_section_access_requested",
+                dedupe_key__startswith=f"cms-section-access-{pk}-{version}-",
+                actor__role="content_editor", actor__is_active=True,
+            ).select_related("actor").first()
+            if access is None:
+                return Response({"detail": "That access request is no longer available."}, status=409)
+            recipient = access.actor
+        elif operation != "release":
+            return Response({"detail": "Choose release or transfer."}, status=400)
+        section.lock_owner = recipient
+        section.lock_acquired_at = timezone.now() if recipient else None
+        section.edit_lease = None
+        section.save(update_fields=["lock_owner", "lock_acquired_at", "edit_lease"])
+        _log_cms_activity(request, "cms_section_lock_overridden" if recipient else "cms_section_lock_released", {
+            "section_id": section.pk, "previous_lock_owner": previous_owner, "lock_owner": recipient.pk if recipient else None,
+        })
+        if recipient:
+            Notification.objects.create(
+                recipient=recipient, actor=request.user, event_type="cms_section_access_granted",
+                title="CMS section access granted", message=f"You can now edit {section.page.title}: {section.section_key}.",
+                link_path=f"/employee/cms/pages/{section.page.slug}",
+            )
         return Response(self.get_serializer(section).data)
 
     @action(detail=True, methods=["post"], url_path="request-access")
     def request_access(self, request, pk=None):
         section = self.get_object()
-        if not lock_is_active(section) or not section.lock_owner_id or section.lock_owner_id == request.user.id:
+        version = section_lock_version(section)
+        if not version or section.lock_owner_id == request.user.pk:
             return Response({"detail": "This section is not locked by another editor."}, status=400)
-        Notification.objects.update_or_create(
-            dedupe_key=f"cms-section-access-{section.pk}-{request.user.pk}-{section.lock_owner_id}",
-            defaults={
-                "recipient": section.lock_owner,
-                "actor": request.user,
-                "event_type": "cms_section_access_requested",
-                "title": "CMS section access requested",
-                "message": f"{request.user.get_full_name() or request.user.username} requested access to {section.page.title}: {section.section_key}.",
-                "link_path": "/employee/cms/pages/" + section.page.slug,
-            },
-        )
+        recipients = set(User.objects.filter(role="admin", is_active=True).values_list("pk", flat=True))
+        recipients.add(section.lock_owner_id)
+        for recipient_id in recipients:
+            Notification.objects.update_or_create(
+                dedupe_key=f"cms-section-access-{section.pk}-{version}-{request.user.pk}-{recipient_id}",
+                defaults={
+                    "recipient_id": recipient_id, "actor": request.user, "event_type": "cms_section_access_requested",
+                    "title": "CMS section access requested",
+                    "message": f"{request.user.get_full_name() or request.user.username} requested access to {section.page.title}: {section.section_key}.",
+                    "link_path": f"/employee/cms/pages/{section.page.slug}",
+                },
+            )
         _log_cms_activity(request, "cms_section_access_requested", {"section_id": section.pk, "owner": section.lock_owner_id})
-        return Response({"detail": "Access request sent to the current editor."})
+        return Response({"detail": "Access request sent to the current editor and Administrators."})
 
     @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
     def publish(self, request, pk=None):
@@ -1088,6 +1187,12 @@ class AdminCMSModuleDetailView(APIView):
             if expected and expected != locked_page.updated_at.isoformat().replace("+00:00", "Z") and expected != locked_page.updated_at.isoformat():
                 return Response({"detail": "This module changed after it was loaded. Refresh before saving."}, status=409)
             section_rows = {row.section_key: row for row in CMSPageSection.objects.select_for_update().filter(page=locked_page)}
+            leases = request.data.get("section_leases")
+            if not isinstance(leases, dict) or any(
+                key in section_rows and not owns_section_lease(section_rows[key], request.user, leases.get(key))
+                for key in sections_payload
+            ):
+                return Response({"detail": "Acquire a current editing lease for every section before saving."}, status=423)
             for key, content in sections_payload.items():
                 if not isinstance(content, dict):
                     return Response({"sections": {key: "Section content must be an object."}}, status=400)
@@ -1107,9 +1212,10 @@ class AdminCMSModuleDetailView(APIView):
                 row.status = "draft"
                 row.lock_owner = None
                 row.lock_acquired_at = None
+                row.edit_lease = None
                 row.save(update_fields=[
                     "content_json", "section_type", "order", "is_visible", "status",
-                    "lock_owner", "lock_acquired_at", "updated_at",
+                    "lock_owner", "lock_acquired_at", "edit_lease", "updated_at",
                 ])
                 from cms.services.collections import sync_normalized_section_draft
                 sync_normalized_section_draft(
@@ -1545,8 +1651,18 @@ def _historical_confirmation_queryset():
     ).order_by("-created_at", "-pk")
 
 
-def _historical_confirmation_rows(confirmations, active_model, *, repair_missing=False):
+def _historical_confirmation_rows(confirmations, active_model):
     confirmations = list(confirmations)
+    from ai_engine.historical_index import indexed_references
+    from ai_engine.models import HistoricalProjectReference
+
+    confirmation_ids = [row.pk for row in confirmations]
+    index_states = dict(HistoricalProjectReference.objects.filter(
+        requested_confirmation_id__in=confirmation_ids,
+    ).values_list("requested_confirmation_id", "state"))
+    indexed_ids = set(indexed_references().filter(
+        indexed_record__confirmation_id__in=confirmation_ids,
+    ).values_list("indexed_record__confirmation_id", flat=True))
     active_reference_record_ids = set(
         active_model.dataset_memberships.filter(
             training_record__confirmation_id__in=[row.pk for row in confirmations],
@@ -1559,7 +1675,7 @@ def _historical_confirmation_rows(confirmations, active_model, *, repair_missing
         try:
             training_record = confirmation.ai_training_record
         except ObjectDoesNotExist:
-            training_record = sync_training_record(confirmation) if repair_missing else None
+            training_record = None
         snapshot = analysis.input_snapshot if isinstance(analysis.input_snapshot, dict) else {}
         form = snapshot.get("simplified_form")
         if not isinstance(form, dict):
@@ -1589,6 +1705,7 @@ def _historical_confirmation_rows(confirmations, active_model, *, repair_missing
                     training_record and training_record.pk in active_reference_record_ids
                 ),
                 "exclusion_reason": training_record.exclusion_reason if training_record else "Pending dataset synchronization.",
+                "index_status": "indexed" if confirmation.pk in indexed_ids else index_states.get(confirmation.pk, "not_indexed"),
             }
         )
     return historical_projects
@@ -1622,7 +1739,23 @@ class AdminAIHistoricalReferencesView(APIView):
         return pagination.get_paginated_response(rows)
 
 
+class AdminAIHistoricalRebuildView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsCMSAdmin]
+
+    def post(self, request):
+        from ai_engine.historical_index import index_status, rebuild_historical_batch
+
+        cursor = request.data.get("after", 0)
+        if type(cursor) is not int or not 0 <= cursor <= 2**63 - 1:
+            return Response({"detail": "Supply a valid project cursor."}, status=400)
+        batch = rebuild_historical_batch(after=cursor)
+        _log_cms_activity(request, "ai_historical_index_rebuild", {"after": cursor, **batch})
+        return Response({**batch, "index": index_status()})
+
+
 def _priority_reference_payload(limit=200):
+    from ai_engine.historical_index import index_status
+
     active = get_active_priority_rule_set()
     drafts = list(PriorityRuleSet.objects.filter(status=PriorityRuleSet.STATUS_DRAFT).order_by("-updated_at", "-pk"))
     draft = drafts[0] if drafts else None
@@ -1633,18 +1766,17 @@ def _priority_reference_payload(limit=200):
     history = list(rules.annotate(analysis_count=Count("analyses"))[:page_size])
     rule_count = rules.count() if len(history) == page_size else len(history)
     historical_projects = _historical_confirmation_rows(
-        _historical_confirmation_queryset()[:limit], active_model, repair_missing=True,
+        _historical_confirmation_queryset()[:limit], active_model,
     ) if limit else []
     training_dataset = training_dataset_summary()
     return {
+        "historical_index": index_status(),
         "system_type": "groq_rag_rules" if groq_enabled else "hybrid_rules_similarity_ml",
         "learns_from_historical_projects": True,
         "learning_explanation": (
-            "The active CMS rules and current project evidence remain the primary scoring method. An administrator can "
-            "curate validator-confirmed projects and rebuild a versioned historical reference model. Groq then receives "
-            "the most similar projects, their rule scores, and their human-confirmed outcomes as secondary calibration "
-            "context. This is retrieval-augmented generation, not fine-tuning of the hosted Groq model, and the validator "
-            "always makes the final decision."
+            "The active CMS rules and current project evidence drive scoring. Once validation completes, eligible project "
+            "snapshots enter the historical index automatically. Groq can receive relevant confirmed projects as secondary "
+            "context. The validator makes the final decision."
             if groq_enabled else
             "The engine applies the active versioned rules first, then an administrator can train a separate, "
             "versioned model using only validator-confirmed project outcomes. It also compares each project with "
@@ -1655,7 +1787,7 @@ def _priority_reference_payload(limit=200):
             "enabled": groq_enabled,
             "primary_model": getattr(settings, "GROQ_PRIMARY_MODEL", "") if groq_enabled else "",
             "backup_model": getattr(settings, "GROQ_BACKUP_MODEL", "") if groq_enabled else "",
-            "historical_mode": "versioned_rag_calibration" if groq_enabled else "trained_local_model",
+            "historical_mode": "automatic_historical_index" if groq_enabled else "trained_local_model",
         },
         "rag_pipeline": {
             "rules_primary": True,
@@ -1672,19 +1804,14 @@ def _priority_reference_payload(limit=200):
                     "description": "Only projects with a validator-confirmed final priority can become references.",
                 },
                 {
-                    "key": "curate",
-                    "title": "Administrator curation",
-                    "description": "Administrators include suitable records or exclude unreliable and duplicate records.",
-                },
-                {
-                    "key": "rebuild",
-                    "title": "Versioned rebuild",
-                    "description": "A rebuild snapshots the eligible dataset and trains the local advisory calibration model.",
+                    "key": "index",
+                    "title": "Automatic indexing",
+                    "description": "Eligible snapshots enter the index after validation. Administrators can rebuild it when needed.",
                 },
                 {
                     "key": "retrieve",
                     "title": "Retrieve similar projects",
-                    "description": "For each proposal, the system retrieves up to six similar projects from the active snapshot.",
+                    "description": "For each proposal, the system finds up to six relevant validated projects in the index.",
                 },
                 {
                     "key": "analyze",

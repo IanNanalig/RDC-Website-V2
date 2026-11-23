@@ -1,5 +1,6 @@
 export type PublicProject = {
   id: number;
+  archived?: boolean;
   title: string;
   agency: string;
   primary_agency?: { id: number; code: string; name: string } | null;
@@ -48,6 +49,7 @@ export type PublicProjectsStats = {
 };
 
 export type PublicProjectsFilters = {
+  archive_state?: "active" | "archived";
   q?: string;
   agency?: string;
   lgu?: string;

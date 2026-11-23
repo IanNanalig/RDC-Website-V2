@@ -87,6 +87,8 @@ try {
   let updatedFeeds = false;
   let eventRequests = 0;
   let aboutDetailRequests = 0;
+  let homeSectionLock = false;
+  let transferSent = false;
   const savedRevision = "2026-01-02T08:00:00+08:00";
   const upcomingForum = {
     id: 7, event_type: "forum", title: "Public test forum", location: "Manila",
@@ -150,15 +152,33 @@ try {
     if (path === "/api/admin/cms/pages/") return respond(route, {
       results: [homePage, aboutPage].map(({ sections, ...summary }) => summary), count: 2, next: null, total_pages: 1,
     });
+    if (path === "/api/admin/cms/sections/locks/") {
+      const revision = homeSectionLock ? "locked" : "unlocked";
+      const locks = homeSectionLock ? [{
+        id: 11, is_locked: true, locked_by_me: false, lock_owner: 2, lock_version: "editor-lock",
+        lock_owner_name: "Content Editor", access_requests: [{ id: 9, name: "Requesting Editor" }],
+      }] : [{ id: 11, is_locked: false, locked_by_me: false, lock_version: "", access_requests: [] }];
+      return respond(route, url.searchParams.get("revision") === revision ? { revision } : { revision, locks });
+    }
+    if (path === "/api/admin/cms/sections/11/manage-lock/") {
+      assert.deepEqual(route.request().postDataJSON(), {
+        confirmed: true, lock_version: "editor-lock", operation: "transfer", request_id: 9,
+      });
+      transferSent = true;
+      homeSectionLock = false;
+      return respond(route, { ...sections.find((row) => row.id === 11), is_locked: false, locked_by_me: false });
+    }
     const lockMatch = path.match(/^\/api\/admin\/cms\/sections\/(\d+)\/(lock|unlock|heartbeat)\/$/);
     if (lockMatch) {
       const section = sections.find((row) => row.id === Number(lockMatch[1]));
-      return respond(route, { ...section, is_locked: lockMatch[2] !== "unlock", locked_by_me: lockMatch[2] !== "unlock", lock_owner: 1, lock_owner_name: "Admin" });
+      return respond(route, { ...section, is_locked: lockMatch[2] !== "unlock", locked_by_me: lockMatch[2] !== "unlock", lock_owner: 1, lock_owner_name: "Admin", edit_lease: "test-lease" });
     }
     const sectionMatch = path.match(/^\/api\/admin\/cms\/sections\/(\d+)\/$/);
     if (sectionMatch && route.request().method() === "PUT") {
       const section = sections.find((row) => row.id === Number(sectionMatch[1]));
-      Object.assign(section, route.request().postDataJSON());
+      const { edit_lease: lease, expected_updated_at: _revision, ...content } = route.request().postDataJSON();
+      assert.equal(lease, "test-lease");
+      Object.assign(section, content);
       return respond(route, { ...section, page_revision: { status: "published", has_unpublished_changes: true, updated_at: savedRevision } });
     }
     if (path === "/api/admin/cms/media/") return respond(route, { results: [], count: 0, next: null, total_pages: 1 });
@@ -171,10 +191,18 @@ try {
   await page.locator('[data-cms-page-id="1"]').getByRole("button", { name: "Manage Content" }).click();
   await page.getByText(/Latest Media Releases, Regional Development Dashboard, and Upcoming Events update automatically/).waitFor();
   await page.locator('[data-cms-section-id="11"]').getByRole("button", { name: "Edit Content" }).waitFor();
+  homeSectionLock = true;
+  const transfer = page.getByRole("button", { name: "Transfer to Requesting Editor" });
+  await transfer.waitFor({ timeout: 15_000 });
+  page.once("dialog", (dialog) => dialog.accept());
+  await transfer.click();
+  await page.getByText("Editing access granted to Requesting Editor.").waitFor();
+  assert.equal(transferSent, true);
   assert.equal(await page.locator('[data-cms-section-id="12"], [data-cms-section-id="13"], [data-cms-section-id="14"]').count(), 0);
   await page.locator('[data-cms-page-id="4"]').getByRole("button", { name: "Manage Content" }).click();
   await page.locator('[data-cms-section-id="44"]').getByRole("button", { name: "Edit Content" }).click();
   const childLabels = page.getByLabel("Child Labels (one per line)").first();
+  await childLabels.and(page.locator(":enabled")).waitFor();
   await childLabels.pressSequentially("First child label with spaces");
   assert.equal(await childLabels.inputValue(), "First child label with spaces", "spaces remain while typing organization child labels");
   page.once("dialog", (dialog) => dialog.accept());

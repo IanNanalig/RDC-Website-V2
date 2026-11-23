@@ -20,6 +20,9 @@ export type CMSSection = {
   status: CMSStatus;
   lock_owner?: number | null;
   lock_owner_name?: string;
+  lock_version?: string;
+  lock_reserved?: boolean;
+  access_requests?: Array<{ id: number; name: string }>;
   lock_acquired_at?: string | null;
   lock_expires_at?: string | null;
   is_locked?: boolean;
@@ -292,6 +295,7 @@ export type CMSAIHistoricalProject = {
   training_eligible?: boolean;
   in_active_reference?: boolean;
   exclusion_reason?: string;
+  index_status?: string;
 };
 
 export type CMSAIModelVersion = {
@@ -388,6 +392,7 @@ export type CMSAIScoringWorkspace = {
   rule_versions_total_pages: number;
   historical_projects: CMSAIHistoricalProject[];
   historical_count: number;
+  historical_index?: { available: number; pending?: number; failed?: number };
   training_dataset?: CMSAITrainingDataset;
   active_model?: CMSAIModelVersion | null;
   model_versions?: CMSAIModelVersion[];
@@ -549,11 +554,19 @@ export const cmsApi = {
     return listFromResponse<CMSSection>(await api.get(`admin/cms/sections/${query}`));
   },
   createSection: (payload: Partial<CMSSection>) => api.post("admin/cms/sections/", payload),
-  updateSection: (id: number, payload: Partial<CMSSection>) =>
+  updateSection: (id: number, payload: Partial<CMSSection> & { edit_lease?: string; expected_updated_at?: string }) =>
     api.put(`admin/cms/sections/${id}/`, payload) as Promise<CMSSectionSaveResult>,
-  lockSection: (id: number, overrideConfirmed = false) => api.post(`admin/cms/sections/${id}/lock/`, { override_confirmed: overrideConfirmed }),
-  unlockSection: (id: number) => api.post(`admin/cms/sections/${id}/unlock/`),
-  heartbeatSection: (id: number) => api.post(`admin/cms/sections/${id}/heartbeat/`),
+  lockSection: (id: number, overrideConfirmed = false, lockVersion = "") =>
+    api.post(`admin/cms/sections/${id}/lock/`, { override_confirmed: overrideConfirmed, lock_version: lockVersion }) as Promise<CMSSection & { edit_lease: string }>,
+  unlockSection: (id: number, lease: string) => api.post(`admin/cms/sections/${id}/unlock/`, { edit_lease: lease }),
+  manageSectionLock: (id: number, lockVersion: string, operation: "release" | "transfer", requestId?: number) =>
+    api.post(`admin/cms/sections/${id}/manage-lock/`, { confirmed: true, lock_version: lockVersion, operation, request_id: requestId }) as Promise<CMSSection>,
+  getSectionLocks: (page: number, revision: string) =>
+    api.get(`admin/cms/sections/locks/?${new URLSearchParams({ page: String(page), revision })}`) as Promise<{
+      revision: string;
+      locks?: Array<Pick<CMSSection, "id" | "is_locked" | "lock_version" | "lock_reserved" | "lock_owner" | "lock_owner_name" | "lock_acquired_at" | "lock_expires_at" | "locked_by_me" | "access_requests">>;
+    }>,
+  heartbeatSection: (id: number, lease: string) => api.post(`admin/cms/sections/${id}/heartbeat/`, { edit_lease: lease }),
   requestSectionAccess: (id: number) => api.post(`admin/cms/sections/${id}/request-access/`),
   archiveSection: (id: number) => api.post(`admin/cms/sections/${id}/archive/`),
 
@@ -648,6 +661,9 @@ export const cmsApi = {
   getAIHistoricalReferences: (page: number, search: string) =>
     api.get(`admin/cms/ai-scoring/historical-references/?${new URLSearchParams({ page: String(page), q: search })}`) as
       Promise<{ count: number; total_pages: number; results: CMSAIHistoricalProject[] }>,
+  rebuildAIHistoricalReferences: (after: number) =>
+    api.post("admin/cms/ai-scoring/historical-references/rebuild/", { after }) as
+      Promise<{ next: number | null; scheduled: number }>,
   getAIScoringVersions: (page: number) =>
     api.get(`admin/cms/ai-scoring/versions/?page=${page}`) as Promise<{ page: number; total_pages: number; results: CMSAIRuleHistoryEntry[] }>,
   getAIScoringVersion: (id: number) => api.get(`admin/cms/ai-scoring/versions/${id}/`) as Promise<CMSAIRuleHistoryDetail>,

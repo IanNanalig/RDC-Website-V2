@@ -29,7 +29,7 @@ from cms.models import (
 )
 from cms.registry import SYSTEM_MANAGED_HOME_SECTIONS
 from cms.services.collections import active_resolution_attachment_ids, resolution_attachment_id
-from cms.services.locking import lock_is_active
+from cms.services.locking import lock_is_active, section_lock_version
 from cms.services.media_usage import get_media_usage_map, get_media_usages
 from cms.services.media_validation import validate_media_upload
 from cms.services.section_validation import google_map_location, preserve_card_identities, validate_section_refinements
@@ -118,6 +118,8 @@ class CMSMediaAssetSerializer(serializers.ModelSerializer):
 
 
 class CMSPageSectionSerializer(serializers.ModelSerializer):
+    lock_version = serializers.SerializerMethodField()
+    lock_reserved = serializers.SerializerMethodField()
     lock_owner_name = serializers.SerializerMethodField()
     lock_expires_at = serializers.SerializerMethodField()
     is_locked = serializers.SerializerMethodField()
@@ -128,12 +130,12 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
         fields = [
             "id", "page", "section_key", "section_type", "order", "content_json", "schema_version",
             "is_visible", "status", "lock_owner", "lock_owner_name", "lock_acquired_at",
-            "lock_expires_at", "is_locked", "locked_by_me", "created_at", "updated_at",
+            "lock_expires_at", "is_locked", "locked_by_me", "lock_version", "lock_reserved", "created_at", "updated_at",
         ]
         read_only_fields = [
             "page", "section_key", "section_type", "order", "schema_version", "is_visible",
             "status", "lock_owner", "lock_owner_name", "lock_acquired_at", "lock_expires_at",
-            "is_locked", "locked_by_me", "created_at", "updated_at",
+            "is_locked", "locked_by_me", "lock_version", "lock_reserved", "created_at", "updated_at",
         ]
 
     def validate_content_json(self, value):
@@ -354,6 +356,12 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
             return None
         timeout = getattr(settings, "CMS_SECTION_LOCK_SECONDS", 600)
         return obj.lock_acquired_at + timedelta(seconds=timeout)
+
+    def get_lock_version(self, obj):
+        return section_lock_version(obj)
+
+    def get_lock_reserved(self, obj):
+        return lock_is_active(obj) and obj.edit_lease is None
 
     def get_is_locked(self, obj):
         return self._lock_active(obj)

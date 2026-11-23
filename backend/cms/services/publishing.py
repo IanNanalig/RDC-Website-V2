@@ -49,7 +49,7 @@ def publish_page(page, user=None):
         # Publishing a whole page remains a useful V1-compatible admin shortcut:
         # every non-archived section is approved in the same atomic operation.
         locked_page.sections.exclude(status="archived").update(
-            status="published", lock_owner=None, lock_acquired_at=None,
+            status="published", lock_owner=None, lock_acquired_at=None, edit_lease=None,
         )
         from cms.services.collections import publish_normalized_page_content
         publish_normalized_page_content(locked_page, user)

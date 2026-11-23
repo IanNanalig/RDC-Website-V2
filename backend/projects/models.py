@@ -393,6 +393,7 @@ class ProjectRevision(models.Model):
     changed_fields = models.JSONField(default=list, blank=True)
     form_migration = models.JSONField(default=dict, blank=True)
     public_note = models.TextField(blank=True)
+    approved_public_note = models.TextField(blank=True, default="", max_length=1000)
     is_public_current = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name="created_project_revisions"

@@ -9,7 +9,8 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient, APITestCase
+from cms.tests.clients import SectionEditingClient
 from PIL import Image
 
 from cms.models import CMSArticle, CMSPage, CMSPageSection, CMSRevision, CMSSiteSetting
@@ -24,6 +25,7 @@ def valid_png():
 
 
 class CMSV2Tests(APITestCase):
+    client_class = SectionEditingClient
     def setUp(self):
         self.media_root = tempfile.mkdtemp(prefix="rdc-cms-v2-tests-")
         self.settings_override = override_settings(MEDIA_ROOT=self.media_root)
@@ -133,19 +135,49 @@ class CMSV2Tests(APITestCase):
         self.assertEqual(acquired.status_code, status.HTTP_200_OK)
         self.assertTrue(acquired.data["locked_by_me"])
         self.assertEqual(
-            self.client.post(f"/api/admin/cms/sections/{section.pk}/heartbeat/").status_code,
+            self.client.post(f"/api/admin/cms/sections/{section.pk}/heartbeat/", {"edit_lease": acquired.data["edit_lease"]}).status_code,
             status.HTTP_200_OK,
         )
+
+    def test_admin_transfer_invalidates_stale_and_same_user_tabs(self):
+        section = CMSPageSection.objects.get(page__slug="contact", section_key="contact-hero")
+        path = f"/api/admin/cms/sections/{section.pk}/"
+        metadata = f"/api/admin/cms/sections/locks/?page={section.page_id}"
+        owner, requester, other_tab, admin = (APIClient() for _ in range(4))
+        for client, user in ((owner, self.editor), (requester, self.editor_b), (other_tab, self.editor_b), (admin, self.admin)):
+            client.force_authenticate(user)
+        original = owner.post(path + "lock/").data
+        self.assertEqual(requester.post(path + "request-access/").status_code, 200)
+        listing = admin.get(metadata).data
+        lock = next(row for row in listing["locks"] if row["id"] == section.pk)
+        self.assertNotIn("edit_lease", lock)
+        self.assertNotIn("locks", admin.get(f"{metadata}&revision={listing['revision']}").data)
+        transfer = {"operation": "transfer", "confirmed": True, "lock_version": lock["lock_version"],
+                    "request_id": lock["access_requests"][0]["id"]}
+        self.assertEqual(requester.post(path + "manage-lock/", transfer, format="json").status_code, 403)
+        self.assertEqual(admin.post(path + "manage-lock/", transfer, format="json").status_code, 200)
+        self.assertEqual(admin.post(path + "manage-lock/", transfer, format="json").status_code, 409)
+        self.assertEqual(owner.post(path + "heartbeat/", {"edit_lease": original["edit_lease"]}).status_code, 409)
+        self.assertEqual(owner.patch(path, {"edit_lease": original["edit_lease"]}, format="json").status_code, 423)
+        renewed = requester.post(path + "lock/")
+        self.assertEqual(renewed.status_code, 200)
+        self.assertEqual(other_tab.post(path + "lock/").status_code, 423)
+        self.assertEqual(other_tab.patch(path, {"content_json": section.content_json}, format="json").status_code, 423)
+        self.assertEqual(requester.patch(path, {
+            "edit_lease": renewed.data["edit_lease"], "expected_updated_at": renewed.data["updated_at"],
+            "content_json": section.content_json,
+        }, format="json").status_code, 200)
 
     def test_admin_must_confirm_section_lock_takeover_and_it_is_audited(self):
         section = CMSPageSection.objects.get(page__slug="contact", section_key="contact-hero")
         self.authenticate(self.editor)
-        self.assertEqual(self.client.post(f"/api/admin/cms/sections/{section.pk}/lock/").status_code, 200)
+        held = self.client.post(f"/api/admin/cms/sections/{section.pk}/lock/")
+        self.assertEqual(held.status_code, 200)
 
         self.authenticate(self.admin)
         path = f"/api/admin/cms/sections/{section.pk}/lock/"
-        self.assertEqual(self.client.post(path).status_code, 409)
-        taken = self.client.post(path, {"override_confirmed": True}, format="json")
+        self.assertEqual(self.client.post(path).status_code, 423)
+        taken = self.client.post(path, {"override_confirmed": True, "lock_version": held.data["lock_version"]}, format="json")
         self.assertEqual(taken.status_code, 200)
         self.assertEqual(taken.data["lock_owner"], self.admin.pk)
         activity = UserActivity.objects.get(event="cms_section_lock_overridden")

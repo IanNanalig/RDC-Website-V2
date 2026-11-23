@@ -152,6 +152,7 @@ class CMSPageSection(models.Model):
         on_delete=models.SET_NULL,
         related_name="locked_cms_sections",
     )
+    edit_lease = models.UUIDField(null=True, editable=False)
     lock_acquired_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

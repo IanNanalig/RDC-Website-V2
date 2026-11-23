@@ -1,3 +1,7 @@
+import json
+from unittest.mock import patch
+
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -5,12 +9,15 @@ from projects.models import (
     Project,
     ProjectPriorityAnalysis,
     ProjectPriorityConfirmation,
+    ProjectRevision,
     User,
 )
 from projects.priority_scoring import confirm_analysis, get_active_priority_rule_set
 
-from .groq_priority import _historical_context
-from .models import AIModelVersion, AIProjectAnalysis, AITrainingRecord
+from .groq_client import GroqCompletion
+from .groq_priority import _historical_context, analyze_priority_with_groq
+from .historical_index import find_historical_matches, queue_historical_reference
+from .models import AIModelVersion, AIProjectAnalysis, AITrainingRecord, HistoricalProjectReference
 from .services import ensure_learning_assessment
 
 
@@ -47,6 +54,7 @@ class ControlledLearningTests(APITestCase):
             "simplified_form": {
                 "projectActivity": f"Historical Project {index}",
                 "description": words,
+                "agencyName": "DPWH",
                 "developmentSector": sector,
                 "location": "Region-wide",
                 "status": "New",
@@ -119,7 +127,8 @@ class ControlledLearningTests(APITestCase):
 
     def test_admin_trains_versioned_model_and_analysis_uses_it(self):
         self._confirmed(10, "low", 25, "social", "local office support")
-        self._confirmed(12, "high", 90, "environment", "regional flood climate resilience")
+        candidate, confirmation = self._confirmed(12, "high", 90, "environment", "regional flood climate resilience")
+        self._index(candidate, confirmation)
         self.client.force_authenticate(self.admin)
 
         response = self.client.post("/api/admin/ai/models/train/", {}, format="json")
@@ -219,44 +228,91 @@ class ControlledLearningTests(APITestCase):
         self.assertTrue(AIModelVersion.objects.filter(pk=original_assessment.model_version_id, status="retired").exists())
         self.assertEqual(AIProjectAnalysis.objects.filter(priority_analysis=analysis).count(), 2)
 
-    def test_rebuilt_rag_context_uses_versioned_projects_scores_and_rationale(self):
-        low_analysis, low_confirmation = self._confirmed(
-            50,
-            "low",
-            45,
-            "infrastructure",
-            "Local drainage repair with a limited service area.",
+    def _index(self, analysis, confirmation):
+        Project.objects.filter(pk=analysis.project_id).update(validated=True, workflow_status=Project.WORKFLOW_VALIDATED)
+        with self.captureOnCommitCallbacks(execute=True):
+            queue_historical_reference(analysis.project_id, confirmation.pk)
+        return HistoricalProjectReference.objects.get(project_id=analysis.project_id)
+
+    @patch("ai_engine.groq_priority.is_groq_enabled", return_value=True)
+    @patch("ai_engine.groq_priority.complete_json")
+    def test_validated_reference_is_retrieved_traced_and_sent_to_groq(self, completion, _enabled):
+        analysis, confirmation = self._confirmed(
+            50, "low", 45, words="Rehabilitate the tide gate and restore drainage through the Malabon outlet. Contact: private@mail.test.",
         )
-        self._confirmed(
-            51,
-            "high",
-            91,
-            "environment",
-            "Region-wide watershed restoration with measured flood-risk reduction.",
+        reference = self._index(analysis, confirmation)
+        self.assertEqual(reference.state, "ready")
+        self.assertNotIn("private@mail.test", reference.normalized_text)
+        self.assertEqual(queue_historical_reference(analysis.project_id, confirmation.pk).pk, reference.pk)
+        pending, pending_confirmation = self._confirmed(51, "high", 91, words="Rehabilitate the tide gate and restore drainage through the Malabon outlet.")
+        with self.captureOnCommitCallbacks(execute=True):
+            queue_historical_reference(pending.project_id, pending_confirmation.pk)
+        self.assertEqual(HistoricalProjectReference.objects.get(project_id=pending.project_id).state, "ineligible")
+
+        snapshot = {"simplified_form": {
+            "projectActivity": "Malabon tide gate work",
+            "description": "Rehabilitate the tide gate and restore drainage through the Malabon outlet.",
+            "location": "Region-wide", "agencyName": "DPWH",
+        }}
+        examples, _, _, info = _historical_context(snapshot, "infrastructure")
+        self.assertEqual(info["status"], "ready")
+        self.assertEqual([row["confirmation_id"] for row in examples], [confirmation.pk])
+        self.assertEqual(examples[0]["rule_base_score"], 45)
+        self.assertEqual(examples[0]["validator_final_priority"], "low")
+        self.assertEqual(find_historical_matches({"description": "vaccination and prenatal nutrition"}), [])
+
+        completion.return_value = GroqCompletion({
+            "outcome_assessments": [{"key": "utility", "raw_score": 8, "explanation": "A gated outlet.", "evidence": []}],
+        }, "test-model", False, ("test-model",))
+        result = analyze_priority_with_groq(
+            pending.project, snapshot, {}, [{"key": "utility", "label": "Utility", "weight": 10}], "infrastructure", [],
         )
-        low_confirmation.override_rationale = "The evidence supports a local rather than region-wide priority."
-        low_confirmation.adjusted_scores = {"readiness": 4}
-        low_confirmation.save(update_fields=["override_rationale", "adjusted_scores"])
+        prompt = json.loads(completion.call_args.args[0][-1]["content"])
+        sent = prompt["validator_confirmed_historical_examples"]
+        self.assertEqual([row["confirmation_id"] for row in sent], [confirmation.pk])
+        self.assertEqual(result["provider"]["historical_reference_ids"], [confirmation.pk])
+        self.assertIn("tide gate", sent[0]["project_text"])
+        self.assertNotIn("private@mail.test", json.dumps(sent))
+
+    def test_admin_rebuild_backfills_matching_legacy_endorsement(self):
+        analysis, confirmation = self._confirmed(53, "high", 91)
+        Project.objects.filter(pk=analysis.project_id).update(validated=True, workflow_status=Project.WORKFLOW_VALIDATED)
+        ProjectRevision.objects.create(
+            project=analysis.project, revision_number=1, revision_type="initial_submission",
+            state="endorsed", is_public_current=True, endorsed_at=timezone.now(),
+            profile_data_snapshot=analysis.input_snapshot,
+        )
+        endpoint = "/api/admin/cms/ai-scoring/historical-references/rebuild/"
+        self.client.force_authenticate(self.validator)
+        self.assertEqual(self.client.post(endpoint, {}, format="json").status_code, 403)
         self.client.force_authenticate(self.admin)
+        for _ in range(2):
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.post(endpoint, {"after": 0}, format="json")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data["scheduled"], 1)
+        reference = HistoricalProjectReference.objects.get(project_id=analysis.project_id)
+        self.assertEqual(reference.state, "ready")
+        self.assertEqual(reference.indexed_record.confirmation_id, confirmation.pk)
 
-        trained = self.client.post("/api/admin/ai/models/train/", {}, format="json")
-        examples, _matches, dataset_version, reference_model = _historical_context(
-            low_analysis.input_snapshot,
-            "infrastructure",
-        )
-
-        self.assertEqual(trained.status_code, status.HTTP_201_CREATED, trained.data)
-        self.assertEqual(reference_model["version"], trained.data["model"]["version"])
-        self.assertEqual(dataset_version, trained.data["model"]["dataset_version"])
-        self.assertEqual(
-            reference_model["retrieval_calibration"]["method"],
-            "similarity_weighted_validator_outcomes",
-        )
-        self.assertEqual(reference_model["retrieval_calibration"]["reference_count"], 2)
-        low_example = next(item for item in examples if item["project_id"] == low_analysis.project_id)
-        self.assertEqual(low_example["rule_base_score"], 45)
-        self.assertEqual(low_example["validator_final_priority"], "low")
-        self.assertEqual(low_example["validator_adjusted_scores"], {"readiness": 4})
-        self.assertIn("local rather than region-wide", low_example["validator_override_rationale"])
-        self.assertEqual(low_example["rule_version"], self.rule_set.version)
-        self.assertEqual(low_example["criterion_scores"][0]["key"], "outcome")
+    def test_duplicate_detection_requires_matching_metadata(self):
+        form = {
+            "projectActivity": "Tide Gate Rehabilitation Phase I",
+            "agencyName": "DPWH", "location": ["Malabon"],
+            "description": "Rehabilitate the tide gate, replace three intake screens and restore drainage capacity.",
+            "scope": "Tide gate and intake screens", "startYear": "2026", "endYear": "2027",
+        }
+        analysis, confirmation = self._confirmed(52, "high", 92)
+        analysis.input_snapshot = {"simplified_form": form}
+        analysis.save(update_fields=["input_snapshot"])
+        self._index(analysis, confirmation)
+        for changes, expected in (
+            ({}, "potential_duplicate"),
+            ({"description": "Restore drainage capacity and rehabilitate the tide gate, replacing three intake screens."}, "potential_duplicate"),
+            ({"location": ["Navotas"]}, "similar_project"),
+            ({"scope": "downstream pumping station construction"}, "similar_project"),
+            ({"projectActivity": "Tide Gate Rehabilitation Phase II"}, "possible_continuation"),
+        ):
+            with self.subTest(changes=changes):
+                matches = find_historical_matches({"simplified_form": {**form, **changes}}, "infrastructure")
+                self.assertEqual(matches[0]["category"], expected)

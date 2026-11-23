@@ -53,20 +53,23 @@ try {
   const firstDetailHold = new Promise((resolve) => { releaseFirstDetail = resolve; });
   let failedDetailCalls = 0;
   await page.route("**/api/**", async (route) => {
-    const path = new URL(route.request().url()).pathname;
+    const url = new URL(route.request().url());
+    const path = url.pathname;
     if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
     if (path.endsWith("/public/projects/stats/")) return respond(route, {
       total_projects: 14, total_budget: 14000000, by_status: { Ongoing: 14 },
       by_agency: { DENR: 14 }, by_lgu: { Manila: 14 }, by_year: { 2026: 14 },
     });
-    if (path.endsWith("/public/projects/")) return respond(route, projects);
+    if (path.endsWith("/public/projects/")) return respond(route, url.searchParams.get("archive_state") === "archived"
+      ? [{ ...project(15), archived: true }]
+      : projects);
     const match = path.match(/\/public\/projects\/(\d+)\/$/);
     if (match) {
       const id = Number(match[1]);
       if (id === 1) await firstDetailHold;
       if (id === 4 && failedDetailCalls++ === 0) return respond(route, { detail: "Unavailable" }, 503);
       return respond(route, {
-        ...project(id), public_summary_text: `Public summary ${id}`,
+        ...project(id), archived: id === 15, public_summary_text: `Public summary ${id}`,
         public_update_timeline: historyById[id],
       });
     }
@@ -147,6 +150,15 @@ try {
   await page.getByRole("button", { name: "Previous page" }).click();
   await page.getByText("Page 1 of 2").waitFor();
   console.log("PASS public project table pagination");
+
+  await page.getByRole("button", { name: "Archived Projects" }).click();
+  dialog = await open(15);
+  await dialog.getByText("Archived", { exact: true }).waitFor();
+  assert.equal(await dialog.getByRole("link", { name: "Report Concern" }).count(), 0);
+  await close(dialog);
+  await page.getByRole("button", { name: "Active Projects" }).click();
+  await page.locator("tbody").getByRole("button", { name: "History Project 1", exact: true }).waitFor();
+  console.log("PASS archived project browsing, labeling, and concern restriction");
 
   await context.close();
 } finally {
