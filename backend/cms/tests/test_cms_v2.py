@@ -406,3 +406,19 @@ class CMSV2Tests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("footer-text", response.data)
         self.assertNotIn("media-upload-max-bytes", response.data)
+
+    def test_settings_are_admin_only_but_media_upload_policy_is_available_to_editors(self):
+        root = "/api/admin/cms/settings/"
+        detail = root + "footer-text/"
+        self.authenticate(self.editor)
+        self.assertEqual(self.client.get(root).status_code, 403)
+        self.assertEqual(self.client.get(detail).status_code, 403)
+        self.assertEqual(self.client.patch(detail, {"value_json": "private"}, format="json").status_code, 403)
+        media = self.client.get("/api/admin/cms/media/upload-policy/")
+        self.assertEqual(media.status_code, 200)
+        self.assertEqual(set(media.data), {"allowed_types", "max_bytes", "categories"})
+        self.assertIn("General", media.data["categories"])
+        self.assertEqual(self.client.get("/api/admin/cms/pages/").status_code, 200)
+        self.authenticate(self.admin)
+        self.assertEqual(self.client.get(root).status_code, 200)
+        self.assertEqual(self.client.patch(detail, {"value_json": "Updated footer"}, format="json").status_code, 200)

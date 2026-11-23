@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import date
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -86,11 +87,9 @@ def _upsert(model, lookup, defaults, user=None, *, restoring=False):
 
 
 def _resolution_rows(year_row):
-    if isinstance(year_row, dict):
-        rows = year_row.get("resolutions") or year_row.get("items") or year_row.get("documents")
-        if isinstance(rows, list):
-            return rows
-    return []
+    from cms.services.resolution_legend import resolution_year_rows
+
+    return resolution_year_rows(year_row)[1] if isinstance(year_row, dict) else []
 
 
 def resolution_attachment_id(value):
@@ -210,41 +209,61 @@ def mark_managed_content_pages_changed(obj, user=None):
         page.save(update_fields=["status", "has_unpublished_changes", "updated_by", "updated_at"])
 
 
-def sync_resolution_to_draft(obj, user=None):
+def sync_resolution_to_draft(obj, user=None, *, resolution_type_key=None):
     """Mirror one normalized resolution into the fixed About RDC draft."""
     if not isinstance(obj, CMSResolution):
         return
     section = _page_sections("about-rdc").filter(section_key="resolutions-archive").first()
     if not section:
-        mark_managed_content_pages_changed(obj, user)
-        return
-    content = dict(section.content_json or {})
+        raise serializers.ValidationError({"resolution_type_key": "The resolution legend is unavailable."})
+    from cms.services.resolution_legend import RESOLUTION_ROW_KEYS, resolution_year_rows, validate_resolution_types
+
+    content = deepcopy(section.content_json or {})
     years = list(content.get("years") or [])
     target = None
+    previous = None
+    position = None
     for year_row in years:
         if not isinstance(year_row, dict):
             continue
-        key = "resolutions" if isinstance(year_row.get("resolutions"), list) else (
-            "items" if isinstance(year_row.get("items"), list) else "resolutions"
-        )
-        rows = list(year_row.get(key) or [])
-        year_row[key] = [
-            row for row in rows
-            if not isinstance(row, dict) or str(row.get("id") or "") != obj.stable_key
-        ]
+        rows = list(resolution_year_rows(year_row)[1])
         if str(year_row.get("year") or "").strip() == str(obj.year):
             target = year_row
+        for index, row in enumerate(rows):
+            if isinstance(row, dict) and str(row.get("id") or "") == obj.stable_key:
+                previous = row
+                if year_row is target:
+                    position = index
+                rows.pop(index)
+                break
+        for alias in RESOLUTION_ROW_KEYS[1:]:
+            year_row.pop(alias, None)
+        year_row["resolutions"] = rows
     if target is None:
         target = {"year": str(obj.year), "resolutions": []}
         years.append(target)
     target_rows = list(target.get("resolutions") or target.get("items") or [])
-    target["resolutions"] = target_rows + [managed_content_snapshot(obj)]
+    candidate = {**(previous or {}), **managed_content_snapshot(obj)}
+    if not obj.attachment_id:
+        candidate.pop("mediaAssetId", None)
+        candidate.pop("documentAssetId", None)
+    if resolution_type_key is not None:
+        candidate["resolutionTypeKey"] = resolution_type_key
+        candidate.pop("legendItems", None)
+    legend = {"legendItems": content.get("legendItems", [])}
+    updated = validate_resolution_types(
+        {**legend, "years": [{"year": obj.year, "resolutions": [candidate]}]},
+        {**legend, "years": [{"year": obj.year, "resolutions": [previous] if previous else []}]},
+    )["years"][0]["resolutions"][0]
+    target_rows.insert(len(target_rows) if position is None else position, updated)
+    target["resolutions"] = target_rows
     target.pop("items", None)
     content["years"] = years
     section.content_json = content
     section.status = "draft"
     section.save(update_fields=["content_json", "status", "updated_at"])
     mark_managed_content_pages_changed(obj, user)
+    return updated["resolutionTypeKey"]
 
 
 def sync_normalized_section_draft(section, user=None, *, restoring=False, resolution_attachment_ids=None):

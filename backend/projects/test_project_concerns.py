@@ -89,6 +89,15 @@ class ProjectConcernAPITests(APITestCase):
         self.assertEqual(mail.outbox[0].reply_to, [])
         self.assertNotIn("ignored@example.test", mail.outbox[0].body)
 
+    def test_public_eligible_archived_project_accepts_a_concern(self):
+        self.project.archived = True
+        self.project.is_active = False
+        self.project.workflow_status = Project.WORKFLOW_VALIDATED
+        self.project.save(update_fields=["archived", "is_active", "workflow_status"])
+        response = self.client.post("/api/public/project-concerns/", self.payload(), format="multipart")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(ProjectConcernReport.objects.get().project_id, self.project.pk)
+
     def test_email_enabled_report_sends_receiver_and_acknowledgement(self):
         response = self.client.post(
             "/api/public/project-concerns/",

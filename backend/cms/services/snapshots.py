@@ -131,6 +131,7 @@ def compose_public_page_snapshot(page, *, draft=False):
         CMSResolution,
     )
     from cms.services.collections import _referenced_keys, _stable_key, managed_content_snapshot, publication_membership
+    from cms.services.resolution_legend import public_resolution_types, resolution_year_rows
 
     def collection_snapshot(record):
         if not record or record.status == "archived":
@@ -259,14 +260,14 @@ def compose_public_page_snapshot(page, *, draft=False):
             if not re.fullmatch(r"[0-9]{4}", raw_year):
                 continue
             resolutions = []
-            items = year_row.get("resolutions") or year_row.get("items") or []
+            _, items = resolution_year_rows(year_row)
             for item in items if year_row.get("manualOrder") is True else reversed(items):
                 if isinstance(item, dict):
                     stable_key = str(item.get("id") or "").strip()
                     if stable_key in archived_keys:
                         continue
                     resolution = deepcopy(normalized_by_key.get(stable_key) or item)
-                    resolution.update({key: item[key] for key in ("legendTitle", "legendItems", "visible", "isVisible") if key in item})
+                    resolution.update({key: item[key] for key in ("legendItems", "resolutionTypeKey", "visible", "isVisible") if key in item})
                     resolutions.append(resolution)
                 elif isinstance(item, str) and item.strip():
                     resolutions.append(item)
@@ -277,4 +278,6 @@ def compose_public_page_snapshot(page, *, draft=False):
             reverse=True,
         )
 
+    if page.slug == "about-rdc" and "resolutions-archive" in by_key:
+        public_resolution_types(by_key["resolutions-archive"]["content"])
     return snapshot

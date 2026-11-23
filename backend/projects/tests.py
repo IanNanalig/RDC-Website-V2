@@ -2005,13 +2005,20 @@ class PerformanceApiTests(APITestCase):
         self.assertNotIn("Private nested note", json.dumps(detail.data, default=str))
         self.assertNotIn("Private generated note", json.dumps(detail.data, default=str))
 
-    def test_archived_scope_only_shows_public_eligible_projects_and_keeps_active_totals(self):
+    def test_public_archive_and_active_records_share_a_single_projection_and_totals(self):
         active = self._project(validated=True)
         archived = self._project(index=2, validated=True)
         archived.archived = True
         archived.is_active = False
         archived.workflow_status = Project.WORKFLOW_VALIDATED
         archived.save()
+        ProjectRevision.objects.create(
+            project=archived, revision_number=1, revision_type="initial_submission",
+            state="endorsed", endorsed_at=timezone.now(),
+            profile_data_snapshot={**archived.profile_data, "public_summary": {
+                "key_facts": {"funding_requirement_total": "1,250.50"},
+            }},
+        )
         private = self._project(index=3)
         private.archived = True
         private.is_active = False
@@ -2019,10 +2026,16 @@ class PerformanceApiTests(APITestCase):
         base = "/api/public/projects/"
         for view in ("summary", "detail"):
             rows = self.client.get(base, {"archive_state": "archived", "view": view})
-            self.assertEqual([row["id"] for row in rows.data], [archived.pk])
-            self.assertIs(rows.data[0]["archived"], True)
+            self.assertEqual({row["id"] for row in rows.data}, {active.pk, archived.pk})
+            self.assertTrue(all("archived" not in row for row in rows.data))
+            self.assertTrue(all(row["implementation_status"] == "Ongoing" for row in rows.data))
         detail = self.client.get(f"{base}{archived.pk}/")
-        self.assertIs(detail.data["archived"], True)
+        self.assertEqual(detail.status_code, 200)
+        self.assertNotIn("archived", detail.data)
         self.assertEqual(self.client.get(f"{base}{private.pk}/").status_code, 404)
-        self.assertEqual([row["id"] for row in self.client.get(base, {"view": "summary"}).data], [active.pk])
-        self.assertEqual(self.client.get(base + "stats/").data["total_projects"], 1)
+        response = self.client.get(base, {"view": "summary", "q": archived.name})
+        self.assertEqual([row["id"] for row in response.data], [archived.pk])
+        stats = self.client.get(base + "stats/", {"status": "Ongoing"})
+        self.assertEqual(stats.data["total_projects"], 2)
+        self.assertEqual(stats.data["total_budget"], active.budget + 1250.50)
+        self.assertEqual(stats.data["by_status"], {"Ongoing": 2})

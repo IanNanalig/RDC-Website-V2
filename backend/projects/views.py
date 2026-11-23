@@ -102,6 +102,7 @@ from .project_status import (
     stored_status_values_for_label,
 )
 from .public_agencies import agency_lookup
+from .public_visibility import public_project_queryset
 from .priority_facts import StalePriorityFacts, lock_priority_scope, priority_facts_state, save_priority_facts
 from .priority_scoring import (
     PriorityInputError, PriorityOutcomeError, analyze_project, confirm_analysis, confirmation_eligibility,
@@ -371,7 +372,7 @@ PUBLIC_CHAT_DIRECT_CONFIDENCE = 0.62
 PUBLIC_CHAT_RELATED_CONFIDENCE = 0.60
 PUBLIC_PROJECTS_CACHE_TTL_SECONDS = 3600
 PUBLIC_PROJECTS_BROWSER_CACHE_CONTROL = "public, no-cache, must-revalidate"
-PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 7
+PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION = 8
 PUBLIC_PROJECTS_CACHE_VERSION_KEY = "public_projects:version"
 
 
@@ -8100,19 +8101,9 @@ class AgencyActivityView(APIView):
         return response
 
 
-def _public_archive_projects():
-    return Project.objects.filter(
-        archived=True, validated=True,
-    ).exclude(workflow_status__in=(Project.WORKFLOW_DRAFT, "rejected")).filter(
-        Q(workflow_status=Project.WORKFLOW_VALIDATED)
-        | Q(revisions__state="endorsed", revisions__is_public_current=True)
-    ).distinct()
-
-
-def _get_public_projects_cache_version(archived=False) -> str:
+def _get_public_projects_cache_version() -> str:
     """Database-derived version so every web worker observes a publish immediately."""
-    queryset = _public_archive_projects() if archived else Project.objects.filter(validated=True, archived=False, is_active=True)
-    state = queryset.aggregate(
+    state = public_project_queryset().aggregate(
         count=Count("id"),
         updated_at=Max("updated_at"),
     )
@@ -8225,24 +8216,17 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
     authentication_classes = []  # Don't attempt JWT auth; avoids 401 on invalid Authorization header.
     serializer_class = PublicProjectSerializer
 
-    def _base_queryset(self, *, archived=False, include_archived=False):
+    def _base_queryset(self):
         endorsed_revisions = ProjectRevision.objects.filter(state="endorsed").order_by(
             "-endorsed_at", "-revision_number"
         )
-        active = Project.objects.filter(validated=True, archived=False, is_active=True)
-        if archived:
-            qs = _public_archive_projects()
-        elif include_archived:
-            qs = active | Project.objects.filter(pk__in=_public_archive_projects().values("pk"))
-        else:
-            qs = active
-        qs = qs.select_related("primary_agency").prefetch_related("collaborating_agency_links__agency")
+        qs = public_project_queryset().select_related("primary_agency").prefetch_related("collaborating_agency_links__agency")
         if getattr(self, "action", "") == "list" and self.request.query_params.get("view") == "summary":
             latest_progress = endorsed_revisions.filter(revision_type="progress_update")[:1]
             return qs.annotate(
                 _public_progress_update_count=Count(
                     "revisions",
-                    filter=Q(revisions__state="endorsed", revisions__revision_type="progress_update"),
+                    filter=Q(revisions__state="endorsed", revisions__revision_type="progress_update"), distinct=True,
                 )
             ).prefetch_related(
                 Prefetch("revisions", queryset=endorsed_revisions[:1], to_attr="_public_latest_endorsed_revision"),
@@ -8266,9 +8250,9 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
         ).data
 
     def list(self, request, *args, **kwargs):
-        archived = request.query_params.get("archive_state") == "archived"
-        version = _get_public_projects_cache_version(archived)
+        version = _get_public_projects_cache_version()
         params = dict(request.query_params)
+        params.pop("archive_state", None)
         cache_key = f"public_projects:list:v{PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION}:{version}:{_hash_query(params)}"
         etag_seed = f"projects-list:{PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION}:{version}:{_hash_query(params)}"
         if _etag(etag_seed) in [value.strip() for value in request.META.get("HTTP_IF_NONE_MATCH", "").split(",")]:
@@ -8277,7 +8261,7 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
         if cached is not None:
             return _conditional_public_response(request, cached, etag_seed=etag_seed)
 
-        qs = self._base_queryset(archived=archived).order_by("-updated_at", "-pk")
+        qs = self._base_queryset().order_by("-updated_at", "-pk")
 
         qs = _filter_public_project_queryset(qs, request.query_params)
 
@@ -8311,7 +8295,7 @@ class PublicProjectsViewSet(viewsets.ReadOnlyModelViewSet):
         return _conditional_public_response(request, payload, etag_seed=etag_seed)
 
     def retrieve(self, request, *args, **kwargs):
-        project = self._base_queryset(include_archived=True).filter(pk=kwargs.get("pk")).first()
+        project = self._base_queryset().filter(pk=kwargs.get("pk")).first()
         if not project:
             return Response({"detail": "Not found."}, status=404)
         payload = self._project_to_public_payload(project)
@@ -8325,6 +8309,7 @@ class PublicProjectsStatsView(APIView):
     def get(self, request):
         version = _get_public_projects_cache_version()
         params = dict(request.query_params)
+        params.pop("archive_state", None)
         cache_key = f"public_projects:stats:v{PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION}:{version}:{_hash_query(params)}"
         etag_seed = f"projects-stats:{PUBLIC_PROJECTS_PAYLOAD_SCHEMA_VERSION}:{version}:{_hash_query(params)}"
         if _etag(etag_seed) in [value.strip() for value in request.META.get("HTTP_IF_NONE_MATCH", "").split(",")]:
@@ -8333,7 +8318,7 @@ class PublicProjectsStatsView(APIView):
         if cached is not None:
             return _conditional_public_response(request, cached, etag_seed=etag_seed)
 
-        qs = Project.objects.filter(validated=True, archived=False, is_active=True).select_related(
+        qs = public_project_queryset().select_related(
             "primary_agency"
         ).prefetch_related(
             "collaborating_agency_links__agency",
@@ -8351,7 +8336,7 @@ class PublicProjectsStatsView(APIView):
         )
         projects_by_id = {project.id: project for project in projects}
 
-        total_budget = 0
+        total_budget = Decimal("0")
         by_status = {}
         by_agency = {}
         by_lgu = {}
@@ -8361,7 +8346,7 @@ class PublicProjectsStatsView(APIView):
 
         for row in payload_rows:
             p = projects_by_id[row["id"]]
-            total_budget += int(row.get("budget") or 0)
+            total_budget += Decimal(str(row.get("budget") or 0))
             if not last_updated_at or (getattr(p, "updated_at", None) and p.updated_at > last_updated_at):
                 last_updated_at = p.updated_at
             impl_status = row.get("implementation_status") or "Unspecified"
@@ -8381,7 +8366,7 @@ class PublicProjectsStatsView(APIView):
 
         payload = {
             "total_projects": len(payload_rows),
-            "total_budget": total_budget,
+            "total_budget": float(total_budget) if total_budget % 1 else int(total_budget),
             "by_status": by_status,
             "by_agency": by_agency,
             "by_lgu": by_lgu,

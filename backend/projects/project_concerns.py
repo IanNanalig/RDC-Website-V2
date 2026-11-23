@@ -24,7 +24,8 @@ from rest_framework.views import APIView
 from .concern_categories import configured_categories
 from .concern_delivery import deliver_project_concern, dispatch_project_concern_delivery
 from .file_validation import ALLOWED_EVIDENCE_EXTENSIONS, validate_uploaded_document
-from .models import Project, ProjectConcernEvidence, ProjectConcernReport
+from .models import ProjectConcernEvidence, ProjectConcernReport
+from .public_visibility import public_project_queryset
 from .permissions import IsAdmin
 from .views import _client_ip, _log_activity, _verify_turnstile
 
@@ -34,8 +35,6 @@ MIN_DESCRIPTION_LENGTH = 10
 REFERENCE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
-def _public_project_queryset():
-    return Project.objects.filter(validated=True, archived=False, is_active=True).select_related("primary_agency")
 
 
 def _project_agency(project):
@@ -188,7 +187,7 @@ class PublicProjectConcernSubmitView(APIView):
             project_id = int(str(request.data.get("project_id") or "").strip())
         except (TypeError, ValueError):
             return Response({"detail": "Choose a valid public project."}, status=400)
-        project = _public_project_queryset().filter(pk=project_id).first()
+        project = public_project_queryset().select_related("primary_agency").filter(pk=project_id).first()
         if not project:
             return Response({"detail": "The selected project is not available for public reporting."}, status=400)
 

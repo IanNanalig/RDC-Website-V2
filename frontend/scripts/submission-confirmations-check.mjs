@@ -77,6 +77,9 @@ async function checkSimplified(kind) {
     if (url.includes("project-revisions/9/")) return respond(route, {
       id: 9, state: "draft", profile_data_snapshot: profile,
     });
+    if (new URL(url).pathname === "/api/employee/projects/") return respond(route, [
+      { id: 7, title: "Estero Renewal", status: "planning", workflow_status: "draft", agency: "DENR", profile_data: profile },
+    ]);
     if (url.includes("employee/projects/7/")) return respond(route, {
       id: 7, title: "Estero Renewal", agency: "DENR",
       status: kind === "revision" ? "proposed" : "planning",
@@ -90,7 +93,16 @@ async function checkSimplified(kind) {
     : kind === "progress"
     ? "/employee/projects/7/edit/simplified?revision=9"
     : "/employee/projects/7/edit/simplified";
-  await page.goto(origin + path, { waitUntil: "networkidle" });
+  if (kind === "project") {
+    await page.goto(origin + "/employee/projects");
+    await page.getByRole("heading", { name: "Agency Projects" }).waitFor();
+    await page.getByRole("button", { name: "View", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Submit", exact: true }).count(), 0);
+    await page.getByRole("button", { name: "Edit", exact: true }).click();
+    await page.waitForURL(`**${path}`);
+  } else {
+    await page.goto(origin + path, { waitUntil: "networkidle" });
+  }
   const buttonName = kind === "progress" ? "Submit Progress Update" : "Submit for Validation";
   await page.getByRole("button", { name: buttonName }).waitFor();
   const canceled = await answerConfirmation(page, buttonName, false);
@@ -226,9 +238,13 @@ async function checkAdminInvitation() {
 }
 
 try {
-  for (const kind of ["new", "project", "revision", "progress"]) await checkSimplified(kind);
-  for (const kind of ["new", "project", "revision", "progress"]) await checkDetailed(kind);
-  await checkAdminInvitation();
+  if (process.argv.includes("--agency-projects-only")) {
+    await checkSimplified("project");
+  } else {
+    for (const kind of ["new", "project", "revision", "progress"]) await checkSimplified(kind);
+    for (const kind of ["new", "project", "revision", "progress"]) await checkDetailed(kind);
+    await checkAdminInvitation();
+  }
 } finally {
   await browser.close();
   await new Promise((resolve, reject) => server.httpServer.close((error) => error ? reject(error) : resolve()));

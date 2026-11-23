@@ -15,7 +15,6 @@ LIMITS = {
     "resolutions-archive": {
         "title": 50, "subtitle": 100, "legendTitle": 25, "legendItems.*.label": 25,
         "years.*.resolutions.*.title": 100, "years.*.resolutions.*.description": 500,
-        "years.*.resolutions.*.legendTitle": 25, "years.*.resolutions.*.legendItems.*.label": 25,
     },
     "committees": {
         "title": 25, "subtitle": 100, "items.*.title": 50, "items.*.description": 1000,

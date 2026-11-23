@@ -66,6 +66,12 @@ def _setting_value(key, fallback):
     return value if isinstance(value, dict) else fallback
 
 
+def get_media_categories():
+    configured = _setting_value("media-categories", {}).get("categories")
+    categories = [item for item in configured if isinstance(item, str)] if isinstance(configured, list) else []
+    return list(dict.fromkeys(["General", *categories]))
+
+
 def get_upload_policy():
     allowed = _setting_value(ALLOWED_TYPES_SETTING, DEFAULT_ALLOWED_TYPES)
     limits = _setting_value(MAX_BYTES_SETTING, DEFAULT_MAX_BYTES)

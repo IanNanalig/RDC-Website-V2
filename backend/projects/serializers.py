@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from datetime import datetime
 from copy import deepcopy
+from math import isfinite
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
 from cms.form_schema import FormSchemaError, resolve_simplified_form_schema, schema_fields, validate_simplified_answers
@@ -1345,7 +1346,6 @@ class PublicProjectSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "title",
-            "archived",
             "agency",
             "primary_agency",
             "collaborating_agencies",
@@ -1387,7 +1387,14 @@ class PublicProjectSerializer(serializers.ModelSerializer):
 
     def get_budget(self, obj):
         if obj.archived:
-            return self.get_public_key_facts(obj).get("funding_requirement_total", obj.budget)
+            value = self.get_public_key_facts(obj).get("funding_requirement_total")
+            if value is not None:
+                try:
+                    amount = float(str(value).replace(",", ""))
+                    if isfinite(amount):
+                        return amount
+                except (TypeError, ValueError, OverflowError):
+                    pass
         return obj.budget
 
     def _simplified(self, obj) -> dict:
@@ -1714,7 +1721,6 @@ class PublicProjectSummarySerializer(PublicProjectSerializer):
         fields = [
             "id",
             "title",
-            "archived",
             "agency",
             "primary_agency",
             "collaborating_agencies",

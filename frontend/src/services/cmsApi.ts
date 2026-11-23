@@ -622,6 +622,11 @@ export const cmsApi = {
     api.get(`admin/cms/media/selected/?${new URLSearchParams({ ids: ids.join(",") })}`)
       .then((rows) => normalizeCmsValue(rows) as CMSMediaAsset[]),
   getMediaCategoryUsage: () => api.get("admin/cms/media/category-usage/") as Promise<Record<string, number>>,
+  getMediaUploadPolicy: () => api.get("admin/cms/media/upload-policy/", true) as Promise<{
+    allowed_types: Record<string, string[]>;
+    max_bytes: Partial<Record<"image" | "document" | "audio" | "video", number>>;
+    categories: string[];
+  }>,
   listMediaPage: async (filters: { q?: string; page?: number; file_type?: string; category?: string; tag?: string; archived?: boolean } = {}) => {
     const query = new URLSearchParams({ view: "summary", page: String(filters.page || 1) });
     if (filters.q) query.set("q", filters.q);

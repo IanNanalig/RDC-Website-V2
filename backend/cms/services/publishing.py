@@ -27,6 +27,15 @@ def publish_page(page, user=None):
     page_id = page.pk if isinstance(page, CMSPage) else page
     with transaction.atomic():
         locked_page = CMSPage.objects.select_for_update().get(pk=page_id)
+        if locked_page.slug == "about-rdc":
+            from cms.services.resolution_legend import validate_resolution_types
+
+            section = locked_page.sections.filter(section_key="resolutions-archive").exclude(status__in=("published", "archived")).first()
+            if section:
+                current = section.content_json or {}
+                section.content_json = validate_resolution_types(current, current)
+                if section.content_json != current:
+                    section.save(update_fields=["content_json"])
         from cms.services.collections import reconcile_normalized_page_content
         reconcile_normalized_page_content(locked_page, user)
         if locked_page.slug == "home":

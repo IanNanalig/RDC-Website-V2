@@ -141,10 +141,10 @@ class ContentOnlyCMSTests(APITestCase):
 
     def test_resolution_legend_and_custom_order_survive_publication(self):
         page = CMSPage.objects.get(slug="about-rdc")
-        changes = {"years": [{"year": "2025", "manualOrder": True, "resolutions": [
-            {"id": "order-resolution-1", "title": "First resolution", "legendTitle": "Documents",
-             "legendItems": [{"label": "Full copy", "color": "blue"}]},
-            {"id": "order-resolution-2", "title": "Second resolution"},
+        changes = {"legendItems": [{"key": "full-copy", "label": "Full copy", "color": "blue"}],
+                   "years": [{"year": "2025", "manualOrder": True, "resolutions": [
+            {"id": "order-resolution-1", "title": "First resolution", "resolutionTypeKey": "full-copy"},
+            {"id": "order-resolution-2", "title": "Second resolution", "resolutionTypeKey": "full-copy"},
         ]}]}
         endpoint = "/api/admin/cms/modules/about-rdc/"
         response = self.client.patch(endpoint, {"sections": {"resolutions-archive": changes}}, format="json")
@@ -160,6 +160,46 @@ class ContentOnlyCMSTests(APITestCase):
         self.assertEqual([row["title"] for row in resolutions], ["First resolution", "Second resolution"])
         self.assertEqual(resolutions[0]["legendItems"][0]["label"], "Full copy")
 
+    def test_legacy_resolution_conflict_requires_an_explicit_choice_and_keeps_original_types(self):
+        section = CMSPageSection.objects.get(page__slug="about-rdc", section_key="resolutions-archive")
+        legacy = [
+            {"label": "RDC Resolution", "color": "blue"},
+            {"label": "Sectoral Committee", "color": "emerald"},
+        ]
+        row = {"id": "legacy-two-types", "title": "Historical resolution", "url": "/legacy.pdf",
+               "legendTitle": "Original heading", "legendItems": legacy}
+        content = {**section.content_json, "years": [{"year": "2025", "resolutions": [row]}]}
+        section.content_json = content
+        section.save(update_fields=["content_json"])
+        endpoint = f"/api/admin/cms/sections/{section.pk}/"
+        rejected = self.client.patch(endpoint, {"content_json": content}, format="json")
+        self.assertEqual(rejected.status_code, 400, rejected.data)
+        row["resolutionTypeKey"] = "sectoral committee"
+        row.pop("legendItems")
+        saved = self.client.patch(endpoint, {"content_json": content}, format="json")
+        self.assertEqual(saved.status_code, 200, saved.data)
+        stored = saved.data["content_json"]["years"][0]["resolutions"][0]
+        self.assertEqual(stored["legacyResolutionLegend"]["legendItems"], legacy)
+        self.assertEqual(stored["legacyResolutionLegend"]["legendTitle"], "Original heading")
+        self.assertEqual(stored["url"], "/legacy.pdf")
+        published = self.client.post("/api/admin/cms/modules/about-rdc/publish/")
+        self.assertEqual(published.status_code, 200, published.data)
+        public_page = self.client.get("/api/public/cms/pages/about-rdc/").data
+        public_content = next(item["content"] for item in public_page["sections"] if item["sectionKey"] == "resolutions-archive")
+        public_row = public_content["years"][0]["resolutions"][0]
+        self.assertEqual([item["label"] for item in public_row["legendItems"]], ["Sectoral Committee"])
+        self.assertNotIn("legendTitle", public_row)
+        self.assertNotIn("legacyResolutionLegend", public_row)
+
+    def test_direct_resolution_api_rejects_missing_multiple_and_unknown_types(self):
+        endpoint = "/api/admin/cms/resolutions/"
+        fields = {"stable_key": "untyped-test", "resolution_number": "Test", "title": "Test resolution", "year": 2025}
+        for types in ({}, {"resolution_type_key": "missing"}, {"resolution_type_key": ["rdc resolution", "sectoral committee"]},
+                      {"resolution_type_key": "rdc resolution", "legendItems": [{"label": "Sectoral Committee"}]}):
+            response = self.client.post(endpoint, {**fields, **types}, format="json")
+            self.assertEqual(response.status_code, 400, response.data)
+        self.assertFalse(CMSResolution.objects.filter(stable_key=fields["stable_key"]).exists())
+
     def test_resolution_draft_batches_attachment_checks_and_writes_only_changed_rows(self):
         page = CMSPage.objects.get(slug="about-rdc")
         section = page.sections.get(section_key="resolutions-archive")
@@ -167,7 +207,7 @@ class ContentOnlyCMSTests(APITestCase):
         publish_url = "/api/admin/cms/modules/about-rdc/publish/"
         media = CMSMediaAsset.objects.create(file="cms/sample-resolution.pdf", file_type="document")
         rows = [{"id": f"sample-resolution-{index}", "number": str(index), "title": f"Sample {index}",
-                 "mediaAssetId": str(media.pk)} for index in range(16)]
+                 "mediaAssetId": str(media.pk), "resolutionTypeKey": "rdc resolution"} for index in range(16)]
         content = {"years": [{"year": "2025", "manualOrder": True, "resolutions": rows}]}
         saved = self.client.patch(archive_url, {"content_json": content}, format="json")
         self.assertEqual(saved.status_code, 200, saved.data)
@@ -177,7 +217,7 @@ class ContentOnlyCMSTests(APITestCase):
         timestamps = dict(CMSResolution.objects.filter(stable_key__startswith="sample-resolution-")
                           .values_list("stable_key", "updated_at"))
 
-        rows[0]["legendItems"] = [{"label": "Sectoral Committee", "color": "emerald"}]
+        rows[0]["resolutionTypeKey"] = "sectoral committee"
         opened = self.client.post(f"{archive_url}lock/")
         self.assertEqual(opened.status_code, 200)
         with CaptureQueriesContext(connection) as captured:
@@ -503,6 +543,7 @@ class ContentOnlyCMSTests(APITestCase):
             "stable_key": "resolution-2026-space-test",
             "resolution_number": "RDC-NCR Resolution No. 01, s. 2026",
             "title": "Resolution title with spaces",
+            "resolution_type_key": "rdc resolution",
             "description": "Description with multiple words",
             "year": 2026,
             "resolution_date": "2026-10-31",
@@ -535,7 +576,8 @@ class ContentOnlyCMSTests(APITestCase):
         content["years"] = [{
             "year": "2026",
             "resolutions": [
-                {"id": f"resolution-2026-{index}", "title": f"Resolution {index}", "description": ""}
+                {"id": f"resolution-2026-{index}", "title": f"Resolution {index}",
+                 "description": "", "resolutionTypeKey": "rdc resolution"}
                 for index in range(1, 8)
             ],
         }]
@@ -1039,7 +1081,7 @@ class ContentOnlyCMSTests(APITestCase):
         publish = "/api/admin/cms/modules/about-rdc/publish/"
         response = self.client.patch(save, {"content_json": {
             **section.content_json,
-            "years": [{"year": 2025, "resolutions": [{"title": "Resolution to remove"}]}],
+            "years": [{"year": 2025, "resolutions": [{"title": "Resolution to remove", "resolutionTypeKey": "rdc resolution"}]}],
         }}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(self.client.post(publish).status_code, 200)

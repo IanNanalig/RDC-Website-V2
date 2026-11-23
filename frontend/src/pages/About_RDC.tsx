@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ABOUT_ORGANIZATION_NODE_IDS } from "../content/aboutStructure";
-import { findResolutionLegendEntry, type ResolutionLegendEntry } from "../content/resolutionLegend";
+import { resolutionType, type ResolutionLegendEntry } from "../content/resolutionLegend";
 import cmsApi, { type CMSPageSnapshot } from "../services/cmsApi";
 import { canDownloadDocument, downloadDocument } from "../utils/documentDownload";
 
@@ -474,7 +474,7 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
   const resolutionYears = useMemo(() => {
     const years: Array<{
       year: string;
-      content: Array<{ title: string; number: string; description: string; date: string; url: string; legendTitle: string; legendItems: ResolutionLegendEntry[] }>;
+      content: Array<{ title: string; number: string; description: string; date: string; url: string; typeKey?: string | null; legendItems: ResolutionLegendEntry[] }>;
     }> = [];
 
     asArray(asRecord(resolutionsContent).years).map(asRecord).forEach((row) => {
@@ -484,7 +484,7 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
       if (!/^\d{4}$/.test(year)) return;
       const content = asArray(row.resolutions || row.items || row.content)
         .map((item) => {
-          if (typeof item === "string") return { title: asString(item), number: "", description: "", date: "", url: "", legendTitle: "", legendItems: [] };
+          if (typeof item === "string") return { title: asString(item), number: "", description: "", date: "", url: "", typeKey: undefined, legendItems: [] };
           const record = asRecord(item);
           if (!isVisible(record)) return null;
           return {
@@ -493,7 +493,7 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
             description: asString(record.description),
             date: asString(record.date),
             url: asString(record.url || record.link),
-            legendTitle: asString(record.legendTitle),
+            typeKey: "resolutionTypeKey" in record ? asString(record.resolutionTypeKey) || null : undefined,
             legendItems: asArray(record.legendItems).map(asRecord)
               .map((entry) => ({ key: asString(entry.key), label: asString(entry.label), color: asString(entry.color, "slate") })).filter((entry) => entry.label),
           };
@@ -1160,16 +1160,8 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
                         <div className="space-y-4">
                           {yearData.content.map((resolution, resIndex) => {
                             const resolutionTitle = resolution.title;
-                            const titleIsAdvisory =
-                              resolutionTitle.includes("Advisory") ||
-                              resolutionTitle.includes("Ad Referendum");
-                            const inferredType = titleIsAdvisory ? { label: "Advisory/Referendum", color: "amber" }
-                              : resolutionTitle.includes("MMDA") ? { label: "MMDA Resolution", color: "purple" }
-                                : resolutionTitle.includes("Sectoral Committee") ? { label: "Sectoral Committee", color: "emerald" }
-                                  : { label: "RDC Resolution", color: "blue" };
-                            const badges = (resolution.legendItems.length > 0 ? resolution.legendItems : [inferredType])
-                              .map((badge) => findResolutionLegendEntry(resolutionLegendItems, badge) || badge);
-                            const primaryColor = badges[0].color;
+                            const badge = resolutionType(resolutionLegendItems, resolutionTitle, resolution.typeKey, resolution.legendItems);
+                            const primaryColor = badge?.color || "slate";
                             const isAdvisory = primaryColor === "amber";
                             const isMMDA = primaryColor === "purple";
                             const isSectoral = primaryColor === "emerald" || primaryColor === "green";
@@ -1220,15 +1212,10 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
                                     {resolution.description && (
                                       <p className="mt-2 text-sm leading-relaxed text-slate-600">{resolution.description}</p>
                                     )}
-                                    {resolution.legendTitle && (
-                                      <p className="mt-2 text-sm font-semibold text-slate-600">{resolution.legendTitle}</p>
-                                    )}
                                     <div className="mt-3 flex flex-wrap items-center gap-2">
-                                      {badges.map((badge, index) => (
-                                        <span key={`${badge.label}-${index}`} className={`inline-block rounded-full px-3 py-1 text-xs font-semibold ${resolutionBadgeColor(badge.color)}`}>
-                                          {badge.label}
-                                        </span>
-                                      ))}
+                                      {badge && <span className={`inline-block rounded-full px-3 py-1 text-xs font-semibold ${resolutionBadgeColor(badge.color)}`}>
+                                        {badge.label}
+                                      </span>}
                                       <span className="text-xs text-slate-500">
                                         Year: {extractYear(yearData.year)}
                                       </span>

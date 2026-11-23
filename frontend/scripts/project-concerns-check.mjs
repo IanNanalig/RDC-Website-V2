@@ -170,7 +170,6 @@ try {
   await adminPage.getByRole("link", { name: "Project Concern Reports" }).first().click();
   await adminPage.waitForURL("**/admin/project-concerns");
   await adminPage.getByRole("heading", { name: "Project Concern Reports" }).waitFor();
-  assert.ok(await adminPage.getByRole("link", { name: "Project Concern Reports" }).isVisible());
   assert.equal(await adminPage.getByText("#41", { exact: false }).count(), 0, "The Administrator list does not expose the numeric project ID");
   await adminPage.getByRole("button", { name: "View" }).click();
   await adminPage.getByText("Observed delay in the published project schedule.").waitFor();

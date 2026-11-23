@@ -12,7 +12,7 @@ import cmsApi, {
   type CMSSiteSetting,
 } from "../../services/cmsApi";
 import { ABOUT_ORGANIZATION_NODE_IDS, aboutNodeEditorLabel } from "../../content/aboutStructure";
-import { findResolutionLegendEntry, resolutionLegendKey } from "../../content/resolutionLegend";
+import { resolutionLegendKey, resolutionType } from "../../content/resolutionLegend";
 import RefreshButton from "./RefreshButton";
 const RichTextEditor = React.lazy(() => import("./RichTextEditor"));
 
@@ -301,6 +301,16 @@ const parseRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 
 const textValue = (value: unknown) => (typeof value === "string" ? value : "");
+const resolutionLegendList = (value: unknown) => Array.isArray(value) ? value.map(parseRecord).map((row) => ({
+  key: textValue(row.key), label: textValue(row.label), color: textValue(row.color) || "blue",
+})) : [];
+
+const selectedResolutionType = (value: unknown, legend: ReturnType<typeof resolutionLegendList>) => {
+  const row = typeof value === "string" ? { title: value } : parseRecord(value);
+  return resolutionType(legend, textValue(row.title || row.number),
+    "resolutionTypeKey" in row ? textValue(row.resolutionTypeKey) : undefined,
+    resolutionLegendList(row.legendItems));
+};
 const stringValue = (value: unknown) => (value === null || value === undefined ? "" : String(value));
 
 const CMS_MEDIA_TYPE_LABELS: Record<string, string> = {
@@ -579,6 +589,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages", initialPageSl
   const [pages, setPages] = useState<CMSPage[]>([]);
   const [articles, setArticles] = useState<CMSArticle[]>([]);
   const [mediaRevision, setMediaRevision] = useState(0);
+  const [uploadPolicy, setUploadPolicy] = useState<Awaited<ReturnType<typeof cmsApi.getMediaUploadPolicy>> | null>(null);
   const [mediaCategoryUsage, setMediaCategoryUsage] = useState<Record<string, number> | null>(null);
   const [mediaLibrary, setMediaLibrary] = useState<{ results: CMSMediaAsset[]; count: number; total_pages: number }>({ results: [], count: 0, total_pages: 1 });
   const [mediaLibraryPage, setMediaLibraryPage] = useState(1);
@@ -714,27 +725,16 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages", initialPageSl
     () => parseJsonObject(sectionForm.content_json),
     [sectionForm.content_json],
   );
-  const mediaUploadLimits = useMemo(() => {
-    const row = settingsRows.find((item) => item.key === "media-upload-max-bytes");
-    const values = parseRecord(row?.value_json);
-    return {
-      image: Number(values.image || 5 * 1024 * 1024),
-      document: Number(values.document || 50 * 1024 * 1024),
-      audio: Number(values.audio || 20 * 1024 * 1024),
-      video: Number(values.video || 50 * 1024 * 1024),
-    };
-  }, [settingsRows]);
-  const allowedMediaTypes = useMemo(() => {
-    const row = settingsRows.find((item) => item.key === "media-upload-allowed-types");
-    const values = parseRecord(row?.value_json);
-    const configured = ["image", "document", "audio", "video"].flatMap((key) => Array.isArray(values[key]) ? values[key] : Object.keys(CMS_MEDIA_TYPE_LABELS).filter((mime) => key === "document" ? mime.startsWith("application/") : mime.startsWith(`${key}/`)))
-      .filter((value): value is string => typeof value === "string");
-    return configured.length ? configured : Object.keys(CMS_MEDIA_TYPE_LABELS);
-  }, [settingsRows]);
-  const mediaCategories = useMemo(() => {
-    const values = parseRecord(settingsRows.find((item) => item.key === "media-categories")?.value_json);
-    return [...new Set(["General", ...(Array.isArray(values.categories) ? values.categories.filter((item): item is string => typeof item === "string") : [])])];
-  }, [settingsRows]);
+  const mediaUploadLimits = {
+    image: uploadPolicy?.max_bytes?.image ?? 5 * 1024 * 1024,
+    document: uploadPolicy?.max_bytes?.document ?? 50 * 1024 * 1024,
+    audio: uploadPolicy?.max_bytes?.audio ?? 20 * 1024 * 1024,
+    video: uploadPolicy?.max_bytes?.video ?? 50 * 1024 * 1024,
+  };
+  const allowedMediaTypes = uploadPolicy?.allowed_types
+    ? Object.values(uploadPolicy.allowed_types).flat()
+    : Object.keys(CMS_MEDIA_TYPE_LABELS);
+  const mediaCategories = uploadPolicy?.categories ?? ["General"];
 
   const setSectionContent = (content: Record<string, unknown>) => {
     setSectionForm((prev) => ({ ...prev, content_json: formatJson(content) }));
@@ -979,7 +979,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages", initialPageSl
         setHasMoreRows((current) => ({ ...current, news: articleRows.length === CMS_LIST_PAGE_SIZE }));
       } else if (tab === "media") {
         if (force) setMediaRevision((current) => current + 1);
-        await loadSettings(force);
+        setUploadPolicy(await cmsApi.getMediaUploadPolicy());
       } else if (tab === "review") {
         const queue = await cmsApi.getReviewQueue();
         setReviewQueue({ ...queue, forms: [] });
@@ -1242,7 +1242,21 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages", initialPageSl
     sectionEditorRevision.current = section.updated_at;
     const content = { ...section.content_json };
     if (section.section_key === "resolutions-archive" && Array.isArray(content.years)) {
-      content.years = content.years.map((entry) => ({ ...parseRecord(entry), editorRowId: crypto.randomUUID() }));
+      const legend = resolutionLegendList(content.legendItems);
+      content.years = content.years.map((entry) => {
+        const { resolutions, items, documents, content: legacyRows, ...year } = parseRecord(entry);
+        const lists = [resolutions, items, documents, legacyRows].filter(Array.isArray);
+        const rows = lists.find((list) => list.length) || [];
+        return {
+          ...year,
+          resolutions: rows.map((row) => {
+            const selection = selectedResolutionType(row, legend);
+            return selection && typeof row !== "string"
+              ? { ...parseRecord(row), resolutionTypeKey: resolutionLegendKey(selection) } : row;
+          }),
+          editorRowId: crypto.randomUUID(),
+        };
+      });
     }
     const nextForm: SectionForm = {
       id: section.id,
@@ -1382,6 +1396,23 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages", initialPageSl
     } catch {
       showSectionError("content", "Section content must be valid JSON.");
       return;
+    }
+
+    if (sectionForm.section_key === "resolutions-archive" && Array.isArray(parsedContent.years)) {
+      const legend = resolutionLegendList(parsedContent.legendItems);
+      for (const year of parsedContent.years.map(parseRecord)) {
+        const resolutions = year.resolutions || year.items;
+        if (!Array.isArray(resolutions)) continue;
+        for (const value of resolutions) {
+          const row = typeof value === "string" ? { title: value } : parseRecord(value);
+          const title = textValue(row.title || row.number);
+          const selected = selectedResolutionType(row, legend);
+          if (!selected) {
+            showSectionError("content", `Choose a Resolution Type for "${title || "Untitled resolution"}" in ${textValue(year.year)}.`);
+            return;
+          }
+        }
+      }
     }
 
     setSectionErrors({});
@@ -1772,6 +1803,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages", initialPageSl
       setSettingsRows((current) => current.map((item) => item.id === row.id ? { ...item, ...updated } : item));
       setSettingDrafts((current) => ({ ...current, [row.id]: updated.value_json }));
       setSettingSourceDrafts((current) => ({ ...current, [row.id]: JSON.stringify(updated.value_json, null, 2) }));
+      if (row.key.startsWith("media-")) loadedTabsRef.current.delete("media");
       setNotice(`Setting "${row.key}" updated. Upload policy changes take effect immediately.`);
     } catch (error) {
       setNotice(getErrorDetail(error, "This setting could not be saved. Check the fields and try again."));
@@ -1929,9 +1961,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages", initialPageSl
         return String(candidate);
       };
       const legendItems = Array.isArray(sectionContent.legendItems) ? sectionContent.legendItems : [];
-      const legendChoices = legendItems.map(parseRecord).map((row) => ({
-        key: textValue(row.key), label: textValue(row.label), color: textValue(row.color) || "blue",
-      })).filter((row) => row.label.trim());
+      const legendChoices = resolutionLegendList(legendItems).filter((row) => row.label.trim());
       const legendOptions = legendChoices.map((row) => ({ value: resolutionLegendKey(row), label: row.label }));
       const updateYear = (yearIndex: number, nextYear: Record<string, unknown>) => {
         const next = [...years];
@@ -1952,22 +1982,22 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages", initialPageSl
             <Field label="Section Subtitle" limit={100} value={textValue(sectionContent.subtitle)} onChange={(value) => updateSectionContent("subtitle", value)} />
             <Field label="Document Legend Heading" limit={25} value={textValue(sectionContent.legendTitle)} onChange={(value) => updateSectionContent("legendTitle", value)} />
           </div>
-          <div className="grid gap-4 xl:grid-cols-2">
-            <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
-              <div className="flex items-center justify-between gap-3">
-                <h4 className="font-bold text-slate-900">Document Legend Entries</h4>
-                <button type="button" className="portal-btn portal-btn-ghost" onClick={() => setSectionContent({ ...sectionContent, legendItems: [...legendItems, { key: crypto.randomUUID(), label: "New document type", color: "blue" }] })}>Add Legend Entry</button>
-              </div>
-              {legendItems.map((item, index) => {
-                const row = parseRecord(item);
-                return (
-                  <div key={index} className="grid gap-2 rounded-lg border border-slate-200 p-3 md:grid-cols-[minmax(0,1fr)_160px_auto] md:items-end">
-                    <Field label="Label" limit={25} value={textValue(row.label)} onChange={(value) => setSectionContent({ ...sectionContent, legendItems: legendItems.map((entry, itemIndex) => itemIndex === index ? { ...row, key: resolutionLegendKey({ key: textValue(row.key), label: textValue(row.label) }) || crypto.randomUUID(), label: value } : entry) })} />
-                    <Select label="Color" value={textValue(row.color) || "blue"} onChange={(value) => setSectionContent({ ...sectionContent, legendItems: legendItems.map((entry, itemIndex) => itemIndex === index ? { ...parseRecord(entry), color: value } : entry) })} options={["blue", "amber", "purple", "emerald", "slate"].map((color) => ({ label: color, value: color }))} />
-                    <button type="button" className="pb-2 text-sm font-semibold text-red-600" onClick={() => setSectionContent({ ...sectionContent, legendItems: legendItems.filter((_, itemIndex) => itemIndex !== index) })}>Remove</button>
-                  </div>
-                );
-              })}
+          <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex items-center justify-between gap-3">
+              <h4 className="font-bold text-slate-900">Document Legend Entries</h4>
+              <button type="button" className="portal-btn portal-btn-ghost" onClick={() => setSectionContent({ ...sectionContent, legendItems: [...legendItems, { key: crypto.randomUUID(), label: "New document type", color: "blue" }] })}>Add Legend Entry</button>
+            </div>
+            <div className="grid gap-3 lg:grid-cols-2">
+            {legendItems.map((item, index) => {
+              const row = parseRecord(item);
+              return (
+                <div key={index} className="grid gap-2 rounded-lg border border-slate-200 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(5rem,0.55fr)_auto] sm:items-end">
+                  <Field label="Label" limit={25} value={textValue(row.label)} onChange={(value) => setSectionContent({ ...sectionContent, legendItems: legendItems.map((entry, itemIndex) => itemIndex === index ? { ...row, key: resolutionLegendKey({ key: textValue(row.key), label: textValue(row.label) }) || crypto.randomUUID(), label: value } : entry) })} />
+                  <Select label="Color" value={textValue(row.color) || "blue"} onChange={(value) => setSectionContent({ ...sectionContent, legendItems: legendItems.map((entry, itemIndex) => itemIndex === index ? { ...parseRecord(entry), color: value } : entry) })} options={["blue", "amber", "purple", "emerald", "slate"].map((color) => ({ label: color, value: color }))} />
+                  <button type="button" className="pb-2 text-sm font-semibold text-red-600" onClick={() => setSectionContent({ ...sectionContent, legendItems: legendItems.filter((_, itemIndex) => itemIndex !== index) })}>Remove</button>
+                </div>
+              );
+            })}
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2019,7 +2049,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages", initialPageSl
                       className="font-semibold text-blue-600"
                       onClick={() => updateYear(yearIndex, {
                         ...year,
-                        resolutions: [...resolutions, { id: `resolution-${crypto.randomUUID()}`, title: "New RDC-NCR Resolution", description: "" }],
+                        resolutions: [...resolutions, { id: `resolution-${crypto.randomUUID()}`, title: "New RDC-NCR Resolution", description: "", resolutionTypeKey: "" }],
                       })}
                     >
                       Add Resolution
@@ -2039,6 +2069,8 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages", initialPageSl
                   const resolution = typeof resolutionValue === "string"
                     ? { title: resolutionValue, url: "" }
                     : parseRecord(resolutionValue);
+                  const legacyTypes = resolutionLegendList(resolution.legendItems);
+                  const selectedType = selectedResolutionType(resolution, legendChoices);
                   const updateResolution = (nextResolution: Record<string, unknown>) => {
                     const next = [...resolutions];
                     next[resolutionIndex] = nextResolution;
@@ -2054,23 +2086,15 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages", initialPageSl
                           const index = displayedResolutions.findIndex((entry) => entry.originalResolutionIndex === resolutionIndex);
                           updateYear(yearIndex, { ...year, manualOrder: true, resolutions: moveRow(display, index, direction) });
                         }} />
-                        <Field label="Resolution Legend Heading" limit={25} value={textValue(resolution.legendTitle)} onChange={(value) => updateResolution({ ...resolution, legendTitle: value })} />
-                        <div className="space-y-2 md:col-span-2">
-                          {(Array.isArray(resolution.legendItems) ? resolution.legendItems : []).map((entry, index, entries) => {
-                            const row = parseRecord(entry);
-                            const label = textValue(row.label);
-                            const choice = findResolutionLegendEntry(legendChoices, { key: textValue(row.key), label });
-                            return (
-                              <div key={index} className="flex items-end gap-3">
-                                <Select label="Resolution Type" value={choice ? resolutionLegendKey(choice) : ""} emptyLabel={(!choice && label) || "Choose a document legend entry"} options={legendOptions} onChange={(value) => {
-                                  const selected = legendChoices.find((item) => resolutionLegendKey(item) === value);
-                                  if (selected) updateResolution({ ...resolution, legendItems: entries.map((item, i) => i === index ? { ...selected, key: value } : item) });
-                                }} />
-                                <button type="button" onClick={() => updateResolution({ ...resolution, legendItems: entries.filter((_, i) => i !== index) })}>Remove Legend Entry</button>
-                              </div>
-                            );
-                          })}
-                          <button type="button" disabled={!legendOptions.length} className="text-sm font-semibold text-blue-700 disabled:text-slate-400" onClick={() => updateResolution({ ...resolution, legendItems: [...(Array.isArray(resolution.legendItems) ? resolution.legendItems : []), { label: "" }] })}>Add Resolution Type</button>
+                        <div className="space-y-2">
+                          <Select label="Resolution Type" value={selectedType ? resolutionLegendKey(selectedType) : ""}
+                            emptyLabel="Choose a document legend entry" options={legendOptions}
+                            onChange={(value) => updateResolution({ ...resolution, resolutionTypeKey: value, legendItems: [] })} />
+                          {!selectedType && legacyTypes.length > 0 && (
+                            <p className="text-xs text-amber-800">
+                              Choose a type to resolve the previous selection ({legacyTypes.map((entry) => entry.label || entry.key).join(", ")}).
+                            </p>
+                          )}
                         </div>
                         <button type="button" className="justify-self-start text-sm font-semibold text-red-600 md:col-span-2" onClick={() => updateYear(yearIndex, { ...year, resolutions: resolutions.filter((_, index) => index !== resolutionIndex) })}>
                           Remove
@@ -2903,7 +2927,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages", initialPageSl
             {hasUnsavedChanges && <p className="mt-1 text-xs font-semibold text-amber-700">You have unsaved changes.</p>}
           </div>
           <div className="flex flex-wrap gap-2">
-            {(["pages", "news", "media", "review", "settings"] as ResourceTab[]).map((tab) => (
+            {(["pages", "news", "media", "review", "settings"] as ResourceTab[]).filter((tab) => isAdmin || tab !== "settings").map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -3736,7 +3760,7 @@ const CmsManager: React.FC<Props> = ({ mode, initialTab = "pages", initialPageSl
         />
       )}
 
-      {activeTab === "settings" && (
+      {isAdmin && activeTab === "settings" && (
         <div className="space-y-5">
           {[
             { title: "Branding and Contact", detail: "Public logo, footer wording, office address, and contact information.", keys: ["site-logo", "footer-text", "contact-details", "office-address"] },

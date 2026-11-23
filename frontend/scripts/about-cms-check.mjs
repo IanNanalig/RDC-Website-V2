@@ -34,7 +34,8 @@ const sections = [
   { id: 44, section_key: "organization-structure", section_type: "text", content_json: { title: "CMS Organization", subtitle: "CMS organization subtitle", nodes: nodeIds.map((id) => ({ id, label: "Configured Group", title: `Configured ${id}`, subtitle: "Configured office", items: [] })) } },
   { id: 45, section_key: "resolutions-archive", section_type: "text", content_json: {
     title: "CMS Resolutions", subtitle: "CMS resolution subtitle", legendTitle: "CMS Legend", categoryTitle: "CMS Categories",
-    legendItems: [{ label: "CMS Resolution Type", color: "blue" }, { label: "Sectoral Committee", color: "emerald" }], categoryItems: [{ title: "CMS Category", description: "CMS category description", color: "green" }],
+    legendItems: [{ label: "CMS Resolution Type", color: "blue" }, { label: "Sectoral Committee", color: "emerald" },
+                  { label: "RDC Resolution", color: "blue" }], categoryItems: [{ title: "CMS Category", description: "CMS category description", color: "green" }],
     years: [{ year: 2025, resolutions: [
       { id: "resolution-2025", title: "CMS Resolution with spaces", url: "", legendItems: [{ label: "Sectoral Committee", color: "blue" }] },
       { id: "legacy-resolution-2025", title: "Legacy resolution without a legend", url: "" },
@@ -188,6 +189,7 @@ try {
   });
 
   await page.goto(`${origin}/employee/cms/pages`);
+  await page.getByRole("button", { name: "Site Settings", exact: true }).waitFor();
   await page.locator('[data-cms-page-id="1"]').getByRole("button", { name: "Manage Content" }).click();
   await page.getByText(/Latest Media Releases, Regional Development Dashboard, and Upcoming Events update automatically/).waitFor();
   await page.locator('[data-cms-section-id="11"]').getByRole("button", { name: "Edit Content" }).waitFor();
@@ -222,8 +224,26 @@ try {
   await page.locator('[data-cms-section-id="45"]').getByRole("button", { name: "Edit Content" }).click();
   const year = page.locator("[data-section-editor] summary").filter({ hasText: "2025 (2)" });
   await year.press("Enter");
-  const typeSelection = page.locator("label").filter({ has: page.getByText("Resolution Type", { exact: true }) }).locator("select");
+  const legendPanel = page.getByRole("heading", { name: "Document Legend Entries" }).locator("xpath=../..");
+  const legendLabels = legendPanel.getByLabel("Label", { exact: true });
+  assert.equal(await legendLabels.count(), 3);
+  const firstLabel = await legendLabels.nth(0).boundingBox();
+  const secondLabel = await legendLabels.nth(1).boundingBox();
+  assert.ok(firstLabel && secondLabel && secondLabel.x > firstLabel.x, "Legend entries use two columns on desktop");
+  await page.setViewportSize({ width: 390, height: 860 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "Legend does not overflow on mobile");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await legendPanel.getByRole("button", { name: "Add Legend Entry" }).click();
+  await legendLabels.last().fill("Temporary type");
+  await legendPanel.getByRole("button", { name: "Remove", exact: true }).last().click();
+  assert.equal(await legendLabels.count(), 3);
+  const typeSelections = page.getByRole("combobox", { name: "Resolution Type", exact: true });
+  assert.equal(await typeSelections.count(), 2);
+  assert.equal(await page.getByText("Resolution Legend Heading", { exact: true }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Add Resolution Type" }).count(), 0);
+  const typeSelection = typeSelections.last();
   assert.equal(await typeSelection.inputValue(), "sectoral committee");
+  await typeSelection.selectOption("cms resolution type");
   const resolutionTitle = page.getByLabel("Resolution 1 Title");
   await resolutionTitle.fill("Draft title retained while collapsed");
   await year.press("Enter");
@@ -318,6 +338,35 @@ try {
   assert.equal(await page.getByRole("heading", { name: "Published test release" }).count(), 0);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
 
+  const editorContext = await browser.newContext();
+  const editor = await editorContext.newPage();
+  await editor.addInitScript(() => {
+    localStorage.setItem("user", JSON.stringify({ id: 5, username: "editor", role: "content_editor" }));
+    localStorage.setItem("isLoggedIn", "true");
+    localStorage.setItem("accessToken", "editor-test-token");
+  });
+  let policyLoaded = false;
+  await editor.route("**/api/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    assert.ok(!path.startsWith("/api/admin/cms/settings/"), "Editor workspace never requests administrative Site Settings");
+    if (path.endsWith("/media/upload-policy/")) {
+      policyLoaded = true;
+      return respond(route, { allowed_types: { image: ["image/png"] }, max_bytes: { image: 1234 }, categories: ["General", "Maps"] });
+    }
+    if (path.endsWith("/cms/pages/")) return respond(route, { results: [aboutPage], count: 1 });
+    if (path.endsWith("/cms/pages/4/") || path.endsWith("/cms/modules/about-rdc/")) return respond(route, aboutPage);
+    return respond(route, { results: [], count: 0 });
+  });
+  await editor.goto(`${origin}/employee/cms/settings`);
+  await editor.waitForURL("**/employee/cms/pages");
+  await editor.getByRole("button", { name: "News", exact: true }).waitFor();
+  assert.equal(await editor.getByRole("button", { name: "Site Settings", exact: true }).count(), 0);
+  await Promise.all([
+    editor.waitForResponse((response) => response.url().includes("/admin/cms/media/upload-policy/")),
+    editor.getByRole("button", { name: "Media Library", exact: true }).click(),
+  ]);
+  assert.equal(policyLoaded, true);
+  await editorContext.close();
   await context.close();
   console.log("PASS About RDC CMS typing, fixed structure, and public rendering checks");
 } finally {

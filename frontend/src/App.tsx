@@ -559,6 +559,7 @@ export default function App() {
           }
         />
         <Route path="/admin/forms" element={<ProtectedRoute roles={["admin"]}><AdminContributorFormsPage /></ProtectedRoute>} />
+        <Route path="/admin/content/settings/*" element={<ProtectedRoute roles={["admin"]}><ContentManagementPage /></ProtectedRoute>} />
         <Route path="/admin/ai-scoring" element={<ProtectedRoute roles={["admin"]}><AdminAIScoringPage /></ProtectedRoute>} />
         <Route path="/admin/content/forms/*" element={<ProtectedRoute roles={["admin"]}><Navigate to="/admin/forms" replace /></ProtectedRoute>} />
         <Route path="/admin/content/ai-scoring/*" element={<ProtectedRoute roles={["admin"]}><Navigate to="/admin/ai-scoring" replace /></ProtectedRoute>} />

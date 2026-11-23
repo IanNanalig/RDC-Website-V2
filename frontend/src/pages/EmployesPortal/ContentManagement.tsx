@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
 import PortalLayout from "../../components/portal/PortalLayout";
 import { userDisplayName } from "../../utils/userDisplayName";
 
@@ -36,6 +36,10 @@ const ContentManagement = () => {
   const user: PortalUser = userRaw ? JSON.parse(userRaw) : {};
   const role = user.role === "content_editor" ? "content_editor" : "admin";
   const displayName = userDisplayName(user, "Content User");
+
+  if (role === "content_editor" && cmsInitialTab === "settings") {
+    return <Navigate to="/employee/cms/pages" replace />;
+  }
 
   return (
     <PortalLayout

@@ -123,7 +123,6 @@ const Projects: React.FC = () => {
   const [sortDesc, setSortDesc] = useState(false);
   const [tablePage, setTablePage] = useState(1);
 
-  const [archiveState, setArchiveState] = useState<"active" | "archived">("active");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
   const [detailProject, setDetailProject] = useState<Project | null>(null);
@@ -151,7 +150,7 @@ const Projects: React.FC = () => {
       const list: Project[] = [];
       let page: Project[];
       do {
-        page = await getPublicProjects({ limit: 500, offset: list.length, view: "summary", archive_state: archiveState });
+        page = await getPublicProjects({ limit: 500, offset: list.length, view: "summary" });
         list.push(...page);
       } while (page.length === 500 && sequence === requestSequence.current);
       if (sequence !== requestSequence.current) return;
@@ -165,7 +164,7 @@ const Projects: React.FC = () => {
     } finally {
       if (sequence === requestSequence.current) setLoading(false);
     }
-  }, [archiveState]);
+  }, []);
 
   const loadProjectDetail = useCallback(async (projectId: number) => {
     const sequence = ++detailRequestSequence.current;
@@ -229,7 +228,7 @@ const Projects: React.FC = () => {
       const ids = new Set<number>();
       let page: Project[];
       do {
-        page = await getPublicProjects({ q: debouncedSearch, limit: 500, offset: ids.size, view: "summary", archive_state: archiveState });
+        page = await getPublicProjects({ q: debouncedSearch, limit: 500, offset: ids.size, view: "summary" });
         page.forEach((project) => ids.add(project.id));
       } while (page.length === 500 && !cancelled);
       if (!cancelled) setSearchMatches({ query: debouncedSearch, ids });
@@ -238,7 +237,7 @@ const Projects: React.FC = () => {
       if (!cancelled) setError("Project search could not be completed. Please retry.");
     });
     return () => { cancelled = true; };
-  }, [archiveState, debouncedSearch, searchRetryKey]);
+  }, [debouncedSearch, searchRetryKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -527,20 +526,11 @@ const Projects: React.FC = () => {
             </div>
           </div>
 
-          <div role="group" aria-label="Project archive filter" className="mb-4 flex flex-wrap gap-2">
-            {(["active", "archived"] as const).map((scope) => (
-              <button key={scope} type="button" aria-pressed={scope === archiveState}
-                className={`rounded-lg border px-3 py-2 text-sm font-semibold ${scope === archiveState ? "bg-blue-700 text-white" : "text-blue-800"}`}
-                onClick={() => { if (scope !== archiveState) { setProjects([]); setSearchMatches(null); setTablePage(1); setArchiveState(scope); } }}>
-                {scope === "active" ? "Active Projects" : "Archived Projects"}
-              </button>
-            ))}
-          </div>
           {/* Summary Stats Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-3 border border-blue-200">
               <div className="text-xs font-semibold text-blue-700 mb-1">
-                {archiveState === "archived" ? "Archived Projects" : "Total Projects"}
+                Total Projects
               </div>
               <div className="text-2xl font-bold text-blue-900">
                 {totals.totalProjects}
@@ -1083,7 +1073,6 @@ const Projects: React.FC = () => {
                     <div className="min-w-0">
                       <h3 id="public-project-detail-title" className="font-semibold text-slate-900 truncate">
                         {detailProject.title}
-                        {detailProject.archived && <span className="ml-2 rounded bg-slate-100 px-2 py-1 text-xs">Archived</span>}
                       </h3>
                       <p className="text-xs text-slate-500 mt-0.5">
                         {detailProject.agency || "N/A"}{" "}
@@ -1093,13 +1082,13 @@ const Projects: React.FC = () => {
                       </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
-                      {!detailProject.archived && <Link
+                      <Link
                         to={`/report-project?project=${detailProject.id}`}
                         onClick={closeProjectDetail}
                         className="rounded-lg bg-green-700 px-3 py-1.5 text-sm font-semibold text-white hover:bg-green-800"
                       >
                         Report Concern
-                      </Link>}
+                      </Link>
                       <button
                         type="button"
                         className="px-3 py-1.5 border rounded-lg text-sm hover:bg-slate-50"

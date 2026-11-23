@@ -73,11 +73,9 @@ class CMSMediaAssetSerializer(serializers.ModelSerializer):
         ]
 
     def validate_category(self, value):
-        from cms.models import CMSSiteSetting
-        setting = CMSSiteSetting.objects.filter(key="media-categories").values_list("value_json", flat=True).first() or {}
-        choices = setting.get("categories") if isinstance(setting, dict) else None
-        allowed = ["General"] + (choices if isinstance(choices, list) else [])
-        if value not in allowed and value != getattr(self.instance, "category", None):
+        from cms.services.media_validation import get_media_categories
+
+        if value not in get_media_categories() and value != getattr(self.instance, "category", None):
             raise serializers.ValidationError("Choose a category from Site Settings.")
         return value
 
@@ -183,6 +181,8 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({"nodes": {index: {"items": "Child labels must be a list."}}})
 
         if page_slug == "about-rdc" and section_key == "resolutions-archive":
+            from cms.services.resolution_legend import RESOLUTION_ROW_KEYS, resolution_year_rows, validate_resolution_types
+
             years = value.get("years")
             if years is not None and not isinstance(years, list):
                 raise serializers.ValidationError({"years": "Resolution years must be a list."})
@@ -206,10 +206,10 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
                     year_errors[year_index] = {"year": "Each resolution year may appear only once."}
                     continue
                 seen_years.add(year)
-                resolutions = year_row.get("resolutions", year_row.get("items", []))
-                if not isinstance(resolutions, list):
+                if any(key in year_row and not isinstance(year_row[key], list) for key in RESOLUTION_ROW_KEYS):
                     year_errors[year_index] = {"resolutions": "Resolutions must be a list."}
                     continue
+                _, resolutions = resolution_year_rows(year_row)
                 resolution_errors = {}
                 for resolution_index, resolution in enumerate(resolutions):
                     if isinstance(resolution, str):
@@ -246,6 +246,7 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
             for field in ("legendItems", "categoryItems"):
                 if field in value and not isinstance(value[field], list):
                     raise serializers.ValidationError({field: "This value must be a list."})
+            value = validate_resolution_types(value, previous)
 
         if page_slug == "contact" and section_key == "main-office":
             email = str(value.get("email") or "").strip()
@@ -707,11 +708,12 @@ class CMSPublicationDocumentSerializer(CMSManagedContentSerializer):
 
 class CMSResolutionSerializer(CMSManagedContentSerializer):
     attachment_url = serializers.SerializerMethodField()
+    resolution_type_key = serializers.CharField(required=False, write_only=True)
 
     class Meta:
         model = CMSResolution
         fields = [
-            "id", "stable_key", "resolution_number", "title", "description", "year", "resolution_date",
+            "id", "stable_key", "resolution_number", "title", "description", "year", "resolution_date", "resolution_type_key",
             "attachment", "attachment_url", "external_url", "sort_order", "status", "published_snapshot_json",
             "has_unpublished_changes", "review_notes", "created_by_name", "updated_by_name",
             "submitted_by_name", "reviewed_by_name", "published_at", "archived_at", "created_at", "updated_at",
@@ -721,6 +723,11 @@ class CMSResolutionSerializer(CMSManagedContentSerializer):
             "review_notes", "created_by_name", "updated_by_name", "submitted_by_name", "reviewed_by_name",
             "published_at", "archived_at", "created_at", "updated_at",
         ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["resolution_type_key"] = self.context.get("resolution_types", {}).get(instance.stable_key)
+        return data
 
     def get_attachment_url(self, obj):
         return obj.attachment.resolved_public_url if obj.attachment and not obj.attachment.is_archived else ""
@@ -749,6 +756,11 @@ class CMSResolutionSerializer(CMSManagedContentSerializer):
         resolution_date = attrs.get("resolution_date", getattr(self.instance, "resolution_date", None))
         if resolution_date and resolution_date.year != year:
             raise serializers.ValidationError({"resolution_date": "Resolution date must match the selected year."})
+        incompatible = {"legendItems", "legend_items", "resolutionTypeKey", "resolutionTypeKeys", "resolution_type_keys", "legendTitle"}
+        if incompatible.intersection(self.initial_data):
+            raise serializers.ValidationError({"resolution_type_key": "Submit one resolution_type_key."})
+        if self.instance is None and "resolution_type_key" not in attrs:
+            raise serializers.ValidationError({"resolution_type_key": "Select a Resolution Type."})
         return attrs
 
 

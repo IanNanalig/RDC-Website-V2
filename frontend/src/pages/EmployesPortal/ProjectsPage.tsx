@@ -362,13 +362,6 @@ const ProjectsPage: React.FC = () => {
     setPage(1);
   }, [selectedWorkflow]);
 
-  const handleSubmit = async (id: number) => {
-    if (role === "employee" && !canEncode) return;
-    await api.post(`employee/projects/${id}/submit/`);
-    await loadProjects();
-    localStorage.setItem("projects_last_update", Date.now().toString());
-  };
-
   const handleArchive = async () => {
     if (!archiveTarget || archiveBusy) return;
     setArchiveBusy(true);
@@ -467,14 +460,6 @@ const ProjectsPage: React.FC = () => {
     (p.status === "planning" || p.workflow_status === "needs_revision") &&
     (canEncode || p.workflow_status === "needs_revision");
 
-  const canSubmitProject = (p: ApiProject) =>
-    role === "employee" &&
-    p.access_level !== "collaborator" &&
-    p.can_edit !== false &&
-    !p.is_revision &&
-    canEncode &&
-    p.status === "planning";
-
   const editPath = (p: ApiProject) => `/employee/projects/${p.id}/edit/simplified`;
 
   const validatorReviewPath = (p: ApiProject) => {
@@ -519,7 +504,7 @@ const ProjectsPage: React.FC = () => {
       ? "Review all portal submissions, archive, and manage records"
       : role === "validator"
       ? "Process pending submissions and maintain review quality"
-      : "Create, submit, view, and print your project records";
+      : "Create, review, and print your project records";
 
   return (
     <PortalLayout
@@ -711,15 +696,6 @@ const ProjectsPage: React.FC = () => {
                             className={`whitespace-nowrap ${canEditProject(p) ? "text-blue-600 hover:underline" : "text-slate-400 cursor-not-allowed"}`}
                           >
                             {p.workflow_status === "needs_revision" ? "Revise" : "Edit"}
-                          </button>
-                        )}
-                        {!p.is_revision && p.status === "planning" && (
-                          <button
-                            disabled={!canSubmitProject(p)}
-                            onClick={() => handleSubmit(p.id)}
-                            className={`whitespace-nowrap ${canSubmitProject(p) ? "text-indigo-600 hover:underline" : "text-slate-400 cursor-not-allowed"}`}
-                          >
-                            Submit
                           </button>
                         )}
                         {canStartProgressUpdate(p) && (

@@ -78,7 +78,9 @@ from cms.services.locking import (
     release_section_lock,
 )
 from cms.services.media_usage import get_media_usages
-from cms.services.media_validation import CMSMediaValidationError, extract_media_metadata, validate_media_upload
+from cms.services.media_validation import (
+    CMSMediaValidationError, extract_media_metadata, get_media_categories, get_upload_policy, validate_media_upload,
+)
 from cms.services.publishing import (
     mark_article_changed,
     mark_page_changed,
@@ -1112,18 +1114,41 @@ class AdminCMSResolutionViewSet(CMSManagedContentViewSet):
     search_fields = ("stable_key", "resolution_number", "title", "description")
     content_type_key = "resolution"
 
+    def get_serializer_context(self):
+        from cms.services.resolution_legend import legend_entries, resolution_entries, resolve_type
+
+        context = super().get_serializer_context()
+        content = CMSPageSection.objects.filter(page__slug="about-rdc", section_key="resolutions-archive").values_list("content_json", flat=True).first() or {}
+        entries = legend_entries(content)
+        context["resolution_types"] = {
+            row["id"]: resolve_type(row, entries) for _, row in resolution_entries(content) if row.get("id")
+        }
+        return context
+
     @transaction.atomic
     def perform_create(self, serializer):
         # Use the same page-first lock order as the fixed archive editor.
         CMSPage.objects.select_for_update().filter(slug="about-rdc").first()
+        key = serializer.validated_data.pop("resolution_type_key")
         super().perform_create(serializer)
-        sync_resolution_to_draft(serializer.instance, self.request.user)
+        selected = sync_resolution_to_draft(serializer.instance, self.request.user, resolution_type_key=key)
+        serializer.context["resolution_types"][serializer.instance.stable_key] = selected
+
+    @action(detail=True, methods=["post"], permission_classes=[permissions.IsAuthenticated, IsCMSAdmin])
+    @transaction.atomic
+    def publish(self, request, pk=None):
+        CMSPage.objects.select_for_update().filter(slug="about-rdc").first()
+        if not self.get_serializer_context()["resolution_types"].get(self.get_object().stable_key):
+            return Response({"resolution_type_key": "Choose one configured Resolution Type before publishing."}, status=400)
+        return super().publish(request, pk=pk)
 
     @transaction.atomic
     def perform_update(self, serializer):
         CMSPage.objects.select_for_update().filter(slug="about-rdc").first()
+        key = serializer.validated_data.pop("resolution_type_key", None)
         super().perform_update(serializer)
-        sync_resolution_to_draft(serializer.instance, self.request.user)
+        selected = sync_resolution_to_draft(serializer.instance, self.request.user, resolution_type_key=key)
+        serializer.context["resolution_types"][serializer.instance.stable_key] = selected
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -2199,6 +2224,10 @@ class AdminCMSMediaAssetViewSet(CMSSummaryListMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsCMSUser]
     pagination_class = CMSMediaPagination
 
+    @action(detail=False, methods=["get"], url_path="upload-policy")
+    def upload_policy(self, request):
+        return Response({**get_upload_policy(), "categories": get_media_categories()})
+
     def list(self, request, *args, **kwargs):
         response = super().list(request, *args, **kwargs)
         if request.query_params.get("archived") in {"1", "true", "yes"}:
@@ -2304,14 +2333,9 @@ class AdminCMSMediaAssetViewSet(CMSSummaryListMixin, viewsets.ModelViewSet):
 
 class AdminCMSSiteSettingViewSet(viewsets.ModelViewSet):
     serializer_class = CMSSiteSettingSerializer
-    permission_classes = [permissions.IsAuthenticated, IsCMSUser]
+    permission_classes = [permissions.IsAuthenticated, IsCMSAdmin]
     queryset = CMSSiteSetting.objects.select_related("updated_by").all().order_by("key")
     lookup_field = "key"
-
-    def get_permissions(self):
-        if self.request.method not in permissions.SAFE_METHODS:
-            return [permissions.IsAuthenticated(), IsCMSAdmin()]
-        return super().get_permissions()
 
     def perform_create(self, serializer):
         setting = serializer.save(updated_by=self.request.user)
@@ -2456,7 +2480,8 @@ class PublicCMSSiteSettingsView(APIView):
     def get(self, request):
         settings_payload = {
             row.key: row.value_json
-            for row in CMSSiteSetting.objects.exclude(key__startswith="media-upload-").order_by("key")
+            for row in CMSSiteSetting.objects.exclude(key__startswith="media-upload-")
+            .exclude(key__in=("media-categories", "project-concern-categories")).order_by("key")
         }
         return _with_public_cache(request, settings_payload)
 
