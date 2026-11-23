@@ -145,6 +145,9 @@ export function AIScoringRuleHistory({ versions, initialTotalPages, activeId, on
       <div className="portal-card-header"><h3 className="font-bold text-slate-900">Rule Version History</h3><p className="text-xs text-slate-500">Old versions remain attached to the analyses they produced.</p></div>
       <div className="portal-card-body space-y-3">
         {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
+        {entries.length === 1 && entries[0].id === activeId && totalPages <= 1 && (
+          <p className="text-sm text-slate-500">No earlier rule versions. The active rules are the current baseline.</p>
+        )}
         {entries.map((rule) => {
           const selected = details[rule.id];
           const note = notes[rule.id] || "";
