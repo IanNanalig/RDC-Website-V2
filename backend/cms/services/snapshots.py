@@ -191,7 +191,8 @@ def compose_public_page_snapshot(page, *, draft=False):
                 record = carousel.get(key)
                 if record and record.status == "archived":
                     continue
-                slides.append((collection_snapshot(record) if use_normalized else None) or slide)
+                rendered_slide = (collection_snapshot(record) if use_normalized else None) or slide
+                slides.append({**rendered_slide, **{key: slide[key] for key in ("visible", "isVisible") if key in slide}})
             hero["slides"] = slides
 
     if page.slug == "publications" and "publication-catalog" in by_key:
@@ -213,7 +214,7 @@ def compose_public_page_snapshot(page, *, draft=False):
             category = dict(published_category)
             if use_normalized and (normalized := collection_snapshot(record)):
                 category = dict(normalized)
-                category.update({key: published_category[key] for key in ("visible", "isVisible") if key in published_category})
+                category.update({key: published_category[key] for key in ("visible", "isVisible", "manualDocumentOrder") if key in published_category})
             documents = []
             for key, published_document in members.items():
                 record = document_records.get(key)
@@ -225,9 +226,9 @@ def compose_public_page_snapshot(page, *, draft=False):
                     document.update({field: published_document[field] for field in ("visible", "isVisible") if field in published_document})
                 document["categoryCode"] = code
                 documents.append(document)
-            category["documents"] = sorted(documents, key=_publication_document_sort_key)
+            category["documents"] = documents if category.get("manualDocumentOrder") is True else sorted(documents, key=_publication_document_sort_key)
             categories.append(category)
-        catalog["categories"] = sorted(categories, key=lambda category: -int(category.get("categoryNumber") or 0))
+        catalog["categories"] = categories if catalog.get("manualOrder") is True else sorted(categories, key=lambda category: -int(category.get("categoryNumber") or 0))
 
     if (
         page.slug == "about-rdc"
@@ -248,22 +249,25 @@ def compose_public_page_snapshot(page, *, draft=False):
         # The fixed page snapshot is the authoritative list. A normalized row
         # enriches its matching entry, but a missing/stale normalized row must
         # never make an otherwise published resolution disappear publicly.
-        # Draft entries are stored oldest-first, so reverse each year for the
-        # requested newest-added-first public presentation.
+        # Legacy years display newest-added first. An explicit move saves
+        # the complete display order for that year.
         years = []
         for year_row in archive_content.get("years") or []:
             if not isinstance(year_row, dict):
                 continue
             raw_year = str(year_row.get("year") or "").strip()
-            if not raw_year.isdigit():
+            if not re.fullmatch(r"[0-9]{4}", raw_year):
                 continue
             resolutions = []
-            for item in reversed(year_row.get("resolutions") or year_row.get("items") or []):
+            items = year_row.get("resolutions") or year_row.get("items") or []
+            for item in items if year_row.get("manualOrder") is True else reversed(items):
                 if isinstance(item, dict):
                     stable_key = str(item.get("id") or "").strip()
                     if stable_key in archived_keys:
                         continue
-                    resolutions.append(deepcopy(normalized_by_key.get(stable_key) or item))
+                    resolution = deepcopy(normalized_by_key.get(stable_key) or item)
+                    resolution.update({key: item[key] for key in ("legendTitle", "legendItems", "visible", "isVisible") if key in item})
+                    resolutions.append(resolution)
                 elif isinstance(item, str) and item.strip():
                     resolutions.append(item)
             years.append({"year": raw_year, "resolutions": resolutions})

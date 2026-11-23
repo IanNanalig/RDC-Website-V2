@@ -45,6 +45,10 @@ export type CMSPage = {
   updated_at: string;
 };
 
+export type CMSSectionSaveResult = CMSSection & {
+  page_revision?: Pick<CMSPage, "status" | "has_unpublished_changes" | "updated_at">;
+};
+
 export type CMSArticle = {
   id: number;
   title: string;
@@ -381,6 +385,7 @@ export type CMSAIScoringWorkspace = {
   draft_rule_set?: CMSAIRuleSet | null;
   draft_rule_sets?: Array<{ id: number; version: string }>;
   rule_versions: CMSAIRuleHistoryEntry[];
+  rule_versions_total_pages: number;
   historical_projects: CMSAIHistoricalProject[];
   historical_count: number;
   training_dataset?: CMSAITrainingDataset;
@@ -517,11 +522,15 @@ export const cmsApi = {
   listPages: async (search = "", page = 1) =>
     listFromResponse<CMSPage>(await api.get(`admin/cms/pages/?${summaryQuery({ q: search, page })}`)),
   getPage: (id: number) => api.get(`admin/cms/pages/${id}/?view=editor`) as Promise<CMSPage>,
-  getPagePreview: (id: number) => api.get(`admin/cms/pages/${id}/preview/`) as Promise<{ draft: CMSPageSnapshot; published: CMSPageSnapshot | null }>,
+  getPagePreview: (id: number) =>
+    api.get(`admin/cms/pages/${id}/preview/`)
+      .then((preview) => normalizeCmsValue(preview) as { draft: CMSPageSnapshot; published: CMSPageSnapshot | null }),
   getModule: (slug: string) => api.get(`admin/cms/modules/${slug}/`) as Promise<CMSPage>,
   createPage: (payload: Pick<CMSPage, "title" | "slug">) => api.post("admin/cms/pages/?view=editor", payload),
   updatePage: (id: number, payload: Pick<CMSPage, "title" | "slug">) =>
     api.put(`admin/cms/pages/${id}/?view=editor`, payload),
+  discardPageDraft: (id: number, expectedUpdatedAt: string) =>
+    api.post(`admin/cms/pages/${id}/discard-draft/?view=editor`, { expected_updated_at: expectedUpdatedAt }) as Promise<CMSPage>,
   publishPage: (id: number) => api.post(`admin/cms/pages/${id}/publish/?view=editor`),
   submitPage: (id: number) => api.post(`admin/cms/pages/${id}/submit/?view=editor`),
   rejectPage: (id: number, remarks = "") => api.post(`admin/cms/pages/${id}/reject/?view=editor`, { remarks }),
@@ -541,7 +550,7 @@ export const cmsApi = {
   },
   createSection: (payload: Partial<CMSSection>) => api.post("admin/cms/sections/", payload),
   updateSection: (id: number, payload: Partial<CMSSection>) =>
-    api.put(`admin/cms/sections/${id}/`, payload),
+    api.put(`admin/cms/sections/${id}/`, payload) as Promise<CMSSectionSaveResult>,
   lockSection: (id: number, overrideConfirmed = false) => api.post(`admin/cms/sections/${id}/lock/`, { override_confirmed: overrideConfirmed }),
   unlockSection: (id: number) => api.post(`admin/cms/sections/${id}/unlock/`),
   heartbeatSection: (id: number) => api.post(`admin/cms/sections/${id}/heartbeat/`),
@@ -596,6 +605,10 @@ export const cmsApi = {
   getContributorFormVersion: (key: string, version: number) =>
     api.get(`contributor-forms/${key}/versions/${version}/`) as Promise<ContributorFormPayload>,
 
+  getSelectedMedia: (ids: string[]) =>
+    api.get(`admin/cms/media/selected/?${new URLSearchParams({ ids: ids.join(",") })}`)
+      .then((rows) => normalizeCmsValue(rows) as CMSMediaAsset[]),
+  getMediaCategoryUsage: () => api.get("admin/cms/media/category-usage/") as Promise<Record<string, number>>,
   listMediaPage: async (filters: { q?: string; page?: number; file_type?: string; category?: string; tag?: string; archived?: boolean } = {}) => {
     const query = new URLSearchParams({ view: "summary", page: String(filters.page || 1) });
     if (filters.q) query.set("q", filters.q);
@@ -620,7 +633,7 @@ export const cmsApi = {
       page += 1;
     }
   },
-  getMedia: (id: number) => api.get(`admin/cms/media/${id}/`) as Promise<CMSMediaAsset>,
+  getMedia: (id: number) => api.get(`admin/cms/media/${id}/`).then((asset) => normalizeCmsValue(asset) as CMSMediaAsset),
   updateMedia: (id: number, payload: { alt_text: string; caption: string; category: string; tags: string[] }) => api.patch(`admin/cms/media/${id}/`, payload) as Promise<CMSMediaAsset>,
   uploadMedia: (formData: FormData) => api.postForm("admin/cms/media/", formData),
   archiveMedia: (id: number) => api.post(`admin/cms/media/${id}/archive/`),
@@ -632,8 +645,11 @@ export const cmsApi = {
   getReviewQueue: () => api.get("admin/cms/review-queue/?view=summary") as Promise<CMSReviewQueue>,
   getAIScoringWorkspace: (limit = 50) => api.get(`admin/cms/ai-scoring/?limit=${limit}`) as Promise<CMSAIScoringWorkspace>,
   getAIScoringDraft: (id: number) => api.get(`admin/cms/ai-scoring/drafts/${id}/`) as Promise<CMSAIRuleSet>,
+  getAIHistoricalReferences: (page: number, search: string) =>
+    api.get(`admin/cms/ai-scoring/historical-references/?${new URLSearchParams({ page: String(page), q: search })}`) as
+      Promise<{ count: number; total_pages: number; results: CMSAIHistoricalProject[] }>,
   getAIScoringVersions: (page: number) =>
-    api.get(`admin/cms/ai-scoring/versions/?page=${page}`) as Promise<{ next: string | null; results: CMSAIRuleHistoryEntry[] }>,
+    api.get(`admin/cms/ai-scoring/versions/?page=${page}`) as Promise<{ page: number; total_pages: number; results: CMSAIRuleHistoryEntry[] }>,
   getAIScoringVersion: (id: number) => api.get(`admin/cms/ai-scoring/versions/${id}/`) as Promise<CMSAIRuleHistoryDetail>,
   restoreAIScoringVersion: (id: number, activeId: number, changeNote: string) =>
     api.post(`admin/cms/ai-scoring/versions/${id}/restore/`, { expected_active_id: activeId, change_note: changeNote }) as

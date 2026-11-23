@@ -224,6 +224,9 @@ try {
     key: "accessibility", label: "Accessible public services",
     weight: 20, context_phrases: ["accessible transport", "connect communities"],
   };
+  const versions = [oldVersion, ...Array.from({ length: 9 }, (_, index) => ({
+    ...oldVersion, id: index + 2, version: `other-history-${index + 1}`, change_note: "",
+  }))];
   let activeId = 2;
   await admin.route("**/api/**", (route) => {
     const requestUrl = route.request().url();
@@ -247,11 +250,34 @@ try {
         { path: ["sector_criteria", "infrastructure", removedCriterion.key], kind: "removed", before: removedCriterion, after: null },
       ],
     });
+    if (requestUrl.includes("ai-scoring/historical-references/")) {
+      const query = new URL(requestUrl).searchParams;
+      const page = Number(query.get("page"));
+      const search = query.get("q");
+      if (search && search !== "River") return json(route, { count: 0, total_pages: 0, results: [] });
+      if (search) assert.equal(page, 1, "Changing search resets the historical page");
+      return json(route, {
+        count: search ? 1 : 11,
+        total_pages: search ? 1 : 2,
+        results: [{
+          confirmation_id: page, training_record_id: page, project_title: search ? "River mitigation" : page === 1 ? "Earlier page project" : "Next page project",
+          agency: "DPWH", sector: "Infrastructure", submission_type: "simplified", project_status: "validated",
+          base_score: 85, suggested_priority: "high", final_priority: "high", rule_version: "test-rules",
+          validator_name: "Validator", confirmed_at: "2026-10-10T00:00:00Z", training_eligible: true,
+        }],
+      });
+    }
+    if (requestUrl.includes("ai-scoring/versions/?page=2")) {
+      return json(route, { page: 2, total_pages: 2, results: [{ ...oldVersion, id: 50, version: "earlier-page-rules" }] });
+    }
+    if (requestUrl.includes("ai-scoring/versions/?page=1")) {
+      return json(route, { page: 1, total_pages: 2, results: versions });
+    }
     if (requestUrl.includes("admin/cms/ai-scoring/")) return json(route, {
       active_rule_set: { id: activeId, version: activeId === 3 ? "restored-scoring-rules" : "test-rules", algorithm_version: "test", config: adminConfig },
       scoring_formula: { max_raw_score: 10, regional_criterion_weight: 25, example: { base: 80, regional: 60, eligible: 70, below_cutoff: 80 } },
       committee_outcome_links: [{ code: "sceed", name: "SCEED", is_active: true, groups: ["economic", "environment"] }],
-      historical_count: 0, historical_projects: [], rule_versions: [oldVersion],
+      historical_count: 11, historical_projects: [], rule_versions: versions, rule_versions_total_pages: 2,
     });
     return json(route, {});
   });
@@ -325,9 +351,29 @@ try {
   assert.equal(await admin.locator("summary").getByText(/Combined weights must total/).count(), 0);
   assert.equal(await priorityThresholds.getByText(/weight/i).count(), 0);
   assert.equal(await admin.getByRole("button", { name: "Create Draft" }).isDisabled(), true);
+  const referencePages = admin.getByRole("navigation", { name: "Historical reference pages" });
+  await admin.getByText("Earlier page project", { exact: true }).waitFor();
+  await referencePages.getByText("Page 1 of 2", { exact: true }).waitFor();
+  assert.ok(await referencePages.getByRole("button", { name: "Previous" }).isDisabled());
+  await referencePages.getByRole("button", { name: "Next" }).click();
+  await admin.getByText("Next page project", { exact: true }).waitFor();
+  await referencePages.getByText("Page 2 of 2", { exact: true }).waitFor();
+  assert.ok(await referencePages.getByRole("button", { name: "Next" }).isDisabled());
+  assert.equal(await admin.getByRole("button", { name: "Exclude", exact: true }).count(), 0);
+  await admin.getByPlaceholder(/Search project, agency/).fill("River");
+  await admin.getByText("River mitigation", { exact: true }).waitFor();
+  await referencePages.getByText("Page 1 of 1", { exact: true }).waitFor();
+  const versionPages = admin.getByRole("navigation", { name: "Rule version history pages" });
+  await versionPages.getByText("Page 1 of 2", { exact: true }).waitFor();
+  await versionPages.getByRole("button", { name: "Next" }).click();
+  await admin.getByText("earlier-page-rules", { exact: true }).waitFor();
+  await versionPages.getByText("Page 2 of 2", { exact: true }).waitFor();
+  assert.ok(await versionPages.getByRole("button", { name: "Next" }).isDisabled());
+  await versionPages.getByRole("button", { name: "Previous" }).click();
   await admin.getByText(oldVersion.change_note, { exact: true }).waitFor();
   await admin.getByRole("button", { name: "View version previous-scoring-rules" }).click();
-  await admin.getByText("Changes since baseline").waitFor();
+  const versionRow = admin.getByText(oldVersion.change_note, { exact: true }).locator("..");
+  await versionRow.getByText("Changes since baseline").waitFor();
   await admin.getByText("Thresholds / High-priority cutoff", { exact: false }).waitFor();
   const addedRow = admin.getByRole("row").filter({ hasText: "Scoring rules / Common outcomes / Safe and reliable transport" });
   await addedRow.getByRole("cell").nth(2).getByText("road, bridge", { exact: true }).waitFor();

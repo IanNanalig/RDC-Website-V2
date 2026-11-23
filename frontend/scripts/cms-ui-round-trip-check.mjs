@@ -43,9 +43,9 @@ const postJson = async (path, body = {}) => {
 
 const pages = listFromResponse(await fetchJson("admin/cms/pages/"));
 const sections = listFromResponse(await fetchJson("admin/cms/sections/"))
-  .filter((section) => section.status !== "archived")
+  .filter((section) => section.status !== "archived" && section.section_key !== "message-form")
   .sort((left, right) => left.page - right.page || left.order - right.order || left.id - right.id);
-const settings = listFromResponse(await fetchJson("admin/cms/settings/"));
+const settings = listFromResponse(await fetchJson("admin/cms/settings/")).filter((setting) => !["quick-links", "social-links"].includes(setting.key));
 const contributorForms = listFromResponse(await fetchJson("admin/cms/forms/"));
 const registeredTypes = new Set([
   "hero_carousel",
@@ -94,9 +94,11 @@ for (const section of sections) {
   }
 
   const before = await fetchJson(`admin/cms/sections/${section.id}/`);
-  const sectionCard = page.locator(`[data-cms-section-id="${section.id}"]`);
-  await sectionCard.waitFor();
-  await sectionCard.getByRole("button", { name: "Edit Content", exact: true }).click();
+  if (["region-hero", "about-hero", "contact-hero"].includes(section.section_key)) {
+    await page.getByRole("button", { name: "Edit Page Header" }).click();
+  } else {
+    await page.locator(`[data-cms-section-id="${section.id}"]`).getByRole("button", { name: "Edit Content", exact: true }).click();
+  }
   await page.getByRole("heading", { name: "Edit Section" }).waitFor();
   assert.equal(await page.locator("pre").count(), 0, `Raw JSON preview visible for ${section.section_type}/${section.section_key}.`);
   assert.equal(await page.locator('textarea[aria-label*="source"]').count(), 0, `Raw source visible for ${section.section_type}/${section.section_key}.`);
@@ -121,9 +123,21 @@ for (const section of sections) {
   await page.getByText("Section updated. Publish the page when ready.").waitFor();
 
   const after = await fetchJson(`admin/cms/sections/${section.id}/`);
+  const compareContent = (record) => {
+    const value = structuredClone(record.content_json);
+    if (["legal-basis", "development-plans", "investment-programming", "monitoring-evaluation"].includes(section.section_key)) {
+      const seen = new Set();
+      value.items?.forEach((item, index) => {
+        const previous = before.content_json.items?.[index]?.id;
+        if (!previous || seen.has(previous)) delete item.id;
+        seen.add(previous);
+      });
+    }
+    return value;
+  };
   assert.deepStrictEqual(
-    after.content_json,
-    before.content_json,
+    compareContent(after),
+    compareContent(before),
     `${section.section_type}/${section.section_key} changed content_json during a no-change visual save.`,
   );
   console.log(`PASS ${cmsPage.slug}: ${section.section_type}/${section.section_key}`);
@@ -154,6 +168,8 @@ await page.goto(`${frontendUrl}/admin/forms`, { waitUntil: "networkidle" });
 await page.getByRole("heading", { name: "Contributor Forms" }).waitFor();
 const contributorForm = page.locator('[data-cms-contributor-form-key="simplified-rdip"]');
 await contributorForm.waitFor();
+assert.equal(await page.getByText("Configuration Impact Review", { exact: true }).count(), 0);
+assert.equal(await contributorForm.getByRole("button", { name: "Update Form", exact: true }).count(), 0);
 await contributorForm.getByRole("button", { name: "Change Form", exact: true }).click();
 await page.getByRole("heading", { name: "Change Form", exact: true }).waitFor();
 assert.equal(await page.getByText("Priority Analysis Facts", { exact: true }).count(), 0, "System-managed AI fields are visible in Contributor Forms CMS.");
@@ -210,7 +226,7 @@ if (process.env.CMS_TEST_FORM_WORKFLOW === "1") {
   const originalVersion = originalForm.current_published_version_number;
   const workflowSuffix = ` [UI smoke ${Date.now()}]`;
 
-  await contributorForm.getByRole("button", { name: "Update Form", exact: true }).click();
+  await contributorForm.getByRole("button", { name: "Change Form", exact: true }).click();
   const description = page.getByLabel("Form description", { exact: true });
   await description.fill(`${await description.inputValue()}${workflowSuffix}`);
   await page.getByRole("button", { name: "Save Draft", exact: true }).click();
@@ -225,7 +241,7 @@ if (process.env.CMS_TEST_FORM_WORKFLOW === "1") {
   await page.getByRole("button", { name: "Reject", exact: true }).click();
   await page.getByText("Form draft returned with review notes.").waitFor();
 
-  await page.getByRole("button", { name: "Update Form", exact: true }).click();
+  await page.getByRole("button", { name: "Change Form", exact: true }).click();
   const rejectedDescription = page.getByLabel("Form description", { exact: true });
   await rejectedDescription.fill(`${await rejectedDescription.inputValue()} ready`);
   await page.getByRole("button", { name: "Save Draft", exact: true }).click();

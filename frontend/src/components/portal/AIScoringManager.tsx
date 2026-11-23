@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import cmsApi, {
   type CMSAIOutcomeRule,
   type CMSAIRuleConfig,
@@ -6,6 +6,7 @@ import cmsApi, {
   type CMSAIScoringWorkspace,
 } from "../../services/cmsApi";
 import { AIScoringRuleHistory } from "./AIScoringRuleHistory";
+import { ScoringHistoryPagination } from "./ScoringHistoryPagination";
 
 type Props = { mode: "admin" | "editor" };
 
@@ -202,6 +203,7 @@ const NumberInput = ({
   min = 0,
   max,
   wholeWeight = false,
+  alignLabel = false,
 }: {
   label: string;
   value: number;
@@ -210,11 +212,12 @@ const NumberInput = ({
   min?: number;
   max?: number;
   wholeWeight?: boolean;
+  alignLabel?: boolean;
 }) => {
   const valid = wholeWeight ? validWeight(value) : withinRange(value, min, max);
   return (
     <label className="block">
-      <span className="text-xs font-medium text-slate-600">{label}</span>
+      <span className={`text-xs font-medium text-slate-600 ${alignLabel ? "block break-words leading-4 sm:min-h-8" : ""}`}>{label}</span>
       <input
         type="number"
         min={wholeWeight ? 1 : min}
@@ -335,16 +338,18 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
   const [changeNote, setChangeNote] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
-  const [historyLimit, setHistoryLimit] = useState(50);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historical, setHistorical] = useState<Awaited<ReturnType<typeof cmsApi.getAIHistoricalReferences>> | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState("");
   const [saving, setSaving] = useState(false);
   const [training, setTraining] = useState(false);
-  const [updatingRecordId, setUpdatingRecordId] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const next = await cmsApi.getAIScoringWorkspace(historyLimit);
+      const next = await cmsApi.getAIScoringWorkspace(0);
       setWorkspace(next);
       const nextDraft = next.draft_rule_set || null;
       setDraft(nextDraft);
@@ -358,7 +363,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
     } finally {
       setLoading(false);
     }
-  }, [canEdit, historyLimit]);
+  }, [canEdit]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -371,18 +376,29 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
     });
   };
 
-  const filteredHistory = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) return workspace?.historical_projects || [];
-    return (workspace?.historical_projects || []).filter((row) => [
-      row.project_title,
-      row.agency,
-      row.sector,
-      row.final_priority,
-      row.rule_version,
-      row.validator_name,
-    ].some((value) => String(value || "").toLowerCase().includes(query)));
-  }, [search, workspace?.historical_projects]);
+  const activeRuleId = workspace?.active_rule_set.id;
+  const referenceVersion = workspace?.rag_pipeline?.reference_model_version;
+  useEffect(() => {
+    if (activeRuleId === undefined) return;
+    let current = true;
+    setHistoryError("");
+    setHistoryLoading(true);
+    const timer = window.setTimeout(() => {
+      void cmsApi.getAIHistoricalReferences(historyPage, search.trim())
+        .then((data) => { if (current) setHistorical(data); })
+        .catch((error) => {
+          if (current) {
+            setHistorical(null);
+            setHistoryError(errorDetail(error, "Historical projects could not be loaded."));
+          }
+        })
+        .finally(() => { if (current) setHistoryLoading(false); });
+    }, 250);
+    return () => { current = false; window.clearTimeout(timer); };
+  }, [activeRuleId, historyPage, referenceVersion, search]);
+
+  const filteredHistory = historical?.results || [];
+  const historicalCount = !historyLoading && historical ? historical.count : search.trim() ? null : workspace?.historical_count;
 
   const save = async () => {
     if (!config || !canEdit || !workspace) return;
@@ -471,33 +487,7 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
     }
   };
 
-  const toggleTrainingRecord = async (row: CMSAIScoringWorkspace["historical_projects"][number]) => {
-    if (!canEdit) return;
-    if (!row.training_record_id) {
-      setNotice("This historical record is not available for training yet. Refresh after the backend update is deployed.");
-      return;
-    }
-    const nextEligible = !row.training_eligible;
-    let reason = "";
-    if (!nextEligible) {
-      reason = window.prompt("Why should this confirmed project be excluded from model training?", "")?.trim() || "";
-      if (!reason) {
-        setNotice("An exclusion reason is required.");
-        return;
-      }
-    }
-    setUpdatingRecordId(row.training_record_id);
-    setNotice("");
-    try {
-      await cmsApi.updateAITrainingRecord(row.training_record_id, nextEligible, reason);
-      setNotice(nextEligible ? "The project is eligible for future AI historical context." : "The project was excluded from future AI historical context.");
-      await load();
-    } catch (error) {
-      setNotice(errorDetail(error, "The training record could not be updated."));
-    } finally {
-      setUpdatingRecordId(null);
-    }
-  };
+
 
   if (loading && !workspace) return <div className="portal-card p-5 text-sm text-slate-600">Loading AI scoring rules and historical references...</div>;
   if (!workspace || !config) return <div className="portal-card p-5 text-sm text-rose-700">{notice || "AI scoring settings are unavailable."}</div>;
@@ -678,9 +668,9 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
                 <div className="mt-3 space-y-3">
                   <NumberInput label={group === "readiness" ? "Readiness weight" : "GAD responsiveness weight"} value={papWeights[group === "readiness" ? "readiness" : "gad_responsiveness"]} wholeWeight disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.thresholds.pap_weights[group === "readiness" ? "readiness" : "gad_responsiveness"] = value; })} />
                   {config.keyword_dictionaries[group].map((rule, index) => (
-                    <div key={rule.key} className="grid gap-2 sm:grid-cols-[minmax(7rem,1fr)_minmax(0,2fr)]">
-                      <NumberInput label={`${rule.key.replaceAll("_", " ")} raw score`} value={rule.raw} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries[group][index].raw = value; })} />
-                      <label className="block"><span className="text-xs font-medium text-slate-600">Guidance</span><input disabled={!canEdit} value={rule.guideline} onChange={(event) => updateConfig((next) => { next.keyword_dictionaries[group][index].guideline = event.target.value; })} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100" /></label>
+                    <div key={rule.key} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] sm:items-start">
+                      <NumberInput label={`${rule.key.replaceAll("_", " ")} raw score`} alignLabel value={rule.raw} min={0} max={10} disabled={!canEdit} onChange={(value) => updateConfig((next) => { next.keyword_dictionaries[group][index].raw = value; })} />
+                      <label className="block"><span className="block text-xs font-medium leading-4 text-slate-600 sm:min-h-8">Guidance</span><textarea rows={2} disabled={!canEdit} value={rule.guideline} onChange={(event) => updateConfig((next) => { next.keyword_dictionaries[group][index].guideline = event.target.value; })} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100" /></label>
                     </div>
                   ))}
                 </div>
@@ -857,27 +847,27 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
         </div>
       </section>
 
-      <AIScoringRuleHistory versions={workspace.rule_versions} activeId={workspace.active_rule_set.id} onRestored={async (result) => {
+      <AIScoringRuleHistory versions={workspace.rule_versions} initialTotalPages={workspace.rule_versions_total_pages} activeId={workspace.active_rule_set.id} onRestored={async (result) => {
         await load();
         setNotice([result.detail, ...result.issues].join(" "));
       }} />
 
       <section className="portal-card overflow-hidden">
         <div className="portal-card-header flex flex-wrap items-start justify-between gap-3">
-          <div><h3 className="font-bold text-slate-900">Historical Project Reference Dataset</h3><p className="text-xs text-slate-500">Only human-confirmed outcomes are eligible. Administrators can exclude unsuitable records from future Groq context and local fallback training.</p></div>
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">{workspace.historical_count} confirmed record{workspace.historical_count === 1 ? "" : "s"}</span>
+          <div><h3 className="font-bold text-slate-900">Historical Project Reference Dataset</h3><p className="text-xs text-slate-500">Shows human-confirmed outcomes and their historical reference status.</p></div>
+          {historicalCount != null && <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">{historicalCount} confirmed record{historicalCount === 1 ? "" : "s"}</span>}
         </div>
         <div className="portal-card-body">
-          <input value={search} onChange={(event) => setSearch(event.target.value)} className="mb-3 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="Search project, agency, sector, priority, rule version, or validator" />
-          {filteredHistory.length === 0 ? <p className="text-sm text-slate-500">No confirmed historical priority analyses match this search.</p> : (
+          <input value={search} onChange={(event) => { setSearch(event.target.value); setHistoryPage(1); }} className="mb-3 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" placeholder="Search project, agency, sector, priority, rule version, or validator" />
+          {historyLoading ? <p role="status">Loading historical projects...</p> : historyError ? <p role="alert" className="text-sm text-rose-700">{historyError}</p> : filteredHistory.length === 0 ? <p className="text-sm text-slate-500">No confirmed historical priority analyses match this search.</p> : (
             <div className="overflow-x-auto rounded-xl border border-slate-200">
               <table className="w-full min-w-[1120px] text-left text-xs">
                 <thead className="bg-slate-50 text-slate-700"><tr><th className="px-3 py-2">Project</th><th className="px-3 py-2">Agency / Sector</th><th className="px-3 py-2">Score</th><th className="px-3 py-2">Suggested</th><th className="px-3 py-2">Final</th><th className="px-3 py-2">Rule version</th><th className="px-3 py-2">Confirmed by</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">AI reference use</th></tr></thead>
-                <tbody>{filteredHistory.map((row) => <tr key={row.confirmation_id} className="border-t border-slate-100 align-top"><td className="px-3 py-2"><p className="font-semibold text-slate-800">{row.project_title}</p><p className="text-slate-500">{row.submission_type} · {row.project_status}</p>{row.override_rationale && <p className="mt-1 text-amber-700">Override: {row.override_rationale}</p>}</td><td className="px-3 py-2">{row.agency || "-"}<br /><span className="text-slate-500">{row.sector || "Unspecified"}</span></td><td className="px-3 py-2">{Number(row.base_score).toFixed(2)}</td><td className="px-3 py-2">{priorityLabel(row.suggested_priority)}</td><td className="px-3 py-2 font-semibold">{priorityLabel(row.final_priority)}</td><td className="px-3 py-2">{row.rule_version}</td><td className="px-3 py-2">{row.validator_name || "-"}</td><td className="px-3 py-2">{formatDate(row.confirmed_at)}</td><td className="px-3 py-2"><span className={`rounded-full px-2 py-1 font-semibold ${row.training_eligible ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>{row.training_eligible ? "Eligible" : "Excluded"}</span><p className={`mt-1 text-[11px] font-medium ${row.in_active_reference && !row.training_eligible ? "text-amber-700" : "text-slate-500"}`}>{row.in_active_reference ? row.training_eligible ? "In active reference version" : "Remains active until rebuild" : row.training_eligible ? "Pending next rebuild" : "Not in active version"}</p>{row.exclusion_reason && <p className="mt-1 max-w-[220px] text-slate-500">{row.exclusion_reason}</p>}{canEdit && <button type="button" disabled={updatingRecordId === row.training_record_id} onClick={() => void toggleTrainingRecord(row)} className="mt-2 block font-semibold text-blue-700 disabled:text-slate-400">{updatingRecordId === row.training_record_id ? "Updating..." : row.training_eligible ? "Exclude" : "Include"}</button>}</td></tr>)}</tbody>
+                <tbody>{filteredHistory.map((row) => <tr key={row.confirmation_id} className="border-t border-slate-100 align-top"><td className="px-3 py-2"><p className="font-semibold text-slate-800">{row.project_title}</p><p className="text-slate-500">{row.submission_type} · {row.project_status}</p>{row.override_rationale && <p className="mt-1 text-amber-700">Override: {row.override_rationale}</p>}</td><td className="px-3 py-2">{row.agency || "-"}<br /><span className="text-slate-500">{row.sector || "Unspecified"}</span></td><td className="px-3 py-2">{Number(row.base_score).toFixed(2)}</td><td className="px-3 py-2">{priorityLabel(row.suggested_priority)}</td><td className="px-3 py-2 font-semibold">{priorityLabel(row.final_priority)}</td><td className="px-3 py-2">{row.rule_version}</td><td className="px-3 py-2">{row.validator_name || "-"}</td><td className="px-3 py-2">{formatDate(row.confirmed_at)}</td><td className="px-3 py-2"><span className={`rounded-full px-2 py-1 font-semibold ${row.training_eligible ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>{row.training_eligible ? "Eligible" : "Excluded"}</span><p className={`mt-1 text-[11px] font-medium ${row.in_active_reference && !row.training_eligible ? "text-amber-700" : "text-slate-500"}`}>{row.in_active_reference ? row.training_eligible ? "In active reference version" : "Remains active until rebuild" : row.training_eligible ? "Pending next rebuild" : "Not in active version"}</p>{row.exclusion_reason && <p className="mt-1 max-w-[220px] text-slate-500">{row.exclusion_reason}</p>}</td></tr>)}</tbody>
               </table>
             </div>
           )}
-          {workspace.historical_count > workspace.historical_projects.length && <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-slate-500">Showing the latest {workspace.historical_projects.length} confirmed records for faster loading.</p>{historyLimit < 500 ? <button type="button" disabled={loading} className="portal-btn portal-btn-ghost" onClick={() => setHistoryLimit(Math.min(500, workspace.historical_count))}>{loading ? "Loading..." : "Load more records"}</button> : <span className="text-xs text-slate-500">Use search within the latest 500 records.</span>}</div>}
+          <ScoringHistoryPagination label="Historical reference pages" page={historyPage} totalPages={historical?.total_pages ?? 1} loading={historyLoading} onPage={setHistoryPage} />
         </div>
       </section>
     </div>

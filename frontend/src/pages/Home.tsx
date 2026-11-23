@@ -26,6 +26,7 @@ type HomeNewsArticle = {
 };
 
 type DocCard = {
+  id: string;
   title: string;
   link: string;
   description?: string;
@@ -98,50 +99,17 @@ const iconForCms = (icon: unknown, fallback = "file") => {
   return <FaFileAlt className="w-8 h-8 text-gray-700" />;
 };
 
-const mapCmsDocItems = (
-  content: Record<string, unknown> | null,
-) => {
-  const result: DocCard[] = [];
-  const sourceItems = asArray(content?.items);
-
-  sourceItems.forEach((item) => {
+const mapCmsDocItems = (content: Record<string, unknown> | null): DocCard[] =>
+  asArray(content?.items).flatMap((item, index) => {
     const row = asRecord(item);
     const title = asString(row.title);
     const link = normalizeQuickLink(asString(row.url || row.link));
-    if (!title && !link) return;
-    const matchIndex = result.findIndex(
-      (candidate) =>
-        (!!link && candidate.link === link) ||
-        (!!title && candidate.title.toLowerCase() === title.toLowerCase()),
-    );
-    if (!isVisible(row)) {
-      if (matchIndex >= 0) result.splice(matchIndex, 1);
-      return;
-    }
-    const quickLinks = asArray(row.quickLinks)
-      .map((quickLink) => {
-        const quick = asRecord(quickLink);
-        const label = asString(quick.label);
-        const quickLinkUrl = asString(quick.link);
-        return label && quickLinkUrl ? { label, link: quickLinkUrl } : null;
-      })
-      .filter(Boolean) as Array<{ label: string; link: string }>;
-
-    const nextItem: DocCard = {
-      title: asString(row.title),
-      link,
-      description: asString(row.description),
-      category: asString(row.category),
-      icon: iconForCms(row.icon),
-      quickLinks: quickLinks.length ? quickLinks : undefined,
-    };
-
-    if (matchIndex >= 0) result[matchIndex] = nextItem;
-    else result.push(nextItem);
+    if (!isVisible(row) || (!title && !link)) return [];
+    return [{
+      id: asString(row.id) || `legacy-card-${index + 1}`,
+      title, link, description: asString(row.description), category: asString(row.category), icon: iconForCms(row.icon),
+    }];
   });
-
-  return result;
-};
 
 function normalizeQuickLink(value: string) {
   const link = value.trim().replace(/^\/Projects(?=[?#]|$)/, "/projects");
@@ -177,6 +145,7 @@ const mapHomeArticle = (article: CMSArticleSnapshot): HomeNewsArticle => ({
 
 const Home: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnapshot }) => {
   const [currentSlide, setCurrentSlide] = useState(0);
+  const [failedSlideImages, setFailedSlideImages] = useState<Set<string>>(() => new Set());
   const [isPaused, setIsPaused] = useState(false);
   const [publishedPage, setHomeCmsPage] = useState<CMSPageSnapshot | null>(null);
   const homeCmsPage = previewSnapshot ?? publishedPage;
@@ -254,6 +223,7 @@ const Home: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnapshot
   ]);
   const carouselImages = useMemo(() => {
     return asArray(heroSection?.slides)
+      .filter(isVisible)
       .map((slide) => {
         const row = asRecord(slide);
         const imageKey = asString(row.imageKey);
@@ -274,7 +244,7 @@ const Home: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnapshot
           button2: { text: asString(button2.text), link: asString(button2.link) },
         };
       })
-      .filter((slide) => slide.title && slide.src);
+      .filter((slide) => slide.title);
   }, [heroSection]);
 
 
@@ -344,25 +314,6 @@ const Home: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnapshot
 
   const developmentPlans = mapCmsDocItems(developmentPlansSection);
   const investmentProgramming = mapCmsDocItems(investmentProgrammingSection);
-  const investmentQuickLinks = (() => {
-    const sectionLinks = asArray(investmentProgrammingSection?.quickLinks)
-      .map((value) => {
-        const row = asRecord(value);
-        const label = asString(row.label);
-        const link = asString(row.link);
-        return label && link ? { label, link } : null;
-      })
-      .filter(Boolean) as Array<{ label: string; link: string }>;
-    const destinations = new Set<string>();
-    const validLinks = (links: Array<{ label: string; link: string }>) => links.flatMap(({ label, link }) => {
-      const destination = normalizeQuickLink(link);
-      if (!label.trim() || !destination || destinations.has(destination)) return [];
-      destinations.add(destination);
-      return [{ label, link: destination }];
-    });
-    const configuredLinks = validLinks(sectionLinks);
-    return configuredLinks.length ? configuredLinks : validLinks(investmentProgramming.flatMap((card) => card.quickLinks || []));
-  })();
   const monitoringEvaluation = mapCmsDocItems(monitoringEvaluationSection);
 
   const formatMoneyCompact = (n: number) => {
@@ -652,17 +603,15 @@ const Home: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnapshot
     const Card = doc.link ? "a" : "article";
     return (
       <Card
-        key={doc.title}
+        key={doc.id}
         href={doc.link || undefined}
-        className={`bg-white rounded-lg border border-gray-200 ${doc.link ? "hover:border-green-500 hover:shadow-lg transition-all duration-300 group" : ""}`}
+        className={`block bg-white rounded-lg border border-gray-200 ${doc.link ? "hover:border-green-500 hover:shadow-lg transition-all duration-300 group" : ""}`}
       >
         <div className="p-5">
           <div className="flex items-start gap-4">
             <div className="text-3xl mt-1">{doc.icon}</div>
             <div className="flex-1">
-              <span className="inline-block px-3 py-1 bg-gray-100 text-gray-700 text-xs font-medium rounded-full mb-3">
-                {doc.category}
-              </span>
+              {doc.category && <span className="mb-2 inline-block rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">{doc.category}</span>}
               <h4 className="font-bold text-gray-800 text-lg group-hover:text-green-700 transition-colors">
                 {doc.title}
               </h4>
@@ -778,15 +727,16 @@ const Home: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnapshot
         onMouseLeave={() => setIsPaused(false)}
       >
         <div className="relative h-[70vh] min-h-[500px]">
-          {carouselImages[currentSlide] && (() => {
-            const slide = carouselImages[currentSlide];
+          {carouselImages.length > 0 && (() => {
+            const slide = carouselImages[currentSlide % carouselImages.length];
             return (
-            <div key={`${currentSlide}-${slide.src}`} className="absolute inset-0">
-              <picture>
+            <div key={`${currentSlide}-${slide.src}`} className="absolute inset-0 bg-gradient-to-br from-blue-950 to-slate-700">
+              {slide.src && !failedSlideImages.has(slide.src) && <picture>
                 {slide.avifSrcSet && <source type="image/avif" srcSet={slide.avifSrcSet} sizes="100vw" />}
                 {slide.webpSrcSet && <source type="image/webp" srcSet={slide.webpSrcSet} sizes="100vw" />}
                 <img
                   src={slide.src}
+                  onError={() => setFailedSlideImages((current) => new Set(current).add(slide.src))}
                   alt={slide.imageAlt}
                   width={1920}
                   height={1080}
@@ -795,7 +745,7 @@ const Home: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnapshot
                   decoding="async"
                   className="absolute inset-0 h-full w-full object-cover"
                 />
-              </picture>
+              </picture>}
               {/* Dark overlay for better text readability */}
               <div className="absolute inset-0 bg-black/50"></div>
 
@@ -924,25 +874,7 @@ const Home: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnapshot
               <div className="p-5 space-y-5">
                 {investmentProgramming.map(renderDocumentCard)}
                 {investmentProgramming.length === 0 && <p className="text-sm text-slate-500">No published investment-programming links are configured.</p>}
-                {investmentQuickLinks.length > 0 && (
-                  <div className="border-t pt-5">
-                    <h5 className="font-semibold text-gray-700 mb-3">Quick Access:</h5>
-                    <div className="space-y-2">
-                      {investmentQuickLinks.map((quickLink, index) => (
-                        <a
-                          href={quickLink.link}
-                          key={`${quickLink.label}-${index}`}
-                          className="flex w-full items-center justify-between rounded-lg bg-gray-50 p-3 text-left transition-colors hover:bg-gray-100 group"
-                        >
-                          <span className="font-medium text-gray-800">{quickLink.label}</span>
-                          <svg className="w-4 h-4 text-gray-400 group-hover:text-green-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                          </svg>
-                        </a>
-                      ))}
-                    </div>
-                  </div>
-                )}
+
               </div>
             </div>
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
 import logging
 import tempfile
 from decimal import Decimal, InvalidOperation
@@ -84,7 +86,7 @@ def _whole_number(value, label, *, minimum=0, maximum=None):
     return number
 
 
-def _validate_request(query, *, include_format=False):
+def _validate_request(query, *, include_format=False, controls=()):
     category = str(query.get("category") or "").strip().lower()
     if category not in {"projects", "users"}:
         raise ExportValidationError("Category must be projects or users.")
@@ -92,7 +94,7 @@ def _validate_request(query, *, include_format=False):
     allowed = {"category"} | (PROJECT_FILTERS if category == "projects" else USER_FILTERS)
     if include_format:
         allowed.add("file_format")
-    unknown = sorted(set(query.keys()) - allowed)
+    unknown = sorted(set(query.keys()) - allowed - set(controls))
     if unknown:
         raise ExportValidationError(f"Unsupported filter: {unknown[0]}.")
 
@@ -707,6 +709,69 @@ class AdminExportCountView(APIView):
             return Response({"detail": "Matching records could not be counted."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+EXPORT_PREVIEW_PAGE_SIZE = 20
+
+
+def _export_fingerprint(category, filters):
+    key = json.dumps([category, filters], sort_keys=True, default=str)
+    return hashlib.sha256(key.encode("utf-8"))
+
+
+def _fingerprint_id(digest, pk):
+    digest.update(f":{pk}".encode("ascii"))
+
+
+class AdminExportPreviewView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        try:
+            category, filters, _ = _validate_request(request.query_params, controls=("page",))
+            raw_page = request.query_params.get("page", "1")
+            if not raw_page.isascii() or not raw_page.isdecimal() or len(raw_page) > 9 or int(raw_page) < 1:
+                raise ExportValidationError("Page must be a positive whole number.")
+            page = int(raw_page)
+        except ExportValidationError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        queryset = _queryset(category, filters)
+        digest = _export_fingerprint(category, filters)
+        offset = (page - 1) * EXPORT_PREVIEW_PAGE_SIZE
+        page_ids = []
+        count = 0
+        for pk in queryset.values_list("pk", flat=True).iterator(chunk_size=1000):
+            if offset <= count < offset + EXPORT_PREVIEW_PAGE_SIZE:
+                page_ids.append(pk)
+            _fingerprint_id(digest, pk)
+            count += 1
+        if page > 1 and not page_ids:
+            return Response({"detail": "This preview page is unavailable. Refresh the preview."}, status=409)
+        records = {record.pk: record for record in queryset.filter(pk__in=page_ids)}
+        if len(records) != len(page_ids):
+            return Response({"detail": "Matching records changed. Refresh the preview."}, status=409)
+        results = []
+        for pk in page_ids:
+            record = records[pk]
+            if category == "projects":
+                form = _simplified(record)
+                workflow = _workflow_status(record)
+                results.append({
+                    "id": pk,
+                    "name": form.get("projectActivity") or record.name,
+                    "agency": form.get("agencyName") or record.agency or record.implementing_agency,
+                    "status": WORKFLOW_LABELS.get(workflow, workflow.replace("_", " ").title()),
+                })
+            else:
+                results.append({
+                    "id": pk, "name": _display_name(record), "agency": record.agency,
+                    "role": ROLE_LABELS.get(record.role, record.role),
+                    "status": "Active" if record.is_active else "Inactive",
+                })
+        return Response({
+            "count": count, "page": page, "has_next": offset + EXPORT_PREVIEW_PAGE_SIZE < count,
+            "results": results, "preview_token": digest.hexdigest(),
+        }, headers={"Cache-Control": "no-store, private"})
+
+
 class AdminExportDownloadView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
@@ -715,21 +780,44 @@ class AdminExportDownloadView(APIView):
         export_format = str(request.query_params.get("file_format") or "").strip().lower()
         filters = None
         try:
-            category, filters, export_format = _validate_request(request.query_params, include_format=True)
+            category, filters, export_format = _validate_request(
+                request.query_params, include_format=True, controls=("preview_token",),
+            )
             queryset = _queryset(category, filters)
             count = queryset.count()
-            if count == 0:
+            if count == 0 and request.query_params.get("preview_token") is None:
                 raise ExportValidationError("No records match the selected criteria.")
             filename = _filename(category, export_format)
             rows = queryset.iterator(chunk_size=500)
             if export_format == "csv":
                 headers = PROJECT_CSV_HEADERS if category == "projects" else USER_CSV_HEADERS
                 row_builder = _project_csv_row if category == "projects" else _user_csv_row
-                response = StreamingHttpResponse(
-                    _csv_stream(headers, (row_builder(item) for item in rows)),
-                    content_type="text/csv; charset=utf-8",
-                )
-                response["Content-Disposition"] = f'attachment; filename="{filename}"'
+                preview_token = request.query_params.get("preview_token")
+                if preview_token is None:
+                    response = StreamingHttpResponse(
+                        _csv_stream(headers, (row_builder(item) for item in rows)),
+                        content_type="text/csv; charset=utf-8",
+                    )
+                    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+                else:
+                    digest = _export_fingerprint(category, filters)
+                    output = tempfile.SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b")
+                    count = 0
+                    try:
+                        writer = csv.writer(_Echo(), lineterminator="\r\n")
+                        output.write(("\ufeff" + writer.writerow(headers)).encode("utf-8"))
+                        for item in rows:
+                            _fingerprint_id(digest, item.pk)
+                            output.write(writer.writerow([_csv_safe(value) for value in row_builder(item)]).encode("utf-8"))
+                            count += 1
+                        if digest.hexdigest() != preview_token:
+                            output.close()
+                            return Response({"detail": "Matching records changed. Refresh the preview before downloading."}, status=409)
+                        output.seek(0)
+                        response = FileResponse(output, as_attachment=True, filename=filename, content_type="text/csv; charset=utf-8")
+                    except Exception:
+                        output.close()
+                        raise
             else:
                 output = _pdf_file(category, filters, rows, count)
                 response = FileResponse(output, as_attachment=True, filename=filename, content_type="application/pdf")

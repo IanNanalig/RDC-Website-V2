@@ -13,8 +13,18 @@ try {
   for (const width of [390, 1280]) {
     const context = await browser.newContext({ viewport: { width, height: 800 }, isMobile: width < 600, hasTouch: width < 600 });
     const page = await context.newPage();
+    const draftImagePath = "/media/cms/preview-carousel.svg";
+    let cmsOrigin;
+    await page.route(`**${draftImagePath}`, (route) => {
+      if (new URL(route.request().url()).origin !== cmsOrigin) return route.fulfill({ status: 404 });
+      return route.fulfill({
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="blue"/></svg>',
+      });
+    });
     let profileSaved = 0;
     let sectionLocks = 0;
+    let mediaListRequests = 0;
     let homePublishAttempts = 0;
     const modulePublishes = [];
     const archivedCarouselItems = [];
@@ -72,6 +82,21 @@ try {
       has_unpublished_changes: true, published_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-02T00:00:00Z", sections: [publicationSection],
     };
+    const form = {
+      id: 1, key: "simplified-rdip", name: "RDIP Contributor Form", status: "published",
+      updated_at: "2026-01-01T00:00:00Z", current_published_version_number: 1,
+      workflow_protection: { sections: ["project_information"], fields: ["description"] },
+      draft_schema_json: {
+        format_version: 3, title: "RDIP Contributor Form",
+        sections: [{ key: "project_information", title: "Project Information", fields: [{ key: "description", label: "Description", type: "textarea", required: true }] }],
+      },
+    };
+    const siteSettings = [
+      { id: 1, key: "office-address", description: "", value_json: "Quezon City" },
+      { id: 2, key: "media-categories", description: "", value_json: { categories: ["General", "Places"] } },
+      { id: 3, key: "quick-links", description: "", value_json: [] },
+      { id: 4, key: "social-links", description: "", value_json: [] },
+    ];
     const profile = { id: 1, username: "admin", first_name: "Admin", last_name: "User", email: "admin@example.com", role: "admin", agency: "RDC-NCR", agency_head: "Configured Council Head", office: "Office", division: "Planning", position: "Administrator", contact_number: "0212345678", phone_number: "09171234567", date_joined: "2026-01-01T00:00:00Z", recent_activity: [] };
     await page.addInitScript(() => { localStorage.setItem("user", JSON.stringify({ id: 1, username: "admin", role: "admin" })); localStorage.setItem("isLoggedIn", "true"); localStorage.setItem("accessToken", "cms-test-token"); });
     await page.route("**/api/**", async (route) => {
@@ -97,7 +122,15 @@ try {
           content: section.content_json,
         }));
         const unchanged = { sectionKey: "development-plans", sectionType: "document_group", order: 2, content: { title: "Development Plans", subtitle: "Unchanged copy" } };
-        if (row.slug === "home") sections.push(unchanged);
+        if (row.slug === "home") {
+          cmsOrigin = url.origin;
+          const hero = sections.find((section) => section.sectionKey === "hero-carousel");
+          hero.content = {
+            ...hero.content,
+            slides: hero.content.slides.map((slide) => ({ ...slide, imageUrl: draftImagePath, imageAlt: "Saved carousel preview image" })),
+          };
+          sections.push(unchanged);
+        }
         const draft = { slug: row.slug, title: row.title, sections };
         const published = { ...draft, sections: sections.map((section) => section === unchanged
           ? { ...section, content: { subtitle: "Unchanged copy", title: "Development Plans" } }
@@ -141,7 +174,16 @@ try {
         archivedCarouselItems.push(Number(path.match(/\/(91|92)\//)?.[1]));
         return respond(route, { status: "archived" });
       }
-      if (path === "/api/admin/cms/media/") return respond(route, { results: mediaAssets, count: mediaAssets.length, next: null, total_pages: 1 });
+      if (path === "/api/admin/cms/media/selected/") {
+        const ids = (url.searchParams.get("ids") || "").split(",");
+        return respond(route, mediaAssets.filter((asset) => ids.includes(String(asset.id))));
+      }
+      if (path === "/api/admin/cms/media/") {
+        mediaListRequests += 1;
+        const terms = (url.searchParams.get("q") || "").toLowerCase().split(/\s+/);
+        const matching = mediaAssets.filter((asset) => terms.every((term) => JSON.stringify(asset).toLowerCase().includes(term)));
+        return respond(route, { results: matching, count: matching.length, next: null, total_pages: 1 });
+      }
       if (path === "/api/profile/" && route.request().method() === "PATCH") { profileSaved += 1; Object.assign(profile, route.request().postDataJSON()); return respond(route, profile); }
       if (path === "/api/profile/") return respond(route, profile);
       if (path === "/api/admin/profiles/2/") return respond(route, { ...profile, id: 2, username: "other", first_name: "Other", last_name: "User" });
@@ -159,13 +201,21 @@ try {
         results: url.searchParams.get("archived") === "1" && !newsRestored ? [archivedNews] : [],
         next: null, total_pages: 1,
       });
+      if (path === "/api/admin/cms/forms/") return respond(route, [form]);
+      if (path === "/api/admin/cms/forms/1/lock/") return respond(route, { ...form, is_locked: true, locked_by_me: true });
+      if (path === "/api/admin/cms/settings/") return respond(route, siteSettings);
+      if (path === "/api/admin/cms/settings/office-address/" && route.request().method() === "PATCH") {
+        siteSettings[0].value_json = route.request().postDataJSON().value_json;
+        return respond(route, siteSettings[0]);
+      }
+      if (path === "/api/admin/cms/media/category-usage/") return respond(route, { Places: 2 });
       if (path === "/api/admin/cms/sections/" || path === "/api/admin/cms/forms/" || path === "/api/admin/cms/events/" || path === "/api/admin/cms/settings/") return respond(route, []);
       if (path === "/api/notifications/") return respond(route, { results: [], unread_count: 0 });
       return respond(route, []);
     });
 
     await page.goto(`${origin}/employee/cms/pages`);
-    await page.getByRole("heading", { name: "Fixed Public Content Modules" }).waitFor();
+    await page.getByRole("heading", { name: "Public Content Modules", exact: true }).waitFor();
     await page.getByText(/The five editable routes, layouts, and section order are application-controlled/).waitFor();
     assert.equal(await page.getByRole("button", { name: "Create Page" }).count(), 0, "Page creation is not exposed");
     assert.equal(await page.getByRole("button", { name: /Archive Page/i }).count(), 0, "Fixed pages cannot be archived");
@@ -179,6 +229,7 @@ try {
     await page.getByRole("tab", { name: "Content" }).click();
     assert.equal(await page.getByRole("tab", { name: "Visibility / Advanced" }).count(), 0, "Visibility controls are removed");
     assert.equal(await page.getByRole("tab", { name: "Basics" }).count(), 0, "Structural controls are removed");
+    assert.equal(mediaListRequests, 0, "Opening the page and section does not fetch the media catalog");
     await page.getByRole("button", { name: "Choose from Media Library" }).click();
     const mediaSearch = page.getByRole("searchbox", { name: "Search Uploaded Image" });
     await mediaSearch.fill("Quezon government");
@@ -207,6 +258,9 @@ try {
     await homeReviewDialog.getByText("Modified", { exact: false }).waitFor();
     await homeReviewDialog.getByText("Unchanged sections (1)", { exact: true }).waitFor();
     await homeReviewDialog.getByRole("button", { name: "Full-Page Preview" }).click();
+    const carouselImage = homeReviewDialog.getByRole("img", { name: "Saved carousel preview image" });
+    assert.equal(await carouselImage.getAttribute("src"), `${cmsOrigin}${draftImagePath}`);
+    await carouselImage.evaluate((img) => img.decode());
     await homeReviewDialog.getByRole("heading", { name: "Development Plans", exact: true }).waitFor();
     await homeReviewDialog.getByRole("heading", { name: "Regional Development Dashboard", exact: true }).waitFor();
     page.once("dialog", (dialog) => dialog.accept());
@@ -277,13 +331,46 @@ try {
     await page.locator('[data-cms-page-id="1"]').getByRole("button", { name: "Manage Content" }).click();
     await page.getByRole("heading", { name: /Sections for Page.*Home/ }).waitFor();
     await page.getByRole("button", { name: "Edit Content" }).click();
-    await page.locator("[data-section-editor]").getByLabel("Title", { exact: true }).fill("Dirty page-switch check");
+    const slideTitle = page.locator("[data-section-editor]").getByLabel("Title", { exact: true });
+    const lastSavedTitle = await slideTitle.inputValue();
+    assert.equal(await page.getByRole("button", { name: "Discard Unsaved Changes" }).count(), 0);
+    await slideTitle.fill("Dirty page-switch check");
+    await page.getByRole("button", { name: "Discard Unsaved Changes" }).waitFor();
+    await slideTitle.fill(lastSavedTitle);
+    assert.equal(await page.getByRole("button", { name: "Discard Unsaved Changes" }).count(), 0);
+    await slideTitle.fill("Discard section changes");
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "Discard Unsaved Changes" }).click();
+    assert.equal(await slideTitle.inputValue(), lastSavedTitle);
+    await slideTitle.fill("Dirty page-switch check");
     page.once("dialog", (dialog) => dialog.accept());
     await page.locator('[data-cms-page-id="2"]').getByRole("button", { name: "Manage Content" }).click();
     await page.getByRole("heading", { name: /Sections for Page.*Region Profile/ }).waitFor();
-    await page.getByRole("button", { name: "Edit Content" }).click();
+    await page.getByRole("button", { name: "Edit Page Header" }).click();
     assert.equal(await page.getByLabel("Body Content").count(), 0, "Unused Region Profile hero body control is hidden");
     await page.getByRole("button", { name: "Close" }).click();
+
+    await page.getByRole("button", { name: "Site Settings", exact: true }).click();
+    await page.getByRole("heading", { name: "Branding and Contact" }).waitFor();
+    assert.equal(await page.locator('[data-cms-setting-key="quick-links"], [data-cms-setting-key="social-links"]').count(), 0);
+    await page.getByText("2 files assigned", { exact: true }).waitFor();
+    assert.equal(await page.getByLabel("Editorial category Places").isDisabled(), true);
+    const officeSetting = page.locator('[data-cms-setting-key="office-address"]');
+    await officeSetting.getByRole("textbox").fill("Updated office address");
+    const officeSaved = page.waitForResponse((response) => response.url().endsWith("/settings/office-address/") && response.request().method() === "PATCH");
+    await officeSetting.getByRole("button", { name: "Save Setting" }).click();
+    assert.equal((await officeSaved).status(), 200);
+    assert.equal(siteSettings[0].value_json, "Updated office address");
+
+    await page.goto(`${origin}/admin/forms`);
+    const formCard = page.locator('[data-cms-contributor-form-key="simplified-rdip"]');
+    await formCard.getByRole("heading", { name: "RDIP Contributor Form" }).waitFor();
+    assert.equal(await page.getByText("Configuration Impact Review", { exact: true }).count(), 0);
+    assert.equal(await formCard.getByRole("button", { name: "Update Form", exact: true }).count(), 0);
+    await formCard.getByRole("button", { name: "Change Form", exact: true }).click();
+    const description = page.locator('[data-form-field-key="description"]');
+    await description.getByText("System-managed field", { exact: true }).waitFor();
+    assert.equal(await description.getByLabel("Field type").isDisabled(), true);
 
     await page.goto(`${origin}/profile`);
     await page.getByRole("heading", { name: "Profile details" }).waitFor();

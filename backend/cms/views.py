@@ -5,10 +5,12 @@ import math
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import OperationalError, connection, transaction
-from django.db.models import Count, Prefetch, Q
+from django.db.models import Count, Prefetch, Q, Value
 from django.db.models.fields.json import KeyTextTransform
+from django.db.models.functions import Concat
 from django.http import Http404
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework import permissions, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
@@ -149,6 +151,11 @@ class CMSSummaryPagination(PageNumberPagination):
 
 
 class CMSMediaPagination(CMSSummaryPagination):
+    page_size = 10
+    page_size_query_param = None
+
+
+class CMSAIScoringPagination(CMSSummaryPagination):
     page_size = 10
     page_size_query_param = None
 
@@ -513,6 +520,86 @@ class AdminCMSPageViewSet(CMSSummaryListMixin, CMSWorkflowMixin, viewsets.ModelV
             "published": compose_public_page_snapshot(page) or None,
         }, headers={"Cache-Control": "private, no-store"})
 
+    @action(detail=True, methods=["post"], url_path="discard-draft")
+    @transaction.atomic
+    def discard_draft(self, request, pk=None):
+        from cms.services.collections import sync_normalized_section_draft
+
+        page_id = self.get_object().pk
+        page = CMSPage.objects.select_for_update().get(pk=page_id)
+        if page.status == "archived":
+            return Response({"detail": "Archived pages cannot be changed."}, status=409)
+        is_admin = request.user.role == "admin"
+        if not is_admin:
+            baseline_time = page.published_at or page.created_at
+            last_discard = UserActivity.objects.filter(
+                event="cms_content_restored", created_at__gte=baseline_time,
+                details__content_type="page", details__id=page.pk, details__action="discard_draft",
+            ).order_by("-created_at").values_list("created_at", flat=True).first()
+            recent = UserActivity.objects.filter(created_at__gt=last_discard or baseline_time)
+            edits = recent.filter(event="cms_content_updated").filter(
+                Q(details__content_type="section", details__page=page.pk)
+                | Q(details__content_type="module", details__slug=page.slug)
+            )
+            collection_types = {
+                "home": ["carousel_item"],
+                "about-rdc": ["resolution"],
+                "publications": ["publication_category", "publication_document"],
+            }.get(page.slug, [])
+            if (
+                page.status == "submitted" or page.updated_by_id != request.user.id
+                or not edits.filter(user=request.user).exists()
+                or edits.exclude(user=request.user).exists()
+                or recent.filter(
+                    details__content_type__in=collection_types,
+                    event__in=("cms_content_created", "cms_content_updated", "cms_content_submitted", "cms_content_rejected"),
+                ).exclude(user=request.user).exists()
+            ):
+                raise PermissionDenied("An administrator must discard this shared or submitted draft.")
+        if not page.has_unpublished_changes:
+            return Response(CMSPageEditorSerializer(page, context={"request": request}).data)
+        try:
+            expected = parse_datetime(str(request.data.get("expected_updated_at") or "").strip())
+        except ValueError:
+            expected = None
+        if expected != page.updated_at:
+            return Response({"detail": "This page changed after it was loaded. Refresh before discarding."}, status=409)
+        snapshot = (page.published_snapshot_json or {}).get("sections")
+        if not page.published_at or not isinstance(snapshot, list):
+            return Response({"detail": "This page has no published baseline to restore."}, status=409)
+        baseline = {
+            row["sectionKey"]: row["content"] for row in snapshot
+            if isinstance(row, dict) and isinstance(row.get("sectionKey"), str) and isinstance(row.get("content"), dict)
+        }
+        sections = [
+            section for section in CMSPageSection.objects.select_for_update().filter(page=page).order_by("pk")
+            if editable_section_definition(page.slug, section.section_key)
+        ]
+        for section in sections:
+            if lock_is_active(section) and section.lock_owner_id != request.user.id:
+                return Response({"detail": "Another editor is working on this page. Close their edit session before discarding."}, status=423)
+            if section.status == "archived":
+                continue
+            if section.status != "published" and section.section_key not in baseline:
+                return Response({"detail": "A draft section has no published baseline. Its content could not be safely restored."}, status=409)
+        for section in sections:
+            if section.status == "archived" or section.section_key not in baseline:
+                continue
+            if section.status != "published" or section.content_json != baseline[section.section_key]:
+                section.content_json = baseline[section.section_key]
+                section.status = "published"
+                section.is_visible = True
+                section.lock_owner = None
+                section.lock_acquired_at = None
+                section.save(update_fields=["content_json", "status", "is_visible", "lock_owner", "lock_acquired_at", "updated_at"])
+                sync_normalized_section_draft(section, request.user, restoring=True)
+        page.status = "published"
+        page.has_unpublished_changes = False
+        page.updated_by = request.user
+        page.save(update_fields=["status", "has_unpublished_changes", "updated_by", "updated_at"])
+        _log_cms_activity(request, "cms_content_restored", {"content_type": "page", "id": page.pk, "slug": page.slug, "action": "discard_draft"})
+        return Response(CMSPageEditorSerializer(page, context={"request": request}).data)
+
     def create(self, request, *args, **kwargs):
         return Response({"detail": "Public pages are fixed by the application and cannot be created."}, status=405)
 
@@ -577,8 +664,10 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
-        section = self.get_object()
-        CMSPage.objects.select_for_update().get(pk=section.page_id)
+        current = self.get_object()
+        page = CMSPage.objects.select_for_update().get(pk=current.page_id)
+        section = CMSPageSection.objects.select_for_update().get(pk=current.pk)
+        section.page = page
         definition = editable_section_definition(section.page.slug, section.section_key)
         if not definition:
             return Response({"detail": "This is not an editable fixed page section."}, status=404)
@@ -600,12 +689,22 @@ class AdminCMSPageSectionViewSet(CMSWorkflowMixin, viewsets.ModelViewSet):
                 {"detail": f"Currently being edited by {section.lock_owner.get_full_name() or section.lock_owner.username}.", "lock_owner": section.lock_owner_id},
                 status=423,
             )
-        return super().update(request, *args, **kwargs)
+        serializer = self.get_serializer(section, data=request.data, partial=kwargs.get("partial", False))
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response({**serializer.data, "page_revision": {
+            "status": page.status,
+            "has_unpublished_changes": page.has_unpublished_changes,
+            "updated_at": serializers.DateTimeField().to_representation(page.updated_at),
+        }})
 
     def perform_update(self, serializer):
         section = serializer.save(status="draft", lock_owner=None, lock_acquired_at=None)
         from cms.services.collections import sync_normalized_section_draft
-        sync_normalized_section_draft(section, self.request.user)
+        sync_normalized_section_draft(
+            section, self.request.user,
+            resolution_attachment_ids=getattr(serializer, "resolution_attachment_ids", None),
+        )
         mark_page_changed(section.page, self.request.user)
         _log_cms_activity(self.request, "cms_content_updated", {"content_type": "section", "id": section.pk, "page": section.page_id})
 
@@ -914,11 +1013,16 @@ class AdminCMSResolutionViewSet(CMSManagedContentViewSet):
     search_fields = ("stable_key", "resolution_number", "title", "description")
     content_type_key = "resolution"
 
+    @transaction.atomic
     def perform_create(self, serializer):
+        # Use the same page-first lock order as the fixed archive editor.
+        CMSPage.objects.select_for_update().filter(slug="about-rdc").first()
         super().perform_create(serializer)
         sync_resolution_to_draft(serializer.instance, self.request.user)
 
+    @transaction.atomic
     def perform_update(self, serializer):
+        CMSPage.objects.select_for_update().filter(slug="about-rdc").first()
         super().perform_update(serializer)
         sync_resolution_to_draft(serializer.instance, self.request.user)
 
@@ -1008,7 +1112,10 @@ class AdminCMSModuleDetailView(APIView):
                     "lock_owner", "lock_acquired_at", "updated_at",
                 ])
                 from cms.services.collections import sync_normalized_section_draft
-                sync_normalized_section_draft(row, request.user)
+                sync_normalized_section_draft(
+                    row, request.user,
+                    resolution_attachment_ids=getattr(section_serializer, "resolution_attachment_ids", None),
+                )
             locked_page.status = "draft"
             locked_page.has_unpublished_changes = True
             locked_page.updated_by = request.user
@@ -1429,21 +1536,21 @@ def _priority_change_note(request, saved_note=None):
     return note.strip()
 
 
-def _priority_reference_payload(limit=200):
-    active = get_active_priority_rule_set()
-    drafts = list(PriorityRuleSet.objects.filter(status=PriorityRuleSet.STATUS_DRAFT).order_by("-updated_at", "-pk"))
-    draft = drafts[0] if drafts else None
-    active_model = get_active_model()
-    groq_enabled = bool(getattr(settings, "GROQ_ENABLED", False))
-    history = published_rules().annotate(analysis_count=Count("analyses"))[:20]
-    confirmations = ProjectPriorityConfirmation.objects.select_related(
+def _historical_confirmation_queryset():
+    return ProjectPriorityConfirmation.objects.select_related(
         "analysis__project",
         "analysis__rule_set",
         "validator",
         "ai_training_record",
-    ).order_by("-created_at")[:limit]
+    ).order_by("-created_at", "-pk")
+
+
+def _historical_confirmation_rows(confirmations, active_model, *, repair_missing=False):
+    confirmations = list(confirmations)
     active_reference_record_ids = set(
-        active_model.dataset_memberships.values_list("training_record_id", flat=True)
+        active_model.dataset_memberships.filter(
+            training_record__confirmation_id__in=[row.pk for row in confirmations],
+        ).values_list("training_record_id", flat=True)
     ) if active_model else set()
     historical_projects = []
     for confirmation in confirmations:
@@ -1452,9 +1559,7 @@ def _priority_reference_payload(limit=200):
         try:
             training_record = confirmation.ai_training_record
         except ObjectDoesNotExist:
-            # Older/imported confirmations may predate automatic record creation.
-            # Repair only the missing row being displayed instead of rescanning the dataset.
-            training_record = sync_training_record(confirmation)
+            training_record = sync_training_record(confirmation) if repair_missing else None
         snapshot = analysis.input_snapshot if isinstance(analysis.input_snapshot, dict) else {}
         form = snapshot.get("simplified_form")
         if not isinstance(form, dict):
@@ -1486,6 +1591,50 @@ def _priority_reference_payload(limit=200):
                 "exclusion_reason": training_record.exclusion_reason if training_record else "Pending dataset synchronization.",
             }
         )
+    return historical_projects
+
+
+class AdminAIHistoricalReferencesView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsCMSAdmin]
+
+    def get(self, request):
+        queryset = _historical_confirmation_queryset()
+        query = str(request.query_params.get("q") or "").strip()[:200]
+        if query:
+            queryset = queryset.alias(
+                validator_display=Concat("validator__first_name", Value(" "), "validator__last_name"),
+            ).filter(
+                Q(analysis__project__name__icontains=query)
+                | Q(analysis__project__agency__icontains=query)
+                | Q(analysis__project__implementing_agency__icontains=query)
+                | Q(analysis__rule_set__version__icontains=query)
+                | Q(validator_display__icontains=query)
+                | Q(validator__username__icontains=query)
+                | Q(final_priority__icontains=query)
+                | Q(analysis__input_snapshot__simplified_form__developmentSector__icontains=query)
+                | Q(analysis__input_snapshot__simplified_form__mainInfrastructureSector__icontains=query)
+                | Q(analysis__input_snapshot__developmentSector__icontains=query)
+                | Q(analysis__input_snapshot__mainInfrastructureSector__icontains=query)
+            )
+        pagination = CMSAIScoringPagination()
+        confirmations = pagination.paginate_queryset(queryset, request)
+        rows = _historical_confirmation_rows(confirmations, get_active_model()) if confirmations else []
+        return pagination.get_paginated_response(rows)
+
+
+def _priority_reference_payload(limit=200):
+    active = get_active_priority_rule_set()
+    drafts = list(PriorityRuleSet.objects.filter(status=PriorityRuleSet.STATUS_DRAFT).order_by("-updated_at", "-pk"))
+    draft = drafts[0] if drafts else None
+    active_model = get_active_model()
+    groq_enabled = bool(getattr(settings, "GROQ_ENABLED", False))
+    rules = published_rules()
+    page_size = CMSAIScoringPagination.page_size
+    history = list(rules.annotate(analysis_count=Count("analyses"))[:page_size])
+    rule_count = rules.count() if len(history) == page_size else len(history)
+    historical_projects = _historical_confirmation_rows(
+        _historical_confirmation_queryset()[:limit], active_model, repair_missing=True,
+    ) if limit else []
     training_dataset = training_dataset_summary()
     return {
         "system_type": "groq_rag_rules" if groq_enabled else "hybrid_rules_similarity_ml",
@@ -1571,6 +1720,7 @@ def _priority_reference_payload(limit=200):
         "draft_rule_set": _priority_rule_payload(draft),
         "draft_rule_sets": [{"id": item.pk, "version": item.version} for item in drafts],
         "rule_versions": [rule_history_entry(rule) for rule in history],
+        "rule_versions_total_pages": max(1, math.ceil(rule_count / page_size)),
         "historical_projects": historical_projects,
         "historical_count": ProjectPriorityConfirmation.objects.count(),
         "training_dataset": training_dataset,
@@ -1770,8 +1920,7 @@ class AdminAIPriorityHistoryView(APIView):
     def get(self, request, pk=None):
         published = published_rules().annotate(analysis_count=Count("analyses"))
         if pk is None:
-            page = PageNumberPagination()
-            page.page_size = 20
+            page = CMSAIScoringPagination()
             return page.get_paginated_response([
                 rule_history_entry(item) for item in page.paginate_queryset(published, request)
             ])
@@ -1853,7 +2002,7 @@ class AdminAIPriorityCMSView(APIView):
 
     def get(self, request):
         try:
-            limit = min(500, max(1, int(request.query_params.get("limit", 200))))
+            limit = min(500, max(0, int(request.query_params.get("limit", 200))))
         except (TypeError, ValueError):
             limit = 200
         return Response(_priority_reference_payload(limit))
@@ -1942,13 +2091,31 @@ class AdminCMSMediaAssetViewSet(CMSSummaryListMixin, viewsets.ModelViewSet):
         tag = self.request.query_params.get("tag")
         if tag:
             queryset = queryset.filter(tags__contains=[tag]) if connection.vendor == "postgresql" else queryset.filter(tags__icontains=f'"{tag}"')
-        search = str(self.request.query_params.get("q") or "").strip()
-        if search:
+        search = str(self.request.query_params.get("q") or "").strip()[:250]
+        for term in search.split():
             queryset = queryset.filter(
-                Q(file__icontains=search) | Q(original_filename__icontains=search) |
-                Q(alt_text__icontains=search) | Q(caption__icontains=search)
+                Q(file__icontains=term) | Q(original_filename__icontains=term)
+                | Q(alt_text__icontains=term) | Q(caption__icontains=term) | Q(category__icontains=term)
+                | Q(tags__icontains=term) | Q(file_type__icontains=term) | Q(mime_type__icontains=term)
             )
-        return queryset.order_by("-created_at")
+        return queryset.order_by("-created_at", "-pk")
+
+    @action(detail=False, methods=["get"], url_path="selected")
+    def selected(self, request):
+        ids = str(request.query_params.get("ids") or "").split(",")
+        if len(ids) > 50 or any(not item.isascii() or not item.isdecimal() or len(item) > 18 for item in ids):
+            return Response({"detail": "Provide up to 50 valid media IDs."}, status=400)
+        assets = CMSMediaAsset.objects.filter(pk__in=ids, is_archived=False).select_related("uploaded_by")
+        return Response(CMSMediaAssetSummarySerializer(assets, many=True, context=self.get_serializer_context()).data)
+
+    @action(detail=False, methods=["get"], url_path="category-usage")
+    def category_usage(self, request):
+        rows = CMSMediaAsset.objects.order_by().values("category").annotate(count=Count("pk"))
+        counts = {}
+        for row in rows:
+            category = row["category"] or "General"
+            counts[category] = counts.get(category, 0) + row["count"]
+        return Response(counts)
 
     def create(self, request, *args, **kwargs):
         try:

@@ -69,9 +69,11 @@ def _publication_file_metadata(attachment):
     return display_type, display_size
 
 
-def _upsert(model, lookup, defaults, user=None):
+def _upsert(model, lookup, defaults, user=None, *, restoring=False):
     obj = model.objects.filter(**lookup).first()
     if obj and obj.status == "archived":
+        if restoring:
+            return obj
         raise serializers.ValidationError({
             "detail": f'"{obj}" belongs to historical records. Add a new item in the page editor.',
             "code": "historical_content_not_editable",
@@ -81,6 +83,37 @@ def _upsert(model, lookup, defaults, user=None):
         obj.created_by = user
         obj.save(update_fields=["created_by"])
     return obj
+
+
+def _resolution_rows(year_row):
+    if isinstance(year_row, dict):
+        rows = year_row.get("resolutions") or year_row.get("items") or year_row.get("documents")
+        if isinstance(rows, list):
+            return rows
+    return []
+
+
+def resolution_attachment_id(value):
+    try:
+        pk = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return pk if 0 < pk <= 2**63 - 1 else None
+
+
+def active_resolution_attachment_ids(content):
+    years = content.get("years")
+    if not isinstance(years, list):
+        return set()
+    ids = {
+        pk for year in years for item in _resolution_rows(year)
+        if isinstance(item, dict) and (pk := resolution_attachment_id(
+            item.get("mediaAssetId") or item.get("documentAssetId") or item.get("attachment")
+        )) is not None
+    }
+    return set(CMSMediaAsset.objects.filter(
+        pk__in=ids, is_archived=False, file_type=CMSMediaAsset.FILE_TYPE_DOCUMENT,
+    ).values_list("pk", flat=True))
 
 
 def managed_content_snapshot(obj):
@@ -214,10 +247,14 @@ def sync_resolution_to_draft(obj, user=None):
     mark_managed_content_pages_changed(obj, user)
 
 
-def sync_normalized_section_draft(section, user=None):
+def sync_normalized_section_draft(section, user=None, *, restoring=False, resolution_attachment_ids=None):
     """Mirror fixed-section collection editors into normalized draft records."""
     content = section.content_json if isinstance(section.content_json, dict) else {}
-    common = {"updated_by": user, "has_unpublished_changes": True, "status": "draft"}
+    common = {
+        "updated_by": user,
+        "has_unpublished_changes": not restoring,
+        "status": "published" if restoring else "draft",
+    }
     identity_changed = False
 
     if section.page.slug == "home" and section.section_key == "hero-carousel":
@@ -261,7 +298,7 @@ def sync_normalized_section_draft(section, user=None):
                     "secondary_label": str(second.get("text") or ""),
                     "secondary_url": _safe_url(second.get("link")),
                     "sort_order": index,
-                }, user,
+                }, user, restoring=restoring,
             )
 
     if section.page.slug == "publications" and section.section_key == "publication-catalog":
@@ -325,7 +362,7 @@ def sync_normalized_section_draft(section, user=None):
                     "cover_alt_text": str(row.get("coverAlt") or "").strip(),
                     "display_number": display_number,
                     "sort_order": category_index,
-                }, user,
+                }, user, restoring=restoring,
             )
             for document_index, item in enumerate(row.get("documents") or [], 1):
                 if not isinstance(item, dict):
@@ -379,14 +416,14 @@ def sync_normalized_section_draft(section, user=None):
                     attachment = None
                     if media_id:
                         try:
-                            attachment = CMSMediaAsset.objects.filter(
-                                pk=media_id, is_archived=False, file_type=CMSMediaAsset.FILE_TYPE_DOCUMENT,
-                            ).first()
+                            attachments = CMSMediaAsset.objects.filter(pk=media_id, file_type=CMSMediaAsset.FILE_TYPE_DOCUMENT)
+                            attachment = (attachments if restoring else attachments.filter(is_archived=False)).first()
                         except (TypeError, ValueError):
                             pass
-                        if not attachment:
+                        if not attachment and not restoring:
                             raise serializers.ValidationError({"detail": "Choose an active publication document from the Media Library."})
-                    attachment_fields["attachment"] = attachment
+                    if attachment or not media_id or not restoring:
+                        attachment_fields["attachment"] = attachment
                     if attachment:
                         media_type, media_size = _publication_file_metadata(attachment)
                         file_type = media_type or file_type
@@ -405,10 +442,17 @@ def sync_normalized_section_draft(section, user=None):
                         "external_url": _safe_url(item.get("url")),
                         "legacy_file_size": file_size,
                         "sort_order": document_index,
-                    }, user,
+                    }, user, restoring=restoring,
                 )
 
     if section.page.slug == "about-rdc" and section.section_key == "resolutions-archive":
+        if resolution_attachment_ids is None:
+            resolution_attachment_ids = active_resolution_attachment_ids(content)
+        keys = {
+            key for year_row in content.get("years") or [] for item in _resolution_rows(year_row)
+            if isinstance(item, dict) and (key := _stable_key(item.get("id"), ""))
+        }
+        existing = CMSResolution.objects.select_for_update().in_bulk(keys, field_name="stable_key")
         for year_row in content.get("years") or []:
             if not isinstance(year_row, dict):
                 continue
@@ -416,7 +460,7 @@ def sync_normalized_section_draft(section, user=None):
             if len(digits) < 4:
                 continue
             year = int(digits[:4])
-            rows = year_row.get("resolutions") or year_row.get("items") or year_row.get("documents") or []
+            rows = _resolution_rows(year_row)
             for item_index, item in enumerate(rows, 1):
                 if not isinstance(item, dict):
                     continue
@@ -438,28 +482,43 @@ def sync_normalized_section_draft(section, user=None):
                     resolution_date = date.fromisoformat(str(item.get("date") or "")) if item.get("date") else None
                 except ValueError:
                     resolution_date = None
-                media_id = item.get("mediaAssetId") or item.get("documentAssetId") or item.get("attachment")
-                try:
-                    attachment = CMSMediaAsset.objects.filter(
-                        pk=media_id,
-                        is_archived=False,
-                        file_type=CMSMediaAsset.FILE_TYPE_DOCUMENT,
-                    ).first() if media_id else None
-                except (TypeError, ValueError):
-                    attachment = None
-                _upsert(
-                    CMSResolution, {"stable_key": key}, {
-                        **common,
-                        "resolution_number": number,
-                        "title": str(item.get("title") or number),
-                        "description": str(item.get("description") or ""),
-                        "year": year,
-                        "resolution_date": resolution_date,
-                        "attachment": attachment,
-                        "external_url": _safe_url(item.get("url") or item.get("link")),
-                        "sort_order": item_index,
-                    }, user,
+                media_id = resolution_attachment_id(
+                    item.get("mediaAssetId") or item.get("documentAssetId") or item.get("attachment")
                 )
+                fields = {
+                    "resolution_number": number,
+                    "title": str(item.get("title") or number),
+                    "description": str(item.get("description") or ""),
+                    "year": year,
+                    "resolution_date": resolution_date,
+                    "attachment_id": media_id if media_id in resolution_attachment_ids else None,
+                    "external_url": _safe_url(item.get("url") or item.get("link")),
+                    "sort_order": item_index,
+                }
+                if not explicit and key not in existing:
+                    # Legacy entries without IDs can match a pre-existing record.
+                    existing[key] = CMSResolution.objects.select_for_update().filter(stable_key=key).first()
+                obj = existing.get(key)
+                if obj is None:
+                    obj, created = CMSResolution.objects.select_for_update().get_or_create(
+                        stable_key=key, defaults={"created_by": user, **fields, **common},
+                    )
+                    existing[key] = obj
+                    if created:
+                        continue
+                if obj.status == "archived":
+                    if restoring:
+                        continue
+                    raise serializers.ValidationError({
+                        "detail": f'"{obj}" belongs to historical records. Add a new item in the page editor.',
+                        "code": "historical_content_not_editable",
+                    })
+                changed = {name: value for name, value in fields.items() if getattr(obj, name) != value}
+                if changed or (restoring and (obj.status != "published" or obj.has_unpublished_changes)):
+                    changes = {**changed, **common}
+                    for name, value in changes.items():
+                        setattr(obj, name, value)
+                    obj.save(update_fields=[*changes, "updated_at"])
 
     if section.page.slug == "publications" and section.section_key == "publication-catalog":
         for field in ("removedCategoryIds", "removedDocumentIds"):

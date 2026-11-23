@@ -152,9 +152,9 @@ const Contact: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnaps
     const longitude = rawLongitude && Number.isFinite(parsedLongitude) && parsedLongitude >= -180 && parsedLongitude <= 180
       ? parsedLongitude
       : null;
-    const query = latitude !== null && longitude !== null
+    const query = asString(mapContent.mapLocationQuery) || (latitude !== null && longitude !== null
       ? `${latitude},${longitude}`
-      : configuredQuery;
+      : configuredQuery);
     return query ? `https://www.google.com/maps?q=${encodeURIComponent(query)}&output=embed` : "";
   };
 
@@ -210,7 +210,7 @@ const Contact: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnaps
                       </div>
                       <div>
                         <h4 className="font-semibold text-slate-900">
-                          {asString(officeContent.addressLabel, "Address")}
+                          Address
                         </h4>
                         <p className="text-slate-600 text-sm mt-1">
                           {contactAddress || "Address has not been configured."}
@@ -233,7 +233,7 @@ const Contact: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnaps
                       </div>
                       <div>
                         <h4 className="font-semibold text-slate-900">
-                          {asString(officeContent.emailLabel, "Email")}
+                          Email
                         </h4>
                         {contactEmail ? (
                           <a href={`mailto:${contactEmail}`} className="text-blue-600 hover:underline text-sm">
@@ -258,7 +258,7 @@ const Contact: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnaps
                       </div>
                       <div>
                         <h4 className="font-semibold text-slate-900">
-                          {asString(officeContent.phoneLabel, "Phone")}
+                          Phone
                         </h4>
                         {contactPhone ? (
                           <a href={`tel:${contactPhone.replace(/[^\d+]/g, "")}`} className="text-blue-600 hover:underline text-sm">
@@ -283,7 +283,7 @@ const Contact: React.FC<{ previewSnapshot?: CMSPageSnapshot }> = ({ previewSnaps
                       </div>
                       <div>
                         <h4 className="font-semibold text-slate-900">
-                          {asString(officeContent.hoursLabel, "Office Hours")}
+                          Office Hours
                         </h4>
                         <p className="text-slate-600 text-sm mt-1">
                           {splitLines(officeHours).map((line, index) => (

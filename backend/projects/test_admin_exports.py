@@ -65,6 +65,32 @@ class AdminExportTests(TestCase):
             },
         )
 
+    def test_preview_matches_csv_order_and_rejects_changed_membership(self):
+        self.authenticate()
+        projects = [self.project(f"Preview Page project {index:02d}") for index in range(21)]
+        params = {"category": "projects", "search": "Preview Page"}
+        preview_url = "/api/admin/exports/preview/"
+        first = self.client.get(preview_url, params)
+        self.assertEqual(first.status_code, 200, first.data)
+        second = self.client.get(preview_url, {**params, "page": 2})
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(first.data["count"], 21)
+        self.assertEqual(len(first.data["results"]), 20)
+        self.assertEqual(second.data["results"][0]["id"], projects[0].pk)
+        self.assertEqual(first.data["preview_token"], second.data["preview_token"])
+
+        download_query = {**params, "preview_token": first.data["preview_token"], "file_format": "csv"}
+        export_url = "/api/admin/exports/download/"
+        downloaded = self.client.get(export_url, download_query)
+        self.assertEqual(downloaded.status_code, 200)
+        csv_rows = list(csv.reader(io.StringIO(b"".join(downloaded.streaming_content).decode("utf-8-sig"))))
+        self.assertEqual([int(row[0]) for row in csv_rows[1:]], [project.pk for project in reversed(projects)])
+        projects[-1].archived = True
+        projects[-1].save(update_fields=["archived"])
+        self.assertEqual(self.client.get(export_url, download_query).status_code, 409)
+        self.authenticate(self.validator)
+        self.assertEqual(self.client.get(preview_url, params).status_code, 403)
+
     def authenticate(self, user=None):
         self.client.force_authenticate(user=user or self.admin)
 

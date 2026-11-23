@@ -32,7 +32,14 @@ const sections = [
   { id: 42, section_key: "legal-basis", section_type: "document_group", content_json: { title: "CMS Legal Basis", subtitle: "CMS legal subtitle", items: [{ id: "law", title: "Law without file", description: "Description", fileType: "PDF", url: "" }] } },
   { id: 43, section_key: "committees", section_type: "document_group", content_json: { title: "CMS Committees", subtitle: "CMS committee subtitle", items: committees } },
   { id: 44, section_key: "organization-structure", section_type: "text", content_json: { title: "CMS Organization", subtitle: "CMS organization subtitle", nodes: nodeIds.map((id) => ({ id, label: "Configured Group", title: `Configured ${id}`, subtitle: "Configured office", items: [] })) } },
-  { id: 45, section_key: "resolutions-archive", section_type: "text", content_json: { title: "CMS Resolutions", subtitle: "CMS resolution subtitle", legendTitle: "CMS Legend", categoryTitle: "CMS Categories", legendItems: [{ label: "CMS Resolution Type", color: "blue" }], categoryItems: [{ title: "CMS Category", description: "CMS category description", color: "green" }], years: [{ year: 2025, resolutions: [{ id: "resolution-2025", title: "CMS Resolution with spaces", url: "" }] }] } },
+  { id: 45, section_key: "resolutions-archive", section_type: "text", content_json: {
+    title: "CMS Resolutions", subtitle: "CMS resolution subtitle", legendTitle: "CMS Legend", categoryTitle: "CMS Categories",
+    legendItems: [{ label: "CMS Resolution Type", color: "blue" }, { label: "Sectoral Committee", color: "emerald" }], categoryItems: [{ title: "CMS Category", description: "CMS category description", color: "green" }],
+    years: [{ year: 2025, resolutions: [
+      { id: "resolution-2025", title: "CMS Resolution with spaces", url: "", legendItems: [{ label: "Sectoral Committee", color: "blue" }] },
+      { id: "legacy-resolution-2025", title: "Legacy resolution without a legend", url: "" },
+    ] }],
+  } },
 ].map((section, index) => ({
   ...section,
   page: 4,
@@ -79,6 +86,8 @@ try {
   const homePage = { id: 1, title: "Home", slug: "home", status: "published", sections: homeSections };
   let updatedFeeds = false;
   let eventRequests = 0;
+  let aboutDetailRequests = 0;
+  const savedRevision = "2026-01-02T08:00:00+08:00";
   const upcomingForum = {
     id: 7, event_type: "forum", title: "Public test forum", location: "Manila",
     start_at: new Date(Date.now() + 86400000).toISOString(), day: 30, month: "Nov", time: "9:00 AM",
@@ -99,7 +108,7 @@ try {
     if (path === "/api/public/cms/pages/home/") return respond(route, {
       slug: "home", sections: [
         { sectionKey: "investment-programming", content: {
-          title: "Investment Programming", items: [{ title: "Resource retained", link: "#" }],
+          title: "Investment Programming", items: [{ id: "resource-a", title: "Resource retained", link: "/publications?category=rdip" }, { id: "resource-b", title: "Resource retained", description: "Second record" }],
           quickLinks: [
             { label: "Project dashboard", link: "/Projects" },
             { label: "RDIP publications", link: "/publications?category=rdip" },
@@ -129,7 +138,14 @@ try {
         { sectionKey: "geographic-coverage", content: { mapAssetId: 99, mapImageUrl: "/missing-custom-map.png" } },
       ],
     });
-    if (path === "/api/admin/cms/pages/4/" || path === "/api/admin/cms/modules/about-rdc/") return respond(route, aboutPage);
+    if (path === "/api/admin/cms/pages/4/" || path === "/api/admin/cms/modules/about-rdc/") {
+      aboutDetailRequests += 1;
+      return respond(route, aboutPage);
+    }
+    if (path === "/api/admin/cms/pages/4/discard-draft/") {
+      assert.equal(route.request().postDataJSON().expected_updated_at, savedRevision);
+      return respond(route, { ...aboutPage, status: "published", has_unpublished_changes: false, updated_at: "2026-01-03T08:00:00+08:00" });
+    }
     if (path === "/api/admin/cms/pages/1/" || path === "/api/admin/cms/modules/home/") return respond(route, homePage);
     if (path === "/api/admin/cms/pages/") return respond(route, {
       results: [homePage, aboutPage].map(({ sections, ...summary }) => summary), count: 2, next: null, total_pages: 1,
@@ -143,7 +159,7 @@ try {
     if (sectionMatch && route.request().method() === "PUT") {
       const section = sections.find((row) => row.id === Number(sectionMatch[1]));
       Object.assign(section, route.request().postDataJSON());
-      return respond(route, section);
+      return respond(route, { ...section, page_revision: { status: "published", has_unpublished_changes: true, updated_at: savedRevision } });
     }
     if (path === "/api/admin/cms/media/") return respond(route, { results: [], count: 0, next: null, total_pages: 1 });
     if (path === "/api/admin/cms/articles/" || path === "/api/admin/cms/sections/" || path === "/api/admin/cms/forms/" || path === "/api/admin/cms/events/" || path === "/api/admin/cms/settings/") return respond(route, []);
@@ -167,6 +183,7 @@ try {
   await page.locator('[data-cms-section-id="43"]').getByRole("button", { name: "Edit Content" }).click();
   assert.equal(await page.getByRole("button", { name: "Add Committee", exact: true }).count(), 0, "fixed committee entries cannot be added");
   assert.equal(await page.locator("[data-section-editor]").getByRole("button", { name: "Remove", exact: true }).count(), 0, "fixed committee entries cannot be removed");
+  await page.locator("[data-section-editor] summary").filter({ hasText: /executive committee/i }).first().click();
   await page.getByRole("button", { name: "Add Committee Information", exact: true }).first().click();
   const functions = page.getByLabel("Functions (one per line)").first();
   await functions.fill("");
@@ -175,14 +192,24 @@ try {
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Cancel" }).click();
   await page.locator('[data-cms-section-id="45"]').getByRole("button", { name: "Edit Content" }).click();
-  const year = page.locator("[data-section-editor] summary").filter({ hasText: "2025 (1)" });
+  const year = page.locator("[data-section-editor] summary").filter({ hasText: "2025 (2)" });
   await year.press("Enter");
+  const typeSelection = page.locator("label").filter({ has: page.getByText("Resolution Type", { exact: true }) }).locator("select");
+  assert.equal(await typeSelection.inputValue(), "sectoral committee");
   const resolutionTitle = page.getByLabel("Resolution 1 Title");
   await resolutionTitle.fill("Draft title retained while collapsed");
   await year.press("Enter");
   await resolutionTitle.waitFor({ state: "hidden" });
   await year.press("Enter");
   assert.equal(await resolutionTitle.inputValue(), "Draft title retained while collapsed");
+  const readsBeforeSave = aboutDetailRequests;
+  await page.getByRole("button", { name: "Save Content Draft", exact: true }).click();
+  await resolutionTitle.waitFor({ state: "hidden" });
+  assert.equal(aboutDetailRequests, readsBeforeSave, "Saving a resolution draft does not reload the About page details");
+  const aboutCard = page.locator('[data-cms-page-id="4"]');
+  page.once("dialog", (dialog) => dialog.accept());
+  await aboutCard.getByRole("button", { name: "Discard Draft Changes" }).click();
+  await aboutCard.getByText("unpublished changes", { exact: true }).waitFor({ state: "hidden" });
 
   await page.goto(`${origin}/about`);
   await page.getByRole("heading", { name: "CMS About RDC" }).waitFor();
@@ -197,13 +224,25 @@ try {
   await page.getByRole("dialog").getByText("Coordinate regional work", { exact: true }).waitFor();
   await page.getByRole("dialog").getByRole("button", { name: "Close committee details" }).click();
   await page.getByText("CMS Resolution Type", { exact: true }).waitFor();
-  await page.getByText("CMS category description", { exact: true }).waitFor();
+  const configuredResolution = page.getByText("CMS Resolution with spaces", { exact: true }).locator("..");
+  const sectoralBadge = configuredResolution.getByText("Sectoral Committee", { exact: true });
+  assert.match(await sectoralBadge.getAttribute("class"), /bg-emerald-100/, "The shared legend overrides the per-resolution color");
+  assert.equal(await configuredResolution.getByText("RDC Resolution", { exact: true }).count(), 0);
+  const legacyResolution = page.getByText("Legacy resolution without a legend", { exact: true }).locator("..");
+  await legacyResolution.getByText("RDC Resolution", { exact: true }).waitFor();
+  const publishedLegend = publicPage.sections.find((section) => section.sectionKey === "resolutions-archive").content.legendItems;
+  Object.assign(publishedLegend[1], { key: "sectoral committee", label: "Sectoral Committee Action", color: "purple" });
+  await page.reload();
+  const renamedBadge = configuredResolution.getByText("Sectoral Committee Action", { exact: true });
+  assert.match(await renamedBadge.getAttribute("class"), /bg-purple-100/, "A linked badge follows changes to the shared legend");
+  assert.equal(await page.getByText("CMS category description", { exact: true }).count(), 0);
   assert.equal(await page.getByText("-Infinity", { exact: true }).count(), 0, "resolution statistics never show -Infinity");
 
   await page.goto(`${origin}/`);
-  await page.getByRole("heading", { name: "Resource retained" }).waitFor();
-  assert.equal(await page.getByRole("link", { name: "Project dashboard", exact: true }).getAttribute("href"), "/projects");
-  assert.equal(await page.getByRole("link", { name: "RDIP publications", exact: true }).getAttribute("href"), "/publications?category=rdip");
+  await page.getByRole("heading", { name: "Resource retained" }).first().waitFor();
+  assert.equal(await page.getByRole("heading", { name: "Resource retained" }).count(), 2);
+  assert.equal(await page.getByRole("link", { name: "Project dashboard", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("link", { name: /Resource retained/ }).getAttribute("href"), "/publications?category=rdip");
   assert.equal(await page.getByRole("link", { name: "Broken quick link", exact: true }).count(), 0);
   await page.getByRole("heading", { name: "Regional Development Dashboard" }).waitFor();
   const ongoingStat = page.getByText("Ongoing Projects", { exact: true }).locator("..");

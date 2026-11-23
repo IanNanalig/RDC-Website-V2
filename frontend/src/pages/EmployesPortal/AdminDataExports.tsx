@@ -8,6 +8,10 @@ type ExportFormat = "csv" | "pdf";
 type Option = { value: string; label: string };
 type ExportOptions = Record<string, Option[]>;
 type Filters = Record<string, string>;
+type ExportPreview = {
+  count: number; page: number; has_next: boolean; preview_token: string;
+  results: { id: number; name: string; agency: string; status: string; role?: string }[];
+};
 
 const projectDefaults: Filters = {
   search: "",
@@ -95,6 +99,9 @@ const AdminDataExports: React.FC = () => {
   const [optionsLoading, setOptionsLoading] = useState(true);
   const [count, setCount] = useState<number | null>(null);
   const [countLoading, setCountLoading] = useState(true);
+  const [preview, setPreview] = useState<(ExportPreview & { query: string }) | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const previewRequest = useRef(0);
   const [exporting, setExporting] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -199,13 +206,45 @@ const AdminDataExports: React.FC = () => {
     }),
   [filters, options]);
 
+  const currentPreview = preview?.query === queryString ? preview : null;
+
+  useEffect(() => {
+    previewRequest.current += 1;
+    setPreview(null);
+    setPreviewLoading(false);
+  }, [queryString]);
+
+  const loadPreview = async (page = 1) => {
+    const requestId = ++previewRequest.current;
+    setPreviewLoading(true);
+    setError("");
+    try {
+      const data = await api.get(`admin/exports/preview/?${queryString}&page=${page}`, true) as ExportPreview;
+      if (requestId !== previewRequest.current) return;
+      if (page > 1 && currentPreview && data.preview_token !== currentPreview.preview_token) {
+        setPreview(null);
+        setError("Matching records changed. Refresh the preview before downloading.");
+        return;
+      }
+      setPreview({ ...data, query: queryString });
+    } catch (reason) {
+      if (requestId === previewRequest.current) {
+        setPreview(null);
+        setError(reason instanceof Error ? reason.message : "The preview could not be loaded.");
+      }
+    } finally {
+      if (requestId === previewRequest.current) setPreviewLoading(false);
+    }
+  };
+
   const generateExport = async () => {
-    if (!count || exporting || yearError) return;
+    if (exporting || yearError || (format === "csv" ? !currentPreview?.count : !count)) return;
     setExporting(true);
     setError("");
     setNotice("");
     try {
-      const result = await api.download(`admin/exports/download/?${queryString}&file_format=${format}`);
+      const token = format === "csv" ? `&preview_token=${currentPreview?.preview_token}` : "";
+      const result = await api.download(`admin/exports/download/?${queryString}&file_format=${format}${token}`);
       const url = URL.createObjectURL(result.blob);
       const anchor = document.createElement("a");
       anchor.href = url;
@@ -216,6 +255,7 @@ const AdminDataExports: React.FC = () => {
       URL.revokeObjectURL(url);
       setNotice(`${category === "projects" ? "Project" : "User"} export downloaded successfully.`);
     } catch (reason) {
+      if (format === "csv") setPreview(null);
       setError(reason instanceof Error ? reason.message : "The export could not be generated.");
     } finally {
       setExporting(false);
@@ -329,6 +369,26 @@ const AdminDataExports: React.FC = () => {
               {selectedCriteria.length === 0 && <span className="text-sm text-slate-500">All {category}</span>}
             </div>
           </div>
+          <section aria-label="Export preview" className="space-y-3">
+            <button type="button" className="portal-btn portal-btn-ghost" disabled={previewLoading || Boolean(yearError)} onClick={() => void loadPreview()}>
+              {previewLoading ? "Loading preview..." : "Preview Results"}
+            </button>
+            {format === "csv" && !currentPreview && <p className="text-sm text-slate-600">Preview the matching records to enable CSV download.</p>}
+            {currentPreview && <>
+              <p className="text-sm text-slate-600">{currentPreview.count.toLocaleString()} matching records</p>
+              {currentPreview.results.length > 0 && <div className="overflow-auto">
+                <table className="w-full text-left text-sm">
+                  <thead><tr><th scope="col">{category === "projects" ? "Project" : "Name"}</th><th scope="col">Agency</th>{category === "users" && <th scope="col">Role</th>}<th scope="col">Status</th></tr></thead>
+                  <tbody>{currentPreview.results.map((row) => <tr key={row.id} className="border-t border-slate-200"><td className="py-2 pr-2">{row.name}</td><td className="pr-2">{row.agency || "-"}</td>{category === "users" && <td className="pr-2">{row.role}</td>}<td>{row.status}</td></tr>)}</tbody>
+                </table>
+              </div>}
+              {(currentPreview.page > 1 || currentPreview.has_next) && <nav aria-label="Export preview pages" className="flex items-center gap-3">
+                <button type="button" className="portal-btn portal-btn-ghost" disabled={previewLoading || currentPreview.page === 1} onClick={() => void loadPreview(currentPreview.page - 1)}>Previous</button>
+                <span>Page {currentPreview.page}</span>
+                <button type="button" className="portal-btn portal-btn-ghost" disabled={previewLoading || !currentPreview.has_next} onClick={() => void loadPreview(currentPreview.page + 1)}>Next</button>
+              </nav>}
+            </>}
+          </section>
           <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(260px,auto)] md:items-end">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Matching records</p>
@@ -352,7 +412,7 @@ const AdminDataExports: React.FC = () => {
               <button
                 type="button"
                 onClick={() => void generateExport()}
-                disabled={exporting || countLoading || !count || Boolean(error)}
+                disabled={exporting || previewLoading || Boolean(yearError) || (format === "csv" ? !currentPreview?.count : countLoading || !count)}
                 className="portal-btn portal-btn-primary w-full justify-center disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {exporting ? "Generating Export..." : `Generate ${format.toUpperCase()}`}

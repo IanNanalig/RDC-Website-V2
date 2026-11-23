@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ABOUT_ORGANIZATION_NODE_IDS } from "../content/aboutStructure";
+import { findResolutionLegendEntry, type ResolutionLegendEntry } from "../content/resolutionLegend";
 import cmsApi, { type CMSPageSnapshot } from "../services/cmsApi";
 import { canDownloadDocument, downloadDocument } from "../utils/documentDownload";
 
@@ -44,14 +45,15 @@ const dotColorClass = (color: string) => ({
   slate: "bg-slate-600",
 }[color] || "bg-slate-600");
 
-const textColorClass = (color: string) => ({
-  blue: "text-blue-600",
-  amber: "text-amber-600",
-  purple: "text-purple-600",
-  emerald: "text-emerald-600",
-  green: "text-green-600",
-  slate: "text-slate-700",
-}[color] || "text-slate-700");
+const resolutionBadgeColor = (color: string) => ({
+  blue: "bg-blue-100 text-blue-700",
+  amber: "bg-amber-100 text-amber-700",
+  purple: "bg-purple-100 text-purple-700",
+  emerald: "bg-emerald-100 text-emerald-700",
+  green: "bg-green-100 text-green-700",
+  slate: "bg-slate-100 text-slate-700",
+}[color] || "bg-slate-100 text-slate-700");
+
 
 const getAboutSection = (page: CMSPageSnapshot | null, sectionKey: string) =>
   page?.sections.find((section) => section.sectionKey === sectionKey)?.content ?? null;
@@ -374,15 +376,8 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
 
     cmsRows.map(asRecord).forEach((row, index) => {
       const rowId = asString(row.id);
-      const matchedIndex = documents.findIndex(
-        (doc) => doc.id === rowId || doc.title === asString(row.title),
-      );
-      if (!isVisible(row)) {
-        if (matchedIndex >= 0) documents.splice(matchedIndex, 1);
-        return;
-      }
+      if (!isVisible(row)) return;
 
-      const fallback = matchedIndex >= 0 ? documents[matchedIndex] : undefined;
       const document: LegalDocument = {
         id: rowId || `legal-document-${index + 1}`,
         title: asString(row.title, `Legal Document ${index + 1}`),
@@ -392,10 +387,9 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
         url: asString(row.url || row.link),
         fileType: asString(row.fileType, "Document"),
         fileSize: asString(row.fileSize),
-        pages: asNumber(row.pages, fallback?.pages),
+        pages: asNumber(row.pages, undefined),
       };
-      if (matchedIndex >= 0) documents[matchedIndex] = document;
-      else documents.push(document);
+      documents.push(document);
     });
 
     return documents;
@@ -480,7 +474,7 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
   const resolutionYears = useMemo(() => {
     const years: Array<{
       year: string;
-      content: Array<{ title: string; number: string; description: string; date: string; url: string }>;
+      content: Array<{ title: string; number: string; description: string; date: string; url: string; legendTitle: string; legendItems: ResolutionLegendEntry[] }>;
     }> = [];
 
     asArray(asRecord(resolutionsContent).years).map(asRecord).forEach((row) => {
@@ -490,7 +484,7 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
       if (!/^\d{4}$/.test(year)) return;
       const content = asArray(row.resolutions || row.items || row.content)
         .map((item) => {
-          if (typeof item === "string") return { title: asString(item), number: "", description: "", date: "", url: "" };
+          if (typeof item === "string") return { title: asString(item), number: "", description: "", date: "", url: "", legendTitle: "", legendItems: [] };
           const record = asRecord(item);
           if (!isVisible(record)) return null;
           return {
@@ -499,9 +493,13 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
             description: asString(record.description),
             date: asString(record.date),
             url: asString(record.url || record.link),
+            legendTitle: asString(record.legendTitle),
+            legendItems: asArray(record.legendItems).map(asRecord)
+              .map((entry) => ({ key: asString(entry.key), label: asString(entry.label), color: asString(entry.color, "slate") })).filter((entry) => entry.label),
           };
         })
-        .filter((item): item is { title: string; number: string; description: string; date: string; url: string } => Boolean(item?.title));
+        .filter((item) => item !== null)
+        .filter((item) => item.title);
       const matchedIndex = years.findIndex((entry) => entry.year === year);
       if (matchedIndex >= 0 && row.replaceExisting !== true) {
         const mergedContent = [...years[matchedIndex].content];
@@ -535,19 +533,8 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
   const resolutionLegendItems = useMemo(() =>
     asArray(asRecord(resolutionsContent).legendItems)
       .map(asRecord)
-      .map((row) => ({ label: asString(row.label), color: asString(row.color, "slate") }))
+      .map((row) => ({ key: asString(row.key), label: asString(row.label), color: asString(row.color, "slate") }))
       .filter((row) => row.label),
-  [resolutionsContent]);
-
-  const resolutionCategoryItems = useMemo(() =>
-    asArray(asRecord(resolutionsContent).categoryItems)
-      .map(asRecord)
-      .map((row) => ({
-        title: asString(row.title),
-        description: asString(row.description),
-        color: asString(row.color, "slate"),
-      }))
-      .filter((row) => row.title || row.description),
   [resolutionsContent]);
 
   useEffect(() => {
@@ -1173,12 +1160,19 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
                         <div className="space-y-4">
                           {yearData.content.map((resolution, resIndex) => {
                             const resolutionTitle = resolution.title;
-                            const isAdvisory =
+                            const titleIsAdvisory =
                               resolutionTitle.includes("Advisory") ||
                               resolutionTitle.includes("Ad Referendum");
-                            const isMMDA = resolutionTitle.includes("MMDA");
-                            const isSectoral =
-                              resolutionTitle.includes("Sectoral Committee");
+                            const inferredType = titleIsAdvisory ? { label: "Advisory/Referendum", color: "amber" }
+                              : resolutionTitle.includes("MMDA") ? { label: "MMDA Resolution", color: "purple" }
+                                : resolutionTitle.includes("Sectoral Committee") ? { label: "Sectoral Committee", color: "emerald" }
+                                  : { label: "RDC Resolution", color: "blue" };
+                            const badges = (resolution.legendItems.length > 0 ? resolution.legendItems : [inferredType])
+                              .map((badge) => findResolutionLegendEntry(resolutionLegendItems, badge) || badge);
+                            const primaryColor = badges[0].color;
+                            const isAdvisory = primaryColor === "amber";
+                            const isMMDA = primaryColor === "purple";
+                            const isSectoral = primaryColor === "emerald" || primaryColor === "green";
 
                             return (
                               <div
@@ -1205,17 +1199,7 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
                                             : "bg-blue-100"
                                     }`}
                                   >
-                                    <div
-                                      className={`w-3 h-3 rounded-full ${
-                                        isAdvisory
-                                          ? "bg-amber-600"
-                                          : isMMDA
-                                            ? "bg-purple-600"
-                                            : isSectoral
-                                              ? "bg-emerald-600"
-                                              : "bg-blue-600"
-                                      }`}
-                                    ></div>
+                                    <div className={`h-3 w-3 rounded-full ${dotColorClass(primaryColor)}`} />
                                   </div>
                                   <div className="flex-1">
                                     {resolution.number && resolution.number !== resolutionTitle && (
@@ -1236,26 +1220,15 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
                                     {resolution.description && (
                                       <p className="mt-2 text-sm leading-relaxed text-slate-600">{resolution.description}</p>
                                     )}
+                                    {resolution.legendTitle && (
+                                      <p className="mt-2 text-sm font-semibold text-slate-600">{resolution.legendTitle}</p>
+                                    )}
                                     <div className="mt-3 flex flex-wrap items-center gap-2">
-                                      <span
-                                        className={`inline-block px-3 py-1 text-xs font-semibold rounded-full ${
-                                          isAdvisory
-                                            ? "bg-amber-100 text-amber-700"
-                                            : isMMDA
-                                              ? "bg-purple-100 text-purple-700"
-                                              : isSectoral
-                                                ? "bg-emerald-100 text-emerald-700"
-                                                : "bg-blue-100 text-blue-700"
-                                        }`}
-                                      >
-                                        {isAdvisory
-                                          ? "Advisory"
-                                          : isMMDA
-                                            ? "MMDA Resolution"
-                                            : isSectoral
-                                              ? "Sectoral Committee"
-                                              : "RDC Resolution"}
-                                      </span>
+                                      {badges.map((badge, index) => (
+                                        <span key={`${badge.label}-${index}`} className={`inline-block rounded-full px-3 py-1 text-xs font-semibold ${resolutionBadgeColor(badge.color)}`}>
+                                          {badge.label}
+                                        </span>
+                                      ))}
                                       <span className="text-xs text-slate-500">
                                         Year: {extractYear(yearData.year)}
                                       </span>
@@ -1351,22 +1324,7 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
               </div>
             </div>
 
-            {/* Summary Stats */}
-            <div className="mt-8 p-6 bg-slate-50 rounded-2xl">
-              <h4 className="font-semibold text-slate-900 mb-3">
-                {asString(asRecord(resolutionsContent).categoryTitle) || "Content not configured"}
-              </h4>
-              {resolutionCategoryItems.length ? (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  {resolutionCategoryItems.map((item, index) => (
-                    <div key={`${item.title}-${index}`} className="text-center p-3 bg-white rounded-lg">
-                      <div className={`text-lg font-bold ${textColorClass(item.color)}`}>{item.title}</div>
-                      <div className="text-sm text-slate-600">{item.description}</div>
-                    </div>
-                  ))}
-                </div>
-              ) : <p className="text-sm text-slate-500">No resolution category summaries are published.</p>}
-            </div>
+
           </div>
         </section>
       </main>

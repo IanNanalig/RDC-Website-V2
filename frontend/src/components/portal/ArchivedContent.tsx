@@ -10,7 +10,7 @@ const ARCHIVED_PAGE_SIZE = 10;
 
 const groups: Group[] = [
   { label: "News", endpoint: "admin/cms/articles/?view=summary&archived=1", detail: (id) => `admin/cms/articles/${id}/`, restore: (id) => `admin/cms/articles/${id}/restore/` },
-  { label: "Events", endpoint: "admin/cms/events/?archived=1", detail: (id) => `admin/cms/events/${id}/`, restore: (id) => `admin/cms/events/${id}/unarchive/` },
+  { label: "Events", endpoint: "admin/cms/events/?view=summary&archived=1", detail: (id) => `admin/cms/events/${id}/`, restore: (id) => `admin/cms/events/${id}/unarchive/` },
   { label: "Media", endpoint: "admin/cms/media/?view=summary&archived=1", detail: (id) => `admin/cms/media/${id}/`, restore: (id) => `admin/cms/media/${id}/restore/` },
 ];
 
@@ -42,23 +42,23 @@ function thumbnail(item: ArchivedItem) {
 }
 
 
-async function fetchGroup(endpoint: string): Promise<ArchivedItem[]> {
-  const rows: ArchivedItem[] = [];
-  let page = 1;
-  while (true) {
-    const separator = endpoint.includes("?") ? "&" : "?";
-    const result = await api.get(`${endpoint}${separator}page=${page}`) as ArchivedItem[] | { results: ArchivedItem[]; next?: string | null };
-    if (Array.isArray(result)) return result;
-    rows.push(...(result.results || []));
-    if (!result.next) return rows;
-    page += 1;
+type ArchivePage = { rows: ArchivedItem[]; count: number; page: number };
+
+async function fetchGroup(endpoint: string, page: number): Promise<ArchivePage> {
+  const url = `${endpoint}&page_size=${ARCHIVED_PAGE_SIZE}`;
+  const result = await api.get(`${url}&page=${page}`) as
+    ArchivedItem[] | { results: ArchivedItem[]; count?: number; total_pages?: number };
+  if (Array.isArray(result)) {
+    const offset = (page - 1) * ARCHIVED_PAGE_SIZE;
+    return { rows: result.slice(offset, offset + ARCHIVED_PAGE_SIZE), count: result.length, page };
   }
+  return { rows: result.results || [], count: result.count ?? result.results?.length ?? 0, page };
 }
 
 export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
   const [activeGroup, setActiveGroup] = useState(groups[0]);
   const [notice, setNotice] = useState("");
-  const [items, setItems] = useState<Record<string, ArchivedItem[]>>({});
+  const [items, setItems] = useState<Record<string, ArchivePage>>({});
   const [groupPages, setGroupPages] = useState<Record<string, number>>(
     () => Object.fromEntries(groups.map((group) => [group.label, 1])),
   );
@@ -73,24 +73,25 @@ export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
     if (detailsOpen && dialog && !dialog.open) dialog.showModal();
   }, [detailsOpen]);
   const [detailLoading, setDetailLoading] = useState(false);
+  const page = groupPages[activeGroup.label] || 1;
+  const requestId = useRef(0);
   const refresh = useCallback(async () => {
+    const id = ++requestId.current;
     setLoading(true);
     setError("");
     try {
-      const results = await Promise.all(groups.map(async (group) => [group.label, await fetchGroup(group.endpoint)] as const));
-      const nextItems = Object.fromEntries(results) as Record<string, ArchivedItem[]>;
-      setItems(nextItems);
-      setGroupPages((current) => Object.fromEntries(groups.map((group) => {
-        const totalPages = Math.max(1, Math.ceil((nextItems[group.label]?.length || 0) / ARCHIVED_PAGE_SIZE));
-        return [group.label, Math.min(current[group.label] || 1, totalPages)];
-      })));
+      const result = await fetchGroup(activeGroup.endpoint, page);
+      if (id === requestId.current) setItems((previous) => ({ ...previous, [activeGroup.label]: result }));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Archived items could not be loaded.");
+      if (id === requestId.current) setError(caught instanceof Error ? caught.message : "Archived items could not be loaded.");
     } finally {
-      setLoading(false);
+      if (id === requestId.current) setLoading(false);
     }
-  }, []);
-  useEffect(() => { void refresh(); }, [refresh]);
+  }, [activeGroup, page]);
+  useEffect(() => {
+    void refresh();
+    return () => { requestId.current += 1; };
+  }, [refresh]);
 
   const restore = async (group: Group, id: number) => {
     setBusyId(`${group.label}-${id}`);
@@ -98,10 +99,13 @@ export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
     try {
       await api.post(group.restore(id), {});
       setSelected(null);
-      setItems((current) => ({ ...current, [group.label]: (current[group.label] || []).filter((item) => item.id !== id) }));
       setNotice(group.label === "Media" ? "File returned to the Media Library." : "Item returned to its module as a draft.");
-      const rows = await fetchGroup(group.endpoint);
-      setItems((current) => ({ ...current, [group.label]: rows }));
+      const result = items[group.label];
+      if (result?.rows.length === 1 && page > 1) {
+        setGroupPages((current) => ({ ...current, [group.label]: page - 1 }));
+      } else {
+        await refresh();
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Restore failed.");
     } finally {
@@ -123,11 +127,10 @@ export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
     }
   };
 
-  const groupItems = items[activeGroup.label] || [];
-  const totalPages = Math.max(1, Math.ceil(groupItems.length / ARCHIVED_PAGE_SIZE));
-  const currentPage = Math.min(groupPages[activeGroup.label] || 1, totalPages);
-  const start = (currentPage - 1) * ARCHIVED_PAGE_SIZE;
-  const visibleItems = groupItems.slice(start, start + ARCHIVED_PAGE_SIZE);
+  const groupItems = items[activeGroup.label];
+  const totalPages = Math.max(1, Math.ceil((groupItems?.count || 0) / ARCHIVED_PAGE_SIZE));
+  const currentPage = groupItems?.page || 1;
+  const visibleItems = groupItems?.rows || [];
   const archivedDetails = selected?.detail;
   const fileUrl = safeMedia(archivedDetails?.url);
   const savedSnapshot = archivedDetails?.published_snapshot_json;
@@ -142,10 +145,10 @@ export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
         </div>
         <nav aria-label="Archived content groups" className="flex flex-wrap gap-2 px-4 pb-4">
           {groups.map((group) => (
-            <button key={group.label} type="button" aria-pressed={group === activeGroup}
+            <button key={group.label} type="button" disabled={Boolean(busyId)} aria-pressed={group === activeGroup}
               className={group === activeGroup ? "portal-btn portal-btn-primary" : "portal-btn portal-btn-ghost"}
               onClick={() => setActiveGroup(group)}>
-              {group.label} ({items[group.label]?.length || 0})
+              {group.label}{items[group.label] ? ` (${items[group.label].count})` : ""}
             </button>
           ))}
         </nav>
@@ -176,9 +179,9 @@ export default function ArchivedContent({ isAdmin }: { isAdmin: boolean }) {
           </div>
           {totalPages > 1 && (
             <nav aria-label="Archived items pagination" className="flex flex-wrap items-center gap-3 text-sm">
-              <button type="button" className="portal-btn portal-btn-ghost" disabled={currentPage === 1} onClick={() => setGroupPages({ ...groupPages, [activeGroup.label]: currentPage - 1 })}>Previous</button>
+              <button type="button" className="portal-btn portal-btn-ghost" disabled={Boolean(busyId) || currentPage === 1} onClick={() => setGroupPages({ ...groupPages, [activeGroup.label]: currentPage - 1 })}>Previous</button>
               <span aria-live="polite">Page {currentPage} of {totalPages}</span>
-              <button type="button" className="portal-btn portal-btn-ghost" disabled={currentPage === totalPages} onClick={() => setGroupPages({ ...groupPages, [activeGroup.label]: currentPage + 1 })}>Next</button>
+              <button type="button" className="portal-btn portal-btn-ghost" disabled={Boolean(busyId) || currentPage === totalPages} onClick={() => setGroupPages({ ...groupPages, [activeGroup.label]: currentPage + 1 })}>Next</button>
             </nav>
           )}
         </section>

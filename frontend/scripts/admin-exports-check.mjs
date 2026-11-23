@@ -79,9 +79,20 @@ async function configure(page, role = "admin") {
         body: JSON.stringify({ category, count }),
       });
     }
+    if (path.endsWith("/admin/exports/preview/")) {
+      assert.equal(url.searchParams.get("agency"), "DENR");
+      assert.equal(url.searchParams.get("budget_min"), "50000000");
+      assert.equal(url.searchParams.get("start_year"), "2022");
+      return route.fulfill({
+        status: 200, headers: cors, contentType: "application/json",
+        body: JSON.stringify({ count: 2, page: 1, has_next: false, preview_token: "verified-token",
+          results: [{ id: 1, name: "Preview project", agency: "DENR", status: "Validated" }] }),
+      });
+    }
     if (path.endsWith("/admin/exports/download/")) {
       await new Promise((resolve) => setTimeout(resolve, 250));
       const format = url.searchParams.get("file_format");
+      if (format === "csv") assert.equal(url.searchParams.get("preview_token"), "verified-token");
       const category = url.searchParams.get("category");
       return route.fulfill({
         status: 200,
@@ -114,6 +125,14 @@ try {
   await page.getByText("Agency: DENR").waitFor();
   await page.getByText("Minimum Budget: 50000000").waitFor();
   await page.getByText("Start Year: 2022").waitFor();
+
+  assert.ok(await page.getByRole("button", { name: "Generate CSV" }).isDisabled());
+  await page.getByRole("button", { name: "Preview Results" }).click();
+  await page.getByRole("cell", { name: "Preview project" }).waitFor();
+  const csvPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Generate CSV" }).click();
+  assert.equal((await csvPromise).suggestedFilename(), "rdc-ncr-projects-20261026-120000.csv");
+  await page.getByText("Project export downloaded successfully.").waitFor();
 
   await page.getByText("PDF", { exact: true }).click();
   const downloadPromise = page.waitForEvent("download");

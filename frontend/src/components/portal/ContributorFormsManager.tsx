@@ -4,7 +4,6 @@ import ContributorFormCatalogs from "./ContributorFormCatalogs";
 import cmsApi, {
   type CMSContributorForm,
   type CMSContributorFormVersion,
-  type CMSCompatibilityReport,
 } from "../../services/cmsApi";
 import {
   DEFAULT_CONTRIBUTOR_FORM_SCHEMA,
@@ -389,8 +388,6 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState("");
   const [notice, setNotice] = useState("");
-  const [compatibility, setCompatibility] = useState<CMSCompatibilityReport | null>(null);
-  const [compatibilityLoading, setCompatibilityLoading] = useState(false);
   const [validationTarget, setValidationTarget] = useState("");
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(() => new Set());
   const [readOnly, setReadOnly] = useState(false);
@@ -500,21 +497,6 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
   }, [clearLoadedForm]);
 
   useEffect(() => { void load(); }, [load]);
-
-  const selectedFormId = selected?.id;
-
-  useEffect(() => {
-    if (!selectedFormId || !schema) return undefined;
-    let current = true;
-    const timer = window.setTimeout(() => {
-      setCompatibilityLoading(true);
-      cmsApi.getContributorFormCompatibility(selectedFormId, schema)
-        .then((report) => { if (current) setCompatibility(report); })
-        .catch(() => { if (current) setCompatibility(null); })
-        .finally(() => { if (current) setCompatibilityLoading(false); });
-    }, 350);
-    return () => { current = false; window.clearTimeout(timer); };
-  }, [schema, selectedFormId]);
 
   const allFields = useMemo(() => schema?.sections
     .filter((section) => section.visible !== false && !section.admin_only)
@@ -905,7 +887,6 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
     if (action === "publish") {
       try {
         const report = await cmsApi.getContributorFormCompatibility(selected.id, selected.draft_schema_json);
-        setCompatibility(report);
         if (report.status === "incompatible") {
           setNotice("Resolve the form configuration errors before publishing.");
           return;
@@ -1017,7 +998,6 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
           {!editMode && <div className="flex flex-wrap gap-2">
             {selected.is_locked && !selected.locked_by_me && <button disabled={Boolean(busyAction)} className="portal-btn portal-btn-ghost" onClick={() => void requestAccess()}>{busyAction === "requesting" ? "Requesting..." : `Request Access from ${selected.lock_owner_name || "Editor"}`}</button>}
             {isAdmin && selected.is_locked && !selected.locked_by_me && <button disabled={Boolean(busyAction)} className="portal-btn portal-btn-ghost" onClick={() => void takeOverEdit("change")}>{busyAction === "taking-over" ? "Taking over..." : "Take Over Editing"}</button>}
-            <button className="portal-btn portal-btn-primary" disabled={loading || Boolean(busyAction) || selected.status === "submitted" && !isAdmin} onClick={() => void beginEdit("update")}>{busyAction === "opening-update" ? "Opening..." : "Update Form"}</button>
             <button className="portal-btn portal-btn-ghost" disabled={loading || Boolean(busyAction) || selected.status === "submitted" && !isAdmin} onClick={() => void beginEdit("change")}>{busyAction === "opening-change" ? "Opening..." : "Change Form"}</button>
             {isAdmin && <button className="portal-btn portal-btn-ghost text-rose-700" disabled={loading || Boolean(busyAction)} onClick={() => void resetForm()}>{busyAction === "resetting-form" ? "Preparing..." : "Reset Form"}</button>}
             {!isAdmin && selected.status !== "submitted" && selected.has_unpublished_changes && <button disabled={Boolean(busyAction)} className="portal-btn portal-btn-ghost" onClick={() => void workflow("submit")}>{busyAction === "submit" ? "Submitting..." : "Submit for Review"}</button>}
@@ -1027,16 +1007,6 @@ const ContributorFormsManager: React.FC<Props> = ({ mode }) => {
         </div>
       </div>
 
-      <details className={`portal-card group overflow-hidden ${compatibility?.status === "incompatible" ? "border-rose-300" : compatibility?.status === "potential_issue" ? "border-amber-300" : "border-emerald-200"}`}>
-        <summary className="portal-card-header flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 [&::-webkit-details-marker]:hidden">
-          <div><h3 className="font-bold text-slate-900">Configuration Impact Review</h3><p className="text-xs text-slate-500">Structural rules and scoring-information effects are reviewed before publication. Ordinary content changes are warnings, not false incompatibilities.</p></div>
-          <span className="flex items-center gap-2"><span className={`rounded-full px-3 py-1 text-xs font-semibold ${compatibility?.status === "incompatible" ? "bg-rose-100 text-rose-800" : compatibility?.status === "potential_issue" ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>{compatibilityLoading ? "Checking…" : compatibility?.status_label || "Checking"}</span><span className="text-slate-500 transition-transform group-open:rotate-180" aria-hidden="true">⌄</span></span>
-        </summary>
-        {compatibility && <div className="portal-card-body space-y-2">
-          {compatibility.impact && <div className="flex flex-wrap gap-2 text-xs text-slate-700"><span className="rounded-full bg-blue-50 px-2 py-1">{compatibility.impact.added_fields.length} fields added</span><span className="rounded-full bg-slate-100 px-2 py-1">{compatibility.impact.retired_fields.length} fields removed</span><span className="rounded-full bg-amber-50 px-2 py-1">{compatibility.impact.hidden_fields?.length || 0} fields hidden</span><span className="rounded-full bg-violet-50 px-2 py-1">{compatibility.impact.modified_fields.length} fields modified</span><span className="rounded-full bg-blue-50 px-2 py-1">{compatibility.impact.added_sections?.length || 0} sections added</span><span className="rounded-full bg-slate-100 px-2 py-1">{compatibility.impact.removed_sections?.length || 0} sections removed</span></div>}
-          {compatibility.issues.length === 0 ? <p className="text-sm text-emerald-800">Configuration is valid. All applicable published answers will be supplied to the scorer automatically.</p> : compatibility.issues.map((issue) => <div key={`${issue.status}-${issue.field_key}`} className={`rounded-lg border p-3 text-sm ${issue.status === "incompatible" ? "border-rose-200 bg-rose-50 text-rose-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}><p className="font-semibold">{issue.field_label}</p><p className="mt-1">{issue.message}</p><p className="mt-1 text-xs">Next step: {issue.recommendation}</p></div>)}
-        </div>}
-      </details>
 
       {(selected.has_unpublished_changes || dirty) && (
         <details className="portal-card group overflow-hidden">

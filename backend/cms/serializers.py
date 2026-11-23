@@ -28,9 +28,11 @@ from cms.models import (
     CMSSiteSetting,
 )
 from cms.registry import SYSTEM_MANAGED_HOME_SECTIONS
+from cms.services.collections import active_resolution_attachment_ids, resolution_attachment_id
 from cms.services.locking import lock_is_active
 from cms.services.media_usage import get_media_usage_map, get_media_usages
 from cms.services.media_validation import validate_media_upload
+from cms.services.section_validation import google_map_location, preserve_card_identities, validate_section_refinements
 
 
 def _user_display(user):
@@ -141,6 +143,12 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Section content must be a JSON object.")
         page_slug = getattr(getattr(self.instance, "page", None), "slug", "")
         section_key = getattr(self.instance, "section_key", "")
+        previous = getattr(self.instance, "content_json", {}) or {}
+        validate_section_refinements(section_key, value, previous)
+        if section_key == "location-map" and value.get("googleMapsLocation"):
+            value = {**value, "mapLocationQuery": google_map_location(value["googleMapsLocation"])}
+        elif section_key == "location-map":
+            value = {key: item for key, item in value.items() if key != "mapLocationQuery"}
 
         if page_slug == "about-rdc" and section_key == "committees":
             expected = {"executive", "sectoral", "special", "affiliate", "advisory"}
@@ -176,6 +184,7 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
             years = value.get("years")
             if years is not None and not isinstance(years, list):
                 raise serializers.ValidationError({"years": "Resolution years must be a list."})
+            self.resolution_attachment_ids = active_resolution_attachment_ids(value)
             seen_years = set()
             year_errors = {}
             current_year = timezone.now().year
@@ -184,7 +193,7 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
                     year_errors[year_index] = "Each resolution year must be an object."
                     continue
                 raw_year = str(year_row.get("year") or "").strip()
-                if not raw_year.isdigit() or len(raw_year) != 4:
+                if len(raw_year) != 4 or not raw_year.isascii() or not raw_year.isdigit():
                     year_errors[year_index] = {"year": "Enter a four-digit resolution year."}
                     continue
                 year = int(raw_year)
@@ -221,17 +230,12 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
                                 "date": "Use YYYY-MM-DD and match the selected resolution year."
                             }
                     media_id = resolution.get("mediaAssetId") or resolution.get("documentAssetId") or resolution.get("attachment")
-                    if media_id:
-                        try:
-                            media = CMSMediaAsset.objects.filter(pk=media_id, is_archived=False).first()
-                        except (TypeError, ValueError):
-                            media = None
-                        if not media or media.file_type != CMSMediaAsset.FILE_TYPE_DOCUMENT:
-                            current = resolution_errors.get(resolution_index, {})
-                            resolution_errors[resolution_index] = {
-                                **(current if isinstance(current, dict) else {}),
-                                "mediaAssetId": "Choose an active document from the Media Library.",
-                            }
+                    if media_id and resolution_attachment_id(media_id) not in self.resolution_attachment_ids:
+                        current = resolution_errors.get(resolution_index, {})
+                        resolution_errors[resolution_index] = {
+                            **(current if isinstance(current, dict) else {}),
+                            "mediaAssetId": "Choose an active document from the Media Library.",
+                        }
                 if resolution_errors:
                     existing = year_errors.get(year_index, {})
                     year_errors[year_index] = {**existing, "resolutions": resolution_errors}
@@ -317,7 +321,7 @@ class CMSPageSectionSerializer(serializers.ModelSerializer):
             if errors:
                 raise serializers.ValidationError(errors)
 
-        return value
+        return preserve_card_identities(section_key, value)
 
     def validate(self, attrs):
         attrs = super().validate(attrs)

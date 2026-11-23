@@ -57,7 +57,7 @@ const isVisible = (value: unknown) => {
 const getPublicationCatalog = (page: CMSPageSnapshot | null) =>
   page?.sections.find((section) => section.sectionKey === "publication-catalog")?.content ?? null;
 
-const mergeDocuments = (cmsDocuments: unknown[], baseCategory?: Category): DocumentItem[] => {
+const mergeDocuments = (cmsDocuments: unknown[], baseCategory?: Category, manualOrder = false): DocumentItem[] => {
   const result = baseCategory?.documents.map((document) => ({ ...document })) ?? [];
 
   cmsDocuments.forEach((documentEntry, documentIndex) => {
@@ -95,6 +95,7 @@ const mergeDocuments = (cmsDocuments: unknown[], baseCategory?: Category): Docum
     else result.push(nextDocument);
   });
 
+  if (manualOrder) return result;
   return result.sort((left, right) => {
     return publicationDocumentNewestYear(right) - publicationDocumentNewestYear(left)
       || right.publicationDate?.localeCompare(left.publicationDate || "") || 0
@@ -125,7 +126,7 @@ const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
 
     const nextId = id || baseCategory?.id || `category-${categoryIndex + 1}`;
     const cmsDocuments = asArray(row.documents);
-    const documents = mergeDocuments(cmsDocuments, baseCategory);
+    const documents = mergeDocuments(cmsDocuments, baseCategory, row.manualDocumentOrder === true);
 
     const nextCategory: Category = {
       id: nextId,
@@ -142,6 +143,7 @@ const buildCategoriesFromCms = (page: CMSPageSnapshot | null): Category[] => {
     else result.push(nextCategory);
   });
 
+  if (catalog?.manualOrder === true) return result;
   return result.sort((left, right) =>
     right.categoryNumber - left.categoryNumber || left.title.localeCompare(right.title),
   );

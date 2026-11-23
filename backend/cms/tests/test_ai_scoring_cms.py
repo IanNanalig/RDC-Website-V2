@@ -83,6 +83,46 @@ class AIPriorityCMSTests(APITestCase):
             final_priority="low",
         )
 
+    def test_historical_references_search_is_paginated_and_admin_only(self):
+        url = "/api/admin/cms/ai-scoring/historical-references/"
+        ProjectPriorityConfirmation.objects.bulk_create([
+            ProjectPriorityConfirmation(analysis=self.analysis, validator=self.validator, final_priority="low")
+            for _ in range(10)
+        ])
+        self.client.force_authenticate(self.admin)
+        response = self.client.get(url, {"q": "Infrastructure"})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["count"], 11)
+        self.assertEqual(response.data["total_pages"], 2)
+        self.assertEqual(len(response.data["results"]), 10)
+        last_page = self.client.get(url, {"q": "Infrastructure", "page": 2})
+        self.assertEqual(last_page.data["page"], 2)
+        self.assertIsNone(last_page.data["next"])
+        self.assertEqual([row["confirmation_id"] for row in last_page.data["results"]], [self.confirmation.pk])
+        self.assertEqual(self.client.get(url, {"q": "nonmatching value"}).data["count"], 0)
+        self.client.force_authenticate(self.editor)
+        self.assertEqual(self.client.get(url).status_code, 403)
+
+    def test_rule_history_workspace_first_page_matches_paginated_endpoint(self):
+        PriorityRuleSet.objects.bulk_create([
+            PriorityRuleSet(version=f"paginated-version-{number}", status=PriorityRuleSet.STATUS_SUPERSEDED, is_active=False)
+            for number in range(10)
+        ])
+        self.client.force_authenticate(self.admin)
+        url = "/api/admin/cms/ai-scoring/versions/"
+        workspace = self.client.get("/api/admin/cms/ai-scoring/", {"limit": 0})
+        first = self.client.get(url)
+        second = self.client.get(url, {"page": 2})
+        self.assertEqual(first.status_code, 200, first.data)
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(first.data["total_pages"], 2)
+        self.assertEqual(workspace.data["rule_versions_total_pages"], first.data["total_pages"])
+        self.assertEqual(workspace.data["rule_versions"], first.data["results"])
+        self.assertEqual(len(first.data["results"]), 10)
+        self.assertEqual(len(second.data["results"]), 1)
+        self.assertNotIn(second.data["results"][0]["id"], {row["id"] for row in first.data["results"]})
+        self.assertIsNone(second.data["next"])
+
     def test_invalid_scoring_limits_are_rejected_on_save_preview_and_activation(self):
         self.client.force_authenticate(self.admin)
         url = "/api/admin/cms/ai-scoring/drafts/"

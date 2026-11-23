@@ -1,7 +1,7 @@
 from django.urls import include, path
 from rest_framework import routers
 from . import views
-from .admin_exports import AdminExportCountView, AdminExportDownloadView, AdminExportOptionsView
+from .admin_exports import AdminExportCountView, AdminExportDownloadView, AdminExportOptionsView, AdminExportPreviewView
 from .project_concerns import (
     AdminProjectConcernDetailView,
     AdminProjectConcernEvidenceDownloadView,
@@ -47,6 +47,7 @@ urlpatterns = [
     path("admin/users/batch-invitations/send/", views.BatchInvitationSendView.as_view(), name="batch-invitation-send"),
     path("admin/exports/options/", AdminExportOptionsView.as_view(), name="admin-export-options"),
     path("admin/exports/count/", AdminExportCountView.as_view(), name="admin-export-count"),
+    path("admin/exports/preview/", AdminExportPreviewView.as_view(), name="admin-export-preview"),
     path("admin/exports/download/", AdminExportDownloadView.as_view(), name="admin-export-download"),
     path("admin/project-concerns/", AdminProjectConcernListView.as_view(), name="admin-project-concern-list"),
     path("admin/project-concerns/<str:reference>/", AdminProjectConcernDetailView.as_view(), name="admin-project-concern-detail"),

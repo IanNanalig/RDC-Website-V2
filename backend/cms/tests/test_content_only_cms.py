@@ -1,6 +1,8 @@
 from io import StringIO
 
 from django.core.management import call_command
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -28,6 +30,209 @@ class ContentOnlyCMSTests(APITestCase):
             username="fixed-editor", email="fixed-editor@example.com", password="StrongTest123!", role="content_editor",
         )
         self.client.force_authenticate(self.admin)
+
+    def test_discard_saved_draft_checks_revision_and_keeps_public_snapshot(self):
+        page = CMSPage.objects.get(slug="home")
+        section = page.sections.get(section_key="development-plans")
+        publish = self.client.post("/api/admin/cms/modules/home/publish/", {}, format="json")
+        self.assertEqual(publish.status_code, 200, publish.data)
+        page.refresh_from_db()
+        section.refresh_from_db()
+        baseline, published_at = page.published_snapshot_json, page.published_at
+        before = section.content_json
+        saved = self.client.patch(
+            f"/api/admin/cms/sections/{section.pk}/", {"content_json": {**before, "title": "Unpublished title"}},
+            format="json",
+        )
+        self.assertEqual(saved.status_code, 200, saved.data)
+        url = f"/api/admin/cms/pages/{page.pk}/discard-draft/"
+        self.assertEqual(self.client.post(url, {"expected_updated_at": page.updated_at.isoformat()}, format="json").status_code, 409)
+        # The CMS sends the revision from the API, serialized in Manila time.
+        summary = self.client.get("/api/admin/cms/pages/?view=summary")
+        home = next(row for row in summary.data["results"] if row["id"] == page.pk)
+        self.assertTrue(home["has_unpublished_changes"])
+        self.assertTrue(home["updated_at"].endswith("+08:00"))
+        invalid = self.client.post(url, {"expected_updated_at": "2026-11-31T00:00:00+08:00"}, format="json")
+        self.assertEqual(invalid.status_code, 409, invalid.data)
+        result = self.client.post(url, {"expected_updated_at": home["updated_at"]}, format="json")
+        self.assertEqual(result.status_code, 200, result.data)
+        self.assertFalse(result.data["has_unpublished_changes"])
+        page.refresh_from_db()
+        section.refresh_from_db()
+        self.assertEqual(section.content_json, before)
+        self.assertEqual(page.published_snapshot_json, baseline)
+        self.assertEqual(page.published_at, published_at)
+        self.assertFalse(page.has_unpublished_changes)
+        summary = self.client.get("/api/admin/cms/pages/?view=summary")
+        home = next(row for row in summary.data["results"] if row["id"] == page.pk)
+        self.assertEqual(home["status"], "published")
+        self.assertFalse(home["has_unpublished_changes"])
+
+    def test_editor_can_discard_their_own_draft_but_not_a_shared_draft(self):
+        slug = "contact"
+        page = CMSPage.objects.get(slug=slug)
+        self.assertEqual(self.client.post(f"/api/admin/cms/modules/{slug}/publish/", {}, format="json").status_code, 200)
+        url = f"/api/admin/cms/pages/{page.pk}/discard-draft/"
+
+        def save_title(section_key, title):
+            section = page.sections.get(section_key=section_key)
+            result = self.client.patch(
+                f"/api/admin/cms/sections/{section.pk}/",
+                {"content_json": {**section.content_json, "title": title}}, format="json",
+            )
+            self.assertEqual(result.status_code, 200, result.data)
+
+        self.client.force_authenticate(self.editor)
+        save_title("contact-hero", "Editor draft")
+        page.refresh_from_db()
+        self.assertEqual(self.client.post(url, {"expected_updated_at": page.updated_at.isoformat()}, format="json").status_code, 200)
+        self.client.force_authenticate(self.admin)
+        save_title("main-office", "Admin draft")
+        self.client.force_authenticate(self.editor)
+        save_title("contact-hero", "Shared draft")
+        page.refresh_from_db()
+        self.assertEqual(self.client.post(url, {"expected_updated_at": page.updated_at.isoformat()}, format="json").status_code, 403)
+
+    def test_home_cards_keep_duplicate_titles_and_reject_over_limit_updates(self):
+        section = CMSPageSection.objects.get(page__slug="home", section_key="development-plans")
+        url = f"/api/admin/cms/sections/{section.pk}/"
+        items = [{"title": "Same title", "description": "First"}, {"title": "Same title", "description": "Second"}]
+        saved = self.client.patch(url, {"content_json": {"title": "Plans", "items": items}}, format="json")
+        self.assertEqual(saved.status_code, 200, saved.data)
+        saved_items = saved.data["content_json"]["items"]
+        self.assertNotEqual(saved_items[0]["id"], saved_items[1]["id"])
+        reordered = list(reversed(saved_items))
+        saved = self.client.patch(url, {"content_json": {"title": "Plans", "items": reordered}}, format="json")
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual(saved.data["content_json"]["items"], reordered)
+        reordered[0]["title"] = "x" * 26
+        invalid = self.client.patch(url, {"content_json": {"title": "Plans", "items": reordered}}, format="json")
+        self.assertEqual(invalid.status_code, 400, invalid.data)
+
+    def test_contact_map_accepts_only_supported_google_maps_locations(self):
+        section = CMSPageSection.objects.get(page__slug="contact", section_key="location-map")
+        url = f"/api/admin/cms/sections/{section.pk}/"
+        for invalid in ("https://elsewhere.example/maps/place/Manila", "https://google.com@elsewhere.example/maps?q=Manila"):
+            response = self.client.patch(url, {"content_json": {"googleMapsLocation": invalid}}, format="json")
+            self.assertEqual(response.status_code, 400, response.data)
+        result = self.client.patch(url, {"content_json": {"googleMapsLocation": "https://www.google.com/maps/place/Quezon+City"}}, format="json")
+        self.assertEqual(result.status_code, 200, result.data)
+        self.assertEqual(result.data["content_json"]["mapLocationQuery"], "Quezon City")
+
+    def test_publications_preserve_explicit_order_and_document_references(self):
+        page = CMSPage.objects.get(slug="publications")
+        older = {"id": "timeline-older", "title": "Older 2021", "url": "https://example.com/older.pdf"}
+        newer = {"id": "timeline-newer", "title": "Newer 2026", "url": "https://example.com/newer.pdf"}
+        changes = {"manualOrder": True, "categories": [
+            {"id": "ordering-a", "title": "Category A", "categoryNumber": 1,
+             "manualDocumentOrder": True, "documents": [older, newer]},
+            {"id": "ordering-b", "title": "Category B", "categoryNumber": 2, "documents": []},
+        ]}
+        response = self.client.patch("/api/admin/cms/modules/publications/", {"sections": {"publication-catalog": changes}}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.client.post("/api/admin/cms/modules/publications/publish/", {}, format="json").status_code, 200)
+        page.refresh_from_db()
+        catalog = next(row["content"] for row in compose_public_page_snapshot(page)["sections"] if row["sectionKey"] == "publication-catalog")
+        self.assertEqual([row["title"] for row in catalog["categories"]], ["Category A", "Category B"])
+        self.assertEqual([row["title"] for row in catalog["categories"][0]["documents"]], [older["title"], newer["title"]])
+        self.assertEqual([row["url"] for row in catalog["categories"][0]["documents"]], [older["url"], newer["url"]])
+
+    def test_resolution_legend_and_custom_order_survive_publication(self):
+        page = CMSPage.objects.get(slug="about-rdc")
+        changes = {"years": [{"year": "2025", "manualOrder": True, "resolutions": [
+            {"id": "order-resolution-1", "title": "First resolution", "legendTitle": "Documents",
+             "legendItems": [{"label": "Full copy", "color": "blue"}]},
+            {"id": "order-resolution-2", "title": "Second resolution"},
+        ]}]}
+        endpoint = "/api/admin/cms/modules/about-rdc/"
+        response = self.client.patch(endpoint, {"sections": {"resolutions-archive": changes}}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        invalid = {"years": [{**changes["years"][0], "year": "20x5"}]}
+        rejected = self.client.patch(endpoint, {"sections": {"resolutions-archive": invalid}}, format="json")
+        self.assertEqual(rejected.status_code, 400, rejected.data)
+        published = self.client.post(endpoint + "publish/", {}, format="json")
+        self.assertEqual(published.status_code, 200, published.data)
+        page.refresh_from_db()
+        archive = next(row["content"] for row in compose_public_page_snapshot(page)["sections"] if row["sectionKey"] == "resolutions-archive")
+        resolutions = archive["years"][0]["resolutions"]
+        self.assertEqual([row["title"] for row in resolutions], ["First resolution", "Second resolution"])
+        self.assertEqual(resolutions[0]["legendItems"][0]["label"], "Full copy")
+
+    def test_resolution_draft_batches_attachment_checks_and_writes_only_changed_rows(self):
+        page = CMSPage.objects.get(slug="about-rdc")
+        section = page.sections.get(section_key="resolutions-archive")
+        archive_url = f"/api/admin/cms/sections/{section.pk}/"
+        publish_url = "/api/admin/cms/modules/about-rdc/publish/"
+        media = CMSMediaAsset.objects.create(file="cms/sample-resolution.pdf", file_type="document")
+        rows = [{"id": f"sample-resolution-{index}", "number": str(index), "title": f"Sample {index}",
+                 "mediaAssetId": str(media.pk)} for index in range(16)]
+        content = {"years": [{"year": "2025", "manualOrder": True, "resolutions": rows}]}
+        saved = self.client.patch(archive_url, {"content_json": content}, format="json")
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual(self.client.post(publish_url, {}, format="json").status_code, 200)
+        page.refresh_from_db()
+        published = page.published_snapshot_json
+        timestamps = dict(CMSResolution.objects.filter(stable_key__startswith="sample-resolution-")
+                          .values_list("stable_key", "updated_at"))
+
+        rows[0]["legendItems"] = [{"label": "Sectoral Committee", "color": "emerald"}]
+        with CaptureQueriesContext(connection) as captured:
+            saved = self.client.patch(archive_url, {"content_json": content}, format="json")
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual(sum('FROM "cms_cmsmediaasset"' in query["sql"] for query in captured), 1)
+        self.assertEqual(sum('UPDATE "cms_cmsresolution"' in query["sql"] for query in captured), 0)
+        self.assertLess(len(captured), 20)
+        self.assertTrue(saved.data["page_revision"]["has_unpublished_changes"])
+        expected = self.client.get(f"/api/admin/cms/pages/{page.pk}/?view=editor").data["updated_at"]
+        self.assertEqual(saved.data["page_revision"]["updated_at"], expected)
+        page.refresh_from_db()
+        self.assertEqual(page.published_snapshot_json, published)
+
+        rows[0]["title"] = "Edited title"
+        rows[0], rows[1] = rows[1], rows[0]
+        saved = self.client.patch(archive_url, {"content_json": content}, format="json")
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual(CMSResolution.objects.get(stable_key="sample-resolution-0").title, "Edited title")
+        self.assertEqual(CMSResolution.objects.get(stable_key="sample-resolution-0").sort_order, 2)
+        self.assertEqual(CMSResolution.objects.get(stable_key="sample-resolution-1").sort_order, 1)
+        unchanged = {key: timestamp for key, timestamp in timestamps.items()
+                     if key not in {"sample-resolution-0", "sample-resolution-1"}}
+        current = CMSResolution.objects.filter(stable_key__in=unchanged).values_list("stable_key", "updated_at")
+        self.assertEqual(dict(current), unchanged)
+
+        discarded = self.client.post(f"/api/admin/cms/pages/{page.pk}/discard-draft/", {
+            "expected_updated_at": saved.data["page_revision"]["updated_at"],
+        }, format="json")
+        self.assertEqual(discarded.status_code, 200, discarded.data)
+        self.assertFalse(discarded.data["has_unpublished_changes"])
+        self.assertEqual(CMSResolution.objects.get(stable_key="sample-resolution-0").title, "Sample 0")
+
+    def test_carousel_limit_and_legacy_text_values_survive_safe_edits(self):
+        section = CMSPageSection.objects.get(page__slug="home", section_key="hero-carousel")
+        url = f"/api/admin/cms/sections/{section.pk}/"
+        slides = [{"id": f"slide-order-{index}", "title": f"Sample {index}", "imageKey": "photo1"} for index in range(10)]
+        invalid = self.client.patch(url, {"content_json": {"slides": [*slides, {"title": "Slide 11"}]}}, format="json")
+        self.assertEqual(invalid.status_code, 400, invalid.data)
+        slides[0]["title"] = "a" * 55
+        section.content_json = {"slides": slides}
+        section.save(update_fields=["content_json"])
+        response = self.client.patch(url, {"content_json": {"slides": list(reversed(slides))}}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["content_json"]["slides"][-1]["title"], "a" * 55)
+
+    def test_selected_media_and_category_usage_exclude_heavy_details(self):
+        active = CMSMediaAsset.objects.create(
+            file="cms/active-image.png", file_type="image", alt_text="Quezon", tags=["government"], category="Maps",
+        )
+        archived = CMSMediaAsset.objects.create(file="cms/old.png", file_type="image", is_archived=True, category="Maps")
+        selected = self.client.get("/api/admin/cms/media/selected/", {"ids": f"{active.pk},{archived.pk}"})
+        self.assertEqual(selected.status_code, 200, selected.data)
+        self.assertEqual([item["id"] for item in selected.data], [active.pk])
+        self.assertNotIn("storage_key", selected.data[0])
+        counts = self.client.get("/api/admin/cms/media/category-usage/")
+        self.assertEqual(counts.data["Maps"], 2)
+        matches = self.client.get("/api/admin/cms/media/", {"view": "summary", "file_type": "image", "q": "Quezon government"})
+        self.assertEqual([row["id"] for row in matches.data["results"]], [active.pk])
 
     def test_publication_document_year_ranges_sort_newest_first(self):
         rows = [

@@ -81,7 +81,6 @@ const statsFromContent = (content: Record<string, unknown>): QuickStat[] => {
       color: "from-orange-500 to-red-400",
     });
   }
-  if (numericStats.length) return numericStats;
   const items = asArray(content.stats)
     .map((item) => {
       const row = asRecord(item);
@@ -97,7 +96,7 @@ const statsFromContent = (content: Record<string, unknown>): QuickStat[] => {
       };
     })
     .filter(Boolean) as QuickStat[];
-  return items;
+  return items.length ? items : numericStats;
 };
 
 const citiesFromContent = (content: Record<string, unknown>): CityLink[] => {

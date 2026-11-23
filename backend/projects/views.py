@@ -35,6 +35,7 @@ from django.db.models.functions import Cast, Coalesce, Concat, NullIf
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import SimpleRateThrottle
@@ -2669,6 +2670,14 @@ class AdminEventViewSet(viewsets.ModelViewSet):
         if self.action == "list" and self.request.query_params.get("archived") == "1":
             return qs
         return qs.filter(created_by=self.request.user)
+
+    def list(self, request, *args, **kwargs):
+        if request.query_params.get("archived") == "1" and request.query_params.get("view") == "summary":
+            pagination = PageNumberPagination()
+            pagination.page_size = 10
+            rows = pagination.paginate_queryset(self.get_queryset().order_by("-updated_at", "-start_at", "-pk"), request)
+            return pagination.get_paginated_response(self.get_serializer(rows, many=True).data)
+        return super().list(request, *args, **kwargs)
 
     def _ensure_editor_can_change(self, event):
         if _is_admin_user(self.request.user):
