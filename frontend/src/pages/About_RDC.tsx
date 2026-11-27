@@ -702,7 +702,7 @@ export default function AboutRDC({ previewSnapshot }: { previewSnapshot?: CMSPag
                           {doc.fileSize}
                         </div>
                       )}
-                      {doc.pages && (
+                      {doc.pages !== undefined && doc.pages > 0 && (
                         <div className="text-xs text-slate-400">
                           {doc.pages} pages
                         </div>

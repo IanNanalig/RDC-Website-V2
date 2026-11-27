@@ -550,7 +550,6 @@ const AIScoringManager: React.FC<Props> = ({ mode }) => {
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
             <p className="font-bold">{groqEnabled ? "This is a controlled Groq-assisted analysis engine." : "This is a controlled hybrid analysis engine."}</p>
             <p className="mt-2 leading-6">{workspace.learning_explanation}</p>
-            <p className="mt-2 leading-6">It does not learn from its own predictions. Only validator-confirmed outcomes can be used as historical reference data.</p>
           </div>
           <div className="rounded-xl border border-slate-200 p-4 text-sm">
             <p className="text-xs uppercase tracking-wide text-slate-500">Active rule version</p>
